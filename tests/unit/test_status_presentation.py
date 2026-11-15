@@ -16,6 +16,11 @@ from quarterdeck.service import Service
 from tests.integration.waiting import wait_for
 
 
+
+def beat_everywhere(runtime,text):
+    """The heartbeat as the service leaves it: the same text at both its places while the earlier one stands."""
+    for place in (servicectl.heartbeat_path(runtime),servicectl.legacy_heartbeat_path(runtime)):place.write_text(text)
+
 @pytest.fixture
 def live(tmp_path):
     (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\nname="synthetic"\n')
@@ -59,10 +64,10 @@ def test_invalid_or_unowned_snapshot_requires_the_ordinary_independent_reader(li
     elif change=='corrupt':path.write_text('{ unparsed')
     elif change=='declaration':ship.file.write_text(ship.file.read_text()+'\n# changed\n')
     elif change=='source':monkeypatch.setattr(presentation,'framework_stamp',lambda:['different code'])
-    elif change=='heartbeat':servicectl.heartbeat_path(ship.runtime).write_text('malformed')
+    elif change=='heartbeat':beat_everywhere(ship.runtime,'malformed')
     elif change=='busy':
         stamp=(datetime.now(timezone.utc)-timedelta(seconds=20)).isoformat()
-        servicectl.heartbeat_path(ship.runtime).write_text(f'{os.getpid()} {stamp}\n')
+        beat_everywhere(ship.runtime,f'{os.getpid()} {stamp}\n')
     elif change=='death':lock.close()
     elif change=='handoff':
         ship.file.write_text('[ship]\nname="synthetic"\n')
@@ -129,8 +134,8 @@ def test_long_tick_rendering_still_requires_current_independent_owner_evidence(l
     if change=='death':lock.close()
     elif change=='busy':
         stamp=(datetime.now(timezone.utc)-timedelta(seconds=20)).isoformat()
-        servicectl.heartbeat_path(ship.runtime).write_text(f'{os.getpid()} {stamp}\n')
-    else:servicectl.heartbeat_path(ship.runtime).write_text('unparsed heartbeat\n')
+        beat_everywhere(ship.runtime,f'{os.getpid()} {stamp}\n')
+    else:beat_everywhere(ship.runtime,'unparsed heartbeat\n')
     assert presentation.cached_line(ship.folder) is None  # law: nothing-waits-silently
     assert path.read_bytes()==before,'consumer and owner refusal never renew success'
 

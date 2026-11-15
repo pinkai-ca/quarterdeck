@@ -199,7 +199,8 @@ def test_a_busy_service_reads_busy_not_dead_and_qd_down_still_stops_it(ship: shi
     pause()  # the service lock stays held while the heartbeat ages
     try:
         stamp = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
-        service.heartbeat_path(ship.runtime).write_text(f"{pid} {stamp}\n")
+        for place in (service.heartbeat_path(ship.runtime), service.legacy_heartbeat_path(ship.runtime)):
+            place.write_text(f"{pid} {stamp}\n")  # aged where the service beats: both places while the earlier one stands
         assert service.alive(ship.runtime) and 29 < service.stale(ship.runtime) < 40, "the lock says alive, the heartbeat says busy"
         assert qd(capsys, "status", "--line").startswith("service busy 3")  # law: nothing-waits-silently
         assert qd(capsys, "status").splitlines()[0].startswith("service busy 3")

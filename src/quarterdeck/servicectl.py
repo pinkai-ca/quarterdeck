@@ -31,8 +31,32 @@ START_SECONDS = 30.0
 LIFECYCLE_REQUESTS = frozenset({'relaunch', 'stop', 'select', 'control'})
 
 
+HEARTBEAT_FOLDER = "heartbeat"
+
+
 def heartbeat_path(runtime: Path) -> Path:
+    """In a folder of its own, which a jail shows read-only: a replace inside it never races a jail's mount, and a
+    running jail sees every beat. A single-file bind pinned the inode a jail started with, so a jail read its
+    launch-time beat for ever, and a replace during bwrap's mount of the file stopped the launch.
+
+    runtime/heartbeat is shown to every jail, so nothing but the heartbeat, and its own temporary file while a beat
+    is written, may ever be written there."""
+    return runtime / HEARTBEAT_FOLDER / "service.heartbeat"
+
+
+def legacy_heartbeat_path(runtime: Path) -> Path:
+    """Where the heartbeat lay before it moved, and where every installer of the earlier code waits for a new
+    service's beat at a sync's target_ready, whichever place its install lock lies at. TEMPORARY: every beat is
+    written here too until a later change, one release after the move, drops this write once no installed copy of
+    the earlier code can run a sync. Never shown to a jail."""
     return runtime / "service.heartbeat"
+
+
+def remove_heartbeat(runtime: Path) -> None:
+    """Both places, each with a temporary file a beat cut short may have left."""
+    for path in (heartbeat_path(runtime), legacy_heartbeat_path(runtime)):
+        path.unlink(missing_ok=True)
+        path.with_suffix(".tmp").unlink(missing_ok=True)
 
 
 def lock_path(runtime: Path) -> Path:
@@ -48,16 +72,34 @@ def legacy_lock_path(runtime: Path) -> Path:
 
 
 def write_heartbeat(runtime: Path) -> None:
+    """One beat, whole by rename, at the heartbeat's place and (TEMPORARY, see legacy_heartbeat_path) its earlier
+    place, so that an installer of the earlier code sees a service of this code start."""
     path = heartbeat_path(runtime)
+    path.parent.mkdir(exist_ok=True)
+    _beat(path)
+    _beat(legacy_heartbeat_path(runtime))  # TEMPORARY: dropped one release after the move
+
+
+def _beat(path: Path) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(f"{os.getpid()} {datetime.now(timezone.utc).isoformat()}\n")
     os.replace(tmp, path)
 
 
 def read_heartbeat(runtime: Path) -> tuple[int, float] | None:
-    """The service's pid and the age of its last tick in seconds, or None when none was written."""
+    """The service's pid and the age of its last tick in seconds, or None when none was written.
+
+    Both places are read and the fresher beat wins. The earlier code's service beats only at the earlier place, so
+    after a sync back, or one that failed and rolled back, the folder holds the dead newer service's last beat; the
+    folder alone would name a dead pid. Inside a jail only the folder is shown, and it is live."""
+    beats = [beat for path in (heartbeat_path(runtime), legacy_heartbeat_path(runtime))
+             if (beat := _read_beat(path)) is not None]
+    return min(beats, key=lambda beat: beat[1]) if beats else None
+
+
+def _read_beat(path: Path) -> tuple[int, float] | None:
     try:
-        pid, stamp = heartbeat_path(runtime).read_text().split()
+        pid, stamp = path.read_text().split()
         moment = datetime.fromisoformat(stamp)
         if int(pid) <= 0 or moment.tzinfo is None:
             return None
@@ -354,7 +396,7 @@ def scoped(ship: Ship, environment: dict[str, str]) -> tuple[list[str], str | No
 def stop(runtime: Path) -> str:
     """Signal the service that holds the lock and wait for the lock to drop; one that ignores SIGTERM is killed."""
     if not alive(runtime):
-        heartbeat_path(runtime).unlink(missing_ok=True)
+        remove_heartbeat(runtime)
         return "service was not running"
     beat = read_heartbeat(runtime)
     if beat is None:
@@ -396,7 +438,7 @@ def stop(runtime: Path) -> str:
             detail = shutdown.annotate(runtime, owner, forced=how == "killed")
             stopped_beat = read_heartbeat(runtime)
             if stopped_beat is not None and stopped_beat[0] == pid:
-                heartbeat_path(runtime).unlink(missing_ok=True)
+                remove_heartbeat(runtime)
             # A relaunch still open when the service ended: released, logged, and on the line for the next service.
             released = relaunch_intent.release(runtime, owner) if owner is not None else []
             bound = max(shutdown.DELIVERY_GRACE if extended else shutdown.ORDINARY_GRACE,

@@ -9,6 +9,7 @@ than the tick (law: events-not-clocks).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import hashlib
 import os
@@ -38,7 +39,8 @@ from .provenance import UNKNOWN
 from .post import Attempts, Store
 from .seat import SEAT_HOLDS, Seat, SelectionError, UnresolvedSeat, launch_pool_refusal, seats
 from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
-    acquire_lock, alive, heartbeat_path, locked, read_heartbeat, request, stale, start, stop, write_heartbeat,
+    acquire_lock, alive, heartbeat_path, legacy_heartbeat_path, locked, read_heartbeat, remove_heartbeat, request, stale,
+    start, stop, write_heartbeat,
 )
 from .ship import Ship, ShipError
 from .tmux import Tmux, TmuxError, ship_sessions
@@ -161,13 +163,14 @@ class Service:
         self.log("start", pid=os.getpid())
         self.clean_server_environment()
         (self.runtime / SEAT_HOLDS).unlink(missing_ok=True)  # an earlier service's holds are its own; this one observes anew
+        self.first_beat()
         from .shutdown import Stop
         beat_stop = threading.Event()
         def keep_heartbeat():
             while not beat_stop.wait(2.0):
                 try:
                     with self.heartbeat_lock:
-                        write_heartbeat(self.runtime)
+                        self.beat()
                 except OSError:
                     pass  # the main step reports storage failures through its usual path
         beat = threading.Thread(target=keep_heartbeat, name='service-heartbeat', daemon=True)
@@ -406,9 +409,25 @@ class Service:
         from . import push_reminder
         push_reminder.run(self)
 
+    def first_beat(self) -> None:
+        """At the start, a beat this service did not write goes, in both places, and its own first beat follows at once.
+
+        A sync that failed and rolled back leaves the dead newer service's last beat in the folder, which the earlier
+        code neither writes nor clears; no reader is left with it."""
+        with getattr(self, 'heartbeat_lock', None) or contextlib.nullcontext():
+            remove_heartbeat(self.runtime)
+            try:
+                self.beat()
+            except OSError:
+                pass  # the beat thread and the main step try again; storage failures are reported there
+
+    def beat(self) -> None:
+        """The heartbeat, in both its places (servicectl.write_heartbeat; the earlier place is TEMPORARY)."""
+        write_heartbeat(self.runtime)
+
     def heartbeat(self) -> None:
         with self.heartbeat_lock:
-            write_heartbeat(self.runtime)
+            self.beat()
         self.publish_accounting_health()
 
     def publish_accounting_health(self, *, force=False) -> None:
