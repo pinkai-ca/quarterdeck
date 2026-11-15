@@ -24,12 +24,14 @@ def transcript(home, name, kind, at, *, complete=True):
         rows = [dict(type='session', id=name, timestamp=at.isoformat(), cwd='/synthetic'),
                 dict(type='message', id='u', parentId=None, timestamp=at.isoformat(),
                      message=dict(role='user', content='Synthetic task ' + name))]
-        if complete:
-            rows.append(dict(type='message', id='a', parentId='u', timestamp=(at + timedelta(seconds=1)).isoformat(),
-                message=dict(role='assistant', model='synthetic-model', provider='synthetic',
-                    content=[dict(type='text', text='Synthetic answer')], stopReason='stop',
-                    usage=dict(input=3, output=2, cacheRead=0, cacheWrite=0, totalTokens=5,
-                               cost=dict(total=0.25)))))
+        rows.append(dict(type='message', id='a', parentId='u', timestamp=(at + timedelta(seconds=1)).isoformat(),
+            message=dict(role='assistant', model='synthetic-model', provider='synthetic',
+                content=[dict(type='text', text='Synthetic answer')], stopReason='stop',
+                usage=dict(input=3, output=2, cacheRead=0, cacheWrite=0, totalTokens=5,
+                           cost=dict(total=0.25)))))
+        if not complete:
+            rows.append(dict(type='message', id='u2', parentId='a', timestamp=(at+timedelta(seconds=2)).isoformat(),
+                             message=dict(role='user', content='Synthetic unfinished task')))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
     else:
@@ -45,17 +47,21 @@ def transcript(home, name, kind, at, *, complete=True):
                 json.dumps(dict(role='user', time=dict(created=ms), model=dict(modelID='synthetic-model')))))
             db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('text', 'u', name, ms, ms,
                 json.dumps(dict(type='text', text='Synthetic task ' + name))))
-            if complete:
-                db.execute('INSERT INTO message VALUES (?,?,?,?,?)', ('a', name, ms+1000, ms+1000,
-                    json.dumps(dict(role='assistant', parentID='u', modelID='synthetic-model', finish='stop',
-                        time=dict(created=ms+1000, completed=ms+1001), tokens=dict(input=3, output=2), cost=.25))))
-                db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('reply', 'a', name, ms+1000, ms+1000,
-                    json.dumps(dict(type='text', text='Synthetic answer'))))
+            db.execute('INSERT INTO message VALUES (?,?,?,?,?)', ('a', name, ms+1000, ms+1000,
+                json.dumps(dict(role='assistant', parentID='u', modelID='synthetic-model', finish='stop',
+                    time=dict(created=ms+1000, completed=ms+1001), tokens=dict(input=3, output=2), cost=.25))))
+            db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('reply', 'a', name, ms+1000, ms+1000,
+                json.dumps(dict(type='text', text='Synthetic answer'))))
+            if not complete:
+                db.execute('INSERT INTO message VALUES (?,?,?,?,?)', ('u2', name, ms+2000, ms+2000,
+                    json.dumps(dict(role='user', time=dict(created=ms+2000)))))
+                db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('text2', 'u2', name, ms+2000, ms+2000,
+                    json.dumps(dict(type='text', text='Synthetic unfinished task'))))
         # Match the native per-launch ancillary folders without importing native content.
         for folder in ('log', 'repos', 'snapshot'):
             (path.parent / folder).mkdir()
             (path.parent / folder / 'synthetic').write_bytes(b'synthetic retained launch data')
-    for source in (path, *path.parent.rglob('*')):
+    for source in ([path] if kind == 'pi' else [path, *path.parent.rglob('*')]):
         os.utime(source, (at.timestamp(), at.timestamp()))
     return path
 
@@ -82,7 +88,7 @@ def world(tmp_path, monkeypatch, kind='pi', *, complete=True):
     monkeypatch.setattr(svc, 'resolved_seats', lambda: [seat])
     logs = []
     monkeypatch.setattr(svc, 'log', lambda event, **data: logs.append((event, data)))
-    svc._account_record(process_table={})
+    svc.account_records(process_table={})
     assert not svc.ledger.catching_up()
     return SimpleNamespace(svc=svc, seat=seat, record=record, current=current, now=now.timestamp(), logs=logs)
 
@@ -117,6 +123,9 @@ def test_accounted_old_record_retires_and_size_falls_current_stays(tmp_path, mon
 def test_unfinished_or_ineligible_sources_stay(tmp_path, monkeypatch, kind, hold):
     w = world(tmp_path, monkeypatch, kind, complete=hold != 'open')
     try:
+        if hold == 'open':
+            assert w.svc.ledger.db.execute('SELECT 1 FROM record_accounting WHERE record=?',
+                                          (str(w.record),)).fetchone() == (1,)
         if hold == 'unaccounted':
             with w.svc.ledger.record_pass() as book:
                 book.mark_accounted(w.record, None)
@@ -169,13 +178,15 @@ def test_changed_epoch_replay_of_copy_keeps_all_measurements_byte_identical(tmp_
         w.svc.accounting_epoch = ['synthetic-changed-reader-and-attribution-epoch']
         book.begin_catchup(w.svc.accounting_epoch)
         keys = {name: ['synthetic-changed-reader', value] for name, value in reader_stamp.readers().items()}
-        w.svc._account_record(process_table={}, source_reader_keys=keys)
+        monkeypatch.setattr(reader_stamp, 'attributions', lambda: keys)
+        w.svc.ledger.attributions.last = None
+        w.svc.account_records(process_table={}, source_reader_keys=keys)
         assert not book.catching_up()
         assert rows(book.db) == expected
         assert book.db.execute('SELECT * FROM records').fetchall() == []
         assert book.db.execute('SELECT COUNT(*) FROM turn_attribution WHERE valid=0').fetchone() == (0,)
         # Measurements are also idempotent on a second complete accounting pass.
-        w.svc._account_record(process_table={}, source_reader_keys=keys)
+        w.svc.account_records(process_table={}, source_reader_keys=keys)
         assert rows(book.db) == expected
     finally:
         book.close()
@@ -190,7 +201,7 @@ def test_sqlite_bundle_moves_once_with_wal_and_shm(tmp_path, monkeypatch):
             path.write_bytes(b'')
             os.utime(path, (w.now-9*86400, w.now-9*86400))
         w.svc.read_marks.clear()
-        w.svc._account_record(process_table={})
+        w.svc.account_records(process_table={})
         original = {p.relative_to(w.record.parent): p.read_bytes()
                     for p in w.record.parent.rglob('*') if p.is_file()}
         moves = []
