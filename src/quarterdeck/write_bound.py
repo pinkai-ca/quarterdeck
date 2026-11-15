@@ -166,6 +166,8 @@ class State:
     unreached: list = field(default_factory=list)
     free: dict = field(default_factory=dict)  # device -> free bytes at the last look
     sizes: dict = field(default_factory=dict)  # seat -> {device: bytes at its last whole measure there}
+    unread: dict = field(default_factory=dict)  # device -> (folder, looks running its statvfs failed, the error's kind)
+    unreadable: set = field(default_factory=set)  # seats whose unmeasured count could not be read, logged once
 
 
 # -- processes -------------------------------------------------------------------------
@@ -611,7 +613,7 @@ def status(ship) -> list[str]:
     try:
         names = sorted(name[:-5] for name in os.listdir(folder(ship.runtime)) if name.endswith('.json'))
     except FileNotFoundError:
-        return []  # no hold was ever placed and no seat left unmeasured: the seats need not be read
+        return floor_unread_status(ship.runtime)  # no hold was ever placed and no seat left unmeasured
     except OSError as error:
         return [f'write-bound holds unreadable ({type(error).__name__}); qd status reads them']
     lines = []
@@ -633,7 +635,7 @@ def status(ship) -> list[str]:
         count = f'{passes} of {PASSES} passes in a row' if isinstance(passes, int) else 'passes unreadable'
         lines.append(f'{name}: write bound unmeasured, {count} ({why}); '
                      f'retried each pass, stopped at {PASSES}')  # law: nothing-waits-silently
-    return lines
+    return lines + floor_unread_status(ship.runtime)
 
 
 # -- a seat left unmeasured ----------------------------------------------------------------------
@@ -647,23 +649,44 @@ def unmeasured_path(runtime, seat: str) -> Path:
     return unmeasured_folder(runtime) / f'{seat}.json'
 
 
-def unmeasured_read(runtime, seat: str) -> dict | None:
-    """The seat's run of unmeasured passes, or None. One that cannot be read reads as none: no jail can write it."""
+def _unmeasured_file(runtime, seat: str) -> tuple[dict | None, str | None]:
+    """The seat's run of unmeasured passes, or None; and why it could not be read, when it is there but unreadable."""
     target = unmeasured_path(runtime, seat)
     try:
         mode = post_dir.mode(target)
-        if mode is None or not stat.S_ISREG(mode):
-            return None
+        if mode is None:
+            return None, None
+        if not stat.S_ISREG(mode):
+            return None, 'not a regular file'
         data = json.loads(post_dir.read_bytes(target, limit=LIMIT))
-    except (OSError, ShipError, ValueError):
-        return None
-    return data if isinstance(data, dict) and data.get('seat') == seat else None
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ShipError, ValueError) as error:
+        return None, type(error).__name__
+    if not isinstance(data, dict) or data.get('seat') != seat:
+        return None, 'not this seat\'s count'
+    return data, None
 
 
-def unmeasured(runtime, reading: Reading) -> int:
-    """Count one more unmeasured pass in a row for the seat, kept where no jail is shown; the passes so far."""
+def unmeasured_read(runtime, seat: str) -> dict | None:
+    """The seat's run of unmeasured passes, or None. One that cannot be read reads as none: no jail can write it."""
+    return _unmeasured_file(runtime, seat)[0]
+
+
+def unmeasured(runtime, reading: Reading, log=None, state: State | None = None) -> int:
+    """Count one more unmeasured pass in a row for the seat, kept where no jail is shown; the passes so far. A count
+    that is there but cannot be read starts again at one, and says so in one log line, once while it stays so."""
     label, held, bound, why = reading.unmeasured
-    before = unmeasured_read(runtime, reading.seat) or {}
+    before, problem = _unmeasured_file(runtime, reading.seat)
+    before = before or {}
+    if problem is None:
+        if state is not None:
+            state.unreadable.discard(reading.seat)
+    elif log is not None and (state is None or reading.seat not in state.unreadable):
+        log('error', step='write-bound', seat=reading.seat,
+            error=f'unmeasured count unreadable ({problem}); counted again from one')
+        if state is not None:
+            state.unreadable.add(reading.seat)
     passes = before.get('passes') if isinstance(before.get('passes'), int) and before.get('passes') > 0 else 0
     now = datetime.now(timezone.utc).isoformat()
     data = dict(version=1, seat=reading.seat, passes=passes + 1, first_at=before.get('first_at') or now, at=now,
@@ -721,7 +744,7 @@ def look(ship, log, *, bounds=None, budget: Budget | None = None, state: State |
             reading = measure(ship, jail, bounds=bounds, budget=fresh)
             readings[name] = reading
             if reading.over is None and reading.unmeasured is not None:
-                passes = unmeasured(ship.runtime, reading)
+                passes = unmeasured(ship.runtime, reading, log, state)
                 label, held, bound, why = reading.unmeasured
                 log('write-bound', seat=name, outcome='unmeasured', passes=passes, group=label, held=held,
                     bound=bound, why=why)
@@ -782,6 +805,53 @@ def _devices(jail: Jail) -> dict[str, int | None]:
     return found
 
 
+UNREAD_LOOKS = 2  # a device whose statvfs fails this many looks running is named on the status line
+
+
+def floor_unread_path(runtime) -> Path:
+    return folder(runtime) / 'floor' / 'unread.json'
+
+
+def floor_unread_write(runtime, unread: dict, log) -> None:
+    """Keep, where no jail is shown, each device whose free space went unread ``UNREAD_LOOKS`` looks running: its floor
+    is not watched there while the walks still stand, and the status line, in another process, says so."""
+    named = [dict(folder=where, looks=looks, error=kind) for where, looks, kind in sorted(unread.values())
+             if looks >= UNREAD_LOOKS]
+    target = floor_unread_path(runtime)
+    try:
+        if named:
+            content = (json.dumps(dict(version=1, devices=named)) + '\n').encode()
+            try:
+                if post_dir.read_bytes(target, limit=LIMIT) == content:
+                    return  # the same devices, the same looks: written only when it changes, not at every look
+            except (FileNotFoundError, ShipError):
+                pass
+            post_dir.ensure_directory(target.parent)
+            post_dir.replace_bytes(target, content)
+        elif post_dir.mode(target) is not None:
+            post_dir.remove(target)
+    except (OSError, ShipError) as error:
+        log('error', step='write-bound-floor', error=repr(error))
+
+
+def floor_unread_status(runtime) -> list[str]:  # law: nothing-waits-silently
+    target = floor_unread_path(runtime)
+    try:
+        mode = post_dir.mode(target)
+        if mode is None:
+            return []
+        if not stat.S_ISREG(mode):
+            raise ValueError('not a regular file')
+        data = json.loads(post_dir.read_bytes(target, limit=LIMIT))
+        devices = data['devices']
+        return [f"write bound: free space unread on {item['folder']}, {item['looks']} looks running "
+                f"({item['error']}); its floor is not watched there" for item in devices]
+    except FileNotFoundError:
+        return []
+    except (OSError, ShipError, ValueError, KeyError, TypeError) as error:
+        return [f'write bound: free-space readings unreadable ({type(error).__name__})']
+
+
 def floor_look(ship, log, state: State, running: dict[str, Jail], readings: dict, space=None) -> list[str]:
     """Read each device the jails write once; where one is under its floor or fell past ``FALL``, stop the seats
     that went unmeasured there this look or grew there since their last whole measure. The seats stopped."""
@@ -798,7 +868,10 @@ def floor_look(ship, log, state: State, running: dict[str, Jail], readings: dict
             free[device], total = space(folder)
         except OSError as error:
             log('error', step='write-bound-floor', folder=folder, error=repr(error))
+            looks = state.unread.get(device, (folder, 0, ''))[1] + 1
+            state.unread[device] = (folder, looks, type(error).__name__)
             continue
+        state.unread.pop(device, None)
         before, floors[device] = state.free.get(device), floor(total)
         if free[device] < floors[device]:
             tripped[device] = f'{folder}: {size(free[device])} free, under its floor of {size(floors[device])}'
@@ -806,6 +879,8 @@ def floor_look(ship, log, state: State, running: dict[str, Jail], readings: dict
             tripped[device] = (f'{folder}: free space fell {size(before - free[device])} since the last look, '
                                f'more than {size(FALL)}')
     state.free = free
+    state.unread = {device: value for device, value in state.unread.items() if device in where}
+    floor_unread_write(ship.runtime, state.unread, log)
     stopped = []
     for name, jail in sorted(running.items()):
         reading, last = readings.get(name), state.sizes.get(name, {})

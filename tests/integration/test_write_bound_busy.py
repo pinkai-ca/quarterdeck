@@ -136,20 +136,29 @@ def starved(monkeypatch, where, seconds: float = HOLD):
             began = threading.Event()
             seen['thread'] = threading.Thread(target=hog, args=(began, sys.getswitchinterval()), daemon=True)
             # Raised before the thread starts, so that this thread, once it has let go of the lock to wait for the
-            # other, cannot ask for it back before the hold is over; the other puts the interval back when it ends.
+            # other, cannot ask for it back before the hold is over; the other puts the interval back when it ends,
+            # and a start that raises puts it back here: never left changed for the rest of the test process.
             sys.setswitchinterval(seconds + 60)
-            seen['thread'].start()
+            try:
+                seen['thread'].start()
+            except BaseException:
+                sys.setswitchinterval(original)
+                raise
             began.wait()
         return scan(fd, device, group, budget)
 
+    original = sys.getswitchinterval()
     monkeypatch.setattr(write_bound, '_scan', starving)
     try:
         yield seen
     finally:
         monkeypatch.setattr(write_bound, '_scan', scan)
-        if 'thread' in seen:
-            seen['thread'].join(timeout=seconds + 60)
-            assert not seen['thread'].is_alive(), 'the thread holding the lock has ended'
+        try:
+            if 'thread' in seen and seen['thread'].ident is not None:
+                seen['thread'].join(timeout=seconds + 60)
+                assert not seen['thread'].is_alive(), 'the thread holding the lock has ended'
+        finally:
+            sys.setswitchinterval(original)  # the hold's own: whatever happened, the interval is as it was
 
 
 def cpu_and_clock(function):
@@ -561,3 +570,65 @@ def test_the_service_tells_the_desk_of_a_floor_hold_and_not_of_a_bound_hold(ship
     actor.write_bound_floor()
     assert alarms.load(ship.runtime, 'worker-1', 'write-bound-floor')['key'] is None, 'the lift clears it'
     assert actor.logs == []
+
+
+def test_a_device_whose_free_space_goes_unread_two_looks_running_is_named_on_the_status_line(ship, monkeypatch, tmux):
+    """The floor fails open where statvfs fails, while the walks still stand: one failed look is only logged; two
+    running put the device on the status line, and a reading that succeeds again takes it off."""
+    from quarterdeck import watch
+
+    fake_jails(ship, monkeypatch, ['worker-1'])
+    failing = {'now': True}
+
+    def space(path):
+        if failing['now']:
+            raise PermissionError('synthetic statvfs failure')
+        return roomy(path)
+
+    state, (logs, log) = write_bound.State(), logger()
+    assert write_bound.look(ship, log, state=state, space=space) == []
+    assert write_bound.status(ship) == [], 'one failed look: logged, not yet named'
+    assert any(data.get('step') == 'write-bound-floor' for event, data in logs if event == 'error')
+    assert write_bound.look(ship, log, state=state, space=space) == []
+    folder = write_bound.seat_folder(ship, 'worker-1')
+    named = f'write bound: free space unread on {folder}, 2 looks running (PermissionError); its floor is not watched there'
+    assert write_bound.status(ship) == [named]
+    assert named in watch.facts(ship, tmux).line()
+    kept = write_bound.floor_unread_path(ship.runtime)
+    first = kept.stat().st_mtime_ns, kept.stat().st_ino
+    write_bound.floor_unread_write(ship.runtime, state.unread, log)
+    assert (kept.stat().st_mtime_ns, kept.stat().st_ino) == first, 'unchanged: not written again'
+    failing['now'] = False
+    assert write_bound.look(ship, log, state=state, space=space) == []
+    assert write_bound.status(ship) == [], 'read again: off the line'
+
+
+def test_an_unreadable_unmeasured_count_is_logged_once_and_counted_again_from_one(ship):
+    reading = write_bound.Reading('worker-1', [], None, {})
+    reading.unmeasured = ('seat', 1, 2, 'the walk passed 10 s on the clock')
+    state, (logs, log) = write_bound.State(), logger()
+    assert write_bound.unmeasured(ship.runtime, reading, log, state) == 1
+    write_bound.unmeasured_path(ship.runtime, 'worker-1').write_text('not json\n')
+    assert write_bound.unmeasured(ship.runtime, reading, log, state) == 1, 'counted again from one'
+    write_bound.unmeasured_path(ship.runtime, 'worker-1').write_text('not json\n')
+    assert write_bound.unmeasured(ship.runtime, reading, log, state) == 1
+    said = [data for event, data in logs if event == 'error' and 'unmeasured count unreadable' in data.get('error', '')]
+    assert len(said) == 1 and said[0]['seat'] == 'worker-1', 'one log line, once, while it stays unreadable'
+    assert write_bound.unmeasured(ship.runtime, reading, log, state) == 2, 'readable again: the count goes on'
+    write_bound.unmeasured_path(ship.runtime, 'worker-1').write_text('not json\n')
+    write_bound.unmeasured(ship.runtime, reading, log, state)
+    assert len([data for event, data in logs if event == 'error']) == 2, 'unreadable again later: said again'
+
+
+def test_the_hold_puts_the_switch_interval_back_when_its_thread_cannot_start(ship, monkeypatch):
+    before = sys.getswitchinterval()
+
+    def refused(self):
+        raise RuntimeError('synthetic: the thread cannot start')
+    folder = write_bound.seat_folder(ship, 'worker-1')
+    folder.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(RuntimeError, match='cannot start'):
+        with starved(monkeypatch, lambda path: path == str(folder)):
+            monkeypatch.setattr(threading.Thread, 'start', refused)
+            write_bound.measure(ship, write_bound.Jail('worker-1', 0, [str(folder)], {}))
+    assert sys.getswitchinterval() == before
