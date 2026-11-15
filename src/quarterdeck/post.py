@@ -218,7 +218,7 @@ class Store:
         except ShipError:
             own = None
         for _ in range(ID_DRAWS):
-            candidate = f"{kind[:3]}-{at.strftime('%Y%m%d-%H%M')}-{sender}-{secrets.token_hex(2)}"
+            candidate = f"{kind[:3]}-{at.strftime('%Y%m%d-%H%M')}-{sender}-{secrets.token_hex(SHORT_ID_BYTES)}"
             short = short_of(candidate)
             if short in avoid or (own is not None and not _absent(own / f"{candidate}.json")):
                 continue
@@ -549,7 +549,8 @@ class Store:
 
 # A seat writes a new message only here. The service files it and is the one that sets the sender.
 DROP_MAX_FILES = 128
-ID_DRAWS = 64  # a short's suffix has 65,536 values per kind; a draw this many times taken refuses, never spins
+SHORT_ID_BYTES = 3  # six hex digits: 16,777,216 values per kind; existing shorts keep their exact width
+ID_DRAWS = 64  # this many taken draws refuse, never spin, regardless of the suffix width
 ID_SPACE_REASON = "no free short id"
 DROP_COUNT_REASON = "drop filing budget reached repeatedly"
 DROP_STALLED_REASON = "drop filing window made no progress"

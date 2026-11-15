@@ -135,7 +135,7 @@ def inspection(seat: Seat, reason: str, attempts: Sequence[str] = (), *, message
     for name in attempts:
         identifier = _named_message(name, message) if message is not None else _legacy_message(seat, name)
         if identifier is None and message is None:
-            match = re.fullmatch(r"((?:ord|rep|que|ans|ack)-[0-9]{8}-[0-9]{4}-.+-[0-9a-f]{4})-[1-9][0-9]*\.json", name)
+            match = re.fullmatch(r"((?:ord|rep|que|ans|ack)-[0-9]{8}-[0-9]{4}-.+-(?:[0-9a-f]{4}|[0-9a-f]{6}))-[1-9][0-9]*\.json", name)
             identifier = match[1] if match else None
         labels.append(post.short_of(identifier) if identifier else f"attempt {name!r}: message ID unknown")
     references = ", ".join(dict.fromkeys(labels))

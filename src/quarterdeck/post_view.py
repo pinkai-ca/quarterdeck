@@ -14,7 +14,7 @@ folder ``runtime/views/<seat>/post`` laid out as the post is, and the jail binds
 - ``transient/<seat>.lock`` and ``<seat>.check.json``, for a temporary check seat only: empty mount points over which
   the jail binds the seat's own real lease files, read-only. Its own jailed ``qd inbox`` proves the lease by their
   identity and lock; no other jail sees any lease, so none can hold one to make a dead check look live.
-- ``shorts``: the short ids already taken (``ord-7f3a``: a kind and four hex digits, no sender, no contents), so a
+- ``shorts``: the short ids already taken (a kind and its complete hex suffix, no sender or contents), so a
   new id the seat chooses never takes a short another seat's message holds.
 
 Nothing else of the post is there: no other seat's inbox or messages, no drop holds (whose reasons could tell a seat

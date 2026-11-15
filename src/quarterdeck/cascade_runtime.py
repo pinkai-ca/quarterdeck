@@ -24,7 +24,7 @@ class ExclusionUnknown(OSError):
 
 
 def key(question: str) -> str:
-    if re.fullmatch(r'que-[0-9]{8}-[0-9]{4}-[A-Za-z0-9_-]+-[0-9a-f]{4}', question):
+    if re.fullmatch(r'que-[0-9]{8}-[0-9]{4}-[A-Za-z0-9_-]+-(?:[0-9a-f]{4}|[0-9a-f]{6})', question):
         return question
     return 'run-' + hashlib.sha256(question.encode('utf-8')).hexdigest()[:16]
 

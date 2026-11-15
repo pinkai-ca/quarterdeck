@@ -258,7 +258,7 @@ class AntigravityHarness(Harness):
             return None
         header = text.split("\n", 1)[0]
         identity = re.match(r"^qd > (?:order|report|question|answer|ack) from [^·\n]+ · "
-                            r"(?:ord|rep|que|ans|ack)-[0-9a-f]{4}(?= · |$)", header)
+                            r"(?:ord|rep|que|ans|ack)-(?:[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{16})(?= · |$)", header)
         if identity is None:
             return None
         previews = [match.group(1).removesuffix("...").removesuffix("…")
