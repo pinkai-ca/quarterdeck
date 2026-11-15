@@ -106,3 +106,57 @@ def test_an_unmeasured_row_stays_unknown_after_the_known_newer_metadata(tmp_path
     assert state.pending_tools is None
     assert idle.check(state).dimension == 'tools-unknown'
     assert any(item['reason'] == 'unknown row kind' for item in reader.inputs(record).skipped)
+
+
+def artifact_rows():
+    return [json.loads(line) for line in (RECORDS / 'artifact-bookkeeping.jsonl').read_text().splitlines()]
+
+
+def test_artifact_bookkeeping_is_neutral_in_both_native_positions(tmp_path):
+    core = [json.loads(line) for line in (RECORDS / 'tool-turn.jsonl').read_text().splitlines()]
+    count, link, monitor, ledger = artifact_rows()
+    # The save block places frame-link between atis-latch and bridge-session.
+    save_block = [{'type': 'atis-latch'}, count, {'type': 'bridge-session'}]
+    # The incremental publication rows follow an assistant/API row and precede a result/user row.
+    call = next(i for i, row in enumerate(core) if row['type'] == 'assistant'
+                and any(block['type'] == 'tool_use' for block in row['message']['content']))
+    record = tmp_path / 'record.jsonl'
+    record.write_text(''.join(json.dumps(row) + '\n' for row in [*save_block, *core[:call + 1], link, monitor,
+                                                                {'type': 'api-request'}, ledger]))
+    reader = ClaudeHarness()
+    active = reader.state(record)
+    assert active.turn_open is True and active.pending_tools == ('Bash',)
+    assert idle.check(active).dimension == 'turn-open'
+    assert not reader.inputs(record).skipped
+    with record.open('a') as stream:
+        for row in [*core[call + 1:], ledger, link, monitor]:
+            stream.write(json.dumps(row) + '\n')
+    ended = reader.state(record)
+    assert ended.turn_open is False and ended.pending_tools == () and ended.queued == ()
+    assert len(ended.completed_turns) == 2
+    assert idle.check(ended) is None
+    assert [item.text for item in reader.inputs(record)] == ['Reply OK.', 'Run true with Bash, then reply OK.']
+    assert not reader.inputs(record).skipped
+
+
+@pytest.mark.parametrize('row', artifact_rows(), ids=['frame-count', 'frame-link', 'comment-monitor', 'autoreact-ledger'])
+def test_each_artifact_row_carries_no_input_and_cannot_close_a_turn(tmp_path, row):
+    core = json.loads((RECORDS / 'plain-turn.jsonl').read_text().splitlines()[0])
+    record = tmp_path / 'record.jsonl'
+    record.write_text(json.dumps(core) + '\n' + json.dumps(row) + '\n')
+    reader = ClaudeHarness()
+    assert reader.state(record).turn_open is True
+    assert idle.check(reader.state(record)).dimension == 'turn-open'
+    assert [item.text for item in reader.inputs(record)] == ['Reply OK.']
+    assert not reader.inputs(record).skipped
+
+
+def test_an_unknown_artifact_kind_is_still_unknown(tmp_path):
+    record = copy_record(tmp_path, 'plain-turn')
+    with record.open('a') as stream:
+        for row in [*artifact_rows(), {'type': 'artifact-future-unmeasured'}]:
+            stream.write(json.dumps(row) + '\n')
+    reader = ClaudeHarness()
+    assert reader.state(record).pending_tools is None
+    assert idle.check(reader.state(record)).dimension == 'tools-unknown'
+    assert any(item['reason'] == 'unknown row kind' for item in reader.inputs(record).skipped)

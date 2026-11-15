@@ -47,7 +47,9 @@ PASTE_HIDDEN_FORMAT = frozenset(chr(code) for first, last in (
     (0x1D173, 0x1D17A), (0xE0001, 0xE0001), (0xE0020, 0xE007F)) for code in range(first, last + 1))
 INPUT_IGNORED = ('api-request', 'api-request-blob', 'attachment', 'bridge-session', 'custom-title',
                  'agent-name', 'mode', 'permission-mode', 'session-owner', 'atis-latch', 'last-prompt',
-                 'file-history-delta', 'file-history-snapshot', 'tools-used', 'api-request-shape', 'cost-state')
+                 'file-history-delta', 'file-history-snapshot', 'tools-used', 'api-request-shape', 'cost-state',
+                 # Claude Code 2.1.325 artifact publication bookkeeping: no input or execution boundary.
+                 'frame-link', 'artifact-comment-monitor', 'artifact-autoreact-ledger')
 PASTED = re.compile(r'^\s*<pasted_content id="[^"]*">\n?(.*?)\n?</pasted_content(?: id="[^"]*")?>\s*$', re.S)
 
 

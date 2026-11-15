@@ -1,0 +1,4 @@
+{"type":"frame-link","artifactCount":1,"sessionId":"fixture-session","timestamp":"2026-01-01T00:00:10+00:00"}
+{"type":"frame-link","frameUrl":"https://example.invalid/fixture-frame","path":"/fixture/page.md","title":"Fixture page"}
+{"type":"artifact-comment-monitor","artifacts":{"fixture-artifact":{"state":"fixture-state","title":"Fixture page","writtenAtMs":0}},"sessionId":"fixture-session","v":1}
+{"type":"artifact-autoreact-ledger","accountUuid":"fixture-account","artifacts":{"fixture-artifact":{"everBaselined":false,"everHadThreads":false,"savedAt":0,"stampHighWater":0,"threads":{},"turnTimestamps":{}}},"sessionId":"fixture-session","v":1}
