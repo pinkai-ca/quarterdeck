@@ -13,6 +13,7 @@ are then set aside unchanged in ``runtime/evidence/seat-move/<seat>-<time>/`` an
   id, version, answered questions, recovery and notice) touch that seat alone and are taken as its own claim. With no
   live window the seat is down and nothing is taken. A live window that the record cannot be joined to holds the seat
   (``launch-unconfirmed.json``), as an unreadable record does, until a person brings it down.
+  An old window's launch.sh is set aside only after its sh has exec'd its program, which every live window has.
 - launch-price.json: rebuilt. The rates are taken only when they are the pool's declared price; the model is the
   seat's own claim.
 - pool and pool-explicit: taken only when they name a pool the ship file declares for the seat.

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,19 +35,41 @@ def old_folder(ship, name: str) -> Path:
 
 
 def old_window(ship, tmux, name: str):
-    """A window started for the seat as the earlier code started it: sh runtime/seats/<seat>/launch.sh."""
+    """A window started for the seat as the earlier code started it: sh runtime/seats/<seat>/launch.sh.
+
+    A seat up before the move has long since run its script. So the window is returned only once the script's own
+    exec has replaced sh, within a bound: tmux returns as soon as the pane exists, and under load sh may not yet have
+    opened the script, which the move then sets aside, and sh exits 2 with the pane dead.
+    """
     folder = old_folder(ship, name)
     (folder / 'launch.sh').write_text('#!/bin/sh\nexec sleep 300\n')
     if not tmux.has_session('Crew'):
         tmux.new_session('Crew')
-    return tmux.new_window('Crew', name, ship.folder, ['sh', str(folder / 'launch.sh')])
+    return exec_proven(tmux.new_window('Crew', name, ship.folder, ['sh', str(folder / 'launch.sh')]))
+
+
+def exec_proven(pane):
+    """The pane, once its process has exec'd its program (its /proc comm is sleep), within a bound of 30 s."""
+    deadline = time.monotonic() + 30
+    while _command(pane.pid) != 'sleep':
+        if time.monotonic() >= deadline:
+            pytest.fail(f'the window never exec\'d its program: its process is {_command(pane.pid)!r} after 30 s')
+        time.sleep(0.02)
+    return pane
+
+
+def _command(pid: int) -> str | None:
+    try:
+        return Path(f'/proc/{pid}/comm').read_text().strip()
+    except OSError:
+        return None
 
 
 def other_window(tmux):
     """A live window started for no seat: what a forged record might name."""
     if not tmux.has_session('Crew'):
         tmux.new_session('Crew')
-    return tmux.new_window('Crew', 'elsewhere', Path('/'), ['sleep', '300'])
+    return exec_proven(tmux.new_window('Crew', 'elsewhere', Path('/'), ['sleep', '300']))
 
 
 def old_launch(ship, name: str, pane: str, pid: int, **fields) -> dict:
