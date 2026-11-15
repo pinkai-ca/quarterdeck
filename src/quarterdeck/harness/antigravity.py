@@ -240,7 +240,10 @@ class AntigravityHarness(Harness):
             chars.add(len(content))
         char_counts = '|'.join(str(value) for value in sorted(chars))
         line_counts = '|'.join(str(value) for value in sorted(lines))
-        return Box(text, folded=rf"\[Pasted text #\d+ (?:(?:{char_counts}) chars|\+(?:{line_counts}) lines)\]")
+        # 1.5.9 keeps whitespace-delimited words together, including hyphens,
+        # then hard-splits an overlong word at box_columns.
+        return Box(text, folded=rf"\[Pasted text #\d+ (?:(?:{char_counts}) chars|\+(?:{line_counts}) lines)\]",
+                   wrap_hyphens=False)
 
     def queued_input(self, text: str, before: Screen, after: Screen) -> str | None:
         """1.5.5 shows an envelope preview and edit hint before persisting the input.

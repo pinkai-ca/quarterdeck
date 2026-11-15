@@ -1,5 +1,6 @@
 """Synthetic input layouts measured on one idle 1.5.9 composer; no native account data."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +40,39 @@ def test_unfolded_ruler_matches_measured_character_wrap(width, row_lengths):
     assert [len(row) for row in screen.box.splitlines()] == row_lengths
     assert reader.box(payload).matches(screen.box, reader.box_columns(width), reader.wrap_slack)
     assert reader.minimum_box_rows(payload, width) == len(row_lengths)
+
+
+@pytest.mark.parametrize('width, lengths', [
+    (64, [14, 61, 61, 57]), (80, [14, 77, 73, 28]), (112, [14, 109, 70]),
+])
+@pytest.mark.parametrize('envelope', [False, True])
+def test_long_hyphenated_path_moves_whole_then_hard_wraps(width, lengths, envelope):
+    reader = AntigravityHarness()
+    payload = ('Write the file /example/long-path-' + 'x' * 120
+               + '/result.txt containing exactly one line.')
+    name = 'hyphen'
+    if envelope:
+        name = 'daily'
+        payload = ('qd > synthetic wrapping example\n' + payload.removesuffix('.')
+                   + ':\nsynthetic\nThen report written.')
+        lengths = [31, *lengths, 9, 20]
+    screen = reader.screen(json.loads((ROOT / f'unbroken-{name}-{width}.json').read_text())['screen'])
+    assert screen.unknown is None and screen.interruption is None and not screen.working
+    assert [len(row.rstrip(' ')) for row in screen.box.splitlines()] == lengths
+    seat = SimpleNamespace(harness=reader, tmux=None, pane=lambda: SimpleNamespace(width=width, height=40))
+    assert Door(seat).matches(reader.box(payload), screen)
+    assert reader.box(payload).wrapped_rows(reader.box_columns(width), reader.wrap_slack) == [
+        row.rstrip(' ') for row in screen.box.splitlines()
+    ]
+
+
+@pytest.mark.parametrize('width', [64, 80, 112])
+def test_short_hyphenated_word_moves_whole_when_it_straddles_the_edge(width):
+    reader = AntigravityHarness()
+    payload = 'X' * (width - 13) + ' alpha-beta'
+    screen = reader.screen(json.loads((ROOT / f'unbroken-short-hyphen-{width}.json').read_text())['screen'])
+    assert [row.rstrip(' ') for row in screen.box.splitlines()] == ['X' * (width - 13), 'alpha-beta']
+    assert reader.box(payload).matches(screen.box, reader.box_columns(width), reader.wrap_slack)
 
 
 @pytest.mark.parametrize('width, offset, row_lengths', [
