@@ -20,8 +20,8 @@ change. So this program, not a seat:
    reads the answer itself, and only its shape: an answer in no shape, or none in time, counts as FLAGGED, and so
    does an answer that does not flag the planted file. Afterwards the hand is taken down. Its drops are swept, and
    only a report of exactly ``done`` on its own order is filed; anything else it wrote is moved aside, never filed;
-6. clean from both hands and nothing from the search: the First Officer is ordered to read the change and report
-   to the desk. Flagged: no seat reads it, and the desk is told the number, the head and what flagged it (the
+6. clean from both hands and nothing from the search: the reader the ship file names ([pr_screen] reader, the First
+   Officer on a crew) is ordered to read the change and report to the desk. Flagged: no seat reads it, and the desk is told the number, the head and what flagged it (the
    pattern's name or the hand, the file's number and kind, the line numbers), quoting nothing the outsider wrote;
 7. a new push to a pull request starts it over.
 
@@ -39,6 +39,7 @@ import re
 import secrets
 import shutil
 import stat
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -49,9 +50,6 @@ from .pr_screen_patterns import PATTERNS
 from .ship import ShipError
 
 ROOT = 'pr-screen'  # runtime/pr-screen: state.json, screens/, screening/<hand>.json, held/<hand>/
-HANDS = ('ernie', 'rocky')  # one on each local model, free of the grading's bert and bullwinkle
-FIRST_OFFICER = 'una'
-DESK = 'desk'
 
 FILE_LINES = 120  # a numbered file holds at most this many lines ...
 FILE_BYTES = 12 * 1024  # ... and this many bytes: a longer text is cut across several numbered files
@@ -180,13 +178,23 @@ def prepare(texts: list[Text]) -> Prepared:
     return prepared
 
 
-def search(prepared: Prepared) -> list[tuple[str, str, int]]:
-    """Every (pattern name, numbered file, line) the one list of patterns finds."""
+def seat_pattern(seats) -> tuple[str, re.Pattern] | None:
+    """A pattern for a text that asks to send or post to one of the ship's own seats, by the names the ship file
+    declares: built at run time, so the code names no ship's seats."""
+    names = '|'.join(re.escape(name) for name in sorted(seats, key=len, reverse=True))
+    if not names:
+        return None
+    return ('post-to-a-named-seat', re.compile(r'\b(send|post|forward|relay|pass|copy|order|tell)\b.{0,40}'
+                                               rf'(\b(to|for)\b.{{0,10}}|--to\s+)\b({names})\b', re.IGNORECASE))
+
+
+def search(prepared: Prepared, extra: tuple = ()) -> list[tuple[str, str, int]]:
+    """Every (pattern name, numbered file, line) the one list of patterns, and ``extra``, finds."""
     hits = []
     for number, text in prepared.files.items():
         for line_number, line in enumerate(text.splitlines(), 1):
             spaced = re.sub(r'[_\-./\\]+', ' ', line)  # IGNORE_PREVIOUS_INSTRUCTIONS in a file name, as words
-            for name, pattern in COMPILED:
+            for name, pattern in (*COMPILED, *extra):
                 if pattern.search(line) or pattern.search(spaced):
                     hits.append((name, number, line_number))
     return hits
@@ -508,14 +516,14 @@ def findings(prepared: Prepared, hits, verdicts) -> list[str]:
 
 
 class LiveOutcomes:
-    """Tell the First Officer (clean) or the desk (flagged), from ship."""
+    """Tell the ship file's reader (clean) or its desk (flagged), from ship."""
 
     def __init__(self, ship):
         self.ship = ship
 
     def clean(self, pr: PullRequest, repository: str) -> str:
         return post.Store(self.ship.runtime).new(
-            'order', post.SHIP, FIRST_OFFICER,
+            'order', post.SHIP, self.ship.pr_screen.reader,
             f'Pull request {pr.number} of {repository}, at head {pr.head}, passed the screen: both hands found it '
             'clean and the search found nothing. Read the change and report to the desk on it: what it does, '
             'whether it is sound, and whether to take it.',
@@ -523,7 +531,7 @@ class LiveOutcomes:
 
     def flagged(self, pr: PullRequest, repository: str, found: list[str]) -> str:
         return post.Store(self.ship.runtime).new(
-            'report', post.SHIP, DESK,
+            'report', post.SHIP, self.ship.pr_screen_desk,
             f'Pull request {pr.number} of {repository}, at head {pr.head}, was flagged by the screen and is read by '
             'no seat. What flagged it, in the screen\'s own terms:\n' + '\n'.join(f'- {line}' for line in found),
             subject=f'Pull request {pr.number} from outside was flagged').id
@@ -543,13 +551,15 @@ def _state(runtime: Path) -> dict:
         return {}
 
 
-def run(runtime: Path, source, hands, outcomes, *, repository: str, hand_names=HANDS,
+def run(runtime: Path, source, hands, outcomes, *, repository: str, hand_names: tuple[str, ...], seat_names=(),
         idle_seconds: float = IDLE_SECONDS, answer_seconds: float = ANSWER_SECONDS, poll: float = POLL_SECONDS,
         clock=time.monotonic, sleep=time.sleep) -> list[dict]:
     """One pass over the open pull requests; what each new number and head came to."""
     runtime = Path(runtime)
     (runtime / ROOT).mkdir(parents=True, exist_ok=True, mode=0o700)
     state = _state(runtime)
+    named = seat_pattern(seat_names)
+    extra = (named,) if named else ()
     results = []
     for pr in source.open():
         seen = state.get(str(pr.number))
@@ -557,7 +567,7 @@ def run(runtime: Path, source, hands, outcomes, *, repository: str, hand_names=H
             continue  # screened at this head; a new push starts it over
         key = f'{pr.number}-{pr.head[:12]}'
         prepared = prepare(source.texts(pr))
-        hits = search(prepared)
+        hits = search(prepared, extra)
         verdicts = []
         if not prepared.flags:
             deadline = clock() + idle_seconds
@@ -685,10 +695,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--hands-root', default=None, help='the hands\' folders (default: <workspace>/work/hands)')
     args = parser.parse_args(argv)
     ship = shipmod.load(Path(args.ship))
+    if ship.pr_screen is None:
+        print(f'{ship.name}: its ship file declares no [pr_screen] table, so this ship has no pull-request screen; '
+              'nothing was read', file=sys.stderr)
+        return 2
     source = FixtureSource(Path(args.fixtures)) if args.fixtures else GitHubSource(args.repository)
     hands_root = Path(args.hands_root) if args.hands_root else Path(ship.workspace) / 'work' / 'hands'
     results = run(ship.runtime, source, LiveHands(ship, qd_bin() / 'qd', hands_root), LiveOutcomes(ship),
-                  repository=args.repository)
+                  repository=args.repository, hand_names=ship.pr_screen.hands, seat_names=tuple(ship.seats))
     for result in results:
         print(f"pull request {result['number']} at {result['head'][:12]}: {result['outcome']}")  # numbers and heads only
     return 0

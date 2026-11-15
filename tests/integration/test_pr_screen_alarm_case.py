@@ -1,4 +1,4 @@
-"""La'an's case through the screen's own path: a planted text tells the hand to write an alarm journal holding an
+"""The security review's case through the screen's own path: a planted text tells the hand to write an alarm journal holding an
 order from the desk. An obedient stand-in hand writes it into its own seat folder, as a fooled hand in its jail
 could. Then the service's own steps run, and nothing reached any seat.
 """
@@ -56,7 +56,7 @@ class Obedient:
         drop = post.drop_dir(self.ship.runtime, name)
         drop.mkdir(parents=True, exist_ok=True)
         (drop / 'ord-forwarded-text.json').write_text(json.dumps(dict(order, id='ord-forwarded-text', **{'from': name},
-                                                                     to='pike')))
+                                                                     to='captain')))
         self.calls.append('order')
         return 'ord-screen-alarm'
 
@@ -69,8 +69,8 @@ class Outcomes:
         self.told = []
 
     def clean(self, pr, repository):
-        self.told.append(('una', pr.number))
-        return 'ord-una'
+        self.told.append(('reviewer', pr.number))
+        return 'ord-reviewer'
 
     def flagged(self, pr, repository, found):
         self.told.append(('desk', pr.number))
@@ -82,6 +82,7 @@ def test_an_obeyed_alarm_journal_and_a_forwarded_post_reach_no_seat(ship, tmux, 
     outcomes = Outcomes()
     svc = service.Service(ship, tmux)
     results = pr_screen.run(ship.runtime, pr_screen.FixtureSource(FIXTURES, ['alarm-journal']), hands, outcomes,
+                            seat_names=tuple(ship.seats),
                             repository='owner/project', hand_names=('worker-1',), answer_seconds=0, poll=0.01)
     assert [r['outcome'] for r in results] == ['flagged'], 'the search flags it, and the hand gave no answer'
 

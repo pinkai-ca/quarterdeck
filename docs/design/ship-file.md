@@ -127,6 +127,15 @@ One plain service process belongs to whoever ran `qd up`, outlives that shell an
 
 `ship.push_reminder` optionally names a declared seat. Twenty minutes after the framework checkout's `refs/remotes/origin/main` last moved, the service files that seat one order to read the hosted runs on the pushed tips ([post](post.md) describes it). Without the key the reminder is off and nothing is read or written. A name that is no declared seat is refused when the ship file is loaded.
 
+`[pr_screen]` declares the pull-request screen (see [working](working.md#a-change-from-outside)): `hands = ["hand-a", "hand-b"]`, the two hands that read an outsider's text, and `reader = "reviewer"`, the seat ordered to read a request both hands and the search found clean. A flagged request is told to the seat whose role is desk, unless `desk = "seat"` names another. Loading refuses the table when:
+- `hands` names fewer or more than two seats;
+- any name is not a declared seat;
+- a hand is not jailed (an endpoint pool, or `sandbox = true`);
+- the two hands share a pool or a declared model;
+- the reader is one of the hands.
+
+Without the table the ship has no screen, and the program says so and reads nothing.
+
 `--ship` or `QD_SHIP` selects a ship explicitly. Up sets `QD_SHIP` in each seat. Without either, a person's shell uses `ships/.default`, managed by `qd default`; without a mark it uses the sole non-template, non-practice ship. An invalid mark or several eligible ships without a mark refuses rather than guesses. The selected folder is forwarded through installed-copy handoff, shown in the act's text proof and exposed as JSON `default_ship`. A seat never reads the default mark. Doctor warns about `QD_SHIP` in a shell that is no seat.
 
 ### Project and runtime

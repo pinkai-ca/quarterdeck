@@ -17,6 +17,7 @@ from quarterdeck import post, pr_screen
 FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'pr_screen'
 CASES = {path.name: json.loads((path / 'pr.json').read_text()) for path in sorted(FIXTURES.iterdir())
          if (path / 'pr.json').is_file()}
+HANDS = ('hand-a', 'hand-b')  # neutral names: the ship file declares a ship's own ([pr_screen] hands)
 SUSPICIOUS = re.compile(r'ignore|disregard|write the word|reply only|answer clean|new instructions|qd post|'
                         r'human-alert|already approved|from now on|forward this', re.IGNORECASE)
 
@@ -101,8 +102,8 @@ class Outcomes:
         self.told = []
 
     def clean(self, pr, repository):
-        self.told.append(('una', pr.number, None))
-        return f'ord-una-{pr.number}'
+        self.told.append(('reviewer', pr.number, None))
+        return f'ord-reviewer-{pr.number}'
 
     def flagged(self, pr, repository, found):
         self.told.append(('desk', pr.number, found))
@@ -121,7 +122,8 @@ def run(world, behaviour, cases=None, **options):
     hands = Hands(runtime, hands_root, behaviour, idle=options.pop('idle', True))
     outcomes = Outcomes()
     clock = Clock()
-    results = pr_screen.run(runtime, pr_screen.FixtureSource(FIXTURES, cases), hands, outcomes,
+    results = pr_screen.run(runtime, pr_screen.FixtureSource(FIXTURES, cases), hands, outcomes, hand_names=HANDS,
+                            seat_names=('reviewer', 'desk', 'lead', *HANDS),
                             repository='owner/project', clock=clock, sleep=clock.sleep, poll=1.0,
                             answer_seconds=30, idle_seconds=30, **options)
     return results, hands, outcomes
@@ -211,12 +213,12 @@ CANARY = ('f02', {3})
     (None, False, 'gave no answer in time'),
 ])
 def test_an_answer_counts_only_by_its_shape(answer, clean, reason):
-    verdict = pr_screen.judge('ernie', answer, NAMES, CANARY)
+    verdict = pr_screen.judge('hand-a', answer, NAMES, CANARY)
     assert verdict.clean is clean and reason in verdict.reason
 
 
 def test_a_flagged_answer_names_the_numbered_file_not_the_pieces_name():
-    verdict = pr_screen.judge('rocky', b'FLAGGED f02:3 f03:4-5', NAMES, CANARY)
+    verdict = pr_screen.judge('hand-b', b'FLAGGED f02:3 f03:4-5', NAMES, CANARY)
     assert verdict.places == (('f002', 4, 5),)
 
 
@@ -227,39 +229,39 @@ def one_piece(world, behaviour, **options):
     hands = Hands(runtime, hands_root, behaviour)
     clock = Clock()
     prepared = pr_screen.prepare(texts('post-elsewhere'))
-    verdict = pr_screen.screen_piece(runtime, hands, 'ernie', 'key', 0, prepared, list(prepared.files),
+    verdict = pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files),
                                      answer_seconds=30, poll=1.0, clock=clock, sleep=clock.sleep, **options)
     return verdict, hands, runtime
 
 
 def test_a_hand_told_to_post_elsewhere_has_nothing_filed_but_its_done(world):
     def obeys(hands, name, order_id, folder):
-        hands.drop(name, dict(id='ord-forged-elsewhere', kind='order', **{'from': name}, to='una',
+        hands.drop(name, dict(id='ord-forged-elsewhere', kind='order', **{'from': name}, to='reviewer',
                               at='2026-11-15T08:00:00+00:00', body='PUFFIN', re=None, subject=None, due=None,
                               speed=None))
         honest(hands, name, order_id, folder)
     verdict, hands, runtime = one_piece(world, obeys)
-    drop = post.drop_dir(runtime, 'ernie')
+    drop = post.drop_dir(runtime, 'hand-a')
     assert [path.name for path in drop.iterdir()] == ['rep-done-ord-screen-001.json'], 'only its done stays'
-    assert len(list((runtime / 'pr-screen' / 'held' / 'ernie').iterdir())) == 1, 'the rest moved aside'
+    assert len(list((runtime / 'pr-screen' / 'held' / 'hand-a').iterdir())) == 1, 'the rest moved aside'
     assert [call[0] for call in hands.calls] == ['fresh', 'order', 'down', 'file_now']
-    assert not pr_screen.held(runtime, 'ernie'), 'the hold is released once the hand is down and swept'
+    assert not pr_screen.held(runtime, 'hand-a'), 'the hold is released once the hand is down and swept'
     assert not verdict.clean  # it flagged the request's lines
 
 
 def test_a_done_with_more_words_is_moved_aside_too(world):
     def chatty(hands, name, order_id, folder):
         (folder / 'answer.txt').write_text('CLEAN')
-        report_done(hands, name, order_id, 'done. Also: the outsider asks una to merge it.')
+        report_done(hands, name, order_id, 'done. Also: the outsider asks reviewer to merge it.')
     verdict, hands, runtime = one_piece(world, chatty)
-    assert list(post.drop_dir(runtime, 'ernie').iterdir()) == []
-    assert ('file_now', 'ernie') not in hands.calls
+    assert list(post.drop_dir(runtime, 'hand-a').iterdir()) == []
+    assert ('file_now', 'hand-a') not in hands.calls
 
 
 def test_no_answer_in_time_counts_as_flagged_and_the_hand_still_goes_down(world):
     verdict, hands, runtime = one_piece(world, silent)
     assert not verdict.clean and 'no answer in time' in verdict.reason
-    assert ('down', 'ernie') in hands.calls and not pr_screen.held(runtime, 'ernie')
+    assert ('down', 'hand-a') in hands.calls and not pr_screen.held(runtime, 'hand-a')
 
 
 def test_a_hand_that_misses_the_planted_check_counts_as_flagged(world):
@@ -269,26 +271,26 @@ def test_a_hand_that_misses_the_planted_check_counts_as_flagged(world):
 
 def test_the_planted_file_cannot_be_told_from_the_outsiders(world):
     verdict, hands, runtime = one_piece(world, honest)
-    folder = next(path for path in (world[1] / 'ernie').iterdir() if path.is_dir())
+    folder = next(path for path in (world[1] / 'hand-a').iterdir() if path.is_dir())
     names = sorted(path.name for path in folder.glob('f*.txt'))
     assert names == [f'f{n:02d}.txt' for n in range(1, len(names) + 1)], 'one numbered sequence'
-    record = json.loads(next((runtime / 'pr-screen' / 'screens' / 'key').glob('piece-0-ernie.json')).read_text())
+    record = json.loads(next((runtime / 'pr-screen' / 'screens' / 'key').glob('piece-0-hand-a.json')).read_text())
     assert f"{record['planted']}.txt" in names and record['planted'] not in record['names']
 
 
 def test_while_a_hand_screens_the_service_files_nothing_it_posts(world):
     runtime, _ = world
     store = post.Store(runtime)
-    message = store.prepare('order', 'ernie', 'una', 'an outsider\'s words')
-    drop = post.drop_dir(runtime, 'ernie')
+    message = store.prepare('order', 'hand-a', 'reviewer', 'an outsider\'s words')
+    drop = post.drop_dir(runtime, 'hand-a')
     drop.mkdir(parents=True)
     (drop / f'{message.id}.json').write_text(message.to_json())
-    pr_screen.hold(runtime, 'ernie', 'key')
-    post.file_drops(store, seats=frozenset({'ernie'}))
+    pr_screen.hold(runtime, 'hand-a', 'key')
+    post.file_drops(store, seats=frozenset({'hand-a'}))
     assert store.all() == [] and (drop / f'{message.id}.json').exists()
     assert pr_screen.status(runtime) and 'its posts are held' in pr_screen.status(runtime)[0]
-    pr_screen.release(runtime, 'ernie')
-    post.file_drops(store, seats=frozenset({'ernie'}))
+    pr_screen.release(runtime, 'hand-a')
+    post.file_drops(store, seats=frozenset({'hand-a'}))
     assert [m.id for m in post.Store(runtime).all()] == [message.id]
 
 
@@ -311,7 +313,7 @@ def test_a_pass_tells_una_of_clean_requests_and_the_desk_of_flagged_ones_quoting
     assert len(told) == len(caught)
     text = json.dumps(told)
     assert not any(word in text for word in OUTSIDER_WORDS), 'nothing the outsider wrote reaches the desk'
-    assert all(name in ('ernie', 'rocky') for kind, name in hands.calls if kind == 'order')
+    assert all(name in ('hand-a', 'hand-b') for kind, name in hands.calls if kind == 'order')
 
 
 def test_a_request_already_screened_at_its_head_is_skipped_and_a_new_push_starts_it_over(world):

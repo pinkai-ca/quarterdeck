@@ -30,8 +30,9 @@ PATTERNS = (
                         r'approved?|no (issues?|problems?|findings?)|lgtm|nothing (found|flagged)|harmless)\b'),
     ('already-screened', r'\b(already|previously|pre-?)\s*(screened|reviewed|approved|checked|verified|cleared)\b'),
     ('qd-command', r'\bqd\s+(post|fresh|restart|up|down|set|press|type|stop|sync|submit|check)\b'),
-    ('post-to-a-seat', r'\b(send|post|forward|relay|pass|copy)\b.{0,40}\b(to|for)\b.{0,10}\b(una|pike|scott|desk|spock|'
-                       r'uhura|laan|la\'an|captain|first officer|engineer|admiral|counsel|steward|media|communications)\b'),
+    # By role; the ship's own seat names are matched by a pattern the screen builds from the ship file at run time.
+    ('post-to-a-seat', r'\b(send|post|forward|relay|pass|copy)\b.{0,40}\b(to|for)\b.{0,10}\b(captain|first officer|'
+                       r'engineer|desk|admiral|operator|maintainers?|security|systems|operations|reviewer)\b'),
     ('runtime-journal', r'(human-alert|unconfirmed-delivery-alert|selection-alert|manual-fresh-alert|compaction|refusal|'
                         r'launch|launch-price|record-launches)\.json(l)?\b|\bruntime/(seats|post|locks)\b|\bseat-holds\b'),
     # A command that would do harm, or reach what it should not.

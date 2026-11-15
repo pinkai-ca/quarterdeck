@@ -108,14 +108,14 @@ A pull request from outside the crew is screened by a program before any seat re
    - Lines and files are cut to bounds.
    - A binary file, a change over the total bound, or a file name over the length bound flags the request, and that text goes to no hand.
    - Nothing is fetched into a repository: the change is read as the API's patches, so no hook, submodule or large file can run.
-3. It searches every line with the one list of patterns (`pr_screen_patterns`). Each line is searched as written, and again with underscores, dashes, dots and slashes read as spaces.
-4. It copies each piece, with a planted file beside it, into the folders of two hands on two local models (ernie and rocky). The planted file holds a harmless instruction under a number like the outsider's, so a hand cannot tell it apart.
+3. It searches every line with the one list of patterns (`pr_screen_patterns`), and with one more built at run time from the ship file's own seat names, for a text that asks to send or post to one of them. Each line is searched as written, and again with underscores, dashes, dots and slashes read as spaces.
+4. It copies each piece, with a planted file beside it, into the folders of the two hands the ship file names in `[pr_screen]`, one on each of two models. The planted file holds a harmless instruction under a number like the outsider's, so a hand cannot tell it apart.
 5. It orders each hand with one fixed order from ship, and judges the answer by its shape alone: `CLEAN`, or `FLAGGED` with `file:line` places. The order is `answer.txt` in the piece's folder.
    - An answer in no shape, none in time, or one that does not flag the planted file counts as FLAGGED.
    - While a hand screens, the service files nothing it posts (`pr_screen.held`, read by the drop filing), and the status line says so.
    - Afterwards the hand is taken down while the hold still stands. Its drops are swept: only a report of exactly `done` on its own order is filed, and anything else it wrote is moved aside under `runtime/pr-screen/held/`, never filed.
    - The hand stays down until the next screen starts it fresh.
-6. Clean from both hands and nothing from the search: the First Officer is ordered to read the change and report to the desk. Flagged: no seat reads it, and the desk is told the number, the head and what flagged it, in the screen's own terms (the pattern's name or the hand, the numbered file's kind, the lines). Nothing the outsider wrote is quoted.
+6. Clean from both hands and nothing from the search: the reader `[pr_screen]` names (the First Officer, on a crew) is ordered to read the change and report to the desk. Flagged: no seat reads it, and the desk is told the number, the head and what flagged it, in the screen's own terms (the pattern's name or the hand, the numbered file's kind, the lines). Nothing the outsider wrote is quoted.
 7. A new push starts it over.
 
 **The residual.** A pull request written to fool both local models and to miss the search can still pass, and then the First Officer reads it with the key in reach. That is why the hold on a screening hand's posts and the planted check matter: the first keeps a fooled hand from carrying the words to a seat, and the second keeps a hand that did no work from passing anything. The planted cases under `tests/fixtures/pr_screen/` include one written to slip past the search; before a naive reader it passes, which the fixture tests show.

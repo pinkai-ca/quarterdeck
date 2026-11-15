@@ -133,6 +133,16 @@ class Cascade:
 
 
 @dataclass(frozen=True)
+class PullRequestScreen:
+    """[pr_screen]: the pull-request screen's two hands, one on each model, and the seat that reads a clean request.
+    The desk, told of a flagged one, is the seat whose role is desk unless ``desk`` names another."""
+
+    hands: tuple[str, str]
+    reader: str
+    desk: str | None = None
+
+
+@dataclass(frozen=True)
 class Ship:
     folder: Path
     name: str
@@ -149,6 +159,7 @@ class Ship:
     kind: str = "crew"  # an office has only the desk and the person's own seats
     forward: dict[str, str] = field(default_factory=dict)
     push_reminder: str | None = None  # the seat ordered to read the hosted runs after pushes of main; [ship] push_reminder
+    pr_screen: PullRequestScreen | None = None  # [pr_screen]; with none, the ship has no pull-request screen
     status_refresh: float = STATUS_REFRESH  # [ship] status_refresh; file changes still request collection
     # The workspace as the declaration writes it, joined to the ship folder but never resolved: ``workspace`` is
     # resolved at load when relative. The jail's work check walks a seat's declared cwd from this one.
@@ -157,6 +168,13 @@ class Ship:
     @property
     def file(self) -> Path:
         return self.folder / "ship.toml"
+
+    @property
+    def pr_screen_desk(self) -> str | None:
+        """The seat told of a flagged pull request: [pr_screen] desk, else the one seat whose role is desk."""
+        if self.pr_screen is None:
+            return None
+        return self.pr_screen.desk or next(seat.name for seat in self.seats.values() if seat.role == "desk")
 
     @property
     def runtime(self) -> Path:
@@ -355,7 +373,24 @@ def _from_text(text: str, folder: Path) -> Ship:
         kind=head.get("kind", "crew"),
         forward=_forward(data.get('forward', {})),
         push_reminder=_push_reminder(head.get("push_reminder")),
+        pr_screen=_pr_screen(data.get("pr_screen")),
     )
+
+
+def _pr_screen(table: object) -> PullRequestScreen | None:
+    """[pr_screen] read as written; whether its seats fit is judged with the whole ship (_validate)."""
+    if table is None:
+        return None
+    if not isinstance(table, dict) or set(table) - {"hands", "reader", "desk"}:
+        raise ShipError('pr_screen takes hands = ["a", "b"], reader = "seat" and, optionally, desk = "seat"')
+    hands, reader, desk = table.get("hands"), table.get("reader"), table.get("desk")
+    if (not isinstance(hands, list) or len(hands) != 2 or len(set(hands)) != 2
+            or not all(isinstance(name, str) and valid_name(name) for name in hands)):
+        raise ShipError(f"pr_screen.hands must name exactly two different seats; got {hands!r}")
+    for key, value in (("reader", reader), ("desk", desk)):
+        if (value is not None or key == "reader") and (not isinstance(value, str) or not valid_name(value)):
+            raise ShipError(f"pr_screen.{key} must name a declared seat; got {value!r}")
+    return PullRequestScreen(tuple(hands), reader, desk)
 
 
 def _push_reminder(value: object) -> str | None:
@@ -529,6 +564,23 @@ def _validate(ship: Ship) -> None:
                 "operations", "systems", "security", "lead", "reviewer", "orchestrator", "ring"}
         if any(seat.role in crew for seat in ship.seats.values()) or ship.groups or ship.cascade:
             raise ShipError('an office has no captain or crew, groups or cascade; declare only the desk and office seats')
+
+    if (screen := ship.pr_screen) is not None:
+        for name in (*screen.hands, screen.reader, *([screen.desk] if screen.desk else [])):
+            if name not in ship.seats:
+                raise ShipError(f"pr_screen names {name!r}, which is not a declared seat; declared: {', '.join(ship.seats)}")
+        first, second = (ship.seats[name] for name in screen.hands)
+        for hand in (first, second):
+            if not ship.jailed(hand):
+                raise ShipError(f"pr_screen.hands: {hand.name} is not jailed; a hand that reads an outsider's words "
+                                "must run in a jail (an endpoint pool, or sandbox = true)")
+        if first.pools[0] == second.pools[0] or (first.model is not None and first.model == second.model):
+            raise ShipError(f"pr_screen.hands: {first.name} and {second.name} run on the same model; the screen "
+                            "needs one hand on each of two models")
+        if screen.reader in screen.hands:
+            raise ShipError("pr_screen.reader must not be one of its hands")
+        if screen.desk is None and sum(seat.role == "desk" for seat in ship.seats.values()) != 1:
+            raise ShipError('pr_screen needs one seat with role = "desk", or desk = "seat" in [pr_screen]')
 
     if ship.push_reminder is not None and ship.push_reminder not in ship.seats:
         raise ShipError(f"ship.push_reminder names {ship.push_reminder!r}, which is not a declared seat; "
