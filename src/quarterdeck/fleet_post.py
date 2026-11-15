@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import secrets
 import stat
+import time
 
 from . import post_dir
 from .fleet import peers
@@ -381,14 +382,77 @@ def _ownership(source, identifier, origin, message, data, *, root):
         raise ShipError('a ship offers as origin only the posts it authored')
 
 
-def export(ship, store):
+class ExportWorklist:
+    """Only the local-message classification is reusable; transport evidence is not.
+
+    Post, import and forwarding files are immutable, so their directory stamps
+    cover the whole re-chain. Mutable declarations and compaction reservations
+    have their own identities. A recent observation never ages into a certificate.
+    """
+
+    def __init__(self):
+        self.certificate = None
+        self.messages = ()
+
+    def stamp(self, ship):
+        result = []
+        folders = [ship.runtime / 'post' / name
+                   for name in ('', 'store', 'imports', 'forwarded', 'addressed')]
+        files = [ship.folder / 'ship.toml']
+        files += [ship.runtime / 'seats' / name / 'compaction.json'
+                  for name in getattr(ship, 'forward', {})]
+        try:
+            for path in folders + files:
+                try:
+                    if path in folders:
+                        descriptor = post_dir.open_directory(path, create=False)
+                        try:
+                            info = os.fstat(descriptor)
+                        finally:
+                            os.close(descriptor)
+                    else:
+                        info = path.lstat()
+                        if not stat.S_ISREG(info.st_mode):
+                            return None
+                except FileNotFoundError:
+                    result.append(None)
+                    continue
+                result.append((info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                               info.st_mtime_ns, info.st_ctime_ns))
+        except (OSError, ShipError):
+            return None
+        # Also cover declarations supplied in memory (including service test ships).
+        declarations = (str(ship.folder), repr(getattr(ship, 'forward', {})),
+                        repr(getattr(ship, 'groups', {})))
+        return declarations, tuple(result)
+
+    def retained(self, ship, message, imported):
+        from .forward_post import recorded
+        return (imported is not None or message.kind == 'report'
+                or '@' in message.to or '@' in message.sender
+                or message.to in getattr(ship, 'forward', {})
+                or recorded(ship.runtime, message.id) is not None)
+
+
+def export(ship, store, *, worklist=None):
     """Write offers only beside this ship's own source files."""
     from . import post
+    started = time.time_ns()
+    before = worklist.stamp(ship) if worklist is not None else None
+    certificate = worklist.certificate if worklist is not None else None
+    reuse = (before is not None and certificate is not None
+             and certificate[0] == before and certificate[1] <= started)
+    if worklist is not None:
+        worklist.certificate = None  # any failure, including an exception, certifies nothing
+    messages = worklist.messages if reuse else store.all()
+    retained = []
     errors = []
-    for message in store.all():
+    for message in messages:
         # Imported posts produce offers only through this ship's declared forward.
         try:
             imported = provenance(ship.runtime, message.id)
+            if worklist is not None and (reuse or worklist.retained(ship, message, imported)):
+                retained.append(message)
             if imported:
                 raw, _ = _source(ship, message.id)
                 seat, here = address(raw.to, imported['origin'])
@@ -398,6 +462,14 @@ def export(ship, store):
                 offer(ship, message, target)
         except (OSError, ValueError, KeyError, ShipError) as error:
             errors.append(_hold_line(f'{post.short_of(message.id)}: outbound held', error))
+    if worklist is not None and not errors and before is not None:
+        after = worklist.stamp(ship)
+        finished = time.time_ns()
+        times = [max(s[-2:]) for s in before[1] if s is not None]
+        if (before == after and started <= finished
+                and (not times or max(times) + post.POST_TIMESTAMP_TICK_NS < started)):
+            worklist.messages = tuple(retained)
+            worklist.certificate = before, started
     return errors
 
 
@@ -538,10 +610,21 @@ def fetched(source, destination, value):
         return False
 
 
-def run(ship, store):
+def run(ship, store, *, worklist=None):
     """One service tick: offer local outbound, fetch peers, retain safe operational holds."""
+    completed = False
     try:
-        errors = export(ship, store)
+        errors = _run(ship, store, worklist=worklist)
+        completed = not errors
+        return errors
+    finally:
+        if worklist is not None and not completed:
+            worklist.certificate = None
+
+
+def _run(ship, store, *, worklist=None):
+    try:
+        errors = export(ship, store) if worklist is None else export(ship, store, worklist=worklist)
     except (OSError, ShipError) as error:
         # The store listing is the no-follow walk. A linked store is a hold, not a failed tick.
         errors = [_hold_line('outbound held', error)]

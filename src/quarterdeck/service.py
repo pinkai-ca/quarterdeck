@@ -101,6 +101,8 @@ class Service:
         self.ship_stamp = None  # the ship file's identity as this pass's load read it; None: not loaded by a pass
         self.runtime = ship.runtime
         self.store = Store(self.runtime)
+        from .fleet_post import ExportWorklist
+        self.fleet_exports = ExportWorklist()
         self.attempts = Attempts(self.runtime)
         self.drop_filer = post.FilingSlice()
         self.quick_request_scan = None
@@ -746,15 +748,24 @@ class Service:
 
     def fleet_post(self) -> None:
         from . import fleet_post
-        errors = fleet_post.run(self.ship, self.store)
-        path = self.runtime / 'post' / 'transport-holds.json'
-        if errors:
-            fleet_post.prepare_outbound(self.runtime)
-            text = json.dumps(errors, sort_keys=True) + '\n'
-            if not path.exists() or path.read_text() != text:
-                fleet_post.replace_status(path, text)
-        else:
-            path.unlink(missing_ok=True)
+        try:
+            errors = fleet_post.run(self.ship, self.store, worklist=self.fleet_exports)
+            path = self.runtime / 'post' / 'transport-holds.json'
+            if errors:
+                fleet_post.prepare_outbound(self.runtime)
+                text = json.dumps(errors, sort_keys=True) + '\n'
+                if not path.exists() or path.read_text() != text:
+                    fleet_post.replace_status(path, text)
+            else:
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    path.unlink(missing_ok=True)
+        except BaseException:
+            self.fleet_exports.certificate = None
+            raise
 
     def views(self) -> None:
         """Each jailed seat's view of the post, after the inboxes and before any delivery types a message to it, from

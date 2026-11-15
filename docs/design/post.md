@@ -23,6 +23,19 @@ reported. The sender reads that receipt and matching destination bytes read-only
 not fetched: the sender retains the offer and names the waiting destination and age in status.
 Publication requests no file or directory sync. Unchanged ticks do not rewrite completed offers and copies.
 
+The service reuses a worklist to avoid walking purely local messages on quiet passes.
+It rebuilds that list when the local store (including replies and ancestry), imports,
+forwarding or addressed inventories, ship declaration (groups included), or a forwarding
+seat's compaction reservation changes. Immutable post files are covered by their directory
+identities; mutable declarations and reservations have individual file identities. A complete,
+successful observation begun beyond `POST_TIMESTAMP_TICK_NS`, with equal fingerprints before
+and after, certifies the list. Recent observations must be rebuilt after the tick; a restart or
+failed transport pass leaves no certificate. Imported messages, reports, qualified addresses,
+declared forwarding recipients and saved routes remain candidates even after closure.
+Their provenance, destinations, offers, ancestry and peer evidence are checked every pass.
+Peer discovery and incoming offer/fetch checks also always run: this worklist never certifies
+transport evidence or a complete duty result. The transport uses no relative-time rendering.
+
 Imported ancestry is context, not another delivery request. Addressed import markers make only the
 intended post eligible for the ordinary local Attempts/door/watch. Import receipts never claim seat
 delivery. Local read views project this ship's qualified party names to bare names and qualify foreign
