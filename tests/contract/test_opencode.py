@@ -320,29 +320,30 @@ def test_the_home_is_built_from_the_endpoint_and_each_launch_gets_a_data_directo
     ("hand", True, None, False),
     ("worker", False, None, False),
 ])
-def test_jailed_opencode_hands_start_the_native_finder_in_a_seat_owned_folder(
+def test_jailed_opencode_hands_start_the_native_finder_in_their_declared_folder(
     tmp_path, served, role, human, sandbox, scoped,
 ):
     harness = OpenCodeHarness()
     pool = Pool("local", "local", endpoint="http://127.0.0.1:9/v1")
-    workspace = tmp_path / "declared-workspace"
-    workspace.mkdir()
+    workspace = tmp_path / "work/hands/w"  # the hand's own declared folder
+    workspace.mkdir(parents=True)
     home = tmp_path / "ship/runtime/seats/w/home"
-    folder = home.parent / "work"
+    retired = home.parent / "work"  # the seat-runtime folder a hand worked in before
     seat = SeatSpec("w", "crew", role, "opencode", (pool.name,), cwd=workspace,
                     human_session=human, sandbox=sandbox)
     harness.build_home(home, seat, pool, None)
     brief = home.parents[2] / "brief/w.md"
     launch = harness.launch(seat, pool, home, brief, None, "synthetic brief")
-    expected = ("opencode", str(folder), "--auto") if scoped else ("opencode", "--auto")
+    expected = ("opencode", str(workspace), "--auto") if scoped else ("opencode", "--auto")
     assert launch.argv[:len(expected)] == expected
     assert launch.argv[-2:] == ("--prompt", "synthetic brief")
     assert launch.env.get("QD_WORKSPACE") == (str(workspace) if scoped else None)
     assert "OPENCODE_DISABLE_FFF" not in launch.env
-    assert folder.is_dir() == scoped and not list(workspace.iterdir())
+    assert not retired.exists(), "no folder is made in the seat's runtime; the declared one is the hand's"
+    assert not list(workspace.iterdir()), "the launch writes nothing in the hand's folder"
 
     if scoped:
-        legacy = build_record(home, directory=workspace)
+        legacy = build_record(home, directory=retired)  # a session saved in the old seat-runtime folder
         wal = legacy.with_name(legacy.name + "-wal")
         before = legacy.read_bytes(), wal.read_bytes()
         with pytest.raises(ShipError, match="qd fresh w starts a scoped session"):
@@ -351,18 +352,21 @@ def test_jailed_opencode_hands_start_the_native_finder_in_a_seat_owned_folder(
         fresh = harness.launch(seat, pool, home, brief, None, "synthetic brief")
         assert fresh.env["XDG_DATA_HOME"] == str(home / "data-002")
         assert fresh.argv[-2:] == ("--prompt", "synthetic brief")
-        record = build_record(home, number=2, directory=folder, session="ses_scoped")
+        record = build_record(home, number=2, directory=workspace, session="ses_scoped")
         resumed = harness.launch(seat, pool, home, brief, "ses_scoped", None)
         assert resumed.argv[:len(expected)] == expected
         assert resumed.argv[-2:] == ("--session", "ses_scoped")
         assert resumed.env["XDG_DATA_HOME"] == str(record.parents[1])
-        build_record(home, number=3, directory=workspace, session="ses_scoped")
+        build_record(home, number=3, directory=retired, session="ses_scoped")
         with pytest.raises(ShipError, match="ambiguous directory evidence.*qd fresh w"):
             harness.launch(seat, pool, home, brief, "ses_scoped", None)
-        folder.rmdir()
-        folder.symlink_to(workspace, target_is_directory=True)
+        elsewhere = tmp_path / "work/hands/other"  # another hand's folder, reached by a link at this hand's place
+        elsewhere.mkdir()
+        workspace.rmdir()
+        workspace.symlink_to(elsewhere, target_is_directory=True)
         with pytest.raises(ShipError, match="must be a seat-owned working directory"):
             harness.launch(seat, pool, home, brief, None, None)
+        assert not list(elsewhere.iterdir())
 
 
 @pytest.mark.parametrize("joined", [False, True])
@@ -375,7 +379,7 @@ def test_scoped_hand_relaunch_refuses_unproved_directory_before_retirement(tmp_p
                 {"crew": Session("crew", "crew")}, {spec.name: spec})
     pane = Pane("%1", "crew", "w", 101, 160, 48, False, False, None)
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: pane if ident == pane.id else None))
-    legacy = build_record(seat.home, directory=workspace)
+    legacy = build_record(seat.home, directory=seat.home.parent / "work")  # saved in the old seat-runtime folder
     Launched(pane.id, pane.pid, datetime.now(UTC).isoformat(), pool.name, None,
              ["opencode"], VERSION, "opencode").write(seat.folder / "launch.json")
     monkeypatch.setattr(seat, "record", lambda: legacy if joined else None)
