@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import fleet_post, forward_post, human_wake, post, post_dir, ship as shipmod
+from quarterdeck import accounting_health, fleet_post, forward_post, human_wake, post, post_dir, ship as shipmod
 from quarterdeck.service import Service
 
 
@@ -143,6 +143,7 @@ def test_short_passes_keep_the_change_check_deadline_and_periodic_refresh(tmp_pa
     svc.rebind = lambda: None
     svc.structure_passes = SimpleNamespace(begin=lambda: None, finish=lambda: None)
     svc.heartbeat = lambda: None
+    svc.accounting_health = accounting_health.Health()  # every Service holds one from __init__; status compares it
     svc.log = lambda kind, **kwargs: None if kind == 'service-timing' else pytest.fail(str(kwargs))
     now = [1.0]
     monkeypatch.setattr('quarterdeck.service.time.monotonic', lambda: now[0])

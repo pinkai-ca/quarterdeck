@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import service as servicemod, service_status, service_wait, ship as shipmod
+from quarterdeck import accounting_health, service as servicemod, service_status, service_wait, ship as shipmod
 from quarterdeck.service import Service
 
 
@@ -80,6 +80,51 @@ def test_a_changed_input_is_published_without_waiting_for_the_periodic_refresh(s
     clock[0] = 0.8
     service.status_due()
     assert published == [0.0, 0.8]
+
+
+def test_an_accounting_transition_forces_exactly_one_collection(scheduled):
+    # The service's in-memory accounting state is compared beside the file inputs: each transition is
+    # published at once, and the same state across many checks forces nothing (the 30 s refresh aside).
+    service, clock, published = scheduled
+    health = service.accounting_health
+    assert health.shown() == accounting_health.UNKNOWN
+    service.status_due()
+    assert published == [0.0]
+    moment = [0.0]
+
+    def checks(count):
+        for _ in range(count):
+            moment[0] += 0.8
+            clock[0] = moment[0]
+            service.status_due()
+
+    checks(5)
+    assert published == [0.0], 'unknown, unchanged'
+    health.committed()  # unknown -> healthy
+    checks(5)
+    assert len(published) == 2 and published[-1] == pytest.approx(moment[0] - 3.2), \
+        'one collection, at the first check after the transition, and none after'
+    for _ in range(accounting_health.BOUND - 1):
+        health.failed('database error', servicemod.post.now())
+    checks(5)
+    assert len(published) == 2, 'failures below the bound show nothing new'
+    health.failed('database error', servicemod.post.now())  # healthy -> failing since a time, with its cause
+    checks(5)
+    assert len(published) == 3 and published[-1] == pytest.approx(moment[0] - 3.2)
+    health.committed()  # failing -> healthy
+    checks(5)
+    assert len(published) == 4 and published[-1] == pytest.approx(moment[0] - 3.2)
+    assert moment[0] < 30, 'every collection here was forced by a transition, never by the refresh'
+
+
+def test_an_unchanged_accounting_state_forces_nothing_across_many_checks(scheduled):
+    service, clock, published = scheduled
+    service.accounting_health.committed()
+    service.status_due()
+    for index in range(1, 37):
+        clock[0] = index * 0.8
+        service.status_due()
+    assert published == [0.0], 'thirty-six unchanged checks within the refresh collect nothing'
 
 
 def test_changes_during_collection_remain_owed(scheduled, monkeypatch):

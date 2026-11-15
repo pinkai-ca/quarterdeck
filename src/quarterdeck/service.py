@@ -354,7 +354,11 @@ class Service:
             demand = self.tmux.clients_attached(sessions) if hasattr(self.tmux, 'clients_attached') else None
             if demand is False:
                 return
-            inputs = service_status.inputs(self.ship)
+            files = service_status.inputs(self.ship)
+            # Beside the files: the service's own accounting state, held in memory. It changes only on a
+            # transition (unknown, healthy, failing since a time with its cause), never on a pass, so a
+            # transition is published at once and the service's own churn still forces nothing.
+            inputs = None if files is None else (files, self.accounting_health.shown())
             if (reversed_clock or inputs is None or inputs != getattr(self, 'status_inputs', None)
                     or now >= getattr(self, 'status_refresh', 0.0)):
                 self.heartbeat()
