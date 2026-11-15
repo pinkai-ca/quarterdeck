@@ -27,7 +27,9 @@ def test_long_checkout_runs_its_native_socket_and_cleans_up(tmp_path):
                 endpoint.unlink(missing_ok=True)
                 endpoint.parent.rmdir()
                 endpoint.parent.parent.rmdir()
-    '''}, socket_stub=True)
+    '''})
+    shutil.copytree(ROOT / 'src/quarterdeck', target / 'src/quarterdeck',
+                    ignore=shutil.ignore_patterns('__pycache__'))
     helpers = target / 'tests/testrunner'
     shutil.copytree(ROOT / 'tests/testrunner', helpers,
                     ignore=shutil.ignore_patterns('__pycache__'))
@@ -38,7 +40,8 @@ def test_long_checkout_runs_its_native_socket_and_cleans_up(tmp_path):
     try:
         assert len(os.fsencode(project)) > 31
         done = tool('run', '--target', str(target), '--fast', '-n', '0', cwd=project)
-        assert done.returncode == 0, done.stdout + done.stderr
+        failures = '\n'.join(path.read_text() for path in (project / '.testruns/results').glob('*/failures/*.txt'))
+        assert done.returncode == 0, done.stdout + done.stderr + failures
         proof = json.loads(marker.read_text())
         assert proof['bytes'] + socket_paths.SOCKET_MARGIN <= socket_paths.SOCKET_LIMIT
         assert proof['mode'] == 0o700
