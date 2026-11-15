@@ -82,7 +82,10 @@ def copied_runtime(source, destination):
                     rows.append(json.dumps(row))
             target.write_text('\n'.join(rows) + '\n')
     # Preserve the actual store's local projections/import provenance too.
-    shutil.copytree(source / 'post', destination / 'post')
+    for name in ('store', 'imports', 'forwarded', 'addressed'):
+        old = source / 'post' / name
+        if old.exists():
+            shutil.copytree(old, destination / 'post' / name)
     shutil.copy2(source.parent / 'ship.toml', destination.parent / 'ship.toml')
     return dict(ledger_records=len(records), copied_files=copied, copied_bytes=size)
 

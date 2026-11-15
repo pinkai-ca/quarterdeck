@@ -31,6 +31,12 @@ class History:
                                  ORIGIN - timedelta(minutes=20), 'Ordinary synthetic work')]
         self.store = SimpleNamespace(all=lambda: self.messages)
         self.reads = []
+        self.visits = []
+        replay_row = self.cache.replay_row
+        def visit(record, *args, **kwargs):
+            self.visits.append(record.rsplit('/', 1)[-1])
+            return replay_row(record, *args, **kwargs)
+        monkeypatch.setattr(self.cache, 'replay_row', visit)
         self.journal = root / 'seats' / 'builder' / 'record-launches.jsonl'
         self.journal.parent.mkdir(parents=True)
         self.journal.write_text('')
@@ -63,12 +69,13 @@ class History:
             self.cache.sources.clear()
             self.cache.last = None
         self.reads.clear()
+        self.visits.clear()
         if self.mode == 'stream':
             self.cache.replay_stream(self.store, self.root, 'ordinary-framework',
                                      lambda *args: None, lambda: None)
         else:
             self.cache.replay(self.store, self.root, framework='ordinary-framework')
-        return list(self.reads)
+        return list(dict.fromkeys(self.visits))
 
     def rows(self):
         return json.dumps(self.book.db.execute(
@@ -96,6 +103,7 @@ def test_new_disjoint_turn_keeps_long_history_and_equals_full_replay(history):
     history.turn('ordinary-future', 3000, 3010)
     history.posted('future', 3005)
     assert history.replay() == ['ordinary-future']
+    assert history.reads == ['ordinary-future']
     assert all(history.book.db.execute('SELECT evidence FROM attribution_records WHERE record=?',
                                       (record,)).fetchone() == (evidence,)
                for record, evidence in old.items())

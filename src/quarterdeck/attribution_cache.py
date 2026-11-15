@@ -187,6 +187,9 @@ class Attribution:
                         reused.add(record)
                         continue
                     certificates[record] = evidence
+                    # Cached native inputs may still be reused, but changed
+                    # bounds/post evidence require recomputing their verdicts.
+                    changed = True
                 if prior is not None and prior[0] == stamp:
                     if not prior[2] or reader not in harness.NAMES or time.monotonic() < self.retries.get(record, 0):
                         if prior[2]:
