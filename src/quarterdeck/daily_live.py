@@ -260,6 +260,22 @@ def _child_env(folder: Path, socket: str) -> dict[str, str]:
     return env
 
 
+def start_private(tmux: Tmux) -> None:
+    """Only the creator starts the server; a check child is an observer.
+
+    The creator API keeps exit-empty off. Retire the bootstrap session by its
+    identity, leaving the empty server available until this creator closes it.
+    """
+    previous = {key: os.environ.pop(key, None) for key in ('TMUX', 'TMUX_PANE')}
+    try:
+        bootstrap = tmux.new_session('qd-daily-live-bootstrap')
+        tmux.kill_session_id(bootstrap)
+    finally:
+        for key, value in previous.items():
+            if value is not None:
+                os.environ[key] = value
+
+
 def _release(tmux: Tmux | None, parent: Path | None) -> str | None:
     if tmux is not None and not tmux.close():
         return f"private tmux retained: {tmux.held}; ship retained at {parent}"
@@ -293,6 +309,7 @@ def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
             declaration = shipmod.edit(declaration, f'seats.{name}', 'cwd', str(workspace))
         durable.replace_file(folder / 'ship.toml', declaration)
         tmux = open_private(parent)
+        start_private(tmux)
         socket = tmux.socket
         completed = subprocess.run(
             [qd, "--ship", str(folder), "check", program, "--minimal"],

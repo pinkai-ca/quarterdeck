@@ -78,7 +78,8 @@ cwd = "../project"
     def private(parent):
         # Workspace preparation precedes even opening the private server.
         check_copy(parent / origin.folder.name)
-        return SimpleNamespace(socket='/synthetic/private/socket', close=lambda: True)
+        return SimpleNamespace(socket='/synthetic/private/socket', close=lambda: True,
+                               new_session=lambda name: 'bootstrap', kill_session_id=lambda identity: None)
 
     def run(argv, **kwargs):
         assert argv[-3:] == ['check', 'fake', '--minimal']

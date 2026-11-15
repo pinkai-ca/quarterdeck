@@ -1002,8 +1002,10 @@ def cmd_daily_live(args: argparse.Namespace) -> list[str]:
     ship = load_ship(args)
     if args.units:
         return daily_live.units(daily_live.installed_qd(ship), ship.folder).splitlines()
-    message, failed = daily_live.run(ship)
-    args.exit_code = 1 if failed else 0
+    message, _failed = daily_live.run(ship)
+    # A filed failure is the daily job's result, not a failed reporting job.
+    # Failure to finish or file the report still follows main's error path.
+    args.exit_code = 0
     return [f"{message.short} to {message.to} · stored", message.body.rstrip("\n")]
 
 
