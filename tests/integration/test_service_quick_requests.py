@@ -10,7 +10,7 @@ from quarterdeck.door import Door
 from .waiting import wait_for
 
 
-def test_submit_is_answered_before_later_work_in_the_first_pass(drydock, tmux, tmp_path, monkeypatch):
+def test_submit_is_answered_before_later_work_in_the_first_pass(drydock, tmux, tmp_path_factory, monkeypatch):
     current = ship.load(drydock)
     owner = service.Service(current, tmux)
     seat = owner.seat('captain')
@@ -78,7 +78,9 @@ def test_submit_is_answered_before_later_work_in_the_first_pass(drydock, tmux, t
             running.result(timeout=5)
         measured = dict(submit_wait_seconds=round(seconds, 6), answered_before_later_duty=before_later == [True],
                         dispatches=len(dispatches), response=response)
-        (tmp_path / 'submit-timing.json').write_text(json.dumps(measured, indent=2) + '\n')
+        # A deliberately kept measurement run retains this artifact even though
+        # pytest removes each successful test's own tmp_path at teardown.
+        (tmp_path_factory.getbasetemp() / 'submit-timing.json').write_text(json.dumps(measured, indent=2) + '\n')
         assert response == "refused: captain's box is empty"
         assert len(dispatches) == 1 and dispatches[0] == response
         assert before_later == [True], measured
