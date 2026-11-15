@@ -98,6 +98,8 @@ def scheduled(monkeypatch, ship, passes, reload=None):
     monkeypatch.setattr(servicemod.signal, 'signal', lambda *args: None)
     monkeypatch.setattr(servicemod.time, 'monotonic', lambda: clock.now)
     monkeypatch.setattr(servicemod.time, 'sleep', sleep)
+    monkeypatch.setattr(servicemod.service_wait, 'Arrivals', lambda runtime: SimpleNamespace(
+        wait=sleep, refresh=lambda names: None, close=lambda: None))
     try:
         with pytest.raises(Stop):
             service.run()

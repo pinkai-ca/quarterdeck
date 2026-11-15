@@ -106,6 +106,7 @@ class Service:
         self.drop_filer = post.FilingSlice()
         self.quick_request_scan = None
         self.quick_request_retry = None
+        self.stale_claims_pending = True
         self.log_path = self.runtime / "log" / "service.jsonl"
         self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
         self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
@@ -171,6 +172,16 @@ class Service:
         arrivals = service_wait.Arrivals(self.runtime)
         try:
             with Stop(self.runtime, self.lock).installed():
+                self.claim_service_start = None
+                try:
+                    info = servicectl.lock_path(self.runtime).lstat()
+                    owner = shutdown.owner(self.runtime, os.getpid())
+                    if (owner is not None and owner['start'] == servicectl.process_start(os.getpid())
+                            and (owner['device'], owner['inode']) == (info.st_dev, info.st_ino)):
+                        self.claim_service_start = dict(ctime_ns=info.st_ctime_ns, device=info.st_dev)
+                except OSError:
+                    pass  # no published start: legacy claims stay held; the service loop still runs
+                self.settle_stale_claims()
                 while True:
                     self.tick()
                     self.drain_accounting()
@@ -817,6 +828,48 @@ class Service:
             self.log('cascade-held', request=request, reason=reason)
 
 
+    def log_claim_settlement(self, path, data, meta):
+        self.log('request-settled', request=path.stem, seat=data.get('seat'),
+                 answer=meta['terminal'], claimer=meta.get('claim_owner'),
+                 before_service_start=meta.get('claim_before_start'))
+
+    def settle_stale_claims(self) -> bool:
+        """On startup, finish dead service claims without ever dispatching them."""
+        from . import request_queue
+        self.stale_claims_pending = False
+        if not (self.runtime / 'requests').exists():
+            return True  # an absent queue has no claims; do not create a new arrival-watch target
+        with request_queue.coordination(self.runtime, wait=False) as owned:
+            if not owned:
+                self.stale_claims_pending = True
+                return False
+            for path in sorted((self.runtime / 'requests').glob('*.json')):
+                try:
+                    start = getattr(self, 'claim_service_start', None)
+                    if not request_queue.stale_claim(path, service_start=start):
+                        continue
+                    meta = request_queue.metadata(path)
+                    data = request_queue.load(path)
+                    if data.get('kind') not in request_queue.SEAT_KINDS:
+                        continue
+                    if 'terminal' in meta and meta.get('settlement') != 'service-restarted':
+                        continue  # cancellation/supersession keeps its own durable outcome
+                    meta['terminal'] = request_queue.RESTART_SETTLEMENT
+                    meta['settlement'] = 'service-restarted'
+                    if 'claim_owner' not in meta:
+                        meta['claim_before_start'] = dict(start,
+                            claim_ctime_ns=path.with_suffix('.claimed').lstat().st_ctime_ns,
+                            margin_ns=post.POST_TIMESTAMP_TICK_NS)
+                    request_queue.save_metadata(path, meta)  # intent precedes log, answer and retirement
+                    self.log_claim_settlement(path, data, meta)
+                    request_queue.settle(path, meta['terminal'], clear_claim=True)
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError, TypeError, ShipError) as error:
+                    self.stale_claims_pending = True
+                    self.log('error', step='stale-request-claims', request=path.name, error=repr(error))
+        return True  # failed individual settlements retain claims; healthy requests may still run
+
     def requests(self) -> None:
         """Each request answered alone, in arrival order: none keeps a later one waiting.
 
@@ -828,6 +881,8 @@ class Service:
 
     def _requests(self, paths, *, kinds=None) -> bool:
         """The one claim/dispatch/settlement path; False defers a busy quick candidate."""
+        if getattr(self, 'stale_claims_pending', False) and not self.settle_stale_claims():
+            return False  # no dispatch can overtake a busy startup settlement
         retry = []
         for path in paths:
             from . import request_queue
@@ -850,6 +905,8 @@ class Service:
                             continue
                         if not isinstance(meta['terminal'], str) or not meta['terminal'] or data.get('kind') not in request_queue.SEAT_KINDS:
                             raise ShipError('request retirement intent unknown; retained')
+                        if meta.get('settlement') == 'service-restarted':
+                            self.log_claim_settlement(path, data, meta)
                         request_queue.settle(path, meta['terminal'], clear_claim=True)
                         continue  # recover cancellation/supersession without ever dispatching it
                     data = request_queue.load(path)
@@ -867,7 +924,7 @@ class Service:
                         continue
                     meta = request_queue.metadata(path)  # supersession may add retired identities
                     if continuation is None and data.get("kind") != "rebrief":
-                        durable.replace_file(claim, raw)  # before dispatch: failed archival cannot requeue an executed action
+                        request_queue.claim(path, raw, meta)  # before dispatch: preserve owner and immutable payload
                     # The durable claim excludes cancellation/supersession while dispatch runs.
                     # A seat transition must never hold the global request coordination lock.
                     ownership.close()

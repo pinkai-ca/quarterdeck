@@ -20,6 +20,7 @@ from .ship import ShipError
 
 SEAT_KINDS = frozenset({'relaunch', 'control', 'select', 'stop', 'submit', 'press', 'type'})
 QUICK_KINDS = frozenset({'submit', 'resend'})
+RESTART_SETTLEMENT = 'settled without applying: the service that claimed it restarted'
 
 
 def arrival_paths(runtime, *, kinds=None):
@@ -220,6 +221,46 @@ def claimed(path):
         return None
 
 
+def claim(path, raw, meta):
+    """Keep the immutable payload claim, with its process identity recorded first."""
+    from .servicectl import process_start
+    pid = os.getpid()
+    meta['claim_owner'] = dict(pid=pid, start=process_start(pid),
+                               digest=hashlib.sha256(raw.encode()).hexdigest())
+    save_metadata(path, meta)
+    durable.replace_file(path.with_suffix('.claimed'), raw)
+
+
+def stale_claim(path, meta=None, *, service_start=None):
+    """Only the exact claim's proved-ended process can be settled; unknown stays held."""
+    from .shutdown import process_gone
+    try:
+        if claimed(path) is not True:
+            return False
+        meta = metadata(path) if meta is None else meta
+        claim = path.with_suffix('.claimed')
+        raw = claim.read_bytes()
+        if raw != path.read_bytes():
+            return False
+        if 'claim_owner' not in meta:
+            # Only startup's newly owned lock supplies this wall-clock boundary.
+            # Never infer a departed owner from an old mtime or a caller's PID.
+            if service_start is None:
+                return False
+            info = claim.lstat()
+            return (stat.S_ISREG(info.st_mode) and info.st_dev == service_start['device']
+                    and 0 < info.st_ctime_ns < service_start['ctime_ns'] - post.POST_TIMESTAMP_TICK_NS)
+        owner = meta.get('claim_owner')
+        if (not isinstance(owner, dict) or type(owner.get('pid')) is not int or owner['pid'] <= 0
+                or not isinstance(owner.get('start'), str) or not owner['start'].isdigit()):
+            return False
+        if owner.get('digest') != hashlib.sha256(raw).hexdigest():
+            return False
+        return process_gone(owner)
+    except (OSError, ValueError, TypeError, ShipError):
+        return False
+
+
 def control_continuation(path, data=None, meta=None):
     """Only the original immutable payload/claim can resume its own consumed control."""
     from .control_confirmation import Continuation
@@ -395,7 +436,8 @@ def _retire(runtime, name, reason, identifier=None):
         if identifier is None and data['kind'] != 'relaunch':
             continue
         meta = metadata(path)
-        if claimed(path) is not False and not isinstance(meta.get('terminal'), str):
+        if (claimed(path) is not False and not isinstance(meta.get('terminal'), str)
+                and not (reason == 'cancelled' and stale_claim(path, meta))):
             raise ShipError(f'request {path.stem} already claimed; outcome unknown; retained')
         paths.append((path, data, meta))
     if identifier is None and uncertain:
