@@ -1,11 +1,14 @@
 """Own restart decisions on a copied ship and synthetic native records, with no live program."""
 
 from datetime import timedelta
+import os
+from types import SimpleNamespace
 
 import pytest
 
 from quarterdeck import human_wake, person_quiet, post, request_queue, service as servicemod
 from quarterdeck.harness.types import Screen
+from quarterdeck.seat import Launched, process_start
 from tests.compaction_shapes import AT
 from tests.unit.test_person_quiet import desk
 
@@ -13,6 +16,12 @@ from tests.unit.test_person_quiet import desk
 @pytest.fixture
 def own_restart(desk, monkeypatch):
     world = desk()
+    # The seat's own requests are filed from its pane: this test process stands in for the desk's pane process, by
+    # its own pid and start time, so the filer descends from it as a seat's qd does.
+    pane = os.getpid()
+    world.seat.tmux.pane = lambda _: SimpleNamespace(id='%1', pid=pane, dead=False)
+    Launched('%1', pane, AT.isoformat(), 'synthetic', None, [world.seat.spec.harness], 'synthetic',
+             harness=world.seat.spec.harness, start=process_start(pane)).write(world.seat.folder / 'launch.json')
     world.now = AT + timedelta(seconds=10)
     world.screen = Screen(text='', box='', working=False)
     world.calls = []
