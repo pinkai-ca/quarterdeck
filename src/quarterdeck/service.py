@@ -35,6 +35,7 @@ from . import accounting_health, credential, durable, idle, install, machine, mo
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .harness.capabilities import validate_effort, validate_mode
+from . import ledger
 from .ledger import Ledger
 from .provenance import UNKNOWN
 from .post import Attempts, Store
@@ -2160,7 +2161,7 @@ class Service:
                             reads.append((record, pool, stamp, None, (), owned.reason, None, settlement))
                         continue
                 try:
-                    stamp = (owned.name, record_fingerprint(record))
+                    stamp = ledger.record_stamp(owned)
                     # The launches joined to this record. A down seat or a newer launch of another record does not move it.
                     launch = self.ledger.provenance.owning_launch(prepared[0], record)
                     evidence = (stamp, owned.reason, record_fingerprint(record_owner.registry(seat.trusted)), launch)
@@ -2178,7 +2179,7 @@ class Service:
                     state, turns = owned.read()
                     # Reading concurrently appended bytes must not certify the later file.
                     try:
-                        stable = stamp == (owned.name, record_fingerprint(record))
+                        stable = stamp == ledger.record_stamp(owned)
                     except OSError:
                         stable = False
                     # Empty records retain ordinary read/error checks: no measured turn was accounted.

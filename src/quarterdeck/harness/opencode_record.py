@@ -58,6 +58,16 @@ def _launch_number(record: Path) -> int:
         return 0
 
 
+def later_launch(record: Path) -> bool:
+    """Whether a later launch of the same home exists: a data folder numbered after this record's, in the home or
+    retired. A launch that has ended writes nothing more, so a turn it left open was cut, not paused."""
+    folder = record.parents[1].name if len(record.parents) > 2 else ''
+    if not folder.startswith(DATA_PREFIX) or not folder[len(DATA_PREFIX):].isdigit():
+        return False  # not a launch's own record: no claim of an ending is made
+    own = _launch_number(record)
+    return any(_launch_number(other) > own for other in records(record.parents[2]))
+
+
 def data_dir_of(record: Path) -> Path:
     return record.parents[1]
 
@@ -137,7 +147,7 @@ def _active_session(rows: _Rows) -> str | None:
 class _Session:
     """Turn boundaries and box state for one session only."""
 
-    def __init__(self, users, answers):
+    def __init__(self, users, answers, launch_ended: bool = False):
         self.turns: list[Turn] = []
         self.open = False
         self.queued: list[str] = []
@@ -147,9 +157,10 @@ class _Session:
         self.model = self.last_input = self.last_input_at = self.open_tool = self.open_tool_since = None
         for pos, (index, mid, data, own) in enumerate(users):
             moved_on = any(answers.get(later[1]) for later in users[pos + 1:])
-            self.user(index, data, own, answers.get(mid, []), moved_on)
+            self.user(index, data, own, answers.get(mid, []), moved_on, launch_ended and pos == len(users) - 1)
 
-    def user(self, index: int, data: dict, own: list[dict], steps: list[tuple[dict, list[dict]]], moved_on: bool) -> None:
+    def user(self, index: int, data: dict, own: list[dict], steps: list[tuple[dict, list[dict]]], moved_on: bool,
+             launch_ended: bool = False) -> None:
         text = "\n".join(p["text"] for p in own if p.get("type") == "text" and isinstance(p.get("text"), str))
         at = _ms(_object(data.get("time")).get("created"))
         overlapped = self.ended_at is not None and (at is None or at <= self.ended_at)
@@ -199,6 +210,13 @@ class _Session:
             ended = ended or _ms(_object(last.get("time")).get("created")) or at
             if running:
                 tools.append(ToolCall(running[0], None, None))  # left running when the program moved on: its end unknown
+        elif launch_ended and not closed and steps:
+            # Its launch has ended (a later one exists), so this turn was cut, never to be written again: it closes
+            # untimed at its last step, counted as far as the record shows, a tool it left running noted as such.
+            closed, timed = True, False
+            ended = ended or _ms(_object(last.get("time")).get("created")) or at
+            if running:
+                tools.append(ToolCall(running[0], None, None))
         if closed:
             self.ended_at = ended if timed else None
             failure = None
@@ -238,7 +256,8 @@ class _Reader(RecordReader):
                 index += 1  # stable even while an earlier parent turn has not ended yet
             elif data.get("role") == "assistant" and isinstance(data.get("parentID"), str):
                 answers.setdefault(sid, {}).setdefault(data["parentID"], []).append((data, parts.get((sid, mid), [])))
-        sessions = {sid: _Session(messages, answers.get(sid, {})) for sid, messages in users.items()}
+        self.launch_ended = isinstance(record, Path) and later_launch(record)
+        sessions = {sid: _Session(messages, answers.get(sid, {}), self.launch_ended) for sid, messages in users.items()}
         self.active = sessions.get(self.session, _Session([], {}))
         self.turns = sorted((turn for session in sessions.values() for turn in session.turns), key=lambda t: t.index)
         # A task's activity belongs to its root for the stall clock, not for turn closure.
@@ -265,8 +284,8 @@ class _Reader(RecordReader):
                 known = False  # scheduling/returned job handles are not child completion evidence
             if not isinstance(name, str) or not name or status not in (*RUNNING, 'completed', 'error'):
                 known = False
-            elif status in RUNNING:
-                pending.append(name)
+            elif status in RUNNING and not self.launch_ended:
+                pending.append(name)  # once its launch has ended, a running tool was left so: none is pending
         if any(session.open for sid, session in sessions.items() if sid != self.session):
             known = False  # children/previous roots in this launch can be generating between tools
         self.pending_tools = tuple(pending) if known else None

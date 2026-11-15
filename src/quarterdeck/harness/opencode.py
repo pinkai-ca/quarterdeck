@@ -316,6 +316,11 @@ class OpenCodeHarness(EndpointHarness):
     inputs = staticmethod(inputs)
     retirement_process_names = ('opencode', 'bun', 'node')
 
+    def stamp_extra(self, record: Path):
+        """What besides its bytes decides a record's reading: whether a later launch of its home exists (ledger)."""
+        from .opencode_record import later_launch
+        return ['later-launch', later_launch(record)]
+
     def retirement_bundle(self, home: Path, record: Path, kept: Path):
         if not record.is_relative_to(home):
             return None

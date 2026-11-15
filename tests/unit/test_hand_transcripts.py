@@ -378,12 +378,112 @@ def test_a_screening_record_leaves_the_home_once_accounted_without_the_weeks_wai
         w.svc.ledger.close()
 
 
-def test_a_screening_record_still_open_stays_and_keeps_every_launch_fresh(tmp_path, monkeypatch):
-    w = world(tmp_path, monkeypatch, 'pi', complete=False, age=timedelta(minutes=2))
+def cut_mid_turn(w, *, number=0, listed=True, age=timedelta(minutes=2), task='Synthetic screening instruction'):
+    """A launch's OpenCode record that the screen's down cut mid-turn, as a hand's were on 15 November: its last step
+    has no finish, and its tool part still reads running. ``number`` is its launch's: 0 is before the current one."""
+    at = datetime.fromtimestamp(w.now, timezone.utc) - age
+    record = w.seat.home / f'data-{number:03d}' / 'opencode' / 'opencode.db'
+    record.parent.mkdir(parents=True)
+    ms = int(at.timestamp() * 1000)
+    with sqlite3.connect(record) as db:
+        db.executescript('''CREATE TABLE session (id TEXT, time_created INTEGER, time_updated INTEGER, parent_id TEXT);
+            CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);''')
+        db.execute('INSERT INTO session VALUES (?,?,?,NULL)', ('cut', ms, ms))
+        db.execute('INSERT INTO message VALUES (?,?,?,?,?)', ('u', 'cut', ms, ms,
+            json.dumps(dict(role='user', time=dict(created=ms), model=dict(modelID='synthetic-model')))))
+        db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('text', 'u', 'cut', ms, ms,
+            json.dumps(dict(type='text', text=task))))
+        db.execute('INSERT INTO message VALUES (?,?,?,?,?)', ('a', 'cut', ms + 1000, ms + 1000,
+            json.dumps(dict(role='assistant', parentID='u', modelID='synthetic-model', time=dict(created=ms + 1000),
+                            tokens=dict(input=30, output=7, reasoning=0, total=37, cache=dict(read=0, write=0)),
+                            cost=.25))))
+        db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('call', 'a', 'cut', ms + 1000, ms + 1000,
+            json.dumps(dict(type='tool', tool='read', state=dict(status='running', time=dict(start=ms + 1000))))))
+    db.close()
+    for source in [record, *record.parent.rglob('*')]:
+        os.utime(source, (at.timestamp(), at.timestamp()))
+    with (w.seat.trusted / trusted_files.LAUNCHES).open('a') as stream:
+        stream.write(json.dumps(dict(record=str(record), at=(at - timedelta(seconds=2)).isoformat(), pool='local',
+                                     harness='opencode')) + '\n')
+    record_owner.register(w.seat.trusted, record, 'opencode')
+    w.svc.account_records(process_table={})
+    if listed:
+        pr_screen.mark_screening(w.svc.runtime, 'hand', [str(record)])
+    return record
+
+
+def test_a_cut_turn_with_a_tool_pending_is_counted_with_its_tokens_once_a_later_launch_exists(tmp_path, monkeypatch):
+    """Its launch has ended (data-002 came after it): the turn closes untimed at its last step, its tool noted as
+    left running, and the ledger counts it as far as the record shows. Listed or not, the reading is the same."""
+    w = world(tmp_path, monkeypatch, 'opencode')
     try:
-        pr_screen.mark_screening(w.svc.runtime, 'hand', [str(w.record)])
-        assert hand_transcripts.run(w.svc, now=w.now) == 0, 'an open conversation is never moved'
-        assert w.record.is_file() and pr_screen.screening_left(w.svc.runtime, 'hand')
+        record = cut_mid_turn(w, listed=False)
+        state, turns = w.seat.harness.read(record)
+        assert state.turn_open is False and state.pending_tools == () and len(turns) == 1
+        [turn] = turns
+        assert not turn.timed and turn.tokens.written == 7 and [t.name for t in turn.tools] == ['read']
+        assert turn.tools[0].failed is None, 'left running: its end unknown'
+        assert w.svc.ledger.ingested(record) == 1, 'counted, not dropped'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_the_same_record_while_its_launch_is_the_latest_keeps_its_turn_open(tmp_path, monkeypatch):
+    """No later launch of the home exists: nothing is closed by guess."""
+    w = world(tmp_path, monkeypatch, 'opencode')
+    try:
+        record = cut_mid_turn(w, number=9, listed=False)  # after data-002: the latest launch
+        state, turns = w.seat.harness.read(record)
+        assert state.turn_open is True and state.pending_tools == ('read',) and turns == []
+        assert w.svc.ledger.ingested(record) == 0
+    finally:
+        w.svc.ledger.close()
+
+
+def test_an_accounted_record_is_read_again_when_a_later_launch_begins(tmp_path, monkeypatch):
+    """Accounted while its launch was the latest, it is read once more when its successor starts, so its cut turn is
+    counted then: the later launch is part of an OpenCode record's stamp."""
+    w = world(tmp_path, monkeypatch, 'opencode')
+    try:
+        record = cut_mid_turn(w, number=9, listed=False)
+        assert w.svc.ledger.ingested(record) == 0
+        transcript(w.seat.home, 'data-010', 'opencode', datetime.fromtimestamp(w.now, timezone.utc))  # its successor
+        w.svc.account_records(process_table={})
+        assert w.svc.ledger.ingested(record) == 1
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_listed_screening_record_cut_mid_turn_retires_only_once_that_accounting_is_in(tmp_path, monkeypatch):
+    """Security's gate: a hand cut off by the screen mid-turn, a tool call pending, has its record retired with no hand
+    on it once its accounting is through; then nothing under its home holds the case's text."""
+    strings = case_strings('note-elsewhere')
+    w = world(tmp_path, monkeypatch, 'opencode')
+    try:
+        record = cut_mid_turn(w, task='\n'.join(strings))
+        assert holds(w.seat.home, strings), 'the screening launch read the case'
+        real = w.svc.ledger.accounted
+        monkeypatch.setattr(w.svc.ledger, 'accounted',
+                            lambda checked, checkpoint: checked != record and real(checked, checkpoint))
+        hand_transcripts.run(w.svc, now=w.now, limit=0)
+        assert record.is_file(), 'not yet accounted: it waits for that'
+        monkeypatch.setattr(w.svc.ledger, 'accounted', real)
+        assert w.svc.ledger.ingested(record) == 1, 'the cut turn is in the ledger first'
+        assert hand_transcripts.run(w.svc, now=w.now, limit=0) == 1 and not record.exists()
+        assert holds(w.seat.home, strings) == [], 'nothing under the hand\'s home holds the case\'s text'
+        assert record_location.resolve(record).is_relative_to(w.svc.runtime / 'retired' / 'hand-transcripts')
+        assert w.svc.ledger.ingested(record) == 1, 'the ledger keeps its keys'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_listed_cut_record_held_open_by_a_process_stays(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch, 'opencode')
+    try:
+        record = cut_mid_turn(w)
+        monkeypatch.setattr(hand_transcripts, 'opened', lambda files, names=None: True)  # a process holds it
+        assert hand_transcripts.run(w.svc, now=w.now, limit=0) == 0 and record.is_file()
     finally:
         w.svc.ledger.close()
 

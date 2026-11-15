@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import time
 
-from . import lifecycle, pr_screen, record_location, record_owner, trusted_files
+from . import ledger, lifecycle, pr_screen, record_location, record_owner, trusted_files
 from .harness import reader_stamp
 from .harness.base import record_fingerprint
 from .provenance import owning_launch_evidence
@@ -193,7 +193,7 @@ def _walk(service, book, *, now, listed, screening, limit, declined=None):
                     if not screening and any(p.stat().st_mtime >= cutoff for p in files):
                         _declined(service, declined, seat.name, record, 'written within the week')
                         continue
-                    stamp = (owned.name, record_fingerprint(record))
+                    stamp = ledger.record_stamp(owned)
                     checkpoint = book.accounting_evidence(seat.name, stamp, owned.reason,
                         owning_launch_evidence(events, str(record)), keys.get(owned.name))
                     if checkpoint is None or not book.accounted(record, checkpoint):
@@ -209,7 +209,7 @@ def _walk(service, book, *, now, listed, screening, limit, declined=None):
                     if opened(files, owned.reader.retirement_process_names):
                         _declined(service, declined, seat.name, record, 'a process may hold its files')
                         continue
-                    if stamp != (owned.name, record_fingerprint(record)):
+                    if stamp != ledger.record_stamp(owned):
                         _declined(service, declined, seat.name, record, 'changed since it was accounted')
                         continue
                     checked_bundle = owned.reader.retirement_bundle(seat.home, record, kept)

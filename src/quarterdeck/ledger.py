@@ -560,3 +560,15 @@ def tools_table(ledger: Ledger) -> list[str]:
 def pools_table(ledger: Ledger, ship: Ship | None = None) -> list[str]:
     from .ledger_reading import collect, render
     return render(collect(ledger, ship))
+
+
+def record_stamp(owned) -> tuple:
+    """A record's accounting stamp: its reader's name and the record's file fingerprint, and anything else its reader
+    names as deciding its reading (``stamp_extra``), such as whether a later launch exists that closes a turn the
+    record's own launch left open. Without it a record accounted before that change would never be read again. Here,
+    beside the ledger, so that no reader's identity changes."""
+    from .harness.base import record_fingerprint
+    stamp = (owned.name, record_fingerprint(owned.path))
+    extra = getattr(owned.reader, 'stamp_extra', None)
+    value = extra(owned.path) if callable(extra) else None
+    return stamp if value is None else (*stamp, value)

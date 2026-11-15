@@ -265,7 +265,7 @@ def accounted_history(book, seat):
         for item in owned:
             if item.reader is None or item.transient:
                 return False
-            stamp = item.name, record_fingerprint(item.path)
+            stamp = ledger.record_stamp(item)
             key = reader_keys.get(item.name)
             if key is None:
                 return False
