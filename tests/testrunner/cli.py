@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import argparse
 import math
+import json
 from pathlib import Path
 import sys
 
-from . import clean, resources, run
+from . import clean, resources, run, socket_roots
 from .layout import Refused
 
 
@@ -50,12 +51,21 @@ def parser() -> argparse.ArgumentParser:
     p = verbs.add_parser('retire', help='retire exactly one recorded crashed run, preserving its first result')
     p.add_argument('run', help='the exact recorded run id; never a path, branch, or age filter')
     p.add_argument('--wait', type=float, default=0.0, help='seconds to wait for a busy slot')
+    p = verbs.add_parser('clean-sockets', help='remove empty derived socket roots whose recorded projects are gone')
+    p.add_argument('--root', action='append', type=Path, dest='roots',
+                   help='an exact socket root (repeat for an explicit list); omit to inspect derived names only')
+    p.add_argument('--expect-project', action='append', type=Path, dest='projects',
+                   help='expected recorded project for each explicit --root, in the same order')
     return top
 
 
 def main(argv: list[str] | None, runner_files: list[Path]) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.verb == 'clean-sockets':
+            result = socket_roots.sweep(args.roots, expected_projects=args.projects)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 2 if any(entry['reason'] != 'project-present' for entry in result['kept']) else 0
         if args.verb == 'run':
             if not math.isfinite(args.timeout) or args.timeout <= 0:
                 raise Refused('--timeout must be finite and greater than zero')

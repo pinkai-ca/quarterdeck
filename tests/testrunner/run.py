@@ -458,6 +458,7 @@ class Runner:
             result['outcome']['wrapper_exit'] = CLEANUP_HELD
         report.write(results_fd, result, console, found['failures'])
         cleanup = clean.discard_records(root, run, self.state, cleanup)
+        cleanup['orphan_socket_roots'] = socket_roots.sweep()
         result['drive_writes'] = storage.writes_since(root.project, self.disk_before, self.io_before)
         if cleanup['outcome'] == 'held' and status == 'passed':
             result['outcome']['wrapper_exit'] = CLEANUP_HELD
