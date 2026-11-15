@@ -199,7 +199,9 @@ def pass_once(service) -> str | None:
                 if seat.launched() != proved:
                     downed.append(seat.name)
                     continue
-                seat._up(True)  # qd up's own resume path, without taking the lock this already holds
+                from . import relaunch_intent
+                with relaunch_intent.section(service, seat, 'server-recovery', resume=True):
+                    seat._up(True)  # qd up's own resume path, without taking the lock this already holds
             brought.append(seat)
         except Exception as error:  # every seat gets its one try; the outcome names each failure
             failures.append(f'{seat.name}: {str(error)[:200]}')

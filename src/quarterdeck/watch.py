@@ -522,6 +522,7 @@ class Facts:
     request_waits: list[str] = field(default_factory=list)
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
+    relaunches: list[str] = field(default_factory=list)  # a relaunch a stopped service left unfinished (relaunch_intent)
     retirement: str | None = None
     accounting: str | None = None
     ledger_recovery: list[str] = field(default_factory=list)
@@ -573,6 +574,7 @@ class Facts:
         parts += self.leftover_checks
         parts += self.request_waits
         parts += self.server_recovery
+        parts += self.relaunches
         parts += self.routes
         parts += self.pending
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
@@ -883,7 +885,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     pending_lines += [f"request claimed: {path.name}; inspect requests/ before retrying"
                       for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
-    from . import cascade_runtime, compaction_alert, group_post, ledger_recovery, model_mismatch, structure_outcome
+    from . import cascade_runtime, compaction_alert, group_post, ledger_recovery, model_mismatch, relaunch_intent, structure_outcome
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
@@ -906,6 +908,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         compactions=compactions,
         manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
         server_recovery=server_recovery.status(ship.runtime),
+        relaunches=relaunch_intent.status(ship),
         model_mismatches=model_mismatch.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)],
                                                pending_model=request_queue.pending_model),
         held=held,

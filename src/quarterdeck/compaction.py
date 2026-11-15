@@ -522,8 +522,10 @@ def tick(seat):
                 data['reason'] = 'fresh transition claimed; waiting for proved successor'
                 save(runtime, seat.name, data)
             # Admission is released; later arrivals belong to the successor and are withheld.
-            seat._down()
-            seat._up(resume=False)
+            from . import relaunch_intent
+            with relaunch_intent.section(None, seat, 'compaction', resume=False):  # a stop waits out the down and up
+                seat._down()
+                seat._up(resume=False)
     except (OSError, ShipError) as error:
         with post.admission(runtime, seat.name):
             try:

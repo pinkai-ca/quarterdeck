@@ -271,7 +271,7 @@ class Service:
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice.
         self._drain_between_duties()
-        for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -467,6 +467,12 @@ class Service:
         done = server_recovery.pass_once(self)
         if done and not done.startswith('unknown'):
             self.log('server-recovery', outcome=done)
+
+    def relaunch_intents(self) -> None:
+        """A relaunch a stopped service left between its down and its up: finished once, here, before anything else
+        reads the seat (relaunch_intent)."""
+        from . import relaunch_intent
+        relaunch_intent.finish(self)
 
     def reconcile(self) -> None:
         """Reconcile journals first, then unjournaled attempts through the same fresh receipt rule.
@@ -1287,7 +1293,9 @@ class Service:
                     if self is not None:
                         self.request_wait = (hold.dimension, hold.reason)
                     return None  # deferred-request answers/lifetime are separate; the reason is shared
-        return seat.restart() if resume else seat.fresh()
+        from . import relaunch_intent
+        with relaunch_intent.section(self, seat, 'relaunch', resume=resume):
+            return seat.restart() if resume else seat.fresh()
 
     def control(self, seat: Seat, name: str, value: str) -> str | None:
         """Apply a control by its in-session form, through the door, when the seat is idle."""
@@ -1591,7 +1599,9 @@ class Service:
             with post.reading_pass(store=self.store, attempts=getattr(self, 'attempts', None)):
                 ready = Service._fresh_after_order_ready(self, seat)
             if ready:
-                proof = seat.fresh()  # law: context-is-cache
+                from . import relaunch_intent
+                with relaunch_intent.section(self, seat, 'after-order', resume=False):
+                    proof = seat.fresh()  # law: context-is-cache
                 self.log("fresh", seat=seat.name, proof=proof)
 
     def _fresh_after_order_ready(self, seat) -> bool:
@@ -1877,6 +1887,11 @@ class Service:
         self.read_marks, self.account_errors, self.meters = marks, errors, meters
         return observations, notices, human_readings
 
+    @staticmethod
+    def resumes_on(seat: Seat, pool: str) -> bool:
+        """Whether a move to ``pool`` keeps the conversation, as Seat.failover_to decides: the same program."""
+        return seat.spec.for_pool(pool).harness == seat.spec.harness
+
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""
         for seat in self.resolved_seats():
@@ -1897,7 +1912,9 @@ class Service:
             if target is None:
                 continue  # every pool is walled or unread: a fact the status line shows, not a move
             came_from = seat.pool.name
-            proof = seat.failover_to(target)
+            from . import relaunch_intent
+            with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
+                proof = seat.failover_to(target)
             self.store.new("report", post.SHIP, seat.name, f"moved to pool {target} from {came_from} at its wall")
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
 
@@ -1951,7 +1968,9 @@ class Service:
         if unknown and self.ledger.walled(pool, self.ship, scope=quota.model_scope(seat, pool)):
             return f"{seat.name} not moved: {pool} is walled"
         came_from = seat.pool.name
-        proof = seat.failover_to(pool)
+        from . import relaunch_intent
+        with relaunch_intent.section(self, seat, 'select', resume=lambda: self.resumes_on(seat, pool)):
+            proof = seat.failover_to(pool)
         self.store.new("report", post.SHIP, seat.name, f"moved to pool {pool} from {came_from} by qd set")
         self.log("select", seat=seat.name, pool=pool, came_from=came_from, usage_unknown=unknown, proof=proof)
         note = f"; {pool} usage unknown; moved on the explicit act" if unknown else ""

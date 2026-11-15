@@ -244,11 +244,12 @@ class Stop:
         self.runtime, self.pid, self.lock = runtime, os.getpid(), lock
         self.requested = False
         self.delivering = False
+        self.relaunching = False  # inside a relaunch section (relaunch_intent.section): held like a delivery
         self.owner = None
 
     def signal(self, *_):
         self.requested = True
-        if not self.delivering:
+        if not self.delivering and not self.relaunching:
             raise SystemExit(0)
 
     @contextmanager

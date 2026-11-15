@@ -268,7 +268,9 @@ def _tell(service: Service, seat: Seat, event: dict) -> None:
 def relaunch(service: Service, seat: Seat, events: list[dict], event: dict) -> None:
     _tell(service, seat, event)
     try:
-        proof = seat.fresh()  # law: context-is-cache -- every open message but the refused one, in full
+        from . import relaunch_intent
+        with relaunch_intent.section(service, seat, 'refusal', resume=False):
+            proof = seat.fresh()  # law: context-is-cache -- every open message but the refused one, in full
     except ShipError as error:
         # Held, never retried: the quarantine and the notice stand, and a person or the systems seat starts it fresh.
         event['stage'], event['reason'] = 'held', f'the automatic fresh start failed: {error}'

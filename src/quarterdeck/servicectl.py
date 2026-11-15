@@ -308,8 +308,10 @@ def stop(runtime: Path) -> str:
     owner = shutdown.owner(runtime, pid)
     if owner is not None and shutdown.process_start(pid) != owner["start"]:
         owner = None
+    from . import relaunch_intent
     term_started = time.monotonic()
     extended = shutdown.inflight(runtime, owner) is not None
+    relaunching = bool(relaunch_intent.held_by(runtime, owner))
     for sig, patience, how in ((signal.SIGTERM, shutdown.ORDINARY_GRACE, "stopped"), (signal.SIGKILL, 2.0, "killed")):
         try:
             os.kill(pid, sig)
@@ -318,10 +320,15 @@ def stop(runtime: Path) -> str:
         deadline = time.monotonic() + patience
         if sig == signal.SIGTERM and extended:
             deadline = max(deadline, term_started + shutdown.DELIVERY_GRACE)
+        if sig == signal.SIGTERM and relaunching:
+            deadline = max(deadline, term_started + relaunch_intent.GRACE)
         while time.monotonic() < deadline and locked(runtime):
             if sig == signal.SIGTERM and shutdown.inflight(runtime, owner) is not None:
                 extended = True
                 deadline = max(deadline, term_started + shutdown.DELIVERY_GRACE)
+            if sig == signal.SIGTERM and not relaunching and relaunch_intent.held_by(runtime, owner):
+                relaunching = True  # a relaunch section opened as the signal arrived: it is held as well
+                deadline = max(deadline, term_started + relaunch_intent.GRACE)
             time.sleep(0.05)
         if not locked(runtime):
             # The lock frees as the process closes its files, a moment before the kernel marks it gone: wait for
@@ -334,11 +341,17 @@ def stop(runtime: Path) -> str:
             stopped_beat = read_heartbeat(runtime)
             if stopped_beat is not None and stopped_beat[0] == pid:
                 heartbeat_path(runtime).unlink(missing_ok=True)
-            bound = shutdown.DELIVERY_GRACE if extended else shutdown.ORDINARY_GRACE
+            # A relaunch still open when the service ended: released, logged, and on the line for the next service.
+            released = relaunch_intent.release(runtime, owner) if owner is not None else []
+            bound = max(shutdown.DELIVERY_GRACE if extended else shutdown.ORDINARY_GRACE,
+                        relaunch_intent.GRACE if relaunching else 0)
             return (f"service {how} · pid {pid}"
                     + (f" · it did not answer SIGTERM within {bound:g}s" if how == "killed" else "")
                     + (f" · waited {time.monotonic() - term_started:.2f}s for delivery boundary (limit {shutdown.DELIVERY_GRACE:g}s)"
                        if extended else "")
+                    + (f" · waited {time.monotonic() - term_started:.2f}s for relaunch boundary (limit {relaunch_intent.GRACE:g}s)"
+                       if relaunching and not extended else "")
+                    + (f" · relaunch of {', '.join(released)} left unfinished for the next service" if released else "")
                     + (f" · {detail}" if detail else ""))
     raise ShipError(f"service {pid} still holds {lock_path(runtime)} after SIGKILL")
 
