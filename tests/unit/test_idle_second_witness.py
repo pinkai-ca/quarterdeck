@@ -20,6 +20,7 @@ from quarterdeck import door, idle, inbox_watch, move_hold, person_quiet, quota,
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.types import ActiveTool, State, Tokens, Turn
 from quarterdeck.service import Service
+from quarterdeck.tmux import PrivateTmuxError, TmuxError, TmuxFormatError, TmuxUnanswered
 
 AT = datetime(2032, 4, 5, 6, 7, tzinfo=timezone.utc)
 VERSION = '2.1.317'
@@ -143,6 +144,10 @@ def test_anything_else_the_screen_names_is_work_held_under_its_name(case, bottom
     ('', 'its screen is not the composer at rest'),
     (None, 'its screen is not the composer at rest'),
     (OSError('synthetic unreadable pane'), 'its screen could not be read'),
+    (TmuxError("tmux capture-pane: can't find pane: %pane-fern"), 'its screen could not be read'),
+    (TmuxUnanswered('tmux capture-pane: private server did not answer'), 'its screen could not be read'),
+    (PrivateTmuxError('synthetic private transport refusal'), 'its screen could not be read'),
+    (TmuxFormatError('synthetic pane line not in the format'), 'its screen could not be read'),
 ])
 def test_a_screen_that_does_not_say_settles_nothing_and_the_hold_says_what_it_lacked(case, shown, lacked):  # law: record-first
     built = case(unread(), shown, alone=True)
@@ -161,6 +166,24 @@ def test_an_interruption_on_the_screen_is_not_rest(case):
         assert hold.dimension == 'tools-unknown' and said == 'its screen is not the composer at rest', changed
     assert built.second(screen=resting)[1] is None
     assert built.reads == 0, 'a screen the caller already read is not read again'
+
+
+@pytest.mark.parametrize('error', [TmuxError("tmux capture-pane: can't find pane: %pane-fern"),
+                                   TmuxUnanswered('tmux capture-pane: private server did not answer'),
+                                   OSError('synthetic unreadable pane')])
+def test_a_capture_that_raises_never_leaves_the_proof_and_is_never_rest(case, monkeypatch, error):  # law: record-first
+    """The pane can go between the check and the capture: the tmux wrapper's own error is the record's unknown."""
+    built = case(unread(), error, alone=True)
+    held = idle.Hold('tools-unknown', 'tool state unknown: its screen could not be read')
+    reading = idle.reading(built.seat)
+    assert reading.hold == held and reading.witness == idle.RECORD and reading.state is built.state
+    assert move_hold.reading(built.seat) == 'tool state unknown'
+    assert person_quiet.idle_hold(built.seat, built.state) == held.reason
+    service = built.service(monkeypatch)
+    assert service.relaunch(built.seat, True) is None and service.request_wait == ('tools-unknown', held.reason)
+    assert 'tool state unknown' in service.select(built.seat, 'pool-oak')
+    service.failover()
+    assert built.moved == [], 'no path acted, and none raised'
 
 
 # -- only together with the record ------------------------------------------------------------------------------

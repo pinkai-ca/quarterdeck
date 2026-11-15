@@ -160,6 +160,7 @@ def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
         return state, hold, None  # the record itself must show everything else at rest
     from . import inbox_watch
     from .door import Door
+    from .tmux import TmuxError
 
     def unknown(lacked):
         return state, Hold('tools-unknown', f"{REASONS['tools-unknown']}: {lacked}"), lacked
@@ -171,7 +172,10 @@ def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
             return state, hold, None
         if screen is None:
             screen = Door(seat).screen()
-    except OSError:
+    except (OSError, TmuxError):
+        # The capture goes through the tmux wrapper: a pane gone between the check and the capture, a server that
+        # does not answer or a line it cannot parse is that wrapper's own error. It never leaves the proof and it
+        # is never rest: the record's unknown stands.
         return unknown('its screen could not be read')
     if (screen is None or screen.box != '' or screen.working is not False or screen.queued
             or screen.unknown or screen.interruption or screen.starting or screen.fresh):
