@@ -554,8 +554,14 @@ class Seat:
             if pool is not None and (not self.spec.pool_choices or pool not in self.spec.pools):
                 raise ShipError(f"{self.name}: --pool {pool!r} is not one of its declared choices"
                                 + (f" ({', '.join(self.spec.pools)})" if self.spec.pool_choices else ""))
+            reported = (resume and self.spec.fresh == 'after-order' and not self.is_up
+                        and self._last_delivered_order_reported())
+            if reported:
+                resume = False
+            def proof(text):
+                return text + (' · fresh: its last order is reported' if reported else '')
             if not self.spec.pool_choices or self.is_up:
-                return self._up(resume)
+                return proof(self._up(resume))
             from .recovery import require_clear
             require_clear(self)
             target, why = (pool, 'chosen for this launch by qd up --pool') if pool is not None else self.launch_choice()
@@ -563,7 +569,7 @@ class Seat:
             saved = self._saved_name()
             if target == current and pool is None and why == 'its saved choice':
                 (self.folder / EXPLICIT).unlink(missing_ok=True)
-                return self._up(resume)  # nothing chosen: the launch is as it always was
+                return proof(self._up(resume))  # nothing chosen: the launch is as it always was
             selected = replace(self.spec.for_pool(target), human_session=self.session.human)
             observation = self._observe_selection(selected, self.ship.pool(target))
             same_program = selected.harness == self.spec.harness
@@ -575,10 +581,28 @@ class Seat:
             self.spec = selected
             if not same_program:
                 self.harness = harnesses.get(selected.harness)
-            proof = self._up(resume=resume and same_program, observation=observation)
+            started = proof(self._up(resume=resume and same_program, observation=observation))
             moved = f"{self.name}: launched on {target} ({why})" + (
                 f"; its saved choice was {saved}" if saved is not None and target != saved else "")
-            return moved + '\n' + proof
+            return moved + '\n' + started
+
+    def _last_delivered_order_reported(self) -> bool:
+        """Use the service's open-work reading; an ack is never a closing report.
+
+        Leave the read-only view before launching, just as fresh_after_order does,
+        so the normal fresh carriage reads any newly arrived open messages.
+        """
+        store, attempts = post.Store(self.ship.runtime), post.Attempts(self.ship.runtime)
+        with post.reading_pass(store=store, attempts=attempts):
+            if store.open_for(self.name):  # the same reading as Service._fresh_after_order_ready
+                return False
+            orders = {message.id: message for message in store.for_seat(self.name)
+                      if message.kind == 'order'}
+            latest = {attempt.message: attempt for attempt in attempts.all() if attempt.seat == self.name}
+            delivered = [attempt for message, attempt in latest.items() if message in orders
+                         and attempt.result in ('delivered', 'watch', 'launch')]
+            last = max(delivered, key=lambda attempt: (attempt.when, attempt.message), default=None)
+            return last is not None and store.closing_report(orders[last.message]) is not None
 
     def _accept_pool(self, spec: SeatSpec | None = None, pool: Pool | None = None) -> None:
         selected = spec or self.spec
