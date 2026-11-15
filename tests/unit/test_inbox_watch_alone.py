@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import inbox_watch, post
+from quarterdeck import inbox_watch, post, trusted_files
 from quarterdeck import ship as shipmod
 
 QD = Path(sys.executable).parent / 'qd'  # this checkout's own qd, never an installed copy
@@ -36,10 +36,14 @@ class Case:
         self.ship, self.runtime = ship, ship.runtime
         self.seat = SimpleNamespace(name=SEAT, ship=ship)
         self.started: list[subprocess.Popen] = []
-        folder = self.runtime / 'seats' / SEAT
-        folder.mkdir(parents=True, exist_ok=True)
-        launched = datetime.now(timezone.utc) - timedelta(seconds=60)
-        (folder / 'launch.json').write_text(json.dumps(dict(pid=os.getpid(), at=launched.isoformat())) + '\n')
+        (self.runtime / 'seats' / SEAT).mkdir(parents=True, exist_ok=True)
+        self.launch(datetime.now(timezone.utc) - timedelta(seconds=60))
+
+    def launch(self, at: datetime) -> None:
+        """The launch record, where the service keeps it and trusts it: this test's own process is the program."""
+        record = trusted_files.path(self.runtime, SEAT, trusted_files.LAUNCH)
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps(dict(pid=os.getpid(), at=at.isoformat())) + '\n')
 
     def run(self, argv) -> subprocess.Popen:
         env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
@@ -139,9 +143,7 @@ def test_a_registration_older_than_the_launch_is_not_this_programs_watch(case):
     shell = case.run(['bash', '-c', f'{WATCH}; true'])
     case.registered(shell)
     assert inbox_watch.alone(case.seat) is True
-    later = datetime.now(timezone.utc) + timedelta(seconds=30)
-    (case.runtime / 'seats' / SEAT / 'launch.json').write_text(
-        json.dumps(dict(pid=os.getpid(), at=later.isoformat())) + '\n')
+    case.launch(datetime.now(timezone.utc) + timedelta(seconds=30))
     assert inbox_watch.alone(case.seat) is False, 'a new launch is another binding and another time'
 
 
