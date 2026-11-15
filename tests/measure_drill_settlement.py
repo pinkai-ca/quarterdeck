@@ -23,7 +23,7 @@ from tests.shared_install import shared_wheel  # noqa: F401
 
 PY312 = os.environ.get('DRILL_PYTHON312')
 TRIALS = 8
-LOAD = 8
+LOAD = 32
 
 OBSERVE = r'''
 import collections, json, sys, time
