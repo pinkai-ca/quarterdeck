@@ -179,7 +179,7 @@ class Task:
 
 class BackgroundBash:
     def __init__(self, record: Path | None = None):
-        self.watch_commands = set()
+        self.watch_commands = {'qd inbox --wait'}
         # A Claude record belongs to home/projects/<slug>/<record>.jsonl. Only the
         # framework's fixed seat-home layout supplies its ship; neither the caller's
         # environment nor text inside the command chooses which qd may be a watch.
