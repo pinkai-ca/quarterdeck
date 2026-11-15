@@ -20,6 +20,9 @@ def notice_class(message):
     return None
 
 
+# Assumes one reading thread (the service's own loop). A race here could only
+# repeat a read, never settle wrongly: reuse requires an unchanged stamp.
+# A second reading thread takes a lock first.
 class _LaunchCache:
     def __init__(self):
         self.declarations = {}
