@@ -18,8 +18,8 @@ def test_unverified_publications_keep_alerts_with_explicit_staleness(live, monke
     data = json.loads((ship.runtime / presentation.NAME).read_text())
     data['line'] = 'service ok · 2 blind · worker needs a human'
     if change == 'old':
-        monkeypatch.setattr(presentation.time, 'time_ns', lambda: data['written'] + 16_000_000_000)
-        monkeypatch.setattr(presentation.time, 'monotonic_ns', lambda: data['monotonic'] + 16_000_000_000)
+        monkeypatch.setattr(presentation.time, 'time_ns', lambda: data['written'] + 46_000_000_000)
+        monkeypatch.setattr(presentation.time, 'monotonic_ns', lambda: data['monotonic'] + 46_000_000_000)
     elif change == 'different-owner':
         data['process_start'] = 'different'
     else:
@@ -32,7 +32,7 @@ def test_unverified_publications_keep_alerts_with_explicit_staleness(live, monke
     assert 'status stale:' in line and line.endswith('2 blind · worker needs a human')
     assert line.startswith('service ok')
     if change == 'old':
-        assert 'published 16s ago' in line
+        assert 'published 46s ago' in line
     assert path.read_bytes() == before, 'reading must not renew the publication'
 
 
@@ -139,7 +139,7 @@ def test_malformed_publication_metadata_uses_the_independent_collector(live, mon
 
 
 @pytest.mark.parametrize('collection_age,written_age,plain', [
-    (20, 2, True), (20, 10, True), (20, 10.000000001, False), (50, 30, False)])
+    (20, 2, True), (50, 40, True), (50, 40.000000001, False), (50, 30, True)])
 def test_publication_recency_uses_write_time_instead_of_collection_start(
         live, monkeypatch, collection_age, written_age, plain):
     from quarterdeck import post
@@ -168,13 +168,18 @@ def test_publication_recency_uses_write_time_instead_of_collection_start(
 
 @pytest.mark.parametrize('path_kind', ['bootstrap', 'parser'])
 @pytest.mark.parametrize('busy', [False, True])
-@pytest.mark.parametrize('age_ns', [60_000_000_000, 60_000_000_001, 61_000_000_000])
+@pytest.mark.parametrize('refresh', [30, 45.5])
+@pytest.mark.parametrize('past_bound_ns', [0, 1, 1_000_000_000])
 def test_an_expired_publication_collects_a_newly_waiting_seat(
-        drydock, tmux, monkeypatch, path_kind, busy, age_ns):
+        drydock, tmux, monkeypatch, path_kind, busy, refresh, past_bound_ns):
     import os
     from quarterdeck import post, servicectl, ship as shipmod
     from quarterdeck.tmux import Tmux
+    file = drydock / 'ship.toml'
+    file.write_text(file.read_text().replace('[ship]', f'[ship]\nstatus_refresh={refresh}'))
     ship = shipmod.load(drydock)
+    bound_ns = round(3 * refresh * 1_000_000_000)
+    age_ns = bound_ns + past_bound_ns
     ship.runtime.mkdir(parents=True)
     monkeypatch.setattr(Tmux, 'for_ship', classmethod(lambda cls, current: tmux))
     with servicectl.acquire_lock(ship.runtime):
@@ -185,7 +190,7 @@ def test_an_expired_publication_collects_a_newly_waiting_seat(
         data = json.loads(file.read_text())
         assert 'desk: no watch armed' not in data['line']
         now, mono = presentation.time.time_ns(), presentation.time.monotonic_ns()
-        data.update(wall=now - 80_000_000_000, monotonic=mono - 80_000_000_000,
+        data.update(wall=now - age_ns - 20_000_000_000, monotonic=mono - age_ns - 20_000_000_000,
                     written=now - age_ns)
         file.write_text(json.dumps(data))
         store.new('question', 'operator', 'desk', 'Synthetic input newly waiting for the desk.')
@@ -204,14 +209,14 @@ def test_an_expired_publication_collects_a_newly_waiting_seat(
             monkeypatch.setattr(cli, 'load_ship', lambda args: ship)
             result = cli.cmd_status(SimpleNamespace(line=True, json=False))
             line = result.render(result.data)
-        if age_ns > 60_000_000_000:
+        if past_bound_ns > 0:
             assert calls == [True]
             assert f'publication {age_ns // 1_000_000_000}s old, collected here' in line
             assert 'desk: no watch armed' in line and '1 waiting' in line
             assert 'status stale' not in line
         else:
             assert not calls
-            assert 'status stale: published 60s ago' in line
+            assert f'status stale: published {age_ns // 1_000_000_000}s ago' in line
             assert 'desk: no watch armed' not in line
         assert line.startswith('service busy 20s' if busy else 'service ok')
         assert file.read_text() == json.dumps(data), 'a reading never renews the service publication'
@@ -237,3 +242,71 @@ def test_an_unknown_write_age_collects_instead_of_reusing_without_a_bound(live, 
     monkeypatch.setattr(watch, 'facts', collect)
     assert presentation.command_line(['--ship', str(ship.folder), 'status', '--line']) == facts.line()
     assert calls == [True]
+
+
+@pytest.mark.parametrize('refresh', [5, 45.5, 300])
+@pytest.mark.parametrize('past_bound_ns', [0, 1])
+@pytest.mark.parametrize('path_kind', ['bootstrap', 'parser', 'direct'])
+def test_plain_age_uses_the_ship_refresh_plus_the_collection_allowance(
+        live, monkeypatch, refresh, past_bound_ns, path_kind):
+    from quarterdeck import servicectl, ship as shipmod
+    ship, svc, lock = live
+    ship.file.write_text(ship.file.read_text().replace('[ship]', f'[ship]\nstatus_refresh={refresh}'))
+    ship = shipmod.load(ship.folder)
+    file = ship.runtime / presentation.NAME
+    data = json.loads(file.read_text())
+    now, mono = presentation.time.time_ns(), presentation.time.monotonic_ns()
+    age = round((refresh + servicectl.STALE_SECONDS) * 1_000_000_000) + past_bound_ns
+    data.update(wall=now - age - 20_000_000_000, monotonic=mono - age - 20_000_000_000,
+                written=now - age, ship=presentation.fingerprint(ship.file))
+    file.write_text(json.dumps(data))
+    monkeypatch.setattr(presentation.time, 'time_ns', lambda: now)
+    monkeypatch.setattr(presentation.time, 'monotonic_ns', lambda: mono)
+    # At the minimum interval both bounds are fifteen seconds; past it the
+    # independent collector must win rather than briefly reusing stale text.
+    expired = age > round(3 * refresh * 1_000_000_000)
+    calls = []
+    def collect(*args, **kwargs):
+        calls.append(True)
+        return watch.Facts('ok', 1, 0, 0, needs_human=['new-worker'])
+    monkeypatch.setattr(watch, 'facts', collect if expired else no_collection)
+    if path_kind == 'bootstrap':
+        line = presentation.command_line(['--ship', str(ship.folder), 'status', '--line'])
+    elif path_kind == 'parser':
+        monkeypatch.setattr(cli, 'load_ship', lambda args: ship)
+        result = cli.cmd_status(SimpleNamespace(line=True, json=False))
+        line = result.render(result.data)
+    else:
+        line = presentation.published_line(ship.folder)
+    if expired:
+        if path_kind == 'direct':
+            assert line is None and not calls
+        else:
+            assert calls == [True] and 'new-worker needs a human' in line
+            assert 'publication 15s old, collected here' in line
+    elif past_bound_ns:
+        assert f'status stale: published {age // 1_000_000_000}s ago' in line
+    else:
+        assert line == data['line']
+
+
+@pytest.mark.parametrize('age_seconds', [90, 91])
+def test_an_unreadable_ship_uses_default_bounds_for_the_direct_reader(live, monkeypatch, age_seconds):
+    from quarterdeck import ship as shipmod
+    ship, svc, lock = live
+    file = ship.runtime / presentation.NAME
+    data = json.loads(file.read_text())
+    now, mono = presentation.time.time_ns(), presentation.time.monotonic_ns()
+    data.update(wall=now - 120_000_000_000, monotonic=mono - 120_000_000_000,
+                written=now - age_seconds * 1_000_000_000)
+    file.write_text(json.dumps(data))
+    monkeypatch.setattr(presentation.time, 'time_ns', lambda: now)
+    monkeypatch.setattr(presentation.time, 'monotonic_ns', lambda: mono)
+    def unreadable(folder):
+        raise shipmod.ShipError('synthetic unreadable declaration')
+    monkeypatch.setattr(shipmod, 'load', unreadable)
+    line, age = presentation.published_reading(ship.folder)
+    if age_seconds == 90:
+        assert 'status stale: published 90s ago' in line and age is None
+    else:
+        assert line is None and age == 91

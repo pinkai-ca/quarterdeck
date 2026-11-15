@@ -21,6 +21,8 @@ from pathlib import Path
 RUNTIME = "runtime"
 TICK = 1.0  # the service's default wait after each pass, in seconds
 TICK_BOUNDS = (0.05, 5.0)  # inclusive; the heartbeat stays well inside servicectl's stale age
+STATUS_REFRESH = 30.0  # unchanged status: seconds after collection finishes
+STATUS_REFRESH_BOUNDS = (5.0, 300.0)
 CARRY_BYTES = 100_000  # ship policy, not a provider capacity measurement
 
 
@@ -144,6 +146,7 @@ class Ship:
     kind: str = "crew"  # an office has only the desk and the person's own seats
     forward: dict[str, str] = field(default_factory=dict)
     push_reminder: str | None = None  # the seat ordered to read the hosted runs after pushes of main; [ship] push_reminder
+    status_refresh: float = STATUS_REFRESH  # [ship] status_refresh; file changes still request collection
 
     @property
     def file(self) -> Path:
@@ -339,6 +342,7 @@ def _from_text(text: str, folder: Path) -> Ship:
         groups=groups,
         cascade=declaration(data.get("cascade")),
         tick=_tick(head.get("tick", TICK)),
+        status_refresh=_status_refresh(head.get("status_refresh", STATUS_REFRESH)),
         code=code,
         carry_bytes=_carry_bytes(head.get("carry_bytes", CARRY_BYTES)),
         kind=head.get("kind", "crew"),
@@ -368,6 +372,18 @@ def _carry_bytes(value: object) -> int:
     if type(value) is not int or value <= 0:
         raise ShipError(f"ship.carry_bytes must be a positive integer count of bytes; got {value!r}")
     return value
+
+
+def _status_refresh(value: object) -> float:
+    low, high = STATUS_REFRESH_BOUNDS
+    refused = ShipError(f"ship.status_refresh must be a number of seconds from {low:g} to {high:g}; got {value!r}")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise refused
+    if isinstance(value, int) and not low <= value <= high:
+        raise refused
+    if not math.isfinite(value) or not low <= value <= high:
+        raise refused
+    return float(value)
 
 
 def _tick(value: object) -> float:

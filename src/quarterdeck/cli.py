@@ -686,7 +686,7 @@ def cmd_status(args: argparse.Namespace) -> Reading:
         publication_age = None
         if not getattr(args, 'json', False):
             from .presentation import published_reading
-            line, publication_age = published_reading(ship.folder)
+            line, publication_age = published_reading(ship.folder, status_refresh=ship.status_refresh)
             if line is not None:
                 return Reading(dict(line=line, copy_warning=warning),
                                lambda d: d['line'] + (' · ' + warning if warning else ''))

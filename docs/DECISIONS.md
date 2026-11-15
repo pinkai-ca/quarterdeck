@@ -549,10 +549,15 @@ is not clear. The status line of every ship session needs no door. Tmux draws
 the line and refreshes the line itself, by running `qd status --line`, so a dead
 service never looks like a healthy idle ship. While the service is running, the
 command reads its valid published line. With an ok service lead, a publication
-written no more than ten seconds ago reads plain, however long collection took.
-An older publication, or a busy service, reads stale with its write age for up
-to sixty seconds. Beyond sixty seconds the command collects current facts
-itself and says `publication <age>s old, collected here` in the lead. It also
+written no more than the refresh interval plus ten seconds ago reads plain
+(forty seconds by default), with its collection-start timestamp retained.
+Unchanged inputs refresh thirty seconds after the last collection finishes;
+recorded input changes request a reading at the next cheap check. The ship file
+may set `[ship] status_refresh` from five through three hundred seconds. An older
+publication, or a busy service, reads stale with its write age through three
+times that interval (ninety seconds by default). Beyond that bound the command
+collects current facts itself and says `publication <age>s old, collected here`
+in the lead. It also
 collects the facts itself when the service is down, nothing valid is published,
 or the publication's write age cannot be known. Thus a stopped publisher cannot
 hide a newly waiting alert behind its last line. The line names every withheld or

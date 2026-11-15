@@ -143,7 +143,7 @@ def test_short_passes_keep_the_change_check_deadline_and_periodic_refresh(tmp_pa
     svc.rebind = lambda: None
     svc.structure_passes = SimpleNamespace(begin=lambda: None, finish=lambda: None)
     svc.heartbeat = lambda: None
-    svc.log = lambda *args, **kwargs: pytest.fail(str(kwargs))
+    svc.log = lambda kind, **kwargs: None if kind == 'service-timing' else pytest.fail(str(kwargs))
     now = [1.0]
     monkeypatch.setattr('quarterdeck.service.time.monotonic', lambda: now[0])
     monkeypatch.setattr('quarterdeck.service.ship_file_stamp', lambda ship: None)
@@ -159,17 +159,17 @@ def test_short_passes_keep_the_change_check_deadline_and_periodic_refresh(tmp_pa
     now[0] = 1.8
     svc.status_due()
     assert calls == [1.0], 'an unchanged check is cheap'
-    now[0] = 6.0
+    now[0] = 31.0
     svc.status_due()
-    assert calls == [1.0, 6.0], 'periodic collection refreshes unchanged presentation'
+    assert calls == [1.0, 31.0], 'periodic collection refreshes unchanged presentation'
     svc.tmux.clients_attached = lambda sessions: False
-    now[0] = 12.0
+    now[0] = 62.0
     svc.tick()
-    assert calls == [1.0, 6.0], 'a known no-viewer pass keeps the existing skip'
+    assert calls == [1.0, 31.0], 'a known no-viewer pass keeps the existing skip'
     svc.tmux.clients_attached = lambda sessions: None
-    now[0] = 12.8
+    now[0] = 62.8
     svc.tick()
-    assert calls[-1] == 12.8, 'unknown demand cannot suppress a due collection'
+    assert calls[-1] == 62.8, 'unknown demand cannot suppress a due collection'
 
 
 def test_reader_reuse_refreshes_each_new_view_after_external_changes(tmp_path, monkeypatch):

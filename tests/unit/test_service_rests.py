@@ -25,14 +25,14 @@ def scheduled(tmp_path, monkeypatch):
         service.ledger.close()
 
 
-def test_unchanged_checks_do_not_recollect_and_refresh_within_plain_line_age(scheduled):
+def test_unchanged_checks_wait_thirty_seconds_before_recollecting(scheduled):
     service, clock, published = scheduled
-    for index in range(100):
+    for index in range(310):
         clock[0] = index / 10
         service.status_due()
     assert len(published) == 2
     assert published[0] == 0.0
-    assert 5 <= published[1] < 6 < servicemod.servicectl.STALE_SECONDS
+    assert 30 <= published[1] < 31
 
 
 def test_a_slow_collection_does_not_return_with_an_overdue_deadline(scheduled):
@@ -43,12 +43,33 @@ def test_a_slow_collection_does_not_return_with_an_overdue_deadline(scheduled):
     service.publish_status = collect
     service.status_due()
     assert service.next_status == pytest.approx(3.7)
+    assert service.status_refresh == 33.0, 'the refresh starts when collection finishes'
     for _ in range(50):
         service.status_due()
     assert published == [0.0], 'duties/rest cannot begin back-to-back slow collections'
     clock[0] = 4.0
     service.status_due()
     assert published == [0.0], 'an unchanged hint does not require another full reading'
+    clock[0] = 32.0
+    service.status_due()
+    assert published == [0.0], 'collection duration must not shorten the thirty-second rest'
+    clock[0] = 33.0
+    service.status_due()
+    assert published == [0.0, 33.0]
+
+
+def test_the_service_uses_the_ship_files_refresh_interval(scheduled):
+    service, clock, published = scheduled
+    service.ship.file.write_text('[ship]\ncode="checkout"\nstatus_refresh=45.5\n')
+    service.ship = shipmod.load(service.ship.folder)
+    service.status_due()
+    assert service.status_refresh == 45.5
+    clock[0] = 44.0
+    service.status_due()
+    assert published == [0.0]
+    clock[0] = 45.5
+    service.status_due()
+    assert published == [0.0, 45.5]
 
 
 @pytest.mark.parametrize('change', ['arrival', 'attempt', 'journal', 'seat', 'heartbeat'])

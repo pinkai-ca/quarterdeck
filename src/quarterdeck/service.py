@@ -44,7 +44,6 @@ from .tmux import Tmux, TmuxError, ship_sessions
 
 TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its session may be switched
 STATUS_INTERVAL = 0.7  # cheap change checks; deadlines start after the check/collection finishes
-STATUS_REFRESH = 5.0  # unchanged presentation is refreshed within the ten-second plain-line age
 ACCOUNT_RETRY = 60.0  # unchanged transient source failures, never provider pacing
 QUICK_REQUEST_SECONDS = 0.02
 QUICK_REQUEST_OPERATIONS = 128
@@ -362,7 +361,7 @@ class Service:
                 # remains owed. No read or failed collection renews the rendering.
                 self.status_inputs = inputs
                 finished = time.monotonic()
-                self.status_refresh = finished + max(STATUS_INTERVAL, STATUS_REFRESH - (finished - now))
+                self.status_refresh = finished + self.ship.status_refresh
         except Exception as error:
             self.log('error', step='publish_status', error=repr(error), trace=traceback.format_exc())
         finally:

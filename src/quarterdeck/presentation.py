@@ -7,13 +7,12 @@ from pathlib import Path
 import sys
 import time
 
-from . import copy_state, servicectl
+from . import copy_state, servicectl, ship as shipmod
 from .procstat import EXITED
 
 NAME = 'status-line.json'
 MAX_AGE_NS = 3_000_000_000  # covers long actor duties; independent owner checks still run on every job
 CLOCK_SKEW_NS = 50_000_000
-COLLECT_AFTER_NS = 60_000_000_000
 
 
 def fingerprint(path):
@@ -91,7 +90,7 @@ def published_line(folder):
     return published_reading(folder)[0]
 
 
-def published_reading(folder):
+def published_reading(folder, *, status_refresh=None):
     """Return text and, when a publication expired, its age for the collector's lead.
 
     The lock/heartbeat are read independently even when the publication is old.
@@ -104,6 +103,13 @@ def published_reading(folder):
     lead = service_lead(folder / 'runtime')
     if lead != 'service ok' and not lead.startswith('service busy'):
         return None, None  # a stopped service cannot keep the named waits up to date
+    if status_refresh is None:
+        try:
+            status_refresh = shipmod.load(folder).status_refresh
+        except (shipmod.ShipError, OSError):
+            status_refresh = shipmod.STATUS_REFRESH
+    plain_ns = round((status_refresh + servicectl.STALE_SECONDS) * 1_000_000_000)
+    collect_ns = round(3 * status_refresh * 1_000_000_000)
     try:
         path = folder / 'runtime' / NAME
         if path.stat().st_size > 65536:
@@ -122,9 +128,9 @@ def published_reading(folder):
         age = time.time_ns() - written if written is not None else -1
         if age < 0:
             return None, None  # an undated/reversed clock cannot bound reuse
-        if age > COLLECT_AFTER_NS:
+        if age > collect_ns:
             return None, age // 1_000_000_000
-        if lead == 'service ok' and 0 <= age <= servicectl.STALE_SECONDS * 1_000_000_000:
+        if lead == 'service ok' and 0 <= age <= plain_ns:
             beat = servicectl.read_heartbeat(folder / 'runtime')
             if (beat is not None and beat[0] == data['pid'] and 0 <= beat[1] <= servicectl.STALE_SECONDS
                     and process_start(beat[0]) == data['process_start']
@@ -210,7 +216,7 @@ def command_line(argv):
     if selected.warning or (selected.qd is not None
                             and Path(sys.executable).parent.resolve() != selected.qd.parent.resolve()):
         return None
-    line, publication_age = published_reading(ship.folder)
+    line, publication_age = published_reading(ship.folder, status_refresh=ship.status_refresh)
     if line is not None:
         return line
     from . import watch

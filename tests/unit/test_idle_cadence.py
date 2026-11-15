@@ -66,7 +66,9 @@ def test_known_no_clients_skips_only_presentation_and_unknown_collects(tmp_path,
     assert not collected,'no viewer must not trigger a complete status collection every tick'
     clients[0]=True;clock[0]=.8;svc.tick()
     clients[0]=None;clock[0]=6.0;svc.tick()
-    assert len(collected)==2 and duties==['account']*3
+    assert collected==[.8] and duties==['account']*3, 'unchanged inputs wait thirty seconds'
+    clock[0]=31.0;svc.tick()
+    assert collected==[.8,31.0] and duties==['account']*4, 'unknown demand still permits a due refresh'
     svc.ledger.close()
 
 

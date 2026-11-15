@@ -143,6 +143,10 @@ After that, [How to use it](../README.md#how-to-use-it) has the everyday command
 .venv/bin/qd default mine
 ```
 
+## Status refresh
+
+`status_refresh`, under `[ship]` in `ship.toml`, sets how many seconds the service waits after a status collection finishes before refreshing unchanged inputs. It defaults to thirty seconds and accepts numbers from five through three hundred seconds inclusive. Recorded input changes still request a reading at the next cheap check. The status line reads plain through the interval plus ten seconds from publication, then stale through three times the interval; beyond that it collects current facts itself. At the default these bounds are forty and ninety seconds.
+
 ## Fresh starts
 
 A fresh start gives an agent a new conversation. The agent receives the agent's brief and an index of the agent's open messages, one line for each message, by thread: the messages the agent still has to answer, and the messages the agent sent that still wait for an answer. The index tells the agent to read a thread whole before acting on any message of that thread, and the agent prints the thread with `qd thread <id>`. A handoff is a note that an agent addresses to itself before a fresh start; the agent receives each handoff that is still open in full, ahead of the index.
