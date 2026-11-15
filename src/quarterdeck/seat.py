@@ -828,7 +828,11 @@ class Seat:
         return planned.opening, carriage.carried
 
     def carriage(self, *, resume_id: str | None = None) -> carriagemod.Carriage:
-        """An index of incoming work and outgoing waits; fresh self-handoffs alone are full."""
+        """Index incoming work and outgoing waits; fresh self-handoffs alone are full.
+
+        Closed obligations never return through unread or unconfirmed transport
+        history. Unread answers/reports still arrive, regardless of ancestry.
+        """
         from . import refusal, thread_context, post_threads
 
         store, attempts = post.Store(self.ship.runtime), post.Attempts(self.ship.runtime)
@@ -841,7 +845,11 @@ class Seat:
             latest = {attempt.message: attempt for attempt in history}
             unread = attempts.undelivered(store, self.name, results={key: value.result for key, value in latest.items()}, for_launch=True)
             queued = self._queued_unread(store, attempts)
-            extra = unread + queued
+            def outstanding(message):
+                # law: open-until-closed -- a missing receipt cannot reopen completed work.
+                return message.kind not in ('order', 'question') or store.is_open(message)
+
+            extra = [message for message in (*unread, *queued) if outstanding(message)]
             consumed = self._consumed_messages(store, attempts, resume_id, refused)
             selection = thread_context.select(store, self.name, extra, consumed=consumed, excluded=refused)
             messages = store.all()
@@ -851,7 +859,8 @@ class Seat:
             delivered = {attempt.message for attempt in history if attempt.result in ('delivered', 'watch')}
             queued_ids = {message.id for message in queued}
             unconfirmed = tuple(message for message in store.for_seat(self.name)
-                                if message.kind != 'ack' and message.id not in consumed and message.id not in delivered
+                                if message.kind != 'ack' and outstanding(message)
+                                and message.id not in consumed and message.id not in delivered
                                 and not ((attempt := latest.get(message.id)) is not None
                                          and attempt.result == 'queued' and message.id not in queued_ids))
             rows = post_threads.index_rows(store, selection.roots, (*pending_messages, *unconfirmed), refused, sent,
