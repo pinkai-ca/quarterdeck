@@ -1280,7 +1280,8 @@ class Service:
         """Tell a seat once, through the post, that a relaunch of it stops at its tool state, and what its own
         word does. Where neither its record nor its screen settles what it has running, the seat itself is the
         one that knows: it lets that end or stops it, or it releases it. A report from the ship, never an
-        obligation; one for each request, whether the request still waits or was retired at its turn's end."""
+        obligation; one for each request, whether the request still waits or was retired at its turn's end. It
+        ends by naming that request, so that a reader can tell when the request, and the report with it, is over."""
         wait = getattr(self, 'request_wait', None)
         if (not isinstance(data, dict) or data.get('kind') != 'relaunch' or meta.get('told')
                 or not isinstance(wait, tuple) or wait[0] not in ('tools-unknown', 'tools-pending')
@@ -1290,7 +1291,9 @@ class Service:
         if answer is not None and not (own and answer.startswith('refused:')):
             return  # applied, or refused to another asker, who has the answer
         verb, name = ('restart', 'restart') if data.get('resume') else ('fresh', 'fresh start')
-        word = f'give your own word as the last act of a turn: qd {verb} {seat} --release'
+        request = getattr(self, 'request_path', None)
+        word = (f'give your own word as the last act of a turn: qd {verb} {seat} --release'
+                + (f' · request {request.stem}' if request is not None else ''))
         if answer is not None:
             said = (f'your own {name} was not applied: your turn ended with it held · {wait[1]} · ask again once '
                     f'that has ended; or, losing what you have running, {word}')

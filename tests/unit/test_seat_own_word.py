@@ -120,7 +120,7 @@ def test_the_same_request_without_the_word_is_held_and_the_seat_is_told_once_wha
     assert message.body == (
         'your own fresh start was not applied: your turn ended with it held · tools pending: its screen shows '
         '2 shells in the background · ask again once that has ended; or, losing what you have running, give your '
-        f'own word as the last act of a turn: qd fresh {SEAT} --release')
+        f'own word as the last act of a turn: qd fresh {SEAT} --release · request {path.stem}')
     assert shown.reads == 0, 'no word, no reading of the box for it'
     desk.tick(5)
     assert len(told(desk)) == 1
@@ -137,7 +137,7 @@ def test_a_crew_seats_held_request_waits_and_the_seat_is_told_once_for_that_requ
     assert message.body == (
         f'a restart of this seat, asked by systems-larch, waits · {UNKNOWN.reason} · it applies once that has '
         'ended; to apply it without waiting, losing what you have running, give your own word as the last act of '
-        f'a turn: qd restart {SEAT} --release')
+        f'a turn: qd restart {SEAT} --release · request {path.stem}')
     assert request_queue.metadata(path)['told'] == message.id
     desk.hold, desk.state = None, unread(open_=False, input_at=-5, turns=[turn(-5, -1)], tools=())
     desk.tick(4)
@@ -147,11 +147,11 @@ def test_a_crew_seats_held_request_waits_and_the_seat_is_told_once_for_that_requ
 def test_an_own_crew_request_that_waits_is_told_as_its_own(desk, shown):
     crew(desk)
     desk.hold, desk.state = PENDING, unread(open_=False, input_at=-5, turns=[turn(-5, 3)])
-    ask(desk, release=False, seconds=4)
+    path = ask(desk, release=False, seconds=4)
     desk.tick(5)
     [message] = told(desk)
     assert message.body.startswith('your own fresh start waits · tools pending: ')
-    assert message.body.endswith(f'qd fresh {SEAT} --release')
+    assert message.body.endswith(f'qd fresh {SEAT} --release · request {path.stem}')
 
 
 # -- only the seat's own, and only what it has running ---------------------------------------------------------
