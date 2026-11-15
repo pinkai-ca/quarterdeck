@@ -49,33 +49,66 @@ def opened(paths, process_names=None):
     return False
 
 
+def _listed(runtime) -> dict[str, set[str]]:
+    """Each hand's screening records still in its home (pr_screen); a list that cannot be read lists nothing here:
+    launches of that hand stay fresh, and nothing of it moves early."""
+    listed = {}
+    if runtime is None:
+        return listed  # a stand-in service with no runtime lists nothing
+    try:
+        names = sorted(path.stem for path in (Path(runtime) / pr_screen.ROOT / pr_screen.RECORDS).glob('*.json'))
+    except OSError:
+        return listed
+    for name in names:
+        try:
+            records = set(pr_screen.screening_records(runtime, name))
+        except (OSError, ValueError):
+            continue
+        if records:
+            listed[name] = records
+    return listed
+
+
 def run(service, *, now=None, limit=1):
-    """Move bounded records only between completed accounting jobs, under seat ownership."""
+    """Move bounded records only between completed accounting jobs, under seat ownership.
+
+    A screening launch's record holds an outsider's text (pr_screen), so it goes first: every hand's listed records
+    in one walk, outside the limit and through a catch-up, without the week's wait. Each still waits for its own
+    accounting checkpoint and every other check. Then, at most ``limit`` ordinary records, as before."""
     book = getattr(service, 'ledger', None)
     if book is None:
         return 0
     driver = getattr(service, 'account_driver', None)
-    if book.catching_up() or book.db.in_transaction or driver is not None and driver.active:
-        return 0
+    if book.db.in_transaction or driver is not None and driver.active:
+        return 0  # never while an accounting job is open
+    listed = _listed(getattr(service, 'runtime', None))
+    count = _walk(service, book, now=now, listed=listed, screening=True, limit=None) if listed else 0
+    if book.catching_up() or limit == 0:
+        return count
+    return count + _walk(service, book, now=now, listed=listed, screening=False, limit=limit)
+
+
+def _walk(service, book, *, now, listed, screening, limit):
     cutoff = (time.time() if now is None else now) - WEEK
     keys = reader_stamp.readers()
     count = 0
     for seat in service.resolved_seats():
         if seat.spec.role != 'hand' or seat.session.human:
             continue
+        screened = listed.get(seat.name, set())
+        if screening and not screened:
+            continue
         try:
             with lifecycle.claim(service.runtime, seat.name):
                 launched, current = seat.launched(), seat.record()
-                try:
-                    screened = set(pr_screen.screening_records(service.runtime, seat.name))
-                except (OSError, ValueError):
-                    screened = set()  # unreadable: every launch of the hand starts fresh, and nothing moves early
-                if launched is None or current is None and not screened:
+                if launched is None or current is None and not screening:
                     continue  # the current launch/record is not established; a screening record needs only the launch
                 launch_at = datetime.fromisoformat(launched.at).astimezone(timezone.utc)
                 events = record_owner.events(seat.trusted / trusted_files.LAUNCHES)
                 for owned in record_owner.records(seat):
                     record = owned.path
+                    if (str(record) in screened) != screening:
+                        continue  # each walk takes its own records: the screening ones first, the others after
                     kept = record_location.destination(record)
                     if (owned.reader is None
                             or owned.reason is not None or record == current or kept is None
@@ -83,9 +116,6 @@ def run(service, *, now=None, limit=1):
                         continue
                     if not record.is_relative_to(seat.home):
                         continue
-                    # A screening launch's record holds an outsider's text: it leaves the home as soon as it is
-                    # accounted and closed, without the week's wait (pr_screen); every other check stands.
-                    screening = str(record) in screened
                     joins = [event for event in events if event['record'] == str(record)]
                     if not joins or any((at := datetime.fromisoformat(e['at']).astimezone(timezone.utc))
                                         >= launch_at or not screening and at.timestamp() >= cutoff for e in joins):
@@ -123,8 +153,9 @@ def run(service, *, now=None, limit=1):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     unit.rename(target)  # same runtime/filesystem; DB, WAL and SHM stay together
                     count += 1
-                    service.log('hand-transcript-retired', seat=seat.name, record=str(record))
-                    if count >= limit:
+                    service.log('hand-transcript-retired', seat=seat.name, record=str(record),
+                                **({'screening': True} if screening else {}))
+                    if limit is not None and count >= limit:
                         return count
         except lifecycle.Busy:
             continue
@@ -134,11 +165,17 @@ def run(service, *, now=None, limit=1):
 def due(service):
     if getattr(service, 'ledger', None) is None:
         return
+    driver = getattr(service, 'account_driver', None)
+    if driver is not None and driver.active:
+        return  # retry at the next completed-job boundary, without delaying another five minutes
     now = time.monotonic()
     if now < getattr(service, 'hand_transcripts_due', 0):
+        if _listed(getattr(service, 'runtime', None)):
+            run(service, limit=0)  # a screening record does not wait for the interval: the screening walk alone
         return
-    driver = getattr(service, 'account_driver', None)
-    if service.ledger.catching_up() or driver is not None and driver.active:
-        return  # retry at the next completed-job boundary, without delaying another five minutes
+    if service.ledger.catching_up():
+        if _listed(getattr(service, 'runtime', None)):
+            run(service, limit=0)  # through a catch-up, the screening walk alone
+        return
     service.hand_transcripts_due = now + INTERVAL
     run(service)

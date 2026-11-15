@@ -393,3 +393,56 @@ def test_the_home_sweep_keeps_a_screening_records_whole_unit_for_the_retirement(
             assert w.seat.harness.retirement_bundle(w.seat.home, w.record, record_location.destination(w.record))
     finally:
         w.svc.ledger.close()
+
+
+def screening_beside(w, kind='pi'):
+    """A second earlier launch's record, two minutes old, listed as a screening launch's; accounted."""
+    at = datetime.fromtimestamp(w.now, timezone.utc) - timedelta(minutes=2)
+    record = transcript(w.seat.home, 'screened' if kind == 'pi' else 'data-003', kind, at)
+    with (w.seat.trusted / trusted_files.LAUNCHES).open('a') as stream:  # where the move keeps it
+        stream.write(json.dumps(dict(record=str(record), at=(at - timedelta(seconds=2)).isoformat(), pool='local',
+                                     harness=kind)) + '\n')
+    record_owner.register(w.seat.trusted, record, kind)
+    w.svc.account_records(process_table={})
+    pr_screen.mark_screening(w.svc.runtime, 'hand', [str(record)])
+    return record
+
+
+def test_a_listed_screening_record_moves_ahead_of_an_older_eligible_one_outside_the_limit(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch, 'pi')  # its old record is nine days old: eligible
+    try:
+        screened = screening_beside(w)
+        assert hand_transcripts.run(w.svc, now=w.now, limit=1) == 2, 'the screening walk is outside the limit'
+        moved = [data['record'] for event, data in w.logs if event == 'hand-transcript-retired']
+        assert moved == [str(screened), str(w.record)], 'the screening record first'
+        assert [data.get('screening') for event, data in w.logs if event == 'hand-transcript-retired'] == [True, None]
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_screening_record_moves_through_a_catch_up_and_between_intervals(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch, 'pi')
+    try:
+        screened = screening_beside(w)
+        monkeypatch.setattr(w.svc.ledger, 'catching_up', lambda: True)
+        w.svc.hand_transcripts_due = float('inf')  # the five-minute interval has not come round
+        hand_transcripts.due(w.svc)
+        assert not screened.exists() and w.record.is_file(), 'the screening record alone, at once'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_screening_record_not_yet_accounted_waits_for_that_alone(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch, 'pi')
+    try:
+        screened = screening_beside(w)
+        real = w.svc.ledger.accounted
+        monkeypatch.setattr(w.svc.ledger, 'accounted',
+                            lambda record, checkpoint: record != screened and real(record, checkpoint))
+        hand_transcripts.run(w.svc, now=w.now, limit=0)
+        assert screened.is_file(), 'not yet accounted: it waits'
+        monkeypatch.setattr(w.svc.ledger, 'accounted', real)  # undo() would drop the world's own patches
+        assert hand_transcripts.run(w.svc, now=w.now, limit=0) == 1 and not screened.exists(), 'and for that alone'
+        assert w.record.is_file(), 'limit 0: the screening walk alone' 
+    finally:
+        w.svc.ledger.close()
