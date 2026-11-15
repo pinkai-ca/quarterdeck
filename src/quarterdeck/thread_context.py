@@ -16,6 +16,36 @@ class Entry:
     context_only: bool = False
 
 
+def closed_order_answers(store: post.Store, seat: str) -> frozenset[str]:
+    """Answers below the recipient's reported order are settled carriage history.
+
+    The nearest order owns the answer: a newer open order must not inherit an
+    older order's closure. Missing/cyclic ancestry proves nothing. This is one
+    read-only snapshot, with no receipt written and nothing kept between calls.
+    """
+    with post.reading_pass(store=store):
+        messages = store.all()
+        by_id = {message.id: message for message in messages}
+        settled: dict[str, bool] = {}
+
+        def closed(identifier):
+            trail, seen = [], set()
+            while identifier in by_id and identifier not in settled and identifier not in seen:
+                seen.add(identifier)
+                message = by_id[identifier]
+                if message.kind == 'order':
+                    settled[identifier] = message.to == seat and store.closing_report(message) is not None
+                    break
+                trail.append(identifier)
+                identifier = message.re
+            result = settled.get(identifier, False)
+            settled.update((item, result) for item in trail)
+            return result
+
+        return frozenset(message.id for message in messages
+                         if message.to == seat and message.kind == 'answer' and closed(message.re))
+
+
 def context(message: post.Message) -> str:
     header = (f"qd context > own question to {message.to} · {message.short}"
               " · context only; no delivery or reply requested")
@@ -245,8 +275,8 @@ def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
            consumed: Collection[str] = (), excluded: Collection[str] = ()) -> Selection:
     """Carry open roots and what amends them once, in root/thread order.
 
-    ``consumed`` must describe the actual conversation being resumed, never a
-    retired conversation or launch receipt. A new conversation passes no ids.
+    ``consumed`` describes proved consumption in the resumed conversation or
+    canonical read/closure settlement, never a launch receipt alone.
     Open roots always return, preserving canonical ``Store.is_open`` semantics.
     A root's thread contributes only what amends it (see ``amends``) and the
     open roots inside it; delivered history stays in the inbox and the store.

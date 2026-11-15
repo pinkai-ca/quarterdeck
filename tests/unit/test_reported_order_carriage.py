@@ -48,12 +48,11 @@ def test_open_order_remains_active_despite_ack_or_another_seats_report(setup, re
     assert live['pasted'] == live['submitted'] == 0
 
 
-@pytest.mark.parametrize('kind', ['answer', 'report'])
-def test_unread_non_obligation_still_arrives_once_even_under_a_closed_order(setup, kind):
+def test_unread_report_still_arrives_once_even_under_a_closed_order(setup):
     svc, seat, live, record = setup
     old = svc.store.new('order', 'issuer', seat.name, 'Synthetic old task')
     svc.store.new('report', seat.name, 'issuer', 'Synthetic done', re=old.id)
-    message = svc.store.new(kind, 'issuer', seat.name, 'Synthetic new information', re=old.id)
+    message = svc.store.new('report', 'issuer', seat.name, 'Synthetic new information', re=old.id)
     carriage = seat.carriage()
     assert active(carriage) == [message.id] and carriage.carried == [message]
     attempt = svc.attempts.open(message, seat.name, '%1', 123, seat.launched().at)

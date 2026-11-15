@@ -949,7 +949,8 @@ class Seat:
         """Index incoming work and outgoing waits; fresh self-handoffs alone are full.
 
         Closed obligations never return through unread or unconfirmed transport
-        history. Unread answers/reports still arrive, regardless of ancestry.
+        history. Answers below this recipient's reported order are settled too;
+        other unread answers and reports still arrive as before.
         """
         from . import refusal, thread_context, post_threads
 
@@ -969,6 +970,7 @@ class Seat:
 
             extra = [message for message in (*unread, *queued) if outstanding(message)]
             consumed = self._consumed_messages(store, attempts, resume_id, refused) | store.read_ids(self.name)
+            consumed |= thread_context.closed_order_answers(store, self.name)
             consumed |= frozenset(message.id for message in store.for_seat(self.name)
                                   if message.obligation and not store.is_open(message))
             selection = thread_context.select(store, self.name, extra, consumed=consumed, excluded=refused)
