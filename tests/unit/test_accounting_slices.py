@@ -367,16 +367,34 @@ def test_planner_finishes_while_the_busy_parent_does_not_read_results(tmp_path, 
     driver = Driver()
     monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
     try:
-        driver.step(svc)
-        assert driver.process is not None and not driver.outgoing
         ingested = svc.ledger.ingested(record)
+        pread = os.pread
+        def unread_plan(fd, count, offset):
+            if driver.plan is not None and fd == driver.plan.fileno():
+                return b''
+            return pread(fd, count, offset)
+        # A budgeted step may end before sending even this small request. Let
+        # the service send it, while withholding only its reads of the plan.
+        with monkeypatch.context() as setup:
+            setup.setattr(os, 'pread', unread_plan)
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                driver.step(svc, wait=False)
+                if driver.process is not None and not driver.outgoing:
+                    break
+                time.sleep(0.005)
+            else:
+                pytest.fail('planning request was not fully sent before the parent became busy')
+        assert driver.plan_offset == 0 and not driver.incoming and not driver.ready, 'setup reads no plan'
+        assert svc.ledger.ingested(record) == ingested, 'setup applies no planned writes'
         done = accounting_slices.frame(('done',))
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 60
         # No driver pump, drain or accounting call: another duty owns the parent.
         while time.monotonic() < deadline:
             size = os.fstat(driver.plan.fileno()).st_size
             if size >= len(done) and os.pread(driver.plan.fileno(), len(done), size - len(done)) == done:
                 break
+            time.sleep(0.005)
         else:
             pytest.fail('planning child waited for its busy parent to read output')
         assert size > 65536, 'the plan must exceed a pipe-sized output buffer'
