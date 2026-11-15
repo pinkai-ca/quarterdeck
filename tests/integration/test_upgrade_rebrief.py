@@ -3,7 +3,8 @@
 import json
 import shutil
 
-from quarterdeck import install, post, standing
+from quarterdeck import install, pending, post, standing
+from quarterdeck.door import Door
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
 from quarterdeck.ship import load
@@ -39,6 +40,13 @@ def test_changed_upgrade_brief_uses_door_and_human_watch_and_down_seat_launch(dr
             svc.deliveries()
             cap=next(m for m in notices if m.to=='captain')
             assert svc.attempts.latest()[cap.id]=='delivered'
+            journals, errors = pending.journals(captain)
+            assert not errors
+            proof = next(proof for proof in journals if proof.data.get('message') == cap.id)
+            assert proof.data['phase'] == 'delivered'
+            assert proof.confirmed(captain) == 'delivered'
+            wait_for(lambda: not captain.is_working(), seconds=15)
+            assert Door(captain).reading().open, 'a confirmed upgrade notice leaves no pending door hold'
             office=next(m for m in notices if m.to=='desk')
             assert office.id not in svc.attempts.latest(), 'the human session is reached only through its watch'
             assert desk.harness.screen(tmux.capture(desk.pane().id)).box==''

@@ -102,12 +102,35 @@ def current_identity(seat: Seat) -> dict[str, str | int] | None:
     return bound
 
 
-def inspection(seat: Seat, reason: str, attempts: Sequence[str] = ()) -> str:
-    """Only a generated attempt name supplies a short ID; other basenames remain unknown."""
+def _named_message(name: str, message: object) -> str | None:
+    """A diagnostic reference must agree with the exact attempt basename."""
+    if not isinstance(message, str) or not re.fullmatch(r'(?:ord|rep|que|ans|ack)-[A-Za-z0-9_-]+', message):
+        return None
+    suffix = name.removeprefix(message + '-')
+    return message if suffix != name and re.fullmatch(r'[1-9][0-9]*\.json', suffix) else None
+
+
+def _legacy_message(seat: Seat, name: str) -> str | None:
+    """Read only the named receipt, including one retired at its original citation."""
+    try:
+        path = post.attempt_path(seat.ship.runtime, name)
+        attempt = post.Attempt(**json.loads(post_dir.read_text(path)))
+        if attempt.seat == seat.name:
+            return _named_message(name, attempt.message)
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, ShipError):
+        pass
+    return None
+
+
+def inspection(seat: Seat, reason: str, attempts: Sequence[str] = (), *, message: str | None = None) -> str:
+    """Journal identity first, then its named receipt; old generated basenames remain readable."""
     labels = []
     for name in attempts:
-        match = re.fullmatch(r"((?:ord|rep|que|ans|ack)-[0-9]{8}-[0-9]{4}-.+-[0-9a-f]{4})-[1-9][0-9]*\.json", name)
-        labels.append(post.short_of(match[1]) if match else f"attempt {name!r}: message ID unknown")
+        identifier = _named_message(name, message) if message is not None else _legacy_message(seat, name)
+        if identifier is None and message is None:
+            match = re.fullmatch(r"((?:ord|rep|que|ans|ack)-[0-9]{8}-[0-9]{4}-.+-[0-9a-f]{4})-[1-9][0-9]*\.json", name)
+            identifier = match[1] if match else None
+        labels.append(post.short_of(identifier) if identifier else f"attempt {name!r}: message ID unknown")
     references = ", ".join(dict.fromkeys(labels))
     identity = f"{seat.name}, {references}" if references else seat.name
     return f"{reason} ({identity}); inspect with qd watch {seat.name}"
@@ -162,7 +185,7 @@ class Proof:
         boundary = {"paste_boundary": BEFORE_PASTE} if before_paste else {}
         if before_paste:
             boundary.update(prepare(proof))
-        proof.save(seat=seat.name, identity=bound, at=original,
+        proof.save(seat=seat.name, message=attempt.message, identity=bound, at=original,
                    since=post.now().isoformat(), payload=text, phase="prepared",
                    record=str(record) if record else None, shown=None,
                    attempts=[attempt.path.name], **boundary)
@@ -208,7 +231,7 @@ class Proof:
         phase = self.data["phase"]
 
         def uncertain(reason: str) -> tuple[str, str, bool]:
-            return inspection(seat, reason, self.data["attempts"]), "needs a human", False
+            return inspection(seat, reason, self.data["attempts"], message=self.data.get('message')), "needs a human", False
 
         if self.data.get('paste_clear') and phase!='withheld':
             return uncertain('paste/submit outcome uncertain: owned unsubmitted-paste cleanup unconfirmed; never resent')
@@ -618,7 +641,7 @@ def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.At
     for proof in proofs:
         if any(n not in attempts for n in proof.data["attempts"]):
             paths.update(a.path for a in attempts.values() if a.seat == name)
-            service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending attempt receipt missing; never resent", proof.data["attempts"]))
+            service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending attempt receipt missing; never resent", proof.data["attempts"], message=proof.data.get('message')))
             continue
         from .receipt_refresh import recover, unfinished
         if unfinished(proof.data):
@@ -692,7 +715,7 @@ def explicit_resend(service: Service, seat: Seat, messages: list[post.Message], 
 def detached(seat: Seat) -> list[str]:
     """Old unresolved submissions remain visible without owning a different door."""
     try:
-        return [inspection(seat, "prior launch has an unconfirmed delivery; historical record evidence required", proof.data["attempts"])
+        return [inspection(seat, "prior launch has an unconfirmed delivery; historical record evidence required", proof.data["attempts"], message=proof.data.get('message'))
                 for proof in active(seat) if not proof.same_launch(seat) and proof.data["phase"] != "queued"]
     except (OSError, ValueError, KeyError):
         return [inspection(seat, "pending delivery journal unreadable; never resent")]
