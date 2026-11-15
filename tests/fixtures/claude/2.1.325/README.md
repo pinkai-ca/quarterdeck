@@ -1,5 +1,7 @@
 # Claude Code 2.1.325 record boundaries
 
+`task-stop.jsonl` recreates a subsequent isolated native 2.1.325 capture: an explicit background Bash call returned a task handle, then a TaskStop call naming that handle returned a non-error result with `command`, `message`, `task_id` and `task_type`. Both call and result carried version 2.1.325; the result named the requested task, had `task_type=local_bash`, and its message began `Successfully stopped`. This extends only the measured TaskStop version set. The fixture's dates, identities, commands and text are synthetic. Tests keep mismatched or unmeasured stop versions, mismatched targets, unsupported results and reversed times unknown; a failed stop or a stop of one task cannot end another task.
+
 Captured from a throwaway home on the declared secondary Claude subscription, using a private tmux server and the installed native 2.1.325 executable. No personal or office conversation was opened. The crew's program was not updated.
 
 The four cumulative turn fixtures were produced by these short prompts:

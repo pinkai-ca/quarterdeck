@@ -1,0 +1,8 @@
+{"type":"user","timestamp":"2032-04-05T06:07:00+00:00","version":"2.1.325","message":{"role":"user","content":"synthetic input"}}
+{"type":"assistant","timestamp":"2032-04-05T06:07:01+00:00","version":"2.1.325","message":{"role":"assistant","content":[{"type":"tool_use","id":"call-spruce","name":"Bash","input":{"command":"synthetic command","run_in_background":true}}]}}
+{"type":"user","timestamp":"2032-04-05T06:07:02+00:00","version":"2.1.325","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-spruce","content":"synthetic result","is_error":false}]},"toolUseResult":{"stdout":"","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false,"backgroundTaskId":"task-willow"}}
+{"type":"system","timestamp":"2032-04-05T06:07:03+00:00","version":"2.1.325","subtype":"turn_duration"}
+{"type":"user","timestamp":"2032-04-05T06:07:04+00:00","version":"2.1.325","message":{"role":"user","content":"synthetic stop request"}}
+{"type":"assistant","timestamp":"2032-04-05T06:07:05+00:00","version":"2.1.325","message":{"role":"assistant","content":[{"type":"tool_use","id":"call-maple","name":"TaskStop","input":{"task_id":"task-willow"}}]}}
+{"type":"user","timestamp":"2032-04-05T06:07:06+00:00","version":"2.1.325","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-maple","content":"synthetic stopped result","is_error":false}]},"toolUseResult":{"command":"synthetic command","message":"Successfully stopped synthetic task","task_id":"task-willow","task_type":"local_bash"}}
+{"type":"system","timestamp":"2032-04-05T06:07:07+00:00","version":"2.1.325","subtype":"turn_duration"}

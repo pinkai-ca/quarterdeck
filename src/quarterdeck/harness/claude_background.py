@@ -21,7 +21,7 @@ CALL_VERSIONS = MEASURED | {'2.1.325'}  # root Bash call/result measured on 2.1.
 STATUS_VERSIONS = MEASURED | {'2.1.325'}  # running local_bash restoration measured on 2.1.325 too
 ERROR_VERSIONS = frozenset({VERSION})  # native failed background invocation with a string result
 EXIT_VERSIONS = frozenset({VERSION, '2.1.325'})  # own root/child process death measured across program exit
-STOP_VERSIONS = frozenset({VERSION})  # TaskStop call and result: no 2.1.322 instance measured
+STOP_VERSIONS = frozenset({VERSION, '2.1.325'})  # matching local_bash TaskStop call/result; no 2.1.322 instance measured
 NOTICE_VERSIONS = {  # a task notification, by its carrier
     ('queue-operation', 'enqueue'): MEASURED | {'2.1.325'},
     ('queue-operation', 'remove'): frozenset({VERSION, '2.1.325'}),  # no 2.1.322 remove carrier measured
