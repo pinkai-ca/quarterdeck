@@ -3,7 +3,7 @@ starts anything.
 
 A jailed `qd inbox --wait` cannot open its own delivery attempts; it asks a broker to open them and offer them.
 Only the service brokered, so under setup the wait was never offered its message and the check failed with
-'waiting message has no watch receipt' (a pi desk on a local model, Una's clone of main d314cf86). The check now
+'waiting message has no watch receipt' (a pi desk on a local model, Una's clone of main 5a7c658d). The check now
 serves its own wake seat while no service owns the ship, through the service's own broker pass.
 
 Real bubblewrap and the fake program; no model. The fake program takes the waking line and does nothing with it,

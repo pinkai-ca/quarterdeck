@@ -4,7 +4,7 @@ That earlier copy installs this code: it holds the lock at its old place, runtim
 operation, and starts this code's service with its start token while it holds it. The new service must know that
 holder as the installer that recorded the operation, and start; any other holder of the old place is still refused.
 
-Real install path in a throwaway: an installed copy of the earlier code (6fc647ed, the last commit before the move),
+Real install path in a throwaway: an installed copy of the earlier code (8639dedc, the last commit before the move),
 its own `qd sync` to this tree, with the service running. Fake programs only; no seat is raised.
 """
 
@@ -26,7 +26,7 @@ from tests.integration.test_upgrade_resources import RESOURCE_ROOTS, archive, co
 
 pytest_plugins = ("tests.shared_install",)
 
-EARLIER = '6fc647ed497bd953c4ea63841e54e325e827e885'  # the ship's installed copy when the move first failed to install
+EARLIER = '8639dedcd930c008d00b65a21f1e973939cf2779'  # the ship's installed copy when the move first failed to install
 EARLIER_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade', 'ships/default', 'ships/shuttle',
                  'ships/office')
 

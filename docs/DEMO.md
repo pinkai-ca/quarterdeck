@@ -106,7 +106,7 @@ The engineer's figures are lower bounds, as the ledger marks them: part of its t
 
 ## The recordings on the product page
 
-The product page shows three recordings, one for each kind of ship. In each, one sentence is typed at the desk of an office. The desk passes it to a ship, the ship's crew does the work in its own programs, and the desk says what came of it. Each is one whole run on real programs and real models, recorded in a terminal with asciinema on 14 November 2026, on Quarterdeck at commit `8ab1d2c`. Nothing was typed into any agent's pane but that sentence.
+The product page shows three recordings, one for each kind of ship. In each, one sentence is typed at the desk of an office. The desk passes it to a ship, the ship's crew does the work in its own programs, and the desk says what came of it. Each is one whole run on real programs and real models, recorded in a terminal with asciinema on 14 November 2026, on Quarterdeck at commit `0895228`. Nothing was typed into any agent's pane but that sentence.
 
 Each recording can be watched in three views, Web, Portrait and Desktop: 112 by 46 characters, 80 by 71, and 225 by 63 with the office beside the ship. A view is a recording of its own run, made at that size, so the three views of one ship differ in what the crew said and did. Every recording is cut to about a minute, and the page marks, at every moment, how much faster than recorded it is playing.
 

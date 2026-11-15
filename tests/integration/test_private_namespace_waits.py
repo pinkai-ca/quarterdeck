@@ -140,7 +140,7 @@ def readers_taking_turns(tmux, seconds, lease=.05, count=2):
 
 
 def test_readers_taking_turns_do_not_starve_a_fresh_start(drydock, tmux):
-    """The red on 005a163: shared leases overlapping one another kept the lock shared for the whole budget, so the
+    """The red on 0ad797d: shared leases overlapping one another kept the lock shared for the whole budget, so the
     drill's fresh start found it never free and its retirement failed busy, though no read was slow."""
     ship = shipmod.load(drydock)
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
