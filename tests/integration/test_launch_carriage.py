@@ -95,10 +95,32 @@ def words(seat: seatmod.Seat) -> list[str]:
 
 def jail_words(seat: seatmod.Seat) -> list[str]:
     """The jail's own words, from bwrap to its "--": the launch's environment words before it name a fresh
-    private TMUX_TMPDIR every launch."""
+    private TMUX_TMPDIR every launch.
+
+    The covers and the socket masks are left out: a test-run folder or another ship's runtime inside a folder the jail
+    binds back is covered, and a listening socket in sight is masked, as the machine holds them at each launch; a whole
+    run's other tests make such folders and sockets (a CI-layout run makes its .testruns in the checkout the jail
+    binds). Every other word is compared."""
     found = words(seat)
     start = next(index for index, word in enumerate(found) if Path(word).name == "bwrap")
-    return found[start:found.index("--")]
+    jail = found[start:found.index("--")]
+    kept, index = [], 0
+    while index < len(jail):
+        if jail[index] == "--size" and jail[index + 2:index + 3] == ["--tmpfs"] and is_cover(Path(jail[index + 3]), seat):
+            index += 4
+            continue
+        if jail[index:index + 2] == ["--ro-bind", "/dev/null"]:  # a socket mask: the sockets listening at that launch
+            index += 3
+            continue
+        kept.append(jail[index])
+        index += 1
+    return kept
+
+
+def is_cover(path: Path, seat: seatmod.Seat) -> bool:
+    """A tmpfs over a test-run folder, or over a ship runtime other than this seat's own."""
+    return path.name == ".testruns" or (path.name == "runtime" and (path.parent / "ship.toml").is_file()
+                                        and path != seat.ship.runtime)
 
 
 def start(way: str, seat: seatmod.Seat, ship: shipmod.Ship, tmux: Tmux, post_threads) -> tuple[str, int]:
@@ -313,7 +335,16 @@ def test_a_jailed_seat_reads_its_own_file_and_no_other_seats_with_no_mount_added
     first_input(captain)
     captain.down()
     store.new("order", "captain", "captain", body("self handoff", 150000), subject="Self handoff")
-    captain.up(resume=False)
+    from quarterdeck import standing
+    runs = standing.PROJECT_DIR / ".testruns"  # as a whole run's CI-layout test makes it, between two launches
+    made = not runs.exists()
+    if made:
+        runs.mkdir()
+    try:
+        captain.up(resume=False)
+    finally:
+        if made:
+            runs.rmdir()
     long_mounts = jail_words(captain)
     assert long_mounts == short_mounts, "the jail is the same: no mount is added for the file"
     path = carried_file(first_input(captain, 0))
