@@ -1,6 +1,6 @@
 """One inventory supplies each seat's active planning rows; writers still reread."""
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 import json
 from types import SimpleNamespace
 
@@ -35,7 +35,7 @@ def test_one_inventory_is_partitioned_by_owner_and_active_location(tmp_path, mon
     declared = dict.fromkeys(('working', 'uncertain', 'busy'))
     def seat(name):
         if name == 'uncertain':
-            raise SelectionError('synthetic selection not ready')
+            raise SelectionError(name, 'synthetic selection not ready')
         return SimpleNamespace(name=name)
     def reconcile(service, subject, known, *, latest):
         claimed.append(subject.name)
