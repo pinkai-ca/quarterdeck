@@ -655,6 +655,42 @@ def test_a_listed_pi_screening_record_cut_mid_turn_retires_once_its_cut_turn_is_
         w.svc.ledger.close()
 
 
+def turn_rows(w, record):
+    """The ledger's rows for this record's turns: index, end, written tokens, cost and tool calls."""
+    return w.svc.ledger.db.execute('SELECT turn, ended, written, cost, tool_calls FROM turns WHERE record = ? ORDER BY turn',
+                                   (str(record),)).fetchall()
+
+
+@pytest.mark.parametrize('kind', ['pi', 'opencode'])
+def test_a_counted_cut_turn_stays_in_the_ledger_while_its_seat_is_down_and_after_it_is_up_again(
+        tmp_path, monkeypatch, kind):
+    """The down-flip: a seat's down removes its trusted launch record (seat._finish_retirement), so while it is down
+    no launch reads as ended, the record's stamp turns back and the record is read once more with its cut turn open.
+    The ledger keeps the turn it counted; up again, the turn reads closed and is counted once, as before."""
+    w = world(tmp_path, monkeypatch, kind)
+    try:
+        if kind == 'pi':
+            record = pi_cut_mid_turn(w)
+            later = lambda: pi_launch(w, before=[w.record, record])
+        else:
+            record = cut_mid_turn(w, listed=False)
+            later = lambda: trusted_launch(w, 3)
+        counted = turn_rows(w, record)
+        assert len(counted) == 1 and w.svc.ledger.ingested(record) == 1, 'the cut turn is counted'
+        owned = lambda: next(o for o in record_owner.records(w.seat) if o.path == record)
+        assert ledger.record_stamp(owned())[2:] == (['later-launch', True],)
+        (w.seat.trusted / trusted_files.LAUNCH).unlink()  # the seat's down, as seat._finish_retirement does
+        assert ledger.record_stamp(owned())[2:] == (['later-launch', False],), 'the stamp turns back: read once more'
+        assert w.seat.harness.read(record)[0].turn_open is True, 'while down, the cut turn reads open again'
+        w.svc.account_records(process_table={})
+        assert w.svc.ledger.ingested(record) == 1 and turn_rows(w, record) == counted, 'kept while down'
+        later()  # up again: a later launch
+        w.svc.account_records(process_table={})
+        assert w.svc.ledger.ingested(record) == 1 and turn_rows(w, record) == counted, 'counted once, unchanged'
+    finally:
+        w.svc.ledger.close()
+
+
 def test_a_screening_record_leaves_even_before_the_next_launch_has_a_record(tmp_path, monkeypatch):
     w = world(tmp_path, monkeypatch, 'pi', age=timedelta(minutes=2))
     try:
