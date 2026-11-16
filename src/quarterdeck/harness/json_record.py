@@ -229,11 +229,22 @@ class RecordReader:
         return cls.read(record)[1]
 
 
+def ended_at_limit(reasons, ended) -> bool | None:
+    """Whether the latest of ``ended`` turns stopped at the output limit, by its kept end reason; None when the reader
+    has no measured form, no turn has ended, or the turn kept no reason."""
+    if reasons is None or not ended or ended[-1].end_reason is None:
+        return None
+    return ended[-1].end_reason in reasons
+
+
 class JsonLinesReader(RecordReader):
     """The shared walk, tool lifetime and live state of a JSON-lines conversation."""
 
     kinds: tuple[str, ...] = ()  # format-identification markers, not an exhaustive native row taxonomy
     label: str = "program"
+    # The native end reasons that mean the program's output limit, as measured in real records; None: not measured,
+    # so whether a turn stopped there is unknown.
+    limit_reasons: frozenset[str] | None = None
 
     @classmethod
     def identifies(cls, entry: dict) -> bool:
@@ -344,4 +355,5 @@ class JsonLinesReader(RecordReader):
                      active_tools=tuple(ActiveTool(name, self.live_tool_starts.get(call))
                                         for call, name in self.live_tools.items()),
                      queue_error=self.queue_error,
-                     failure=self.turns[-1].failure if self.open is None and self.turns else None)
+                     failure=self.turns[-1].failure if self.open is None and self.turns else None,
+                     ended_at_limit=ended_at_limit(self.limit_reasons, self.turns if self.open is None else ()))

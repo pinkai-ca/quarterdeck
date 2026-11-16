@@ -103,6 +103,10 @@ Model identity is adapter-owned: Codex folds case only, pi/OpenCode use literal 
 
 For relaunch admission only, Claude Code 2.1.317 can set aside a background Bash task whose known start predates this launch and whose sole later evidence is the measured single-shell resume-stopped notice. Other versions, delegated/current tasks, unknown starts or other later evidence remain unknown. This launch-scoped view does not change accounting, status, controls or ordinary moves.
 
+### A turn stopped at the output limit
+
+Each reader says whether a seat's latest ended turn stopped at its program's output limit (`State.ended_at_limit`), in the forms measured in real crew records on 15 November: pi's `stopReason` `length` (123 such messages) and OpenCode's `finish` `length` (14). Claude's records showed no `max_tokens` stop, and Codex's rollouts and Grok's updates no limit form at all: for those it is unknown (`None`), never guessed. Such a turn may have written nothing, and its seat then sits idle with its order open. While its last turn stopped so, no turn runs and an order of its own is open, the status line says `<seat>: its last turn stopped at its output limit with an order open`, and its alarm goes once to the systems seats (`output_limit`, channel `output-limit`); both clear when a new turn starts or the order closes. Nothing is typed into the seat: a systems seat nudges it or starts it fresh. A seat in a human's session is not read for it, since an automatic reading never opens the person's conversation. This is apart from the automatic recovery below, which is for proved reasoning-only stops alone.
+
 ### Thinking exhaustion
 
 Automatic recovery is restricted to proved nonhuman Qwen3.8-27B configurations on OpenCode 1.19.5 or pi 0.74.2, with exact launch/configuration evidence. Version prefixes, unknown plugins/budgets or missing compatible native off mode grant no recovery. Endpoint `output` is a positive response allowance below context, default at most 8192 and one quarter of context with a 1024 floor; server limits remain independent.

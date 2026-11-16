@@ -30,7 +30,8 @@ LAUNCHES = 'record-launches.jsonl'
 COMPACTION = 'compaction.json'
 REFUSAL = 'refusal.json'
 ALARMS = ('human-alert.json', 'unconfirmed-delivery-alert.json', 'selection-alert.json', 'manual-fresh-alert.json',
-          'write-bound-floor-alert.json', 'jail-sweep-alert.json')  # every journal of alarms.FILES
+          'write-bound-floor-alert.json', 'jail-sweep-alert.json',
+          'output-limit-alert.json')  # every journal of alarms.FILES
 RETIRING = 'retiring.json'
 REFUSED_RELAUNCH = 'relaunch-refused.json'  # a relaunch refused while the old program was ending, until up succeeds
 MOVE_HOLD = 'move-hold.json'

@@ -525,6 +525,7 @@ class Facts:
     compactions: list[str] = field(default_factory=list)
     held: list[str] = field(default_factory=list)
     turn_errors: list[str] = field(default_factory=list)
+    output_limits: list[str] = field(default_factory=list)  # a seat stopped at its output limit with an order open
     group_held: list[str] = field(default_factory=list)
     drop_held: list[str] = field(default_factory=list)  # a refused post drop: the folder is named
     cascade_held: list[str] = field(default_factory=list)
@@ -577,6 +578,7 @@ class Facts:
         parts += self.manual_fresh
         parts += self.model_mismatches
         parts += self.turn_errors
+        parts += self.output_limits
         parts += self.sign_in_failures
         parts += self.pane_obstructions
         parts += self.post_held
@@ -873,7 +875,7 @@ _CREW_STEPS = (('pending', POST), ('unresolved', SLOW), ('ending', SLOW), ('laun
                ('obstruction', POST), ('compaction', SLOW), ('route', SLOW), ('queue', SLOW), ('door', DOOR),
                ('detached', POST))
 _SEAT_LISTS = ('waiting', 'needs_human', 'unarmed', 'pending', 'routes', 'unknown', 'queue_unknown', 'compactions',
-               'turn_errors', 'sign_in_failures', 'ending', 'pane_obstructions', 'seat_holds')
+               'turn_errors', 'output_limits', 'sign_in_failures', 'ending', 'pane_obstructions', 'seat_holds')
 
 
 @dataclass
@@ -936,6 +938,9 @@ def _run_step(step: str, seat, ctx: dict, store, attempts, latest) -> _Step:
             if not ctx.get('authentication') and (reason := failure_obstruction(seat, store)):
                 ops.append(('turn_errors', f"{name}: {reason}", 'append'))  # law: nothing-waits-silently
                 ops.append(('needs_human', name, 'append'))
+            from .output_limit import line as output_limit_line
+            if stopped := output_limit_line(seat, store):
+                ops.append(('output_limits', stopped, 'append'))  # law: nothing-waits-silently
         elif step == 'compaction':
             from .compaction import status as compaction_status
             if detail := compaction_status(seat, alerts_only=True):

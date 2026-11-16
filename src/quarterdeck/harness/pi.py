@@ -105,6 +105,7 @@ def _compaction_row(entry):
 class _Reader(JsonLinesReader):
     kinds = ('session', 'message', 'model_change', 'thinking_level_change')
     label = "pi"
+    limit_reasons = frozenset({"length"})  # measured on 15 Nov: 123 of pi's ended assistant messages in crew records
 
     @classmethod
     def read_snapshot(cls, record, snapshot):

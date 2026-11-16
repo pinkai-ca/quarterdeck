@@ -17,13 +17,14 @@ from ..pricing import amount
 from .costs import CostStep, costed, model_name
 from .base import Input, RecordError, State, Tokens, ToolCall, Turn
 from .sqlite_snapshot import snapshot
-from .json_record import RecordReader
+from .json_record import RecordReader, ended_at_limit
 from .types import CappedGeneration
 
 DATA_PREFIX = "data-"
 RECORD = Path("opencode") / "opencode.db"
 RUNNING = {"pending", "running"}
 ENDS_TURN = ("stop", "length", "content-filter")
+LIMIT_REASONS = frozenset({"length"})  # measured on 15 Nov: 14 of OpenCode's ended assistant messages in crew records
 ABORTED = "MessageAbortedError"  # the program's name for an interrupted step, as the pinned 1.19.5 record shows
 
 
@@ -212,7 +213,8 @@ class _Session:
                                for _, parts in steps for p in parts)  # model output; no proof of its absence is recorded
                 failure = TurnFailure(words(detail), ended, (self.inputs[-1],), True if activity else None, 'program error')
             self.turns.append(costed(Turn(index, at, ended, text, reply, model, tokens, tuple(tools), timed=timed,
-                                          cost_steps=tuple(costs), failure=failure)))
+                                          cost_steps=tuple(costs), failure=failure,
+                                          end_reason=_text(last.get("finish")) if completed else None)))
             if completed:
                 self.completed_turns.append(self.turns[-1])
         else:
@@ -281,7 +283,8 @@ class _Reader(RecordReader):
                      completed_turns=tuple(active.completed_turns), pending_tools=self.pending_tools,
                      conversation=self.session, input_id=self.input_id, work_id=self.work_id,
                      capped=self.capped if not active.open and not active.queued and self.pending_tools == () else None,
-                     failure=active.turns[-1].failure if not active.open and active.turns else None)
+                     failure=active.turns[-1].failure if not active.open and active.turns else None,
+                     ended_at_limit=ended_at_limit(LIMIT_REASONS, active.turns if not active.open else ()))
 
 
 def _generation(rows, root):

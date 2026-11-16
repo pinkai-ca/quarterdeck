@@ -218,6 +218,9 @@ class State:
     queue_error: str | None = None  # queued is candidate history, not proved membership, when unresolved
     failure: TurnFailure | None = None  # latest ended turn only; cleared by a new native turn
     active_tools: tuple[ActiveTool, ...] = ()  # observed active subset, including across accounting boundaries
+    # The latest ended turn stopped at the program's output limit: True or False where the reader has measured its
+    # program's form (pi's stopReason, OpenCode's finish, both 'length'); None where it has not, never guessed.
+    ended_at_limit: bool | None = None
 
 
 @dataclass(frozen=True)
