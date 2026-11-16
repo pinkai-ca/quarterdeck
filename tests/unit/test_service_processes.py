@@ -1,16 +1,21 @@
 """Private service scope readings after a lock owner has exited."""
 
+import os
+import select
+import signal
+
 import pytest
 
-from quarterdeck import service_processes as scopes, servicectl
+from quarterdeck import service_processes as scopes, servicectl, shutdown
 from tests.unit.test_stop_owner_lifetime import stand_in, stopping_clock
 
 
-def proc(root, pid, *, session=301, group=301, start="700", state="S", unit=None):
+def proc(root, pid, *, session=301, group=301, start="700", state="S", unit=None, parent=1, name="synthetic"):
     folder = root / str(pid)
     folder.mkdir(parents=True, exist_ok=True)
-    fields = [state, "1", str(group), str(session), *(["0"] * 15), start]
+    fields = [state, str(parent), str(group), str(session), *(["0"] * 15), start]
     (folder / "stat").write_text(f"{pid} (synthetic service) " + " ".join(fields) + "\n")
+    (folder / "comm").write_text(name + "\n")
     if unit is not None:
         (folder / "cgroup").write_text(f"0::/user.slice/{unit}\n")
 
@@ -90,3 +95,69 @@ def test_the_owned_process_group_is_available_when_the_session_is_not_owned(tmp_
     bound = scopes.capture(301, "700")
     assert bound.read() == {301: "700", 302: "701"}
     assert "process group 301" in bound.proof and "cgroup unavailable" in bound.proof
+
+
+def test_a_tmux_server_in_the_cgroup_is_left_with_everything_under_it(tmp_path, monkeypatch):
+    root, groups = tmp_path / "proc", tmp_path / "groups"
+    unit = "qd-service-synthetic-00000004.scope"
+    folder = groups / "user.slice" / unit
+    folder.mkdir(parents=True)
+    (folder / "cgroup.procs").write_text("301\n302\n303\n304\n305\n")
+    (folder / "cgroup.events").write_text("populated 1\n")
+    proc(root, 301, unit=unit)
+    proc(root, 302, start="702", unit=unit, name="tmux: server")
+    proc(root, 303, start="703", unit=unit, parent=302)  # a pane
+    proc(root, 304, start="704", unit=unit, parent=303)  # the pane's program
+    proc(root, 305, start="705", unit=unit)  # a plain detached member
+    monkeypatch.setattr(scopes, "PROC", root)
+    monkeypatch.setattr(scopes, "CGROUPS", groups)
+    bound = scopes.capture(301, "700")
+    assert bound.read() == {301: "700", 305: "705"}
+    assert bound.servers == {302: "702"}
+    assert bound.spared() == "a tmux server is in the service's scope (pid 302); left running with its panes"
+
+
+def _end(pid, start):
+    """Teardown of a stand-in this test started: by its exit event, the timeout only a guard."""
+    if shutdown.process_gone(dict(pid=pid, start=start)):
+        return
+    try:
+        descriptor = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return
+    try:
+        if not shutdown.process_gone(dict(pid=pid, start=start)):
+            os.kill(pid, signal.SIGKILL)
+            assert select.select([descriptor], [], [], 20)[0]
+    finally:
+        os.close(descriptor)
+
+
+def test_the_stop_leaves_a_tmux_server_in_its_scope_and_ends_a_plain_detached_member(tmp_path, monkeypatch):
+    with stand_in(tmp_path, response="exit", detach=("plain", "server")) as (runtime, child):
+        plain = int(child.stdout.readline())
+        server, pane = map(int, child.stdout.readline().split())
+        members = {pid: shutdown.process_start(pid) for pid in (plain, server, pane)}
+        send = os.kill
+        try:
+            assert (scopes.PROC / str(server) / "comm").read_text() == "tmux: server\n"
+            assert all(os.getsid(pid) == child.pid for pid in members), "each is in the owner's session"
+            parent = {pid: int((scopes.PROC / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[1])
+                      for pid in members}
+            assert parent[plain] != child.pid and parent[server] != child.pid, "detached, not in its tree"
+            assert parent[pane] == server
+            child.descendants[plain] = members[plain]  # the one the stop may signal besides its owner
+            stopping_clock(monkeypatch, child, response="exit")
+            result = servicectl.stop(runtime)
+            assert result.startswith("service stopped")
+            assert "its remaining children were killed" in result
+            assert (f"a tmux server is in the service's scope (pid {server}); left running with its panes"
+                    in result)
+            assert shutdown.process_gone(dict(pid=plain, start=members[plain]))
+            assert not shutdown.process_gone(dict(pid=server, start=members[server]))
+            assert not shutdown.process_gone(dict(pid=pane, start=members[pane]))
+            assert child.poll() == 0 and not servicectl.locked(runtime)
+        finally:
+            monkeypatch.setattr(os, "kill", send)
+            for pid in (server, pane, plain):
+                _end(pid, members[pid])

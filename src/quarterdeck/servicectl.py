@@ -489,7 +489,7 @@ def stop(runtime: Path) -> str:
         def observe(found):
             known.update(found)
             stop_barrier.retain(runtime, known)
-        write_bound.kill(known, observe=observe)
+        write_bound.kill(known, observe=observe, spare=service_processes.server)  # never a tmux server's panes
 
     previous = stop_barrier.read(runtime)
     if previous is not None:
@@ -518,7 +518,7 @@ def stop(runtime: Path) -> str:
                 raise ShipError(f'earlier service exit cannot be confirmed: {stop_barrier.names(previous)}')
             stop_barrier.require_clear(runtime)
             return (f"service killed · earlier stop's tree confirmed ended: {stop_barrier.names(previous)}"
-                    f" · {bound.proof}")
+                    f" · {bound.proof}" + (f" · {bound.spared()}" if bound.servers else ""))
         stop_barrier.require_clear(runtime)
     if not alive(runtime):
         remove_heartbeat(runtime)
@@ -539,7 +539,7 @@ def stop(runtime: Path) -> str:
         owner = None
     known = {pid: start} if start is not None else {}
     try:
-        known.update(write_bound.tree(pid, start))
+        known.update(write_bound.tree(pid, start, spare=service_processes.server))
     except OSError as error:
         raise ShipError(f"service {pid} tree cannot be read ({type(error).__name__}); exit cannot be confirmed") from None
     stop_barrier.retain(runtime, known)
@@ -620,6 +620,7 @@ def stop(runtime: Path) -> str:
                         relaunch_intent.GRACE if relaunching else 0)
             return (f"service {how} · pid {pid}"
                     + f" · {process_scope.proof}"
+                    + (f" · {process_scope.spared()}" if process_scope.servers else "")
                     + (" · it released its lock but did not exit; killed with its tree" if released_alive else "")
                     + (" · its remaining children were killed" if remaining and not released_alive and how == "stopped" else "")
                     + (f" · it did not answer SIGTERM within {bound:g}s" if how == "killed" else "")

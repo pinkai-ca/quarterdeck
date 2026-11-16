@@ -46,7 +46,13 @@ with scope:
         else:
             print('ignored', flush=True)
     signal.signal(signal.SIGTERM, term)
+    # Detached members of the scope, each started by a program that exits before the owner reports it holds.
+    detached = [subprocess.run([sys.executable, '-c', sys.argv[5], kind], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
+                for kind in sys.argv[6:]]
     print('held', flush=True)
+    for line in detached:
+        print(line, flush=True)
     # The owner remains alive across lock release until the driver explicitly
     # permits exit. A signal interrupt or a stdio EOF cannot end this wait.
     assert os.read(exit_event, 1) == b'x'
@@ -55,13 +61,34 @@ lock.close()
 '''
 
 
+DETACH = r'''
+import os, subprocess, sys
+MEMBER = """
+import os, signal, subprocess, sys
+if sys.argv[1] == 'server':
+    with open('/proc/self/comm', 'w') as stream:
+        stream.write('tmux: server')  # only its name: never a real tmux
+    pane = subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()'], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(os.getpid(), pane.pid, flush=True)
+else:
+    print(os.getpid(), flush=True)
+signal.pause()
+"""
+member = subprocess.Popen([sys.executable, '-c', MEMBER, sys.argv[1]], stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+print(member.stdout.readline().strip(), flush=True)
+'''
+
+
 @contextmanager
-def stand_in(tmp_path, *, place="current", response="ignore"):
+def stand_in(tmp_path, *, place="current", response="ignore", detach=()):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     exit_read, exit_write = os.pipe()
     try:
-        child = subprocess.Popen([sys.executable, "-c", HOLDER, str(runtime), place, response, str(exit_read)],
+        child = subprocess.Popen([sys.executable, "-c", HOLDER, str(runtime), place, response, str(exit_read),
+                                  DETACH, *detach],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, pass_fds=(exit_read,),
                                  stderr=subprocess.PIPE, text=True, start_new_session=True)
     except BaseException:

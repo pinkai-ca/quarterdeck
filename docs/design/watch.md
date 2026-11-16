@@ -65,7 +65,10 @@ again, including its child cgroups. If that cgroup cannot be read, it uses only
 the private session or process group bound while the owner was alive. The proof
 line names this re-read and any fallback. A newly discovered process enters the
 barrier before the same tree kill runs; an incomplete reading or an unconfirmed
-exit refuses the stop. The proof line names any forced end. An atomic stop barrier under
+exit refuses the stop. A tmux server in that scope (a process named `tmux: server`,
+which a seat's relaunch from the service may start there) and every process under it
+are never ended: the proof line names it as left running with its panes, and the stop
+is judged on the rest. The proof line names any forced end. An atomic stop barrier under
 `runtime/locks` retains all observed identities before they are signalled. A
 start, including copy recovery, refuses while any recorded exit is unconfirmed
 or the barrier is unreadable, and names that hold in status. Once every identity

@@ -1,6 +1,6 @@
 """Re-read a service's private process scope after its owner has released the lock."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
@@ -10,6 +10,7 @@ from .procstat import EXITED
 PROC = Path('/proc')
 CGROUPS = Path('/sys/fs/cgroup')
 UNIT = re.compile(r'qd-service-[A-Za-z0-9_.-]+-[0-9a-f]{8}\.scope')
+SERVER = 'tmux: server'  # the name tmux gives its server process
 
 
 class Uncertain(OSError):
@@ -34,6 +35,37 @@ def cgroup(pid):
     raise ValueError('not a private service cgroup')
 
 
+def server(pid):
+    """A tmux server, by the name it gives itself: a service stop never ends one, nor anything under it.
+
+    A seat's relaunch can start the ship's tmux server from the service, and then it is born in the service's
+    scope; ending it would end every seat's pane and jail with the service."""
+    try:
+        return (PROC / str(pid) / 'comm').read_text().rstrip('\n') == SERVER
+    except (OSError, UnicodeError):
+        return False
+
+
+def descendants(roots):
+    """The roots and every process now under them, by parent pid."""
+    children = {}
+    for entry in PROC.iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            parent = int((entry / 'stat').read_text().rsplit(')', 1)[1].split()[1])
+        except (OSError, IndexError, ValueError, UnicodeError):
+            continue
+        children.setdefault(parent, []).append(int(entry.name))
+    found, stack = set(), list(roots)
+    while stack:
+        pid = stack.pop()
+        if pid not in found:
+            found.add(pid)
+            stack += children.get(pid, [])
+    return found
+
+
 def mark(path):
     info = path.stat()
     return info.st_dev, info.st_ino
@@ -47,8 +79,27 @@ class Scope:
     folder: Path | None
     identity: tuple[int, int] | None
     proof: str = ''
+    servers: dict = field(default_factory=dict)  # tmux servers met in the scope, left running with their panes
 
     def read(self):
+        """The scope's live processes, less any tmux server in it and every process under one."""
+        found = self.members()
+        roots = [pid for pid in found if server(pid)]
+        if not roots:
+            return found
+        for pid in roots:
+            self.servers.setdefault(pid, found[pid])
+        spared = descendants(roots)
+        return {pid: start for pid, start in found.items() if pid not in spared}
+
+    def spared(self):
+        """The stop line's words for the tmux servers it left running; empty when the scope held none."""
+        if not self.servers:
+            return ''
+        pids = ', '.join(map(str, sorted(self.servers)))
+        return f"a tmux server is in the service's scope (pid {pids}); left running with its panes"
+
+    def members(self):
         if self.folder is not None:
             try:
                 found = self.read_cgroup()

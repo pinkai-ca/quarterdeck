@@ -213,7 +213,8 @@ def _is_jail_of(argv: list[str], folders: set[str]) -> bool:
     return any(folder in folders for folder in _binds(argv))
 
 
-def _descendants(processes, roots) -> list[int]:
+def _descendants(processes, roots, spare=None) -> list[int]:
+    """The roots and every process under them; a process ``spare`` names is left out with all under it."""
     children: dict[int, list[int]] = {}
     for pid, row in processes.items():
         children.setdefault(row[0], []).append(pid)
@@ -221,7 +222,7 @@ def _descendants(processes, roots) -> list[int]:
     stack = list(roots)
     while stack:
         pid = stack.pop()
-        if pid in found:
+        if pid in found or (spare is not None and spare(pid)):
             continue
         found[pid] = None
         stack += children.get(pid, [])
@@ -473,24 +474,25 @@ def place(runtime, reading: Reading, who: str = 'the write-bound alarm', floor: 
     return data
 
 
-def kill(pids: dict[int, str], rounds: int = 10, *, observe=None) -> list[int]:
+def kill(pids: dict[int, str], rounds: int = 10, *, observe=None, spare=None) -> list[int]:
     """SIGSTOP the tree so nothing in it forks on, then SIGKILL every process of it; the pids signalled.
 
     A process is known by its pid and its start, so a pid the system gave to another process since is never
     signalled; a child is taken into the tree only while its parent is still the known process.
     ``observe``, when supplied, records every identity seen before that round's signals.
+    ``spare``, when supplied, names a process that is never taken into the tree, nor anything under it.
     """
     known = dict(pids)
     signalled: list[int] = []
     for _ in range(rounds):
         processes = _processes()
         live = [pid for pid, start in known.items() if pid in processes and processes[pid][1] == start]
-        for child in _descendants(processes, live):
+        for child in _descendants(processes, live, spare):
             known.setdefault(child, processes[child][1])
         if observe is not None:
             observe(dict(known))
         live = [pid for pid, start in known.items() if pid in processes and processes[pid][1] == start
-                and _state(pid) not in ('Z', 'X')]
+                and _state(pid) not in ('Z', 'X') and (spare is None or not spare(pid))]
         if not live:
             break
         for sig in (signal.SIGSTOP, signal.SIGKILL):
@@ -504,7 +506,7 @@ def kill(pids: dict[int, str], rounds: int = 10, *, observe=None) -> list[int]:
     return signalled
 
 
-def tree(pid: int, start: str | None, processes=None) -> dict[int, str]:
+def tree(pid: int, start: str | None, processes=None, *, spare=None) -> dict[int, str]:
     """A process and its descendants now, each by pid and start; empty when that process is not the one named.
 
     Read-only: what kill() is then given, so the stop of a seat ends the same tree the write-bound alarm would.
@@ -512,7 +514,7 @@ def tree(pid: int, start: str | None, processes=None) -> dict[int, str]:
     processes = _processes() if processes is None else processes
     if pid not in processes or start is None or processes[pid][1] != start:
         return {}
-    return {child: processes[child][1] for child in _descendants(processes, [pid])}
+    return {child: processes[child][1] for child in _descendants(processes, [pid], spare)}
 
 
 def alive(pids: dict[int, str]) -> dict[int, str]:
