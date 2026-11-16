@@ -249,8 +249,12 @@ class Tmux:
     never starts or stops it (``-N``).
     """
 
-    def __init__(self, socket: str | None = None, *, _owned=None, ship: bool = False, legacy: bool = False):
+    def __init__(self, socket: str | None = None, *, _owned=None, ship: bool = False, legacy: bool = False,
+                 name: str | None = None):
         self.socket = socket
+        self.name = name  # the ship's, for its own server's scope
+        self._runner = subprocess.run  # every command of _run goes through it
+        self.started_server = None  # where this object started the ship's own server, once it has
         self._buffers = itertools.count()
         self._owned = _owned
         self.held = None
@@ -306,7 +310,7 @@ class Tmux:
         """
         own = ship_socket(ship)
         _check_socket_path(own, create=False)
-        server = cls(str(own), ship=True)
+        server = cls(str(own), ship=True, name=getattr(ship, 'name', None))
         named = os.environ.get("QD_TMUX_SOCKET")
         if named and named != str(own):
             if private_endpoint(named):
@@ -399,15 +403,35 @@ class Tmux:
             # a declared environment, never the caller's: every seat it runs inherits it.
             from .jail_environment import unjailed_environment
             env = unjailed_environment(os.environ)
+            if not self._answers(env):
+                command = self._in_own_scope(command, env)
         bound = PRIVATE_COMMAND_WAIT if self._private else None
         try:
-            done = subprocess.run(command, input=stdin, capture_output=True, text=True, env=env, timeout=bound)
+            done = self._runner(command, input=stdin, capture_output=True, text=True, env=env, timeout=bound)
         except subprocess.TimeoutExpired:
             raise TmuxUnanswered(f"tmux {args[0]}: private server did not answer within {bound:g} s "
                                  "(stopped or hung); retained") from None
         if done.returncode:
             raise TmuxError(f"tmux {args[0]}: {done.stderr.strip() or done.returncode}")
         return done.stdout
+
+    def _answers(self, env) -> bool:
+        """Whether the ship's own server already runs: only a new-session that starts it is given a scope."""
+        done = self._runner(['tmux', '-u', '-S', self.socket, '-N', 'list-sessions'], capture_output=True, text=True,
+                            env=env)
+        return done.returncode == 0
+
+    def _in_own_scope(self, command: list[str], env) -> list[str]:
+        """The ship's server is born in a transient systemd scope of its own, as the service is, never in its caller's
+        (the service's own scope, or a person's pane): it belongs to neither, and outlives both. Where systemd-run or
+        the user's manager cannot be reached, it starts in the caller's scope as before, and says so."""
+        from types import SimpleNamespace
+        from .servicectl import scope_unit, scoped
+        scope, why = scoped(SimpleNamespace(name=self.name or 'ship'),
+                            env, kind='tmux-server', run=self._runner)
+        self.started_server = (f"tmux server started in its own scope {scope_unit(scope)}" if scope else
+                               f"tmux server started in the caller's scope: {why}")
+        return [*scope, *command]
 
     # -- sessions and windows ----------------------------------------------------------
 

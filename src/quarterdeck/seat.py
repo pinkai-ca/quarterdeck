@@ -1009,6 +1009,8 @@ class Seat:
         jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
         notice_note = f" · {launched.notice}" if launched.notice else ""
         unchecked_note = f" · {effort_note}" if effort_note else ""
+        if started := getattr(self, "server_started", None):
+            unchecked_note += f" · {started}"
         return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · provider {providers.display(pool.provider)} · pool {pool.name} · {how}{carried_note}{jail_note}{notice_note}{unchecked_note}"
 
     def _resume_id(self) -> str | None:
@@ -1190,6 +1192,7 @@ class Seat:
         return socket if socket and Path(socket).is_absolute() else None
 
     def _open_window(self, argv: list[str], env: dict[str, str], path: str) -> Pane:
+        self.server_started = None  # where this launch started the ship's own tmux server, if it did
         session = self.session
         ship_env = {"QD_SHIP": str(self.ship.folder)}
         if split := (self.tmux.split(self.ship) if getattr(self.tmux, "ship", False) else []):
@@ -1201,7 +1204,10 @@ class Seat:
                 raise ShipError(f"tmux session {session.title!r} belongs to {owner or 'another server user'}; "
                                 f"give this ship's session another title")
         else:
+            if getattr(self.tmux, "ship", False):
+                self.tmux.started_server = None  # this launch's own start of the ship's server, and no earlier one
             self.tmux.new_session(session.title, env=ship_env)
+            self.server_started = getattr(self.tmux, "started_server", None)
             status = shlex.join([str(qd_bin() / "qd"), "--ship", str(self.ship.folder), "status", "--line"])
             self.tmux.status_line(session.title, status)
         from .jail_environment import without_refused

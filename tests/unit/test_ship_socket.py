@@ -171,7 +171,10 @@ def test_the_socket_folder_is_made_private_when_the_server_starts(tmp_path, monk
     with pytest.raises(TmuxError):
         Tmux(str(path), ship=True).new_session("Crew")
     assert (path.parent.stat().st_mode & 0o777) == 0o700
-    assert seen[0][:4] == ["tmux", "-u", "-S", str(path)] and "new-session" in seen[0]
+    # The server is first asked whether it runs; the one that starts it is the new-session.
+    assert seen[0] == ["tmux", "-u", "-S", str(path), "-N", "list-sessions"]
+    [started] = [command for command in seen if "new-session" in command]
+    assert started[started.index("tmux"):][:4] == ["tmux", "-u", "-S", str(path)]
 
 
 def test_a_symlinked_socket_folder_is_refused_and_left_alone(tmp_path, monkeypatch):

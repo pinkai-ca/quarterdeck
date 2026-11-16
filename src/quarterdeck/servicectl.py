@@ -451,10 +451,14 @@ def scope_unit(scope: list[str]) -> str:
     return next(word.partition('=')[2] for word in scope if word.startswith('--unit='))
 
 
-def scoped(ship: Ship, environment: dict[str, str]) -> tuple[list[str], str | None]:
+def scoped(ship: Ship, environment: dict[str, str], *, kind: str = 'service',
+           run=subprocess.run) -> tuple[list[str], str | None]:
     """The words that start the service in a transient systemd scope of its own, named for the ship, so that a stop of
     the caller's scope (the pane that ran qd sync) leaves it running; or none, and why, where the user's service
-    manager cannot be reached. systemd-run --scope execs the command itself, so the pid is the service's."""
+    manager cannot be reached. systemd-run --scope execs the command itself, so the pid is the service's.
+
+    ``kind`` names what starts there: 'service', or 'tmux-server' for the ship's own terminal server, whose unit
+    (qd-tmux-server-*) the stop's service pattern never matches. ``run`` runs the probe."""
     import re
     import secrets
     import shutil
@@ -463,12 +467,13 @@ def scoped(ship: Ship, environment: dict[str, str]) -> tuple[list[str], str | No
     if program is None:
         return [], f"{SCOPE_PROGRAM} is absent"
     name = re.sub(r'[^A-Za-z0-9_.-]', '_', ship.name)[:64] or 'ship'
-    unit = f"qd-service-{name}-{secrets.token_hex(4)}.scope"
+    unit = f"qd-{kind}-{name}-{secrets.token_hex(4)}.scope"
+    what = 'tmux server' if kind == 'tmux-server' else kind
     words = [program, '--user', '--scope', '--quiet', '--collect', '--expand-environment=no', f'--unit={unit}',
-             f'--description=qd service of {ship.name}', '--']
+             f'--description=qd {what} of {ship.name}', '--']
     try:
-        probe = subprocess.run([*words[:-1], f'--unit=qd-probe-{name}-{secrets.token_hex(4)}.scope', '--', 'true'],
-                               env=environment, capture_output=True, text=True, timeout=10)
+        probe = run([*words[:-1], f'--unit=qd-probe-{name}-{secrets.token_hex(4)}.scope', '--', 'true'],
+                    env=environment, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired) as error:
         return [], f"{SCOPE_PROGRAM} --user did not answer ({type(error).__name__})"
     if probe.returncode:
