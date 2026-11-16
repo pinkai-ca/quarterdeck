@@ -30,8 +30,9 @@ change. So this program, not a seat:
    pattern's name or the hand, the file's number and kind, the line numbers), quoting nothing the outsider wrote.
    Unread is neither: a request the reading itself failed on (the network, GitHub's rate limit, an answer not in its
    shape, a push while it was read) is read by no seat and tried again at the next run, and after UNREAD_REPORT_RUNS
-   runs in a row at one head the desk is told, once, that it is unread, never that it is flagged. What the outsider
-   made too big to read (a listing past its pages, a page past its size) is flagged;
+   runs in a row at one head the desk is told, once, that it is unread, never that it is flagged. What the outsider's
+   own bytes cause is flagged: a listing past its pages, a page past its size, and text that will not decode
+   (UNDECODABLE); only GitHub's own envelope out of shape stays unread;
 7. a new push to a pull request starts it over.
 
 THE RESIDUAL, in the design's own words: a pull request written to fool both local models and to miss the search
@@ -90,6 +91,18 @@ class Unread(ScreenError):
     def __init__(self, message: str, kind: str):
         super().__init__(message)
         self.kind = kind
+
+
+UNDECODABLE = 'content could not be decoded'  # what the outsider wrote is not text: flagged, never unread
+
+
+def _encoded(value: str) -> bytes:
+    """The outsider's text as UTF-8, or a flag: a string the JSON could carry but UTF-8 cannot (a lone surrogate) is
+    the outsider's bytes, never a failure of the reading."""
+    try:
+        return value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise ScreenError(UNDECODABLE) from None
 
 
 UNREAD_REPORT_RUNS = 3  # unread for this many runs in a row, at one head: the desk is told, once, that it is unread
@@ -1308,7 +1321,7 @@ class GitHubSource:
             opener = urllib.request.urlopen
         self.opener = opener
 
-    def _get(self, path: str):
+    def _get(self, path: str, *, outsider: bool = False):
         import urllib.request
         items, url = [], f'{self.API}/repos/{self.repository}{path}'
         separator = '&' if '?' in url else '?'
@@ -1320,7 +1333,12 @@ class GitHubSource:
                 raw = response.read(PAGE_BYTES + 1)
             if len(raw) > PAGE_BYTES:  # read whole or not at all: a page cut short is never judged
                 raise ScreenError(f'{path.split("?")[0]}: a page is over {PAGE_BYTES} bytes')
-            data = json.loads(raw)
+            try:
+                data = json.loads(raw)
+            except UnicodeDecodeError:
+                if outsider:  # the request's own text in the answer will not decode: the outsider's bytes, flagged
+                    raise ScreenError(UNDECODABLE) from None
+                raise  # the listing of open requests: no one request to blame, the pass fails as before
             if not isinstance(data, list):
                 return data
             items += data
@@ -1334,20 +1352,23 @@ class GitHubSource:
         return [PullRequest(int(item['number']), str(item['head']['sha'])) for item in self._get('/pulls?state=open')]
 
     def texts(self, pr: PullRequest) -> list[Text]:
-        item = self._get(f'/pulls/{pr.number}')
+        # Every page here holds what the outsider wrote. A string of theirs that will not decode, in the answer's
+        # bytes or as UTF-8, is flagged (UNDECODABLE); GitHub's envelope out of shape stays unread.
+        item = self._get(f'/pulls/{pr.number}', outsider=True)
         if str(item['head']['sha']) != pr.head:
             raise Unread(f'pull request {pr.number} moved while it was read; the next pass starts it over', 'moved')
-        texts = [Text('title', 0, (item.get('title') or '').encode()),
-                 Text('description', 0, (item.get('body') or '').encode())]
-        comments = [*self._get(f'/issues/{pr.number}/comments'), *self._get(f'/pulls/{pr.number}/comments'),
-                    *self._get(f'/pulls/{pr.number}/reviews')]
-        texts += [Text('comment', i + 1, (c.get('body') or '').encode()) for i, c in enumerate(comments)]
-        texts += [Text('commit message', i + 1, (c.get('commit', {}).get('message') or '').encode())
-                  for i, c in enumerate(self._get(f'/pulls/{pr.number}/commits'))]
-        for i, f in enumerate(self._get(f'/pulls/{pr.number}/files'), 1):
+        texts = [Text('title', 0, _encoded(item.get('title') or '')),
+                 Text('description', 0, _encoded(item.get('body') or ''))]
+        comments = [*self._get(f'/issues/{pr.number}/comments', outsider=True),
+                    *self._get(f'/pulls/{pr.number}/comments', outsider=True),
+                    *self._get(f'/pulls/{pr.number}/reviews', outsider=True)]
+        texts += [Text('comment', i + 1, _encoded(c.get('body') or '')) for i, c in enumerate(comments)]
+        texts += [Text('commit message', i + 1, _encoded(c.get('commit', {}).get('message') or ''))
+                  for i, c in enumerate(self._get(f'/pulls/{pr.number}/commits', outsider=True))]
+        for i, f in enumerate(self._get(f'/pulls/{pr.number}/files', outsider=True), 1):
             patch = f.get('patch')
             # No patch: a binary file, or one GitHub will not show; it goes to no hand and is flagged.
-            texts.append(Text('file', i, patch.encode() if isinstance(patch, str) else b'\x00', f.get('filename')))
+            texts.append(Text('file', i, _encoded(patch) if isinstance(patch, str) else b'\x00', f.get('filename')))
         return texts
 
 

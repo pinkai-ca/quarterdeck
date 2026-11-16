@@ -1216,3 +1216,37 @@ def test_a_request_github_answers_beyond_the_limits_is_flagged_alone(world, monk
     assert by_number[4]['outcome'] == 'flagged' and by_number[4]['findings'][0].startswith('not screened: ')
     assert by_number[4]['findings'][0].endswith('; flagged'), 'what the outsider made is a finding, not unread'
     assert ('over 4096 bytes' if limit == 'a page over its size' else 'more than 3 pages') in by_number[4]['findings'][0]
+
+
+@pytest.mark.parametrize('content', ['a lone surrogate in the title', 'bytes that will not decode in a patch',
+                                     'a lone surrogate in a comment', 'a lone surrogate in a commit message'])
+def test_the_outsiders_text_that_will_not_decode_is_flagged_never_unread(world, content):
+    pages = {'/pulls': [dict(number=3, head=dict(sha='03' * 20)), dict(number=4, head=dict(sha='04' * 20))]}
+    pages.update(github_request(3, [dict(filename='docs/a.md', patch='@@ -1 +1 @@\n-recieve\n+receive\n')]))
+    pages.update(github_request(4, [dict(filename='docs/b.md', patch='@@ -1 +1 @@\n-a\n+b\n')]))
+    if content == 'a lone surrogate in the title':  # json.dumps writes it as the escape \ud800, which JSON allows
+        pages['/pulls/4']['title'] = 'A fix \ud800 here'
+    elif content == 'bytes that will not decode in a patch':
+        pages['/pulls/4/files'] = b'[{"filename": "docs/b.md", "patch": "@@ -1 +1 @@\\n+\xff\xfe"}]'
+    elif content == 'a lone surrogate in a comment':
+        pages['/issues/4/comments'] = [dict(body='Thanks \udc80')]
+    else:
+        pages['/pulls/4/commits'] = [dict(commit=dict(message='Fix \ud83d'))]
+    source = pr_screen.GitHubSource('owner/project', opener=GitHub(pages), page=100)
+    results, outcomes = run_source(world, source)
+    by_number = {result['number']: result for result in results}
+    assert by_number[3]['outcome'] == 'clean', 'the other request is screened'
+    assert by_number[4]['outcome'] == 'flagged'
+    assert by_number[4]['findings'] == ['not screened: content could not be decoded; flagged']
+    assert [told for told in outcomes.told if told[1] == 4] == [('desk', 4, by_number[4]['findings'])]
+    assert json.loads((world[0] / 'pr-screen' / 'state.json').read_text())['4']['outcome'] == 'flagged'
+
+
+def test_githubs_own_answer_out_of_shape_stays_unread(world):
+    pages = {'/pulls': [dict(number=4, head=dict(sha='04' * 20))]}
+    pages.update(github_request(4, []))
+    pages['/pulls/4/commits'] = b'<html>a page of GitHub\'s, not JSON</html>'
+    source = pr_screen.GitHubSource('owner/project', opener=GitHub(pages), page=100)
+    results, outcomes = run_source(world, source)
+    assert (results[0]['outcome'], results[0]['kind']) == ('unread', 'unexpected answer')
+    assert not outcomes.told
