@@ -68,7 +68,7 @@ def test_an_unreadable_cgroup_uses_the_owned_session_and_labels_the_stop(tmp_pat
         stopping_clock(monkeypatch, child, response="exit")
         proof = servicectl.stop(runtime)
         assert proof.startswith("service stopped")
-        assert f"processes re-read: session {child.pid} (service cgroup unavailable)" in proof
+        assert f"processes re-read: session {child.pid} (service cgroup unavailable: PermissionError)" in proof
         assert child.poll() == 0
 
 
@@ -84,7 +84,7 @@ def test_a_cgroup_that_becomes_unreadable_falls_back_to_the_captured_session(tmp
     monkeypatch.setattr(scopes, "CGROUPS", groups)
     bound = scopes.capture(301, "700")
     assert bound.read() == {301: "700", 302: "701"}
-    assert "session 301" in bound.proof and "cgroup unavailable" in bound.proof
+    assert bound.proof == "processes re-read: session 301 (service cgroup unavailable: FileNotFoundError)"
 
 
 def test_the_owned_process_group_is_available_when_the_session_is_not_owned(tmp_path, monkeypatch):
@@ -94,7 +94,7 @@ def test_the_owned_process_group_is_available_when_the_session_is_not_owned(tmp_
     monkeypatch.setattr(scopes, "PROC", root)
     bound = scopes.capture(301, "700")
     assert bound.read() == {301: "700", 302: "701"}
-    assert "process group 301" in bound.proof and "cgroup unavailable" in bound.proof
+    assert bound.proof == "processes re-read: process group 301 (service cgroup unavailable: FileNotFoundError)"
 
 
 def test_a_tmux_server_in_the_cgroup_is_left_with_everything_under_it(tmp_path, monkeypatch):
@@ -194,3 +194,74 @@ def test_an_owner_that_ends_before_its_scope_is_bound_is_stopped_not_refused(tmp
         result = servicectl.stop(runtime)
         assert result.startswith(f"service stopped · pid {child.pid} · its owner ended before its scope was read")
         assert signals == [] and child.poll() == 0 and not servicectl.locked(runtime)
+
+
+def vanishing(monkeypatch, pid):
+    """``pid`` is listed, then reaped between its /proc file's open and read: the kernel answers ESRCH there."""
+    real = scopes.process
+
+    def process(asked):
+        if asked == pid:
+            raise ProcessLookupError(3, "No such process")
+        return real(asked)
+    monkeypatch.setattr(scopes, "process", process)
+
+
+def cgroup_scope(tmp_path, monkeypatch, unit, members):
+    root, groups = tmp_path / "proc", tmp_path / "groups"
+    folder = groups / "user.slice" / unit
+    folder.mkdir(parents=True)
+    (folder / "cgroup.procs").write_text("".join(f"{pid}\n" for pid in members))
+    (folder / "cgroup.events").write_text("populated 1\n")
+    for pid, start in members.items():
+        proc(root, pid, start=start, unit=unit)
+    monkeypatch.setattr(scopes, "PROC", root)
+    monkeypatch.setattr(scopes, "CGROUPS", groups)
+    return scopes.capture(301, "700")
+
+
+def test_a_member_that_vanishes_between_the_listing_and_its_read_is_skipped_as_ended(tmp_path, monkeypatch):
+    unit = "qd-service-synthetic-00000005.scope"
+    bound = cgroup_scope(tmp_path, monkeypatch, unit, {301: "700", 302: "701"})
+    vanishing(monkeypatch, 302)
+    assert bound.read() == {301: "700"}
+    assert bound.proof == f"processes re-read: cgroup {unit}", "the cgroup itself was read: no fallback"
+
+
+def test_a_member_that_vanishes_during_the_fallback_read_is_skipped_as_ended(tmp_path, monkeypatch):
+    root = tmp_path / "proc"
+    proc(root, 301)
+    proc(root, 302, start="701")
+    proc(root, 303, start="702")
+    monkeypatch.setattr(scopes, "PROC", root)
+    bound = scopes.capture(301, "700")
+    vanishing(monkeypatch, 302)
+    assert bound.read() == {301: "700", 303: "702"}
+    assert bound.proof == "processes re-read: session 301 (service cgroup unavailable: FileNotFoundError)"
+
+
+def test_a_membership_that_changes_mid_read_in_any_other_way_stays_uncertain(tmp_path, monkeypatch):
+    bound = cgroup_scope(tmp_path, monkeypatch, "qd-service-synthetic-00000006.scope", {301: "700", 302: "701"})
+    real, seen = scopes.process, []
+
+    def reused(asked):
+        found = real(asked)
+        if asked == 302:
+            seen.append(asked)
+            if len(seen) == 2:
+                return found[0], "799", *found[2:]  # the pid read again names another process
+        return found
+    monkeypatch.setattr(scopes, "process", reused)
+    with pytest.raises(scopes.Uncertain, match="membership changed during reading"):
+        bound.read()
+
+
+def test_a_pid_reaped_mid_read_is_gone_for_the_stop(monkeypatch):
+    class Reaped:
+        def __init__(self, *_):
+            pass
+
+        def read_text(self):
+            raise ProcessLookupError(3, "No such process")
+    monkeypatch.setattr(shutdown, "Path", Reaped)
+    assert shutdown.process_gone(dict(pid=302, start="701"))

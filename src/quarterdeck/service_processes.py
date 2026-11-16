@@ -13,6 +13,11 @@ UNIT = re.compile(r'qd-service-[A-Za-z0-9_.-]+-[0-9a-f]{8}\.scope')
 SERVER = 'tmux: server'  # the name tmux gives its server process
 
 
+# A process gone since it was listed: absent when its /proc file is opened (ENOENT), or reaped between the open
+# and the read (ESRCH, which Path.read_text meets when a member ends in that window). Either way it has ended.
+VANISHED = (FileNotFoundError, ProcessLookupError)
+
+
 class Uncertain(OSError):
     """The scope was readable but did not supply a complete current process reading."""
 
@@ -81,6 +86,7 @@ class Scope:
     proof: str = ''
     servers: dict = field(default_factory=dict)  # tmux servers met in the scope, left running with their panes
     ended: bool = False  # the owner ended and released the lock before its scope was bound: nothing to read
+    unbound: str = 'none found'  # why no cgroup was bound at capture, for the fallback's line
 
     def read(self):
         """The scope's live processes, less any tmux server in it and every process under one."""
@@ -103,13 +109,14 @@ class Scope:
         return f"a tmux server is in the service's scope (pid {pids}); left running with its panes"
 
     def members(self):
+        unavailable = self.unbound
         if self.folder is not None:
             try:
                 found = self.read_cgroup()
             except Uncertain:
                 raise
-            except (OSError, ValueError, StopIteration):
-                pass  # the captured private session/group is the only fallback
+            except (OSError, ValueError, StopIteration) as error:
+                unavailable = type(error).__name__  # the cgroup itself: a member that ended is skipped inside
             else:
                 self.proof = f'processes re-read: cgroup {self.folder.name}'
                 return found
@@ -120,7 +127,7 @@ class Scope:
         try:
             if process(self.pid)[1] != self.start:
                 raise Uncertain('service scope leader identity changed')
-        except FileNotFoundError:
+        except VANISHED:
             pass
         found = {}
         for entry in PROC.iterdir():
@@ -128,11 +135,11 @@ class Scope:
                 continue
             try:
                 state, start, group, session = process(int(entry.name))
-            except FileNotFoundError:
+            except VANISHED:
                 continue
             if state not in EXITED and (session if kind == 'session' else group) == number:
                 found[int(entry.name)] = start
-        self.proof = f'processes re-read: {kind} {number} (service cgroup unavailable)'
+        self.proof = f'processes re-read: {kind} {number} (service cgroup unavailable: {unavailable})'
         return found
 
     def read_cgroup(self):
@@ -151,8 +158,8 @@ class Scope:
                 before = process(pid)
                 current = cgroup(pid)
                 after = process(pid)
-            except FileNotFoundError:
-                continue
+            except VANISHED:
+                continue  # it ended between the listing and its reading: skipped as ended
             if before[1:] != after[1:] or current != self.folder:
                 raise Uncertain('service cgroup membership changed during reading')
             if after[0] not in EXITED:
@@ -174,7 +181,7 @@ def capture(pid, start, *, owners=None, runtime=None):
     lock's reading and this one: its scope is empty, not unreadable."""
     try:
         state, actual, group, session = process(pid)
-    except FileNotFoundError:
+    except VANISHED:
         state = actual = None
     if state is None or state in EXITED or actual != start:
         if runtime is not None:
@@ -187,13 +194,13 @@ def capture(pid, start, *, owners=None, runtime=None):
         raise Uncertain('service owner changed before its process scope was bound')
     owners = {pid: start} if owners is None else owners
     fallback = ('session', session) if session in owners else ('process group', group) if group in owners else None
-    folder, identity = None, None
+    folder, identity, unbound = None, None, 'none found'
     try:
         folder = cgroup(pid)
         identity = mark(folder)
-    except (OSError, ValueError, StopIteration):
-        folder = None
+    except (OSError, ValueError, StopIteration) as error:
+        folder, unbound = None, type(error).__name__
     if folder is None and fallback is None:
         raise Uncertain('service has no provable private process scope')
     anchor = fallback[1] if fallback is not None else pid
-    return Scope(anchor, owners.get(anchor, start), fallback, folder, identity)
+    return Scope(anchor, owners.get(anchor, start), fallback, folder, identity, unbound=unbound)

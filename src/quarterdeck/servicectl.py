@@ -481,8 +481,31 @@ def scoped(ship: Ship, environment: dict[str, str]) -> tuple[list[str], str | No
     return words, None
 
 
+def recorded_owner(runtime: Path, left: dict[int, str]) -> tuple[int, str] | None:
+    """The live service's own owner, by pid and start, when an earlier stop recorded it among ``left``; else None.
+
+    Then that stop was interrupted, or runs beside this one, while the service still lives: a stop run again owes
+    it SIGTERM and its grace, as a first stop does, never the kill an earlier stop's leftovers get."""
+    if not alive(runtime):
+        return None
+    pid = holder(runtime)
+    if pid is None or pid not in left:
+        return None
+    from . import shutdown
+    start = shutdown.process_start(pid)
+    return (pid, start) if start is not None and left[pid] == start else None
+
+
 def stop(runtime: Path) -> str:
     """Signal the lock's owner; confirm its exit, ending its tree if it outlives the grace."""
+    previous = stop_barrier.read(runtime)
+    told: set[int] = set()  # the tmux servers the line already names
+    line = _stop(runtime, previous, told)
+    words = stop_barrier.spared_words({pid: start for pid, start in (previous or {}).items() if pid not in told})
+    return line + (f" · {words}" if words else "")
+
+
+def _stop(runtime: Path, previous: dict[int, str] | None, told: set[int]) -> str:
     from . import service_processes, shutdown, write_bound
 
     def end_tree(known):
@@ -491,9 +514,28 @@ def stop(runtime: Path) -> str:
             stop_barrier.retain(runtime, known)
         write_bound.kill(known, observe=observe, spare=service_processes.server)  # never a tmux server's panes
 
-    previous = stop_barrier.read(runtime)
+    leftovers_ended = ""
     if previous is not None:
-        if left := stop_barrier.remaining(previous):
+        left = stop_barrier.remaining(previous)
+        if left and (live := recorded_owner(runtime, left)) is not None:
+            # The earlier stop never finished with the service that still holds the lock. Its own tree and scope
+            # take the ordinary path below, SIGTERM and its grace first; only what the earlier stop recorded beyond
+            # them, its leftovers, is ended now. A scope that cannot be read ends nothing here: the path below
+            # reads it again and refuses as a first stop would.
+            owner_pid, owner_start = live
+            service = {owner_pid: owner_start}
+            try:
+                service.update(write_bound.tree(owner_pid, owner_start, spare=service_processes.server))
+                service.update(service_processes.capture(owner_pid, owner_start, runtime=runtime).read())
+                leftovers = {pid: start for pid, start in left.items() if pid not in service}
+            except (OSError, ValueError, IndexError):
+                leftovers = {}
+            if leftovers:
+                end_tree(dict(leftovers))
+                if still := stop_barrier.remaining(leftovers):
+                    raise ShipError(f"earlier stop's leftovers exit cannot be confirmed: {stop_barrier.names(still)}")
+                leftovers_ended = f"an earlier stop's leftovers ended: {stop_barrier.names(leftovers)}"
+        elif left:
             bound = None
             for process, began in left.items():
                 try:
@@ -517,9 +559,11 @@ def stop(runtime: Path) -> str:
             if stop_barrier.remaining(previous):
                 raise ShipError(f'earlier service exit cannot be confirmed: {stop_barrier.names(previous)}')
             stop_barrier.require_clear(runtime)
+            told.update(bound.servers)
             return (f"service killed · earlier stop's tree confirmed ended: {stop_barrier.names(previous)}"
                     f" · {bound.proof}" + (f" · {bound.spared()}" if bound.servers else ""))
-        stop_barrier.require_clear(runtime)
+        else:
+            stop_barrier.require_clear(runtime)
     if not alive(runtime):
         remove_heartbeat(runtime)
         return "service was not running"
@@ -616,10 +660,12 @@ def stop(runtime: Path) -> str:
                 remove_heartbeat(runtime)
             # A relaunch still open when the service ended: released, logged, and on the line for the next service.
             released = relaunch_intent.release(runtime, owner) if owner is not None else []
+            told.update(process_scope.servers)
             bound = max(shutdown.DELIVERY_GRACE if extended else shutdown.ORDINARY_GRACE,
                         relaunch_intent.GRACE if relaunching else 0)
             return (f"service {how} · pid {pid}"
                     + f" · {process_scope.proof}"
+                    + (f" · {leftovers_ended}" if leftovers_ended else "")
                     + (f" · {process_scope.spared()}" if process_scope.servers else "")
                     + (" · it released its lock but did not exit; killed with its tree" if released_alive else "")
                     + (" · its remaining children were killed" if remaining and not released_alive and how == "stopped" else "")

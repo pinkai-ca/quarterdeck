@@ -62,8 +62,12 @@ An owner that releases its lock but outlives the exit grace has its whole tree
 ended by the write-bound kill, which observes new children before each round's
 signals. Before confirming a stop, it reads the service's private systemd cgroup
 again, including its child cgroups. If that cgroup cannot be read, it uses only
-the private session or process group bound while the owner was alive. The proof
-line names this re-read and any fallback. A newly discovered process enters the
+the private session or process group bound while the owner was alive. A member
+that ends between the cgroup's listing and its own reading (its `/proc` file gone,
+or reaped between the file's open and its read, which answers ESRCH) is skipped as
+ended; only a cgroup that cannot itself be read falls back, and a membership that
+changes mid-read in any other way stays uncertain. The proof line names this
+re-read and any fallback, with the error that caused it. A newly discovered process enters the
 barrier before the same tree kill runs; an incomplete reading or an unconfirmed
 exit refuses the stop. A tmux server in that scope (a process named `tmux: server`,
 which a seat's relaunch from the service may start there) and every process under it
@@ -73,7 +77,15 @@ scope is bound has an empty scope, not an unreadable one. The proof line names a
 `runtime/locks` retains all observed identities before they are signalled. A
 start, including copy recovery, refuses while any recorded exit is unconfirmed
 or the barrier is unreadable, and names that hold in status. Once every identity
-is proved gone, the next start or recovery clears the barrier itself. No jail
+is proved gone, the next start or recovery clears the barrier itself. A tmux
+server a barrier recorded, and everything under it, is never waited for, since
+no stop ends one: the proof line names it as left running. A stop run again while
+the barrier records the live service's own owner (an earlier stop interrupted, or
+one running beside it) gives that owner SIGTERM and its grace as a first stop does;
+only what the earlier stop recorded outside the owner's tree and scope is ended at
+once, and the line names it. An unreadable barrier holds a stop as it holds a start,
+and its refusal names the file, why, and what settles it: once no process an
+earlier stop recorded runs, the file is moved aside unchanged. No jail
 is shown this folder. Cached status cannot hide a standing barrier.
 
 The service atomically publishes `runtime/status-line.json` for text status-line jobs, dating collection start (`wall`/`monotonic`) and the publication write (`written`) separately. The optional collection-age cache retains its three-second wall/monotonic bounds and owner/declaration/framework checks. Outside that cache, a publication from the current service with an ok lead reads plain through `ship.status_refresh + STALE_SECONDS` after its write: forty seconds at the default thirty-second refresh, including a ten-second collection allowance. Its collection-start timestamp remains unchanged. Older or unverified publications, and a busy service, retain their operational alerts under an explicit `status stale` marker and write age through three times the refresh interval (ninety seconds by default). Beyond that bound the command collects current facts itself and adds `publication <age>s old, collected here` to the lead. A down service is independently named `SERVICE DOWN` and also takes the collector. Missing, corrupt or undated publications, or an unknowable write age, take the collector too, so reuse can never be unbounded. The collector keeps its existing error/unknown handling. Slow collections still publish; failed collection discards old rendering. Receipt, lifecycle, usage and JSON readings still collect their own facts and never consume this file.
