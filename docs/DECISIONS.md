@@ -506,6 +506,12 @@ never holds the key, and the key reaches the program by an environment
 variable. A key pool is measured by spend, and an optional budget per day, week
 or month is its wall.
 
+Until the routed key isolation lands, no seat launches on a pool paid by a key,
+a key pool or a keyed endpoint, jailed or not: the key would reach the seat's
+program by its environment, and so the model's tool commands. Every launch door
+refuses it with a line naming that change; the ship file still loads, so a seat
+already running on a key can be seen and stopped.
+
 An endpoint pool is a model served at an OpenAI-compatible URL, local or
 remote, with no credential of its own and no quota wall. The machine that runs a
 local server pays for that server, and a key named beside the URL pays for a

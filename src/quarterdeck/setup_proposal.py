@@ -480,6 +480,8 @@ def summary(ship: Ship, display_control, *, existing: Ship | None = None, office
                     detail = f"an API key ({pool.api_key.removeprefix('env:')}) at {pool.endpoint}"
                 else:
                     detail = f"a model at {pool.endpoint}"
+            if pool.paid_by_key:  # declared as asked, and named refused before anything is written (ship.key_refusal)
+                detail += "; refused for now: no seat runs on a key until the routed key isolation lands"
             if detail not in runs.setdefault(program, []):
                 runs[program].append(detail)
         if len(seat.pools) > 1:

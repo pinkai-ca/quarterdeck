@@ -73,10 +73,10 @@ def wall_reason(ship: Ship, program: str, now: datetime) -> str | None:
     from .ledger import Ledger
     from .quota import reset_text
     from .usage_cache import parse
-    harness = harnesses.get(program)
-    pool = next((pool for pool in ship.pools.values() if harness.accepts(pool) is None), None)
+    from .check import check_pool
+    pool, refused = check_pool(ship, harnesses.get(program))
     if pool is None:
-        return 'no compatible declared pool; try again the next night'
+        return f"{refused or 'no compatible declared pool'}; try again the next night"
     try:
         book = Ledger.reading(ship.runtime / 'ledger.sqlite')
         if book is None:

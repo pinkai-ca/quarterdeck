@@ -24,6 +24,7 @@ from .harness.base import _version_in_runtime, key_environment, program_version,
 from .harness.capabilities import validate_selection
 from .seat import program_path, temporary_seat
 from .ship import CARRY_BYTES, Pool, SeatSpec, Ship, ShipError
+from . import ship as shipmod
 from .tmux import Tmux
 
 PATIENCE = 600.0  # a fix is a turn of real work
@@ -234,7 +235,11 @@ def framework_check(ship: Ship) -> Check:
 
 
 def pool_check(pool: Pool) -> Check:
-    """A pool is ready when the credential it names is there, or its endpoint answers; expiry is read as metadata, never a token."""
+    """A pool is ready when the credential it names is there, or its endpoint answers; expiry is read as metadata, never a token.
+
+    A pool paid by a key is not ready, whatever its key: no seat launches on it (ship.key_refusal)."""
+    if reason := shipmod.key_refusal(pool):
+        return Check(f"pool {pool.name}", False, reason.removesuffix("; nothing was started"))
     if pool.kind == "endpoint":
         try:
             return Check(f"pool {pool.name}", True, endpoint.describe(pool))
@@ -262,7 +267,7 @@ def fix(ship: Ship, failed: list[Check], tmux: Tmux) -> list[Check]:
     """Open a throwaway seat on the first pool whose program runs, hand it the failures as an order, and wait for its report."""
     searched = program_path()
     available = next(((pool, reader) for pool in ship.pools.values() for name in harnesses.NAMES
-                      if (reader := harnesses.get(name)).accepts(pool) is None
+                      if (reader := harnesses.get(name)).accepts(pool) is None and not pool.paid_by_key
                       and shutil.which(reader.program, path=searched)), None)
     if available is None:
         return [Check("seat opened", False, "no declared pool's program is on the PATH, so no seat can be asked; install one first")]

@@ -34,6 +34,7 @@ from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, program_where, record_fingerprint
 from .seat import Seat, temporary_seat
 from .ship import SeatSpec, Ship, ShipError
+from . import ship as shipmod
 from .tmux import Tmux, TmuxError
 
 PATIENCE = 180.0
@@ -124,11 +125,22 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None,
     return checks
 
 
+def check_pool(ship: Ship, harness) -> tuple[object | None, str | None]:
+    """The pool qd check launches its seat on: the first declared pool the program runs on that no key pays. With
+    none, the refusal where only a key pays for a pool it runs on (ship.key_refusal), else None as well. The nightly
+    live check reads the same pool (daily_live.wall_reason)."""
+    compatible = [p for p in ship.pools.values() if harness.accepts(p) is None]
+    pool = next((p for p in compatible if not p.paid_by_key), None)
+    if pool is None and compatible:
+        return None, f"check-{harness.name}: {shipmod.key_refusal(compatible[0])}"
+    return pool, None
+
+
 def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
            *, minimal: bool = False) -> tuple[list[Check], str | None]:
-    pool = next((p for p in ship.pools.values() if harness.accepts(p) is None), None)
+    pool, refused = check_pool(ship, harness)
     if pool is None:
-        return [ProbeCheck('pool', False, f'no compatible declared pool for {name}', 'pool')], None
+        return [ProbeCheck('pool', False, refused or f'no compatible declared pool for {name}', 'pool')], None
     version = _version_in_runtime(harness, ship.runtime)
     where = program_where(harness)
     selected = harness.selected_program() if where is not None else None

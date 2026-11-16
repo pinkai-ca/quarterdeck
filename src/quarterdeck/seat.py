@@ -411,7 +411,9 @@ class Seat:
         choice with room, or one the ship file no longer declares, gives way. Room is what the service routes by
         (``quota.cached_open``): a choice whose room is unknown, with no ledger, its usage not yet read or its
         history still catching up, is never taken over the saved one. The saved choice stays while the ledger does
-        not show it walled; with no choice that has room, the saved choice stays, or the first declared one.
+        not show it walled; with no choice that has room, the saved choice stays, or the first declared one. A
+        choice paid by a key is never taken while another is not shown walled, a saved one included
+        (ship.key_refusal); left alone, its launch is refused.
         """
         pools = self.spec.pools
         current = self.pool.name
@@ -427,6 +429,8 @@ class Seat:
         unknown = []
         try:
             for name in pools:
+                if self.ship.pool(name).paid_by_key:
+                    continue  # never a launch's choice, saved or not: its launch is refused (ship.key_refusal)
                 if name == saved:
                     if book is None or not book.walled(name, self.ship, scope=quota.model_scope(self, name)):
                         return name, 'its saved choice'
@@ -445,6 +449,9 @@ class Seat:
                 return unknown[0], (f'its saved {saved} is no longer declared; the first declared choice not shown '
                                     f'walled, its room unknown')
             return pools[0], f'its saved {saved} is no longer declared and every declared choice is walled'
+        if unknown and self.ship.pool(saved).paid_by_key:
+            return unknown[0], (f'its saved {saved} is paid by a key; the first declared choice not shown walled, '
+                                'its room unknown')
         if unknown:
             return current, f"saved choice retained; room unknown on {', '.join(unknown)}"
         return current, 'every declared choice is walled; its saved choice stays'
@@ -822,6 +829,8 @@ class Seat:
         reader = harnesses.get(selected.harness)
         if reason := reader.accepts(paid):
             raise ShipError(f"{self.name}: {reason}")
+        if reason := shipmod.key_refusal(paid):  # every launch door passes here, before anything of a launch is made
+            raise shipmod.KeyRefused(f"{self.name}: {reason}")
         validate_selection(selected, reader)
         reader.check_defaults(selected, self.ship.folder / 'homes' / reader.name)
 
@@ -1636,7 +1645,10 @@ def bring_up(ship: Ship, tmux: Tmux) -> list[str]:
         if seat.spec.up and not seat.is_up and (held := write_bound.reason(ship.runtime, seat.name)):
             proofs.append(f"{seat.name} left down: {held}")  # only a word for this seat lifts it
         elif seat.spec.up and not seat.is_up:
-            proofs.append(seat.up(resume=True))
+            try:
+                proofs.append(seat.up(resume=True))
+            except shipmod.KeyRefused as refused:
+                proofs.append(str(refused))  # that seat alone stays down; the rest of the ship comes up
         elif seat.is_up:
             proofs.append(f"{seat.name} already up in {seat.pane().id}")
     return proofs

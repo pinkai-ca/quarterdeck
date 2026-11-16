@@ -30,6 +30,10 @@ class ShipError(Exception):
     """A refusal: the reason, and what would lift it."""
 
 
+class KeyRefused(ShipError):
+    """A launch refused because a key pays for its pool (key_refusal): the one seat stays down, no other."""
+
+
 @dataclass(frozen=True)
 class Pool:
     """One way of paying: a subscription, named by its credential directory; an API key; or an endpoint.
@@ -65,6 +69,25 @@ class Pool:
         if self.endpoint:
             return "endpoint"
         return "key" if self.api_key else "subscription"
+
+    @property
+    def paid_by_key(self) -> bool:
+        """Whether a key pays for this pool: a key pool, or an endpoint with a key named beside its URL."""
+        return bool(self.api_key)
+
+
+def key_refusal(pool: Pool) -> str | None:
+    """Why no seat launches on this pool for now, or None: a pool paid by a key is refused at every door.
+
+    Until the routed key isolation lands, a key reaches a seat's program, and so the model's tool commands, by its
+    environment and its launch; nothing yet keeps it out of their reach. So no seat runs on a key: qd up, fresh,
+    restart, a pool move, the service's relaunch, qd check and qd doctor all say this line, and nothing is started.
+    A subscription and a keyless endpoint are unchanged.
+    """
+    if not pool.paid_by_key:
+        return None
+    return (f"its pool {pool.name} is paid by a key, and no seat runs on a key until the routed key isolation "
+            "lands; nothing was started")
 
 
 @dataclass(frozen=True)

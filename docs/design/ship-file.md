@@ -37,6 +37,7 @@ config_dir = "~/.config/agy"
 provider = "anthropic"
 api_key = "env:ANTHROPIC_API_KEY"     # the key is named, never written here
 budget = "200 USD/month"             # optional: a wall when spent
+# For now no seat launches on a pool paid by a key: see "Seats, sessions and pools" below.
 
 [pools.local]
 provider = "local"
@@ -110,6 +111,8 @@ sandbox = true                       # what a seat on an endpoint pool gets anyw
 `qd up` starts the service and every seat marked up, resuming seats with records. `qd up <seat>` also starts a declared seat marked down. A seat uses the ship workspace unless it declares `cwd`; its persona is display, defaulting to its seat name. [Seats](seats.md) describes launch, controls and subscription moves.
 
 A harness is the terminal program; a provider is the company or declared endpoint operator; a pool is one payment/access choice. A model's brand does not identify its endpoint operator. Seats name harnesses and ordered pools. Pools point to credentials rather than containing them: a subscription's directory, a key's environment variable or file, or an OpenAI-compatible endpoint with an optional key. Endpoint pools have no subscription quota wall. Their seats are jailed unless `sandbox = false`; any seat can request `sandbox = true`. [Harnesses](harnesses.md) owns compatibility and jail behavior.
+
+A pool paid by a key, a key pool or an endpoint with `api_key`, is declared and read as any other, but for now no seat launches on it, jailed or not: until the routed key isolation lands, a key reaches the seat's program, and so the model's tool commands. Every door that starts or proves a seat refuses it with one line, `<seat>: its pool <pool> is paid by a key, and no seat runs on a key until the routed key isolation lands; nothing was started`: qd up, fresh and restart, qd set and qd up `--pool`, the service's moves and relaunches, and a fresh start after compactions. qd check and qd doctor open no seat on it, qd doctor fails its pool, and the service never moves a seat onto it, so a seat whose other choices are spent is held at its limit. The ship file still loads, so a seat that was already running on a key can be seen and stopped. A subscription and a keyless endpoint are unchanged.
 
 Canonical provider identifiers are `anthropic`, `openai`, `google`, `xai`, `meta`, `zai` and `openrouter`. Known company spellings normalize without case, including `z.ai`/`z-ai`, `x.ai`, `open-ai` and `open-router`; other explicit endpoint operators retain their trimmed spelling. `synthetic` identifies the fake program. Native harnesses accept their company's subscription or key; open harnesses accept compatible endpoint pools and refuse a key without an endpoint. Validation and preflight refuse incompatible choices before replacing a running pane.
 

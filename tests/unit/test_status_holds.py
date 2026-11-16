@@ -115,9 +115,8 @@ def test_a_down_seat_does_not_contribute_a_limit_hold(view, monkeypatch):
 
 @pytest.mark.parametrize("pool", [
     Pool("second", "fake"),
-    Pool("second", "claude", api_key="env:SYNTHETIC_UNUSED"),
     Pool("second", "local", endpoint="http://127.0.0.1:9/v1"),
-])
+])  # a key pool is no destination at all: test_key_pool_refused holds the seat at its limit
 def test_a_destination_without_subscription_usage_uses_its_walls(view, pool):
     r = view
     r.seat.ship.pools["second"] = pool

@@ -633,6 +633,7 @@ def tick(seat):
             # Admission is released; later arrivals belong to the successor and are withheld.
             from . import relaunch_intent
             with relaunch_intent.section(None, seat, 'compaction', resume=False):  # a stop waits out the down and up
+                seat._accept_pool()  # a launch _up would refuse (a key pool, ship.key_refusal) leaves it running
                 seat._down()
                 seat._up(resume=False)
     except (OSError, ShipError) as error:

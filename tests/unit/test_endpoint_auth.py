@@ -54,7 +54,8 @@ def test_keyed_discovery_doctor_and_adapter_homes_never_store_the_key(server, tm
     pool = Pool('synthetic', 'local', endpoint=url, api_key=key)
     assert endpoint.choose(pool, None).model == 'synthetic-model'
     assert endpoint.describe(pool) == f'{url} answers; serves synthetic-model (4,096 tokens)'
-    assert doctor.pool_check(pool).passed
+    refused = doctor.pool_check(pool)  # never ready while a key pays for it (ship.key_refusal), and never probed
+    assert not refused.passed and 'is paid by a key' in refused.detail
     for harness in (OpenCodeHarness(), PiHarness()):
         spec = SeatSpec('worker', 'crew', 'worker', harness.name, ('synthetic',))
         home = tmp_path/harness.name/'runtime'/'seats'/'worker'/'home'
@@ -62,7 +63,7 @@ def test_keyed_discovery_doctor_and_adapter_homes_never_store_the_key(server, tm
         launch = harness.launch(spec, pool, home, tmp_path/'brief', None, None)
         assert launch.env[endpoint.KEY_VARIABLE] == 'synthetic-key'
         assert all('synthetic-key' not in file.read_text() for file in home.rglob('*') if file.is_file())
-    assert http.seen == [('/v1/models', 'Bearer synthetic-key')]*5
+    assert http.seen == [('/v1/models', 'Bearer synthetic-key')]*4  # choose, describe and the two homes; not doctor
     monkeypatch.setenv('SYNTHETIC_BAD_KEY', 'synthetic-rejected-key')
     with pytest.raises(ShipError, match='answered 401') as refused:
         endpoint.choose(Pool('bad', 'local', endpoint=url, api_key='env:SYNTHETIC_BAD_KEY'), None)

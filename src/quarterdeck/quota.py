@@ -15,10 +15,13 @@ from .provenance import UNKNOWN
 
 
 def candidate_pools(seat) -> tuple[str, ...]:
-    """Later declared choices, then earlier choices, excluding the current pool."""
+    """Later declared choices, then earlier choices, excluding the current pool and any pool paid by a key.
+
+    A launch on a key is refused (ship.key_refusal), so a key pool is no destination: a seat whose other choices
+    are spent is held at its limit with no eligible destination, and the status line says so."""
     pools = seat.spec.pools
     current = pools.index(seat.pool.name)
-    return pools[current + 1:] + pools[:current]
+    return tuple(name for name in pools[current + 1:] + pools[:current] if not seat.ship.pool(name).paid_by_key)
 
 
 @dataclass(frozen=True)
