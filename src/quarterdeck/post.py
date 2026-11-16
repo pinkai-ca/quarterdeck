@@ -1243,10 +1243,13 @@ INBOX_TAIL_MESSAGES = 200
 INBOX_TAIL_BYTES = 256 * 1024
 
 
-def inbox_reading(store: Store, seat: str, *, recent: bool = False) -> dict:
+def inbox_reading(store: Store, seat: str, *, recent: bool = False, open_only: bool = False) -> dict:
     told, sender_seat = _told(store, seat), _sender_seat(store)
     messages = [_shown(m, withheld, told, sender_seat) for withheld in [_withheld(store, seat)]
                 for m in store.for_seat(seat)]
+    if open_only:
+        return dict(seat=seat, open=[m for m in messages if store.is_open(m)],
+                    received=[], closed_by={}, open_only=True)
     data = {"seat": seat, "open": [m for m in messages if store.is_open(m)],
             "received": list(reversed([m for m in messages if not store.is_open(m)])),
             "closed_by": {m.id: closed.id for m in messages if m.kind == "order"
@@ -1330,17 +1333,28 @@ def _shown(message: Message, withheld: frozenset[str] | None, told: frozenset[st
     return replace(message, subject=None, body=words)
 
 
-def inbox_text(store: Store, seat: str) -> str:
-    return render_inbox_reading(inbox_reading(store, seat, recent=True))
+def inbox_text(store: Store, seat: str, *, open_only: bool | None = None) -> str:
+    if open_only is None:
+        from . import ship as shipmod
+        try:
+            spec = shipmod.load(store.dir.parent.parent.parent).seats.get(seat)
+            open_only = spec is not None and spec.role == 'hand'
+        except (ShipError, OSError, ValueError):
+            open_only = False
+    return render_inbox_reading(inbox_reading(store, seat, recent=True, open_only=open_only))
 
 
 def render_inbox_reading(data: dict) -> str:
     lines = [f"# Inbox: {data['seat']}", ""]
-    for title, key in (("Open", "open"), ("Received", "received")):
+    sections = (("Open", "open"),) if data.get('open_only') else (("Open", "open"), ("Received", "received"))
+    for title, key in sections:
         lines += [f"## {title} ({len(data[key])})", ""]
         for message in data[key]:
             lines += _entry(message, data["closed_by"].get(message.id), data.get('settled', {}).get(message.id))
-    if "older_received" in data:
+    if data.get('open_only'):
+        lines += ['Other messages stay in the message store. `qd thread <id>` reads a thread; '
+                  '`qd inbox --all` prints the complete history.']
+    elif "older_received" in data:
         lines += [_older_line(data["older_received"])]
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1361,11 +1375,11 @@ def _entry(message: Message, closed: str | None, settled: str | None = None) -> 
     return [head, *([" · ".join(details)] if details else []), "", message.body.rstrip(), ""]
 
 
-def render_inbox(runtime: Path, store: Store, seat: str) -> Path:
+def render_inbox(runtime: Path, store: Store, seat: str, *, open_only: bool | None = None) -> Path:
     folder = runtime / "post" / "inbox"
     post_dir.ensure_directory(folder)
     path = folder / f"{seat}.md"
-    text = inbox_text(store, seat)
+    text = inbox_text(store, seat, open_only=open_only)
     try:
         current = post_dir.read_text(path)
     except FileNotFoundError:

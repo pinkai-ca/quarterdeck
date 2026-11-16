@@ -1056,6 +1056,9 @@ class Seat:
                                 and message.id not in consumed and message.id not in delivered
                                 and not ((attempt := latest.get(message.id)) is not None
                                          and attempt.result == 'queued' and message.id not in queued_ids))
+            if self.spec.role == 'hand' and not resume_id:
+                # A fresh hand starts with its open work, rather than unrelated unread history or outgoing waits.
+                pending_messages, unconfirmed, sent = (), (), ()
             rows = post_threads.index_rows(store, selection.roots, (*pending_messages, *unconfirmed), refused, sent,
                                            seat=self.name)
         handoffs = [entry.message for entry in selection.entries

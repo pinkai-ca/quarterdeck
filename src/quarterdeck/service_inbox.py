@@ -130,7 +130,9 @@ def render_pass(service, store):
     for name in service.ship.seats:
         path = service.runtime / 'post' / 'inbox' / f'{name}.md'
         try:
-            data = post.inbox_reading(store, name, recent=True)
+            hand = getattr(service.ship.seats[name], 'role', None) == 'hand'
+            data = (post.inbox_reading(store, name, recent=True, open_only=True) if hand
+                    else post.inbox_reading(store, name, recent=True))
             text = post.render_inbox_reading(data)
             for message in data['received']:
                 # The cutoff excludes strictly older entries, not equal ones.
@@ -141,7 +143,10 @@ def render_pass(service, store):
             except FileNotFoundError:
                 current = None
             if current != text:
-                post.render_inbox(service.runtime, store, name)
+                if hand:
+                    post.render_inbox(service.runtime, store, name, open_only=True)
+                else:
+                    post.render_inbox(service.runtime, store, name)
         except ShipError as error:
             succeeded = False
             service.log('error', step='inbox', seat=name, error=str(error))
