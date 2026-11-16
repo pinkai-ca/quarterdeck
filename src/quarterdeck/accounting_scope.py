@@ -141,7 +141,7 @@ def barriers(first, last, set_aside, young, own_changes):
             found.add(name)
     if first.sql[:2] != last.sql[:2] or first.sql[3:] != last.sql[3:]:
         found.add('ledger-identity')
-    elif last.sql[2] - first.sql[2] != own_changes:
+    elif written(last) - written(first) != own_changes:
         found.add('other-writers')
     return sorted(found)
 
@@ -153,11 +153,17 @@ def globals_without(reading, paths):
                   and path not in paths), *reading.inputs[1:])
 
 
+def written(reading):
+    """The ledger rows a reading saw written, less those of duties proven to touch no table the accounting job reads
+    (Service.NON_ACCOUNTING_DUTIES): what the other-writers barrier compares."""
+    return reading.sql[2] - getattr(reading, 'foreign', 0)
+
+
 def global_equal(before, after, own=0, set_aside=()):
     return (global_valid(before, set_aside) and global_valid(after, set_aside)
             and globals_of(before, set_aside) == globals_of(after, set_aside)
             and before.sql[:2] == after.sql[:2] and before.sql[3:] == after.sql[3:]
-            and after.sql[2] - before.sql[2] == own)
+            and written(after) - written(before) == own)
 
 
 class Partitions:

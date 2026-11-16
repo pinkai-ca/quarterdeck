@@ -14,6 +14,7 @@ import json
 import hashlib
 import os
 import signal
+import sqlite3
 import sys
 import time
 import traceback
@@ -295,13 +296,45 @@ class Service:
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.retire_hand_transcripts, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
-                with self.timings().measure(step.__name__):
+                with self.timings().measure(step.__name__), Service.non_accounting(self, step.__name__):
                     step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
             self._drain_between_duties()
             self.status_due()
             self.timings().publish(self.log)
+
+    # The duties whose ledger rows may be counted apart from the accounting gate's other writers, and the tables
+    # those rows may touch: the usage refresh writes pools, usage_samples and usage_reads, and no accounting step reads
+    # any of them. A duty's rows are counted apart only when every table it wrote, triggers included, is one of these.
+    NON_ACCOUNTING_DUTIES = frozenset(('refresh_usage',))
+    NON_ACCOUNTING_TABLES = frozenset(('pools', 'usage_samples', 'usage_reads'))
+
+    @contextmanager
+    def non_accounting(self, name):
+        if name not in Service.NON_ACCOUNTING_DUTIES:
+            yield
+            return
+        try:
+            db = self.ledger.db
+            before = db.total_changes
+        except Exception:  # a ledger being reopened: nothing is counted apart, and the barrier holds
+            yield
+            return
+        tables = set()
+        def authorize(action, table, *_):
+            if action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE):
+                tables.add(table)
+            return sqlite3.SQLITE_OK
+        db.set_authorizer(authorize)
+        try:
+            yield
+        finally:
+            db.set_authorizer(None)
+            after = db.total_changes
+            # A write to any other table (an accounting one above all) leaves the whole duty another writer's.
+            if after >= before and tables <= Service.NON_ACCOUNTING_TABLES:
+                self.non_accounting_writes = getattr(self, 'non_accounting_writes', 0) + after - before
 
     def _drain_between_duties(self):
         for name in ('drain_drops', 'drain_accounting', 'drain_requests'):

@@ -14,7 +14,7 @@ import time
 from . import trusted_files
 from . import post, record_owner, record_location
 from .harness import held_reading, reader_stamp
-from .accounting_scope import Partitions
+from .accounting_scope import Partitions, written
 
 BACKSTOP = 600.0
 
@@ -27,6 +27,9 @@ class Reading:
     classes: tuple = field(default=(), compare=False, repr=False)
     young: tuple = field(default=(), compare=False, repr=False)
     began: int = field(default=0, compare=False, repr=False)
+    # The service's count of ledger rows written by duties proven to touch no table the accounting job reads
+    # (Service.NON_ACCOUNTING_DUTIES): never another writer's (accounting_scope.written).
+    foreign: int = field(default=0, compare=False, repr=False)
 
 
 def capture(service, records, *, issues=None, retain=False):
@@ -113,7 +116,8 @@ def capture(service, records, *, issues=None, retain=False):
         ended = time.time_ns()
         if started > ended:
             note('unreadable', 'settings')
-        return (Reading(inputs, sql, ended, tuple(file_classes), tuple(young), started)
+        foreign = int(getattr(service, 'non_accounting_writes', 0) or 0)
+        return (Reading(inputs, sql, ended, tuple(file_classes), tuple(young), started, foreign)
                 if (valid or retain) and started <= ended else None)
     except (OSError, ValueError, TypeError, AttributeError, sqlite3.Error):
         note('unreadable', current_class)
@@ -157,8 +161,9 @@ def differences(before, after):
 
 
 def sql_changes(before, after, own=0):
-    total = after.sql[2] - before.sql[2]
+    total = written(after) - written(before)
     return dict(total_changes=total, driver_changes=own, other_changes=total - own,
+                non_accounting_changes=after.foreign - before.foreign,
                 data_version=after.sql[1] - before.sql[1],
                 connection_changed=int(before.sql[0] != after.sql[0]),
                 database_changed=int(before.sql[3:] != after.sql[3:]))
@@ -353,7 +358,7 @@ class Gate:
         if (full and before is not None and after is not None and not before.young and not after.young
                 and before.inputs == after.inputs
                 and before.sql[:2] == after.sql[:2] and before.sql[3:] == after.sql[3:]
-                and after.sql[2] - before.sql[2] == self.own_changes + extra):
+                and written(after) - written(before) == self.own_changes + extra):
             self.completed = after
             self.due = time.monotonic() + BACKSTOP
         else:
