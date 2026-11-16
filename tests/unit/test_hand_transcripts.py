@@ -68,6 +68,14 @@ def transcript(home, name, kind, at, *, complete=True, task=None):
 
 
 def world(tmp_path, monkeypatch, kind='pi', *, complete=True, age=timedelta(days=9), task=None):
+    # opened() scans every process of the user, as it must on the live ship. Under xdist other tests run beside these
+    # and start processes named after the real programs (node, opencode, pi), which a retirement here would wait for.
+    # So each test's readers wait for a program name of the test's own, which only a process it starts can bear.
+    import secrets
+    from quarterdeck.harness.pi import PiHarness
+    world.program = f'qdt-{secrets.token_hex(4)}'  # within the 15 bytes a process name holds
+    for reader in (PiHarness, OpenCodeHarness):
+        monkeypatch.setattr(reader, 'retirement_process_names', (world.program,))
     now = datetime.now(timezone.utc)
     old = now - age
     spec = SeatSpec('hand', 'crew', 'hand', kind, ('local',), cwd=tmp_path)
@@ -472,13 +480,13 @@ def test_a_screening_record_not_yet_accounted_waits_for_that_alone(tmp_path, mon
 
 NAMED = r"""
 import ctypes, sys
-ctypes.CDLL(None).prctl(15, b'node', 0, 0, 0)  # PR_SET_NAME: read as a program the retirement waits for
+ctypes.CDLL(None).prctl(15, sys.argv[1].encode(), 0, 0, 0)  # PR_SET_NAME: the program name this test's reader waits for
 """
 
 # The leader alone exits while a thread of its keeps the record open, as a node or bun process with workers can.
 LEADER_EXITS = NAMED + r"""
 import threading, time
-held = open(sys.argv[1], 'rb')
+held = open(sys.argv[2], 'rb')
 started = threading.Event()
 def keep():
     started.set()
@@ -513,13 +521,14 @@ def test_a_zombie_named_after_the_program_holds_nothing_and_the_record_moves(tmp
     named node or opencode were caught in that window)."""
     import subprocess, sys
     w = world(tmp_path, monkeypatch, 'opencode')
-    zombie = subprocess.Popen([sys.executable, '-I', '-c', NAMED])
+    name = world.program  # this test's own: no other test's retirement waits for it
+    zombie = subprocess.Popen([sys.executable, '-I', '-c', NAMED, name])
     try:
         until(lambda: set(task_states(zombie.pid).values()) == {'Z'})
         with pytest.raises(PermissionError):
             os.listdir(f'/proc/{zombie.pid}/fd')
-        assert Path(f'/proc/{zombie.pid}/comm').read_text().strip() == 'node'
-        assert not hand_transcripts.opened([w.record], ('opencode', 'bun', 'node'))
+        assert Path(f'/proc/{zombie.pid}/comm').read_text().strip() == name
+        assert not hand_transcripts.opened([w.record], (name,))
         assert retire(w) == 1, f"declined: {retire.declined}"
     finally:
         zombie.wait()
@@ -529,15 +538,16 @@ def test_a_zombie_named_after_the_program_holds_nothing_and_the_record_moves(tmp
 def test_a_leader_that_exits_while_a_thread_holds_the_record_still_holds_the_move(tmp_path, monkeypatch):
     import subprocess, sys
     w = world(tmp_path, monkeypatch, 'opencode')
-    process = subprocess.Popen([sys.executable, '-I', '-c', LEADER_EXITS, str(w.record)], stdout=subprocess.PIPE,
-                               text=True)
+    name = world.program  # this test's own: no other test's retirement waits for it
+    process = subprocess.Popen([sys.executable, '-I', '-c', LEADER_EXITS, name, str(w.record)],
+                               stdout=subprocess.PIPE, text=True)
     try:
         assert process.stdout.readline().strip() == 'ready'
         until(lambda: task_states(process.pid).get(str(process.pid)) == 'Z')
         assert 'Z' in task_states(process.pid).values() and set(task_states(process.pid).values()) != {'Z'}
         with pytest.raises(PermissionError):
             os.listdir(f'/proc/{process.pid}/fd')
-        assert hand_transcripts.opened([w.record], ('opencode', 'bun', 'node'))
+        assert hand_transcripts.opened([w.record], (name,))
         assert retire(w) == 0
         assert ('hand', str(w.record), 'a process may hold its files') in retire.declined
         assert w.record.is_file()
