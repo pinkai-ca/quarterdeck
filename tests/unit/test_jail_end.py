@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import signal
+import tempfile
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -239,7 +241,12 @@ def launch(runtime, seat, pid):
 def test_with_no_server_the_launches_alone_are_the_roots(tmp_path, monkeypatch):
     launch(tmp_path, 'worker-1', os.getpid())
     monkeypatch.setattr(jail_end, '_sessions_elsewhere', lambda tmux, ship: False)
+    monkeypatch.setattr(jail_end, 'tmux_servers', lambda: set())
     assert jail_end.live_roots(tmp_path, Gone(tmp_path / 'no-socket'), object()) == {os.getpid()}
+    monkeypatch.setattr(jail_end, 'tmux_servers', lambda: {4242})  # a server whose socket file was unlinked
+    assert jail_end.live_roots(tmp_path, Gone(tmp_path / 'no-socket'), object()) == {os.getpid(), 4242}
+    monkeypatch.setattr(jail_end, 'tmux_servers', lambda: None)  # the process table unreadable: no reading
+    assert jail_end.live_roots(tmp_path, Gone(tmp_path / 'no-socket'), object()) is None
 
 
 def test_a_server_that_is_not_known_gone_gives_no_roots(tmp_path, monkeypatch):
@@ -262,3 +269,17 @@ def test_a_gone_server_while_the_ships_sessions_may_run_elsewhere_gives_no_roots
 def test_a_server_with_no_absolute_socket_is_never_read_as_gone(tmp_path):
     for socket in (None, 'named'):
         assert jail_end.server_state(SimpleNamespace(socket=socket)) == jail_end.UNKNOWN
+
+
+def test_every_tmux_server_of_this_user_is_found_by_its_process_name(tmp_path):
+    folder = Path(tempfile.mkdtemp(prefix='qdts-', dir='/tmp'))
+    socket = str(folder / 's')
+    env = {key: value for key, value in os.environ.items() if key not in ('TMUX', 'TMUX_PANE')}
+    subprocess.run(['tmux', '-S', socket, '-f', '/dev/null', 'new-session', '-d', 'sleep 60'], env=env, check=True)
+    pid = int(subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '#{pid}'], env=env, capture_output=True,
+                             text=True).stdout)
+    try:
+        assert pid in jail_end.tmux_servers() and os.getpid() not in jail_end.tmux_servers()
+    finally:
+        os.kill(pid, signal.SIGTERM)  # this test's own server, by its pid
+        shutil.rmtree(folder, ignore_errors=True)

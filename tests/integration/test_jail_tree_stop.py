@@ -13,6 +13,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -539,3 +540,55 @@ def orphaned_jail_of(ship, workspace: Path, seat: str) -> tuple[int, str]:
     [(_, pid, start)] = jail_end.orphans(ship.runtime, set(), seat=seat)[0]
     aged(start)
     return pid, start
+
+
+class OwnServer:
+    """A private tmux server of the test's own, by -S in a short folder of its own, ended by the test that started it."""
+
+    def __init__(self, folder: Path):
+        self.socket = str(folder / 's')
+
+    def __call__(self, *args):
+        env = {key: value for key, value in os.environ.items() if key not in ('TMUX', 'TMUX_PANE')}
+        return subprocess.run(['tmux', '-S', self.socket, '-f', '/dev/null', *args], env=env, capture_output=True,
+                              text=True, timeout=30)
+
+    def server_pid(self):
+        done = self('display-message', '-p', '#{pid}')
+        return int(done.stdout.strip()) if done.returncode == 0 and done.stdout.strip().isdigit() else None
+
+    def panes(self):
+        listed = self('list-panes', '-a', '-F', '#{pane_pid}')
+        if listed.returncode != 0:
+            raise OSError(listed.stderr)
+        return [SimpleNamespace(pid=int(pid)) for pid in listed.stdout.split()]
+
+
+@jailed
+def test_a_server_whose_socket_file_was_unlinked_keeps_its_panes_jails(ship, tmp_path, short):
+    """A server runs on when its socket file is removed: the socket reads as gone, yet a jail in its pane is no
+    orphan. It survives the sweep, with no alarm and no evidence."""
+    workspace = tmp_path / 'work'
+    script = tmp_path / 'launch.sh'
+    script.write_text(f'#!/bin/sh\nexec {shlex.join(argv_of(ship, workspace))}\n')
+    server = OwnServer(short)
+    assert server('new-session', '-d', '-s', 'sweep', f'sh {shlex.quote(str(script))}').returncode == 0
+    pid_of_server = server.server_pid()
+    try:
+        assert wait_for(lambda: (workspace / 'ready').exists(), 60)
+        [(_, pid, start)] = jail_end.orphans(ship.runtime, set(), seat='worker-1')[0]
+        aged(start)
+        os.unlink(server.socket)  # the test's own server: it runs on without its socket file
+        assert jail_end.server_state(server) == jail_end.GONE
+        logs = []
+        svc = SimpleNamespace(ship=ship, tmux=server, log=lambda event, **data: logs.append((event, data)))
+        assert jail_end.sweep(svc) == [] and write_bound.alive({pid: start}), 'its jail survives the sweep'
+        assert [event for event, _ in logs if event == 'jail-swept'] == []
+        assert jail_end.alarm(ship.runtime, 'worker-1')[1] is None, 'no alarm'
+        evidence = ship.runtime / 'evidence' / 'jail-sweep'
+        assert not evidence.exists() or not any(evidence.iterdir()), 'no evidence'
+    finally:
+        if pid_of_server:
+            os.kill(pid_of_server, signal.SIGTERM)  # the test's own server, by the pid it read; its panes end with it
+            wait_for(lambda: not write_bound._processes().get(pid_of_server), 10)
+        cleanup(ship)

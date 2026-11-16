@@ -101,7 +101,11 @@ def live_roots(runtime: Path, tmux, ship=None) -> set[int] | None:
     if isinstance(server, int) and server > 1:
         return roots | set(panes) | {server}
     if server_state(tmux) == GONE and not _sessions_elsewhere(tmux, ship):
-        return roots  # no server: no pane, so no jail can descend from one; the launches alone are roots
+        # No server at its socket: no pane can descend from it. But a server runs on when its socket file is unlinked,
+        # so every tmux server of this user is a root too: a real orphan goes to the user's manager or a subreaper,
+        # never to a tmux server.
+        servers = tmux_servers()
+        return None if servers is None else roots | servers
     return None  # running but unreadable, or unknown: a server whose pid cannot be read proves no pane's ancestry
 
 
@@ -113,6 +117,31 @@ def _socket_path(tmux) -> Path | None:
     default server, a named one, a reading with no socket): no claim about a server is made from a guessed path."""
     socket = getattr(tmux, 'socket', None)
     return Path(socket) if isinstance(socket, str) and os.path.isabs(socket) else None
+
+
+SERVER_NAME = 'tmux: server'  # the name a tmux server gives its own process
+
+
+def tmux_servers() -> set[int] | None:
+    """Every tmux server of this user, by its process name; None where the process table cannot be read."""
+    uid = os.getuid()
+    found = set()
+    try:
+        names = os.listdir('/proc')
+    except OSError:
+        return None
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            if os.stat(f'/proc/{name}').st_uid != uid:
+                continue
+            with open(f'/proc/{name}/comm') as stream:
+                if stream.read().strip() == SERVER_NAME:
+                    found.add(int(name))
+        except OSError:
+            continue  # ended while read
+    return found
 
 
 def _sessions_elsewhere(tmux, ship) -> bool:
