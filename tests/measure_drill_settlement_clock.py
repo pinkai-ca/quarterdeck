@@ -82,7 +82,7 @@ def test_installed_blind_under_quota(variant, scratch, private_socket_root, shar
     script = baseline_script() if variant == 'main' else blind.FINISHED_BLIND
     monkeypatch.setattr(blind, 'FINISHED_BLIND', script)
     original = blind.command
-    unit = 'qd-worker1-drill-clock-' + uuid.uuid4().hex + '.scope'
+    unit = 'qd-drill-clock-' + uuid.uuid4().hex + '.scope'
     bus = {**os.environ, 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}',
            'DBUS_SESSION_BUS_ADDRESS': f'unix:path=/run/user/{os.getuid()}/bus'}
     observations = []
