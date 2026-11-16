@@ -244,3 +244,84 @@ def test_a_worker_beside_a_hand_still_resumes(handed: shipmod.Ship, tmux: Tmux):
     assert " · resumed " in proof and "a hand starts fresh" not in proof
     assert worker.record() == record, "the same conversation, in a new process"
     assert json.loads((worker.trusted / "launch.json").read_text())["resume"] is not None
+
+
+class _Book:
+    """A ledger reading: the named pools walled, room known on the rest unless named unknown."""
+    def __init__(self, walled=(), unknown=()):
+        self._walled, self._unknown = set(walled), set(unknown)
+        self.quota = type('Quota', (), {'room_known': lambda _, name, *, scope=None: name not in self._unknown})()
+
+    def walled(self, name, ship=None, *, scope=None):
+        return name in self._walled
+
+    def usage_known(self, name, *, scope=None):
+        return name not in self._unknown
+
+    def catching_up(self):
+        return False
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def listed(ship: shipmod.Ship) -> shipmod.Ship:
+    """The example ship's worker declared on a plain list of two pools, as the office seats are."""
+    file = ship.folder / "ship.toml"
+    text = file.read_text().replace('[pools.fake]\nprovider = "synthetic"',
+                                    '[pools.fake]\nprovider = "synthetic"\n\n[pools.spare]\nprovider = "synthetic"', 1)
+    start = text.index('[seats.worker-1]')
+    text = text[:start] + text[start:].replace('pool = "fake"', 'pool = ["fake", "spare"]', 1)
+    file.write_text(text)
+    return shipmod.load(ship.folder)
+
+
+def _saved_on_spare(ship, tmux):
+    seat = seatmod.Seat(ship, ship.seat("worker-1"), tmux, launching=True)
+    assert seat.spec.pools == ("fake", "spare") and not seat.spec.pool_choices, "a plain list, no per-pool table"
+    seat.move_to("spare")  # as the service's failover leaves a seat it moved
+    return seatmod.Seat(ship, ship.seat("worker-1"), tmux, launching=True)
+
+
+def test_a_down_seat_on_a_plain_list_leaves_its_spent_saved_pool_for_the_first_with_room(
+        listed: shipmod.Ship, tmux: Tmux, monkeypatch):
+    from quarterdeck import ledger
+    monkeypatch.setattr(ledger.Ledger, "reading", classmethod(lambda cls, path: _Book(walled={"spare"})))
+    seat = _saved_on_spare(listed, tmux)
+    assert seat.pool.name == "spare"
+    proof = seat.up(resume=False)
+    assert proof.startswith("worker-1: launched on fake (the first declared choice with room, before its saved "
+                            "spare); its saved choice was spare"), proof
+    assert json.loads((seat.trusted / "launch.json").read_text())["pool"] == "fake"
+    assert (seat.trusted / "pool").read_text() == "fake\n"
+
+
+def test_a_down_seat_keeps_its_saved_pool_where_the_first_ones_room_is_unknown(
+        listed: shipmod.Ship, tmux: Tmux, monkeypatch):
+    from quarterdeck import harness, ledger
+    seat = _saved_on_spare(listed, tmux)
+    monkeypatch.setattr(ledger.Ledger, "reading", classmethod(lambda cls, path: None))  # no ledger at all
+    assert seat.launch_choice() == ("spare", "its saved choice")
+    # A ledger that shows the first pool not walled, but whose room on it is not known: the provider's usage unread.
+    class Reads:
+        """The program's own reader, but one that reads its provider's usage, so room is known only from it."""
+        background_usage, reads_usage, model_scoped_quota = False, True, False
+
+        def __init__(self, real):
+            self._real = real
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+    native = harness.native_for
+    monkeypatch.setattr(harness, "native_for", lambda provider: Reads(native(provider)))
+    monkeypatch.setattr(ledger.Ledger, "reading", classmethod(lambda cls, path: _Book(unknown={"fake"})))
+    assert seat.launch_choice() == ("spare", "its saved choice")
+    proof = seat.up(resume=False)
+    assert proof.startswith("worker-1 up in") and "launched on" not in proof, proof
+    assert json.loads((seat.trusted / "launch.json").read_text())["pool"] == "spare"
+    seat.down()
+    # With its saved pool spent too, it still never moves onto a pool whose room is unknown.
+    monkeypatch.setattr(ledger.Ledger, "reading", classmethod(
+        lambda cls, path: _Book(walled={"spare"}, unknown={"fake"})))
+    assert seat.launch_choice() == ("spare", "saved choice retained; room unknown on fake")

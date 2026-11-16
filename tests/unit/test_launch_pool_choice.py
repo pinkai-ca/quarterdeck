@@ -27,9 +27,18 @@ def down_on(r, pool):
 
 
 def walls(monkeypatch, *walled):
+    """The ledger shows these pools walled, and room known on every other: the reading the service routes by."""
     class Book:
+        quota = SimpleNamespace(room_known=lambda name, *, scope=None: True)
+
         def walled(self, name, ship=None, *, scope=None):
             return name in walled
+
+        def usage_known(self, name, *, scope=None):
+            return True
+
+        def catching_up(self):
+            return False
 
         def close(self):
             pass
@@ -37,8 +46,10 @@ def walls(monkeypatch, *walled):
     monkeypatch.setattr(ledger.Ledger, 'reading', classmethod(lambda cls, path: Book()))
 
 
-def test_a_saved_later_choice_gives_way_to_the_first_with_room_and_starts_fresh_on_another_program(migrated):
+def test_a_saved_later_choice_gives_way_to_the_first_with_room_and_starts_fresh_on_another_program(migrated,
+                                                                                                    monkeypatch):
     r = migrated
+    walls(monkeypatch)  # room known on both
     seat = down_on(r, 'second')
     assert seat.pool.name == 'second'
     proof = seat.up()
@@ -90,8 +101,9 @@ def test_an_undeclared_saved_choice_with_a_launch_on_file_is_still_refused(migra
         Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
 
 
-def test_qd_set_on_a_down_seat_chooses_the_next_launch_and_it_is_taken_once(migrated):
+def test_qd_set_on_a_down_seat_chooses_the_next_launch_and_it_is_taken_once(migrated, monkeypatch):
     r = migrated
+    walls(monkeypatch)  # room known on both
     r.worker.down()
     seat = Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
     answer = cli.select(r.ship, seat, ['pool=second'])
@@ -157,6 +169,7 @@ def test_a_seat_that_is_up_is_never_moved_by_its_launch_choice(migrated):
 
 def test_bring_up_launches_down_seats_by_the_ship_file(migrated, monkeypatch):
     r = migrated
+    walls(monkeypatch)  # room known on both
     down_on(r, 'second')
     monkeypatch.setattr(seatmod.shipmod, 'fence', lambda ship: 'fenced')
     proofs = seatmod.bring_up(r.ship, r.tmux)

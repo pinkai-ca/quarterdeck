@@ -407,9 +407,11 @@ class Seat:
         """The pool a launch of this down seat takes, and why: the ship file is the Admiral's order.
 
         A person's explicit choice for this launch (``qd set pool=`` on a down seat) is taken as it is. Otherwise
-        the first declared choice with room, one the ledger does not show walled, wins over the saved choice:
-        a saved choice later in the list than a choice with room, or one the ship file no longer declares,
-        gives way. With no choice that has room, the saved choice stays, or the first declared one.
+        the first declared choice with room wins over the saved choice: a saved choice later in the list than a
+        choice with room, or one the ship file no longer declares, gives way. Room is what the service routes by
+        (``quota.cached_open``): a choice whose room is unknown, with no ledger, its usage not yet read or its
+        history still catching up, is never taken over the saved one. The saved choice stays while the ledger does
+        not show it walled; with no choice that has room, the saved choice stays, or the first declared one.
         """
         pools = self.spec.pools
         current = self.pool.name
@@ -422,21 +424,22 @@ class Seat:
             return current, 'chosen for this launch by qd set'
         from . import ledger, quota
         book = ledger.Ledger.reading(self.ship.runtime / 'ledger.sqlite')
-        history_pending = False
+        unknown = []
         try:
             for name in pools:
-                pool = self.ship.pool(name)
-                if book is not None and pool.kind == 'key' and pool.budget is not None and book.catching_up():
-                    history_pending = True
-                    continue
+                if name == saved:
+                    if book is None or not book.walled(name, self.ship, scope=quota.model_scope(self, name)):
+                        return name, 'its saved choice'
+                    continue  # spent: a declared choice with room after it may take its place
+                if book is not None and quota.cached_open(self.ship, book, name, self):
+                    return name, f'the first declared choice with room, before its saved {saved}'
                 if book is None or not book.walled(name, self.ship, scope=quota.model_scope(self, name)):
-                    return name, ('its saved choice' if name == saved else
-                                  f'the first declared choice with room, before its saved {saved}')
+                    unknown.append(name)  # not shown walled, and its room not known either
         finally:
             if book is not None:
                 book.close()
-        if history_pending:
-            return current, 'saved choice retained; budget room unknown while accounting catches up'
+        if unknown:
+            return current, f"saved choice retained; room unknown on {', '.join(unknown)}"
         return current, 'every declared choice is walled; its saved choice stays'
 
     def failover_to(self, pool: str) -> str:
@@ -762,7 +765,7 @@ class Seat:
                 resume = False
             def proof(text):
                 return text + (' · fresh: its last order is reported' if reported else '')
-            if not self.spec.pool_choices or self.is_up:
+            if len(self.spec.pools) < 2 or self.is_up:  # a plain list of pools chooses as a table of them does
                 return proof(self._up(resume))
             from .recovery import require_clear
             require_clear(self)
