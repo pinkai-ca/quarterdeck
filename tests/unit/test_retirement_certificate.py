@@ -94,8 +94,9 @@ def test_each_input_change_wakes_the_next_scan(tmp_path, clock, monkeypatch, rel
 def test_declaration_and_ledger_gate_changes_wake_scan(tmp_path, clock):
     s = service(tmp_path)
     certify(s)
-    s.ship.file.write_text('changed declaration\n')
-    assert s.post_retirement_gate.begin(s, 1)
+    s.ship.file.write_text('# Changed declaration\n')
+    clock.mono = 1
+    assert s.post_retirement_gate.begin(s, clock.mono)
     certify(s)
     s.ledger.catching_up = lambda: True
     retirement.due(s, idle=True)
