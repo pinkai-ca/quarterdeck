@@ -177,6 +177,44 @@ def test_moving_batches_keep_draining_and_preserve_original_bytes(tmp_path, cloc
         assert retirement.retired(path, s.runtime).read_bytes() == original
 
 
+@pytest.mark.parametrize('change', ['closure', 'receipt', 'journal', 'launch'])
+def test_changed_eligibility_rechecks_and_moves_original_evidence(tmp_path, clock, change):
+    s = service(tmp_path)
+    message = s.store.new('order' if change == 'closure' else 'answer',
+                          'lead', 'builder', 'Synthetic task')
+    attempt = s.attempts.open(message, 'builder', '%1', 100, '2000-01-01T00:00:00+00:00')
+    if change != 'receipt':
+        s.attempts.close(attempt, 'delivered')
+    journal = s.runtime / 'post' / 'pending' / 'builder' / attempt.path.name
+    launch = s.runtime / 'trusted' / 'builder' / 'launch.json'
+    if change == 'journal':
+        data = dict(seat='builder', identity=dict(pane='%1', pid=100, harness='fake', launch=attempt.launched_at),
+                    at=attempt.at, since=attempt.at, payload=post.typed([message]), phase='queued',
+                    record=None, shown=None, attempts=[attempt.path.name])
+        journal.write_text(json.dumps(data))
+    elif change == 'launch':
+        launch.parent.mkdir(parents=True)
+        launch.write_text(json.dumps(dict(pane='%1', pid=100, at=attempt.launched_at)))
+    certify(s)
+    assert attempt.path.exists()
+    if change == 'closure':
+        s.store.new('report', 'builder', 'lead', 'Synthetic completion', re=message.id)
+    elif change == 'receipt':
+        s.attempts.close(attempt, 'delivered')
+    elif change == 'journal':
+        data['phase'] = 'delivered'
+        journal.write_text(json.dumps(data))
+    else:
+        launch.unlink()
+    original = attempt.path.read_bytes()
+    journal_bytes = journal.read_bytes() if journal.exists() else None
+    retirement.due(s, idle=True)
+    assert s.logs[-1][1]['attempts'] == 1
+    assert retirement.retired(attempt.path, s.runtime).read_bytes() == original
+    if journal_bytes is not None:
+        assert retirement.retired(journal, s.runtime).read_bytes() == journal_bytes
+
+
 def test_failed_pass_retains_stall_deadline_and_does_not_wait(tmp_path, clock, monkeypatch):
     s = service(tmp_path)
     wall = [1000.0]
