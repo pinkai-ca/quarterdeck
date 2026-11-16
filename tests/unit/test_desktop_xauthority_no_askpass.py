@@ -79,7 +79,7 @@ def test_no_list_passes_askpass_even_one_that_names_it(which):
 
 def test_the_server_and_the_service_never_hold_askpass():
     assert ASKPASS not in je.unjailed_environment(CALLER)
-    assert ASKPASS not in je.service_environment(CALLER, keys=(ASKPASS,))
+    assert ASKPASS not in je.service_environment(CALLER)
     assert not je.from_pane(ASKPASS) and ASKPASS not in set_names(je.pane_settings(CALLER))
 
 

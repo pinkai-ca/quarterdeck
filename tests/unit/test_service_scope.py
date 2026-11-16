@@ -41,16 +41,17 @@ def test_the_declared_environment_keeps_its_list_and_the_pools_keys_and_never_a_
                'GIT_INDEX_FILE': '/i', 'GIT_OBJECT_DIRECTORY': '/o', 'GIT_SSH_COMMAND': 'ssh -i k', 'GIT_SSH': 's',
                'QD_SHIP': '/s', 'QD_DEFAULT_SHIP': '/d', 'QD_SESSION_OWNER': 't', 'GIT_AUTHOR_NAME': 'a',
                'PYTHONPATH': '/p'}
-    kept = je.service_environment(environ, ['POOL_API_KEY', 'QD_SEAT', 'ABSENT_KEY'])
-    # Named exactly: no other QD_ or GIT_ name, and QD_TMUX_SOCKET only where servicectl finds it declared.
-    assert set(kept) == {'PATH', 'HOME', 'LC_ALL', 'POOL_API_KEY', 'XDG_RUNTIME_DIR', 'DISPLAY', 'QD_SHIP',
+    kept = je.service_environment(environ)
+    # Named exactly: no other QD_ or GIT_ name, and QD_TMUX_SOCKET only where servicectl finds it declared. No pool
+    # key either: no seat runs on a key (ship.key_refusal), so the service holds none.
+    assert set(kept) == {'PATH', 'HOME', 'LC_ALL', 'XDG_RUNTIME_DIR', 'DISPLAY', 'QD_SHIP',
                          'QD_DEFAULT_SHIP', 'GIT_AUTHOR_NAME'}  # DISPLAY: the desktop's, for the server it may start
 
 
-def test_the_pools_keys_are_the_env_names_the_ship_file_declares():
-    pools = {'a': SimpleNamespace(api_key='env:ONE_KEY'), 'b': SimpleNamespace(api_key='file:/k'),
-             'c': SimpleNamespace(api_key=None)}
-    assert servicectl.pool_keys(SimpleNamespace(pools=pools)) == ['ONE_KEY']
+def test_the_service_names_no_pool_key_whatever_the_ship_file_declares():
+    import inspect
+    assert list(inspect.signature(je.service_environment).parameters) == ['environ'], 'no way to pass one in'
+    assert not hasattr(servicectl, 'pool_keys')
 
 
 def test_an_unjailed_seat_refuses_a_secret_name_but_the_one_its_pools_declared_key_fills(monkeypatch):
@@ -62,10 +63,10 @@ def test_an_unjailed_seat_refuses_a_secret_name_but_the_one_its_pools_declared_k
     caller = {'PATH': '/bin', 'HOME': '/h', 'POOL_KEY_NAME': 'k-123', 'UNDECLARED_API_KEY': 'u-456', 'QD_SEAT': 'una'}
     keyed = Pool('keyed', 'anthropic', api_key='env:POOL_KEY_NAME')
     plain = Pool('plain', 'anthropic')
-    # The service starts from its declared environment: the declared key is there, the undeclared one is not.
-    service = je.service_environment(caller, servicectl.pool_keys(SimpleNamespace(pools={'keyed': keyed})))
-    assert 'POOL_KEY_NAME' in service and 'UNDECLARED_API_KEY' not in service and 'QD_SEAT' not in service
-    monkeypatch.setattr(os, 'environ', dict(service))
+    # The service starts from its declared environment: no key, declared or not, and no seat.
+    service = je.service_environment(caller)
+    assert 'POOL_KEY_NAME' not in service and 'UNDECLARED_API_KEY' not in service and 'QD_SEAT' not in service
+    monkeypatch.setattr(os, 'environ', dict(caller))  # the rule below is the unjailed seat's own, read where it is
     filled = key_environment(keyed, 'PROGRAM_API_KEY')  # as a harness fills its program's key variable
     refuse_secret_names('w', {'HOME': '/h', **filled}, keyed)  # the key pool still launches with its key
     with pytest.raises(ShipError, match='names OTHER_TOKEN, which looks secret'):

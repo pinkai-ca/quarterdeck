@@ -98,9 +98,9 @@ def unjailed_environment(environ) -> dict[str, str]:
     return declared(environ, UNJAILED, UNJAILED_PREFIXES)
 
 
-def service_environment(environ, keys=()) -> dict[str, str]:
-    """What the service starts with: its own list, and the pools' declared ``keys``."""
-    return declared(environ, SERVICE, SERVICE_PREFIXES, keys)
+def service_environment(environ) -> dict[str, str]:
+    """What the service starts with: its own list, and no pool's key (ship.key_refusal: no seat runs on one)."""
+    return declared(environ, SERVICE, SERVICE_PREFIXES)
 
 
 def looks_secret(name: str) -> bool:

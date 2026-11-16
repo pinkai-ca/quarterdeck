@@ -368,8 +368,10 @@ def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
 
     from . import jail_environment
 
-    # Declared, never inherited: not the caller's seat (QD_SEAT) nor the desktop's secrets.
-    environment = jail_environment.service_environment(os.environ, pool_keys(ship))
+    # Declared, never inherited: not the caller's seat (QD_SEAT) nor the desktop's secrets, nor any pool's key. No seat
+    # runs on a key until the routed key isolation lands (ship.key_refusal), so the service needs none, and an unjailed
+    # seat of the same user could read one in its /proc/<pid>/environ.
+    environment = jail_environment.service_environment(os.environ)
     environment['QD_SHIP'] = str(ship.folder)
     from .tmux_socket import private_endpoint
 
@@ -443,12 +445,6 @@ def record_for_test_run(ship: Ship, pid: int, scope: list[str]) -> None:
         durable.replace_file(target / f'{pid}-{record["start"]}.json', json.dumps(record, sort_keys=True) + '\n')
     except OSError:
         pass  # the run's scan by the ship's path still finds it; a record never stops a start
-
-
-def pool_keys(ship: Ship) -> list[str]:
-    """The variables the ship file names for its pools' keys (api_key = "env:NAME"): the service reads them."""
-    return [pool.api_key.partition(':')[2] for pool in ship.pools.values()
-            if pool.api_key and pool.api_key.startswith('env:')]
 
 
 def scope_unit(scope: list[str]) -> str:

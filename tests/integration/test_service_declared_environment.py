@@ -20,7 +20,8 @@ from .test_ship_server import ship  # noqa: F401  the drydock in a short folder,
 DECOYS = ('QD_DECOY_OPENAI_API_KEY', 'QD_DECOY_JMAP_TOKEN', 'DECOY_CLIENT_SECRET', 'DECOY_HARMLESS')
 SESSION = ('DISPLAY', 'SSH_AUTH_SOCK', 'DBUS_SESSION_BUS_ADDRESS', 'XAUTHORITY')  # the desktop's: kept for unjailed panes
 ASKPASS = 'SUDO_ASKPASS'  # reaches no seat, no server and no service, whatever list names it
-POOL_KEY = 'DECOY_POOL_API_KEY'  # declared in the ship file as a pool's key: the service reads it
+POOL_KEY = 'DECOY_POOL_API_KEY'  # declared in the ship file as a keyed endpoint's key: the service never holds it
+KEY_POOL_KEY = 'DECOY_KEY_POOL_API_KEY'  # declared as a key pool's key: nor that
 
 
 def environ_names(pid: int) -> set[str]:
@@ -36,13 +37,15 @@ def seeded(monkeypatch) -> None:
         monkeypatch.setenv(name, 'decoy-value')
     monkeypatch.setenv('QD_SEAT', 'una')  # the pane that ran qd sync
     monkeypatch.setenv(POOL_KEY, 'decoy-key')
+    monkeypatch.setenv(KEY_POOL_KEY, 'decoy-key')
     monkeypatch.setenv(ASKPASS, '/usr/bin/ssh-askpass')
 
 
 def test_the_service_holds_only_its_declared_environment(drydock: Path, tmux, monkeypatch):
     file = drydock / 'ship.toml'
     text = file.read_text() + ('\n[pools.keyed]\nprovider = "local"\nendpoint = "http://127.0.0.1:9/v1"\n'
-                               f'api_key = "env:{POOL_KEY}"\n')
+                               f'api_key = "env:{POOL_KEY}"\n'
+                               f'\n[pools.paid]\nprovider = "synthetic"\napi_key = "env:{KEY_POOL_KEY}"\n')
     file.write_text(text)
     ship = shipmod.load(drydock)
     seeded(monkeypatch)
@@ -59,7 +62,7 @@ def test_the_service_holds_only_its_declared_environment(drydock: Path, tmux, mo
         assert not names & {'QD_TMUX_SOCKET', 'GIT_DIR'}, 'a caller\'s socket and repository stay with the caller'
         assert 'service started' in proof and ('in its own scope qd-service-' in proof
                                                or "in the caller's scope: systemd-run" in proof), proof
-        assert POOL_KEY in names, 'a pool key the ship file names is what the service needs'
+        assert not names & {POOL_KEY, KEY_POOL_KEY}, 'no seat runs on a key, so the service holds none'
         assert {'PATH', 'HOME', 'QD_SHIP', *SESSION} <= names, 'it may start the server unjailed panes inherit'
         shipped = Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
         assert f'QD_SHIP={ship.folder}'.encode() in shipped, 'its own ship, whatever the caller held'
@@ -80,7 +83,7 @@ def test_the_ships_own_tmux_server_starts_from_the_declared_environment(ship, mo
         names = {line.split('=', 1)[0] for line in shown if '=' in line}
         copied = {line.split('=', 1)[0] for line in session if '=' in line}  # tmux's update-environment copies
         print('server:', ' '.join(sorted(names)), '| session:', ' '.join(sorted(copied)))  # names only
-        everything = set(DECOYS) | {'QD_SEAT', POOL_KEY, ASKPASS}
+        everything = set(DECOYS) | {'QD_SEAT', POOL_KEY, KEY_POOL_KEY, ASKPASS}
         assert not names & everything, sorted(names & everything)
         assert not copied & everything, sorted(copied & everything)
         assert {'PATH', *SESSION} <= names, 'the desktop names an unjailed pane keeps'
