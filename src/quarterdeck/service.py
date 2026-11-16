@@ -29,7 +29,7 @@ from . import trusted_files
 from . import harness as harnesses
 from . import service_status, service_timing, service_wait
 from . import shutdown, lifecycle
-from .harness import reader_stamp
+from .harness import held_reading, reader_stamp
 from . import pending as pending_delivery, delivery_record
 from . import accounting_health, credential, durable, idle, install, machine, move_hold, post, post_dir, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
@@ -137,6 +137,8 @@ class Service:
         self.usage_hold: dict[str, float] = {}  # a refused pool's Retry-After, by the monotonic clock
         self.usage_logged: dict[str, str] = {}  # each pool's last logged usage failure
         self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
+        # record -> when its mark, made inside a reader's time-bound unknown, is read again though its bytes stand still
+        self.read_holds: dict[Path, held_reading.Hold] = {}
         self.account_errors: dict[Path, tuple] = {}  # evidence, error, next transient read time
         self.accounting_health = accounting_health.Health()  # a new process starts unchecked
         self.accounting_health_error = None
@@ -2128,6 +2130,7 @@ class Service:
         table = machine.processes() if process_table is None else process_table
         observations, notices, human_readings = [], [], []
         marks, errors = dict(self.read_marks), dict(self.account_errors)
+        holds, held = dict(getattr(self, 'read_holds', {})), {}
         spans = {}  # record -> (size, bound): read refused past its bound this pass
         meters = deepcopy(self.meters)
         checkpoints = {}
@@ -2179,7 +2182,8 @@ class Service:
                     launch = self.ledger.provenance.owning_launch(prepared[0], record)
                     evidence = (stamp, owned.reason, record_fingerprint(record_owner.registry(seat.trusted)), launch)
                     # New launch/price evidence for this record must be reconciled even if its bytes stand still.
-                    if marks.get(record) == stamp and prepared[2] is None:
+                    # A mark made inside a time-bound unknown is read again once that unknown has passed.
+                    if marks.get(record) == stamp and prepared[2] is None and not held_reading.due(holds.get(record)):
                         continue
                     checkpoint = self.ledger.accounting_evidence(
                         seat.name, stamp, owned.reason, launch, reader_keys.get(owned.name))
@@ -2198,6 +2202,8 @@ class Service:
                     # Empty records retain ordinary read/error checks: no measured turn was accounted.
                     if stable and turns and state.turns is not None and state.turn_open is not None:
                         checkpoints[record] = checkpoint
+                    if stable and state.turn_open is None and (hold := held_reading.unknown_until(owned)) is not None:
+                        held[record] = hold
                 except OSError as error:
                     message = str(error)
                     if getattr(error, 'size', None) is not None and getattr(error, 'bound', None) is not None:
@@ -2248,6 +2254,10 @@ class Service:
                                 meters[seat.name] = machine.Meter(pane.pid)
                             notices.append(("ledger", dict(seat=seat.name, record=record.name, turns=written)))
                     marks[record] = stamp
+                    if record in held:
+                        holds[record] = held[record]
+                    else:
+                        holds.pop(record, None)
                     if record in checkpoints:
                         book.mark_accounted(record, checkpoints[record])
                     if record == current and seat.session.human:
@@ -2259,6 +2269,7 @@ class Service:
                 book.finish_catchup(getattr(self, 'accounting_epoch', None))
 
         self.read_marks, self.account_errors, self.meters = marks, errors, meters
+        self.read_holds = {record: hold for record, hold in holds.items() if record in marks}
         return observations, notices, human_readings
 
     @staticmethod

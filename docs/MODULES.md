@@ -62,6 +62,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `capabilities.py` | what each adapter declares of its harness's efforts and defaults, the checks of a seat's `model` and `effort` against that, and the words for a program's own default |
 | `costs.py` | an endpoint program's step costs: what its record states, what stated rates prove, and what stays unpriced |
 | `failures.py` | a recorded error's bounded first words |
+| `held_reading.py` | until when a record's unknown turn state holds only for a time, as its reader says, so that the accounting pass reads the record again once it has passed; the service's alone, in no reader's stamp set |
 | `home.py` | building a seat's home: a pool's credential brought into it, a key pool's environment, and the ship's settings layered over a program's own |
 | `json_record.py` | JSON-lines records |
 | `record_file.py` | the one opener of a seat's program record: no link at its name or on the way from the seat folder, no fifo, socket or device, only this user's own regular file with one name; one read at most a bound (128 MiB for JSON lines, 512 MiB for a SQLite record with its log), refused past it; the status line's word on a record near or past its bound |
