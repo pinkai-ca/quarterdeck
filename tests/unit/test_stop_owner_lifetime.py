@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 import signal
+import select
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -60,6 +61,7 @@ def stand_in(tmp_path, *, place="current", response="ignore"):
     try:
         assert child.stdout.readline().strip() == "held"
         child.descendants = {}
+        child.runtime = runtime
         yield runtime, child
     finally:
         if child.poll() is None:
@@ -74,7 +76,9 @@ def stopping_clock(monkeypatch, child, response="ignore"):
     kill = os.kill
 
     def send(pid, sig):
+        from quarterdeck import stop_barrier
         assert pid == child.pid or pid in child.descendants
+        assert stop_barrier.read(child.runtime).get(pid) == shutdown.process_start(pid)
         signals.append(sig)
         kill(pid, sig)
         if pid != child.pid:
@@ -234,6 +238,47 @@ def test_a_live_child_barrier_holds_start_until_the_child_ends(tmp_path, monkeyp
         # No service is raised: after the automatic clear, the ordinary already-up path supplies the proof.
         monkeypatch.setattr(servicectl, 'alive', lambda _: True)
         assert servicectl.start(ship).startswith('service alive')
+        assert not stop_barrier.path(runtime).exists()
+
+
+def test_a_child_discovered_during_the_kill_holds_both_restart_paths(tmp_path, monkeypatch):
+    from quarterdeck import install, stop_barrier
+
+    with stand_in(tmp_path, response="release-tree") as (runtime, child):
+        stopping_clock(monkeypatch, child, response="release-tree")
+        send = os.kill
+
+        def temporarily_unavailable(pid, sig):
+            if pid in child.descendants:
+                raise PermissionError('synthetic child temporarily cannot be ended')
+            send(pid, sig)
+
+        monkeypatch.setattr(servicectl.os, 'kill', temporarily_unavailable)
+        try:
+            with pytest.raises(ShipError, match='exit cannot be confirmed'):
+                servicectl.stop(runtime)
+            assert child.poll() is not None
+            assert child.descendants
+            known = stop_barrier.read(runtime)
+            assert all(known[pid] == start for pid, start in child.descendants.items())
+            for start in (lambda: servicectl.start(SimpleNamespace(runtime=runtime)),
+                          lambda: install._restart_old(SimpleNamespace(runtime=runtime),
+                                   {'pending': {'was_running': True}}, bootstrap=False)):
+                with pytest.raises(ShipError, match='service stop barrier') as error:
+                    start()
+                assert all(f'pid {pid} start {began}' in str(error.value)
+                           for pid, began in child.descendants.items())
+        finally:
+            monkeypatch.setattr(servicectl.os, 'kill', send)
+            for pid in child.descendants:
+                descriptor = os.pidfd_open(pid)
+                try:
+                    send(pid, signal.SIGKILL)
+                    # Wait for the exit event; the timeout is only a teardown guard.
+                    assert select.select([descriptor], [], [], 20)[0]
+                finally:
+                    os.close(descriptor)
+        stop_barrier.require_clear(runtime)
         assert not stop_barrier.path(runtime).exists()
 
 
