@@ -59,3 +59,27 @@ def test_a_cold_store_reads_each_import_record_once(tmp_path, monkeypatch):
     assert sorted(m.id for m in messages) == sorted(m.id for m in sent)
     assert tried.count('imports') == 3, f'one import record tried per message: {tried}'
     assert tried.count('forwarded') == 3, f'one route file tried per message: {tried}'
+
+
+from .test_group_forward_crossship import fleet_pair, imported  # noqa: E402,F401 (fleet_pair: the fixture, by name)
+
+
+def test_an_imported_message_with_an_at_address_reads_its_import_record_once(fleet_pair, monkeypatch):
+    """The view of an imported message, or one with an '@' address, passes the import record it was given on to the
+    route lookup, so a cold load outside a reading pass reads it once, as every other message's."""
+    pair = fleet_pair
+    root = imported(pair, monkeypatch)
+    assert '@' in root.id and root.sender == 'desk@office'
+    agora = pair[1]
+    tried = []
+    real = fleet_post.stable_bytes
+
+    def counted(path):
+        tried.append(Path(path))
+        return real(path)
+    monkeypatch.setattr(fleet_post, 'stable_bytes', counted)
+    messages = post.Store(agora.runtime).all()
+    assert any(m.id == root.id for m in messages)
+    record = fleet_post.import_path(agora.runtime, root.id)
+    assert record.is_file()
+    assert tried.count(record) == 1, f'the import record read {tried.count(record)} times'

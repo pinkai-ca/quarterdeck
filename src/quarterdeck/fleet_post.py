@@ -244,7 +244,7 @@ def local_view(runtime, message, *, data=None, imported=UNREAD):
         return seat if ship == here else f'{seat}@{ship}'
 
     from .forward_post import projected
-    return projected(runtime, replace(message, sender=view(message.sender), to=view(message.to)))
+    return projected(runtime, replace(message, sender=view(message.sender), to=view(message.to)), imported=imported)
 
 
 def unrouted(runtime):
