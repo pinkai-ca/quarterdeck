@@ -483,7 +483,7 @@ def scoped(ship: Ship, environment: dict[str, str]) -> tuple[list[str], str | No
 
 def stop(runtime: Path) -> str:
     """Signal the lock's owner; confirm its exit, ending its tree if it outlives the grace."""
-    from . import shutdown, write_bound
+    from . import service_processes, shutdown, write_bound
 
     def end_tree(known):
         def observe(found):
@@ -493,10 +493,32 @@ def stop(runtime: Path) -> str:
 
     previous = stop_barrier.read(runtime)
     if previous is not None:
-        if stop_barrier.remaining(previous):
+        if left := stop_barrier.remaining(previous):
+            bound = None
+            for process, began in left.items():
+                try:
+                    bound = service_processes.capture(process, began, owners=previous)
+                    break
+                except (OSError, ValueError, IndexError):
+                    continue
+            if bound is None:
+                raise ShipError('earlier service process scope cannot be read; exit cannot be confirmed')
+            try:
+                previous.update(bound.read())
+                stop_barrier.retain(runtime, previous)
+            except (OSError, ValueError, IndexError):
+                raise ShipError('earlier service process re-read failed; exit cannot be confirmed') from None
             end_tree(previous)
+            try:
+                previous.update(bound.read())
+                stop_barrier.retain(runtime, previous)
+            except (OSError, ValueError, IndexError):
+                raise ShipError('earlier service process re-read failed; exit cannot be confirmed') from None
+            if stop_barrier.remaining(previous):
+                raise ShipError(f'earlier service exit cannot be confirmed: {stop_barrier.names(previous)}')
             stop_barrier.require_clear(runtime)
-            return f"service killed · earlier stop's tree confirmed ended: {stop_barrier.names(previous)}"
+            return (f"service killed · earlier stop's tree confirmed ended: {stop_barrier.names(previous)}"
+                    f" · {bound.proof}")
         stop_barrier.require_clear(runtime)
     if not alive(runtime):
         remove_heartbeat(runtime)
@@ -521,6 +543,22 @@ def stop(runtime: Path) -> str:
     except OSError as error:
         raise ShipError(f"service {pid} tree cannot be read ({type(error).__name__}); exit cannot be confirmed") from None
     stop_barrier.retain(runtime, known)
+    try:
+        process_scope = service_processes.capture(pid, start)
+    except (OSError, ValueError, IndexError) as error:
+        raise ShipError(f'service {pid} process scope cannot be read ({type(error).__name__}); '
+                        'exit cannot be confirmed') from None
+
+    def reread_processes():
+        try:
+            found = process_scope.read()
+        except (OSError, ValueError, IndexError) as error:
+            raise ShipError(f'service {pid} process re-read failed ({type(error).__name__}); '
+                            'exit cannot be confirmed') from None
+        known.update(found)
+        stop_barrier.retain(runtime, known)
+
+    reread_processes()  # before the first signal, while the owner still proves its scope
     from . import relaunch_intent
     term_started = time.monotonic()
     extended = shutdown.inflight(runtime, owner) is not None
@@ -528,6 +566,7 @@ def stop(runtime: Path) -> str:
     for sig, patience, how in ((signal.SIGTERM, shutdown.ORDINARY_GRACE, "stopped"), (signal.SIGKILL, 2.0, "killed")):
         try:
             if sig == signal.SIGKILL:
+                reread_processes()
                 end_tree(known)
             elif not shutdown.process_gone(identity):
                 os.kill(pid, sig)
@@ -554,6 +593,7 @@ def stop(runtime: Path) -> str:
             gone_by = time.monotonic() + EXIT_SETTLE
             while time.monotonic() < gone_by and not shutdown.process_gone(identity):
                 time.sleep(0.05)
+            reread_processes()  # includes children born during SIGTERM even after their parent ended
             released_alive = how == "stopped" and not shutdown.process_gone(identity)
             remaining = any(not shutdown.process_gone(dict(pid=child, start=began))
                             for child, began in known.items())
@@ -562,6 +602,7 @@ def stop(runtime: Path) -> str:
                     end_tree(known)
                 except OSError as error:
                     raise ShipError(f"service {pid} tree could not be ended ({type(error).__name__}); exit cannot be confirmed") from None
+            reread_processes()  # a new member after the kill holds the proof too
             unconfirmed = [child for child, began in known.items()
                            if not shutdown.process_gone(dict(pid=child, start=began))]
             if unconfirmed or not shutdown.process_gone(identity):
@@ -578,6 +619,7 @@ def stop(runtime: Path) -> str:
             bound = max(shutdown.DELIVERY_GRACE if extended else shutdown.ORDINARY_GRACE,
                         relaunch_intent.GRACE if relaunching else 0)
             return (f"service {how} · pid {pid}"
+                    + f" · {process_scope.proof}"
                     + (" · it released its lock but did not exit; killed with its tree" if released_alive else "")
                     + (" · its remaining children were killed" if remaining and not released_alive and how == "stopped" else "")
                     + (f" · it did not answer SIGTERM within {bound:g}s" if how == "killed" else "")

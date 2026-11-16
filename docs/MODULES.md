@@ -42,6 +42,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `refusal.py` | a provider-refused crew seat started fresh once, the refused message withheld and its sender, a seat of this ship or of the fleet, told by a notice built from the store, never from the journal's words |
 | `sandbox.py` | the bubblewrap jail around a sandboxed seat's program |
 | `servicectl.py` | the service's heartbeat, lock, start (in a systemd scope of its own, from a declared environment), stop and requests |
+| `service_processes.py` | re-read a service's private process scope after its owner has released the lock |
 | `ship_locks.py` | the ship's lock files, all under runtime/locks where every jail hides them, and the one bounded wait for each |
 | `tmux.py` | the only module that runs tmux |
 | `trusted_files.py` | where the files the service writes for a seat and trusts are kept: `runtime/trusted/<seat>`, which no jail can see, and their names |
