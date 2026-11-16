@@ -544,7 +544,7 @@ def stop(runtime: Path) -> str:
         raise ShipError(f"service {pid} tree cannot be read ({type(error).__name__}); exit cannot be confirmed") from None
     stop_barrier.retain(runtime, known)
     try:
-        process_scope = service_processes.capture(pid, start)
+        process_scope = service_processes.capture(pid, start, runtime=runtime)
     except (OSError, ValueError, IndexError) as error:
         raise ShipError(f'service {pid} process scope cannot be read ({type(error).__name__}); '
                         'exit cannot be confirmed') from None

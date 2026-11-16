@@ -161,3 +161,36 @@ def test_the_stop_leaves_a_tmux_server_in_its_scope_and_ends_a_plain_detached_me
             monkeypatch.setattr(os, "kill", send)
             for pid in (server, pane, plain):
                 _end(pid, members[pid])
+
+
+def test_an_owner_gone_before_capture_is_an_empty_scope_only_once_the_lock_is_free(tmp_path, monkeypatch):
+    monkeypatch.setattr(scopes, "PROC", tmp_path / "proc")  # no reading of the owner: it has ended
+    gone = 999999999  # above pid_max: the real /proc proves it gone too
+    held = [True]
+    monkeypatch.setattr(servicectl, "alive", lambda runtime: held[0])
+    with pytest.raises(FileNotFoundError):
+        scopes.capture(gone, "700")  # without the runtime nothing proves it was a service that ended
+    with pytest.raises(FileNotFoundError):
+        scopes.capture(gone, "700", runtime=tmp_path)  # a lock still held refuses
+    held[0] = False
+    bound = scopes.capture(gone, "700", runtime=tmp_path)
+    assert bound.read() == {} and bound.read() == {}
+    assert bound.proof == "its owner ended before its scope was read" and not bound.servers
+
+
+def test_an_owner_that_ends_before_its_scope_is_bound_is_stopped_not_refused(tmp_path, monkeypatch):
+    with stand_in(tmp_path, response="exit") as (runtime, child):
+        native_kill, bind = os.kill, scopes.capture
+        signals = []
+
+        def ended_before_capture(pid, start, **kwargs):
+            assert pid == child.pid and servicectl.locked(runtime)
+            native_kill(child.pid, signal.SIGTERM)
+            child.wait(timeout=20)  # its exit is the event; the timeout only guards the test
+            return bind(pid, start, **kwargs)
+
+        monkeypatch.setattr(scopes, "capture", ended_before_capture)
+        monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
+        result = servicectl.stop(runtime)
+        assert result.startswith(f"service stopped · pid {child.pid} · its owner ended before its scope was read")
+        assert signals == [] and child.poll() == 0 and not servicectl.locked(runtime)

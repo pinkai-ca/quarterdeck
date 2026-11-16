@@ -80,9 +80,12 @@ class Scope:
     identity: tuple[int, int] | None
     proof: str = ''
     servers: dict = field(default_factory=dict)  # tmux servers met in the scope, left running with their panes
+    ended: bool = False  # the owner ended and released the lock before its scope was bound: nothing to read
 
     def read(self):
         """The scope's live processes, less any tmux server in it and every process under one."""
+        if self.ended:
+            return {}
         found = self.members()
         roots = [pid for pid in found if server(pid)]
         if not roots:
@@ -164,9 +167,23 @@ class Scope:
         return found
 
 
-def capture(pid, start, *, owners=None):
-    state, actual, group, session = process(pid)
-    if state in EXITED or actual != start:
+def capture(pid, start, *, owners=None, runtime=None):
+    """Bind the owner's private scope while the owner still proves it.
+
+    Given the runtime, an owner proven gone that no longer holds the lock was a service that ended between the
+    lock's reading and this one: its scope is empty, not unreadable."""
+    try:
+        state, actual, group, session = process(pid)
+    except FileNotFoundError:
+        state = actual = None
+    if state is None or state in EXITED or actual != start:
+        if runtime is not None:
+            from . import servicectl, shutdown
+            if shutdown.process_gone(dict(pid=pid, start=start)) and not servicectl.alive(runtime):
+                return Scope(pid, start, None, None, None, proof='its owner ended before its scope was read',
+                             ended=True)
+        if state is None:
+            raise FileNotFoundError(f'service owner {pid} is gone')
         raise Uncertain('service owner changed before its process scope was bound')
     owners = {pid: start} if owners is None else owners
     fallback = ('session', session) if session in owners else ('process group', group) if group in owners else None

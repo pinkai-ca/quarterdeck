@@ -68,7 +68,8 @@ barrier before the same tree kill runs; an incomplete reading or an unconfirmed
 exit refuses the stop. A tmux server in that scope (a process named `tmux: server`,
 which a seat's relaunch from the service may start there) and every process under it
 are never ended: the proof line names it as left running with its panes, and the stop
-is judged on the rest. The proof line names any forced end. An atomic stop barrier under
+is judged on the rest. An owner proven gone, whose lock is already free, before its
+scope is bound has an empty scope, not an unreadable one. The proof line names any forced end. An atomic stop barrier under
 `runtime/locks` retains all observed identities before they are signalled. A
 start, including copy recovery, refuses while any recorded exit is unconfirmed
 or the barrier is unreadable, and names that hold in status. Once every identity
