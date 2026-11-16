@@ -13,7 +13,7 @@ import time
 
 from . import trusted_files
 from . import post, record_owner, record_location
-from .harness import reader_stamp
+from .harness import held_reading, reader_stamp
 from .accounting_scope import Partitions
 
 BACKSTOP = 600.0
@@ -190,6 +190,32 @@ class Gate:
         self.scope = self.job_scope = None
         self.job_retry = False
         self.force_full = False
+        # seat -> the holds its records were left with by the job that last read them: a record whose unknown lasts
+        # only for a time is read again once that time has passed, though no input the certificate sees has changed.
+        self.holds = {}
+        self.held = set()  # the seats whose due holds the last allowed() added to its scope
+
+    def hold(self, seat, hold):
+        """The child left one of 'seat''s records held until 'hold' (held_reading.Hold) is due."""
+        self.holds.setdefault(seat, []).append(hold)
+
+    def taken(self, scope):
+        """A job that reads these seats (all of them if None) starts: their holds are its to read and report again."""
+        if scope is None:
+            self.holds.clear()
+        else:
+            for seat in scope:
+                self.holds.pop(seat, None)
+
+    def due_holds(self):
+        """The seats with a due hold, and how many holds are due; judged on each hold's own reader clock."""
+        seats, count = set(), 0
+        for seat, holds in self.holds.items():
+            due = sum(1 for hold in holds if held_reading.due(hold))
+            if due:
+                seats.add(seat)
+                count += due
+        return seats, count
 
     def configure(self, service, inventory, scope):
         if self.partitions is None:
@@ -217,6 +243,7 @@ class Gate:
     def allowed(self, service, *, retry=False):
         self.scope = None
         self.force_full = False
+        self.held = set()
         if self.partitions is not None and not retry and (self.catching_up(service) or self.full_due()):
             self.force_full = True
             self.decision = {'catch-up' if self.catching_up(service) else 'backstop': 1}
@@ -236,8 +263,15 @@ class Gate:
             issues = {}
             reading = capture(service, self.records, issues=issues, retain=True)
             self.scope = p.choose(reading, now)
+            held, due = self.due_holds()
+            if held and self.scope is not None:
+                # A held seat the partitions no longer know cannot be read alone: the job is full.
+                self.held = held
+                self.scope = self.scope | held if held <= p.seats else None
             allowed = self.scope is None or bool(self.scope)
             self.decision = evidence(p.baseline, reading, issues) if allowed else {}
+            if due and allowed:
+                self.decision['held-reading'] = due  # a class and a count: never a seat, path or record
             if self.scope:
                 self.decision['scoped-seats'] = len(self.scope)
             if allowed and self.previous:
@@ -247,6 +281,12 @@ class Gate:
             reason = ('retry' if retry else 'no-completed-certificate' if self.completed is None
                       else 'backstop')
             self.decision = {reason: 1}
+            if self.previous:
+                self.decision['previous-job'] = self.previous
+            return True
+        held, due = self.due_holds()
+        if due:
+            self.decision = {'held-reading': due}
             if self.previous:
                 self.decision['previous-job'] = self.previous
             return True
@@ -285,8 +325,10 @@ class Gate:
         if len(self.records) != known:
             self.started = admit(service, self.started, self.records)
         if self.partitions is not None and self.job_scope is not None and not self.job_retry:
-            if self.partitions.choose(self.started, time.monotonic(),
-                                      catching_up=self.catching_up(service)) != self.job_scope:
+            chosen = self.partitions.choose(self.started, time.monotonic(), catching_up=self.catching_up(service))
+            if chosen is not None and self.held:
+                chosen = chosen | self.held  # the seats allowed() added for their due holds
+            if chosen != self.job_scope:
                 self.reject()
                 return False
         return True

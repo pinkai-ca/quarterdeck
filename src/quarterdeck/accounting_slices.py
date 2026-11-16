@@ -130,6 +130,16 @@ def planning_book(path, send):
     return book
 
 
+def held_packet(service, seat, record):
+    """What the child tells the parent of a record it has just accounted: the hold it was left with, or None.
+
+    The parent's gate starts a job for that seat once the hold is due, though nothing it watches has changed. The
+    packet names the seat, never the record: the parent needs to know only whose records to read again.
+    """
+    hold = getattr(service, 'read_holds', {}).get(Path(record))
+    return None if hold is None else ('hold', seat, hold)
+
+
 def worker():
     """No provider calls, native launches, source writes or operational ledger writes."""
     os.nice(10)
@@ -217,6 +227,8 @@ def worker():
                                                                source_reader_keys=reader_keys)
                     for event, data in notices:
                         send(('notice', event, data))
+                    if (packet := held_packet(service, seat.name, item.path)) is not None:
+                        send(packet)
                     for reading in human:
                         person, record, state, inputs, stamp = reading
                         failure = replace(state.failure, inputs=()) if state.failure else None
@@ -565,6 +577,7 @@ class Driver:
                 self.continuing = continuation
                 self.scope = (set(self.retry_seats) if continuation is not None else
                               None if self.gate.force_full else self.gate.scope)
+                self.gate.taken(self.scope)  # this job reads these seats' held records and reports their holds again
                 self.retry_seats = set()
                 self.completion = []
                 self.counts, self.records = Counter(), set()
@@ -638,6 +651,8 @@ class Driver:
                         self.changed |= book.db.total_changes != changes
                     elif packet[0] == 'heartbeat':
                         service.heartbeat()
+                    elif packet[0] == 'hold':
+                        self.gate.hold(packet[1], packet[2])
                     elif packet[0] == 'error':
                         raise RuntimeError(packet[1])
                     elif packet[0] == 'done':

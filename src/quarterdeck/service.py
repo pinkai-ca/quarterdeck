@@ -2182,9 +2182,12 @@ class Service:
                     launch = self.ledger.provenance.owning_launch(prepared[0], record)
                     evidence = (stamp, owned.reason, record_fingerprint(record_owner.registry(seat.trusted)), launch)
                     # New launch/price evidence for this record must be reconciled even if its bytes stand still.
-                    # A mark made inside a time-bound unknown is read again once that unknown has passed.
-                    if marks.get(record) == stamp and prepared[2] is None and not held_reading.due(holds.get(record)):
-                        continue
+                    # A mark made inside a time-bound unknown is read again once that unknown has passed: once, since
+                    # the read that follows sets a new hold or none.
+                    if marks.get(record) == stamp and prepared[2] is None:
+                        if not held_reading.due(holds.get(record)):
+                            continue
+                        holds.pop(record)
                     checkpoint = self.ledger.accounting_evidence(
                         seat.name, stamp, owned.reason, launch, reader_keys.get(owned.name))
                     if checkpoint is not None and self.ledger.accounted(record, checkpoint):

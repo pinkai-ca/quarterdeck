@@ -9,7 +9,8 @@ unaccounted.
 
 This module is the service's alone. No reader imports it, so it is in no reader's stamp set, and it changes no
 reading: it asks the reader instance that has just read the record when its unknown ends, by the reader's own
-deadline and clock.
+deadline and clock. The pass asks only after it has read the record as unknown, so a second reading that finds the
+window already passed means the grace ended between the two: the hold is then due at once, never lost.
 """
 
 from __future__ import annotations
@@ -61,10 +62,15 @@ def unknown_until(owned) -> Hold | None:
             found = parsed.readers.get(reader)
     except (OSError, ValueError):
         return None
-    if found is None or found[1] != len(parsed.rows) or state.turn_open is not None:
+    if found is None or found[1] != len(parsed.rows) or state.turn_open:
         return None
     instance = found[0]
     at = instance.notice_at
-    if not instance.answering_notice() or at is None or at.tzinfo is None:
-        return None  # an untimed notice is unknown until a row follows it: the ordinary rule
-    return Hold(at + timedelta(seconds=claude.NOTICE_GRACE_SECONDS), reader)
+    if not instance.notice_unanswered or instance.open is not None or at is None or at.tzinfo is None:
+        return None  # no notice window, or an untimed one, unknown until a row follows it: the ordinary rule
+    hold = Hold(at + timedelta(seconds=claude.NOTICE_GRACE_SECONDS), reader)
+    if state.turn_open is None:
+        return hold if instance.answering_notice() else None
+    # The pass read the record inside the window and this second reading finds it already passed: the grace ended
+    # between the two. The hold is due at once, so the next pass reads the record again.
+    return hold if hold.due() else None

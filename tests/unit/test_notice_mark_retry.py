@@ -71,11 +71,52 @@ def test_a_fresh_notice_is_marked_and_read_again_once_its_grace_has_passed(tmp_p
     w.svc.account_records()
     assert len(w.claude_reads) == 2
     assert ledger_state(w, path) == (None, True, 1)
-    assert held_reading.unknown_until(w.owned[path]) is None
+    assert w.svc.read_holds == {}
     # Accounted: later passes neither read it nor hold it.
     at_clock(monkeypatch, 3600)
     w.svc.account_records()
     assert len(w.claude_reads) == 2
+
+
+def test_the_grace_ending_between_the_two_reads_leaves_a_due_hold(tmp_path, monkeypatch):
+    """The pass reads the record inside the window and marks it; the grace ends before the hold is asked for.
+
+    The second reading finds the window already passed. It still returns the hold, due at once, so the next pass
+    reads the unchanged record again rather than leaving the mark until the bytes change.
+    """
+    w, path = claude_world(tmp_path, monkeypatch, completed_background_turn() + [notice()])
+    at_clock(monkeypatch, NOTICE_SECOND + GRACE - 0.001)
+    original = held_reading.unknown_until
+
+    def late(owned):
+        at_clock(monkeypatch, NOTICE_SECOND + GRACE)  # the grace ends between the pass's read and this one
+        return original(owned)
+
+    monkeypatch.setattr(held_reading, 'unknown_until', late)
+    w.svc.account_records()
+    assert ledger_state(w, path) == ('incomplete turn state in record', False, 1)
+    hold = w.svc.read_holds[path]
+    assert hold.until == AT + timedelta(seconds=NOTICE_SECOND + GRACE) and held_reading.due(hold)
+    monkeypatch.setattr(held_reading, 'unknown_until', original)
+    w.svc.account_records()
+    assert len(w.claude_reads) == 2
+    assert ledger_state(w, path) == (None, True, 1)
+    assert w.svc.read_holds == {}
+    at_clock(monkeypatch, 3600)
+    w.svc.account_records()
+    assert len(w.claude_reads) == 2
+
+
+@pytest.mark.parametrize('seconds', [GRACE - 1, GRACE + 1])
+def test_a_window_passed_with_a_reply_or_never_opened_gives_no_hold(tmp_path, monkeypatch, seconds):
+    """Only the notice window holds: a record whose notice was answered reads known, and asks for no hold."""
+    reply = dict(role='assistant', id='message-oak', model='synthetic-model', stop_reason='end_turn',
+                 content=[dict(type='text', text='synthetic notice response')],
+                 usage=dict(input_tokens=7, output_tokens=3))
+    w, path = claude_world(tmp_path, monkeypatch, completed_background_turn() + [notice()]
+                           + [row('assistant', 6, message=reply), row('system', 8, subtype='turn_duration')])
+    at_clock(monkeypatch, NOTICE_SECOND + seconds)
+    assert held_reading.unknown_until(w.owned[path]) is None
 
 
 def test_a_reply_inside_the_grace_moves_the_mark_by_its_bytes_as_before(tmp_path, monkeypatch):
