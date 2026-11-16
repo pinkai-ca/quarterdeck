@@ -126,13 +126,37 @@ _lock = threading.Lock()
 
 
 class _Entry:
-    """One database path's kept snapshot: its stamp, its bytes, and what readers derived from those bytes."""
+    """One database path's kept snapshot: its stamp, its bytes, and at most one reading derived from those bytes."""
 
-    __slots__ = ('stamp', 'bound', 'merged', 'derived')
+    __slots__ = ('stamp', 'bound', 'merged', 'derived_key', 'derived_value', 'derived_size')
 
     def __init__(self, stamp: tuple, bound: int | None, merged: bytes):
         self.stamp, self.bound, self.merged = stamp, bound, merged
-        self.derived: dict = {}  # immutable values only, keyed by the reader that made them
+        self.derived_key, self.derived_value, self.derived_size = None, None, 0
+
+    def size(self) -> int:
+        """What this entry holds against the bound: its snapshot's bytes and its derived reading's measured size."""
+        return len(self.merged) + self.derived_size
+
+    def derived(self, key):
+        """The derived reading kept under ``key``, None where this entry holds another one or none."""
+        with _lock:
+            return self.derived_value if self.derived_key == key else None
+
+    def keep(self, key, value, size: int) -> None:
+        """Keep one derived reading, immutable, beside the snapshot: the latest replaces any other. ``size`` counts
+        toward the bound, so eviction frees it with the snapshot."""
+        with _lock:
+            self.derived_key, self.derived_value, self.derived_size = key, value, size
+            _evict()
+
+
+def _evict() -> None:
+    """Least recently used first, until the kept entries fit both bounds. The caller holds the lock."""
+    held = sum(kept.size() for kept in _entries.values())
+    while _entries and (len(_entries) > CACHE_ENTRIES or held > CACHE_BYTES):
+        _, evicted = _entries.popitem(last=False)
+        held -= evicted.size()
 
 
 def _certified(stamp: tuple, started: int) -> bool:
@@ -142,12 +166,12 @@ def _certified(stamp: tuple, started: int) -> bool:
                for present, _inode, _size, mtime, _device, ctime in stamp)
 
 
-def cached(record: Path, bound: int | None = record_file.DATABASE_BOUND) -> tuple[tuple, bytes, dict | None]:
+def cached(record: Path, bound: int | None = record_file.DATABASE_BOUND) -> tuple[tuple, bytes, _Entry | None]:
     """``snapshot``, taken once per change of the database and its -wal. The stamp (record_fingerprint: presence,
     device, inode, size, mtime_ns and ctime_ns of each) is read first; a kept snapshot with the same stamp and bound
     is returned as it was. Otherwise a fresh snapshot is taken, and kept only where its stamp did not move during the
-    read and was certified when the read began. A path that is gone drops its entry. The third value is the entry's
-    store for derived readings, None where nothing was kept: what a reader puts there must be immutable."""
+    read and was certified when the read began. A path that is gone drops its entry. The third value is the kept
+    entry, for one derived reading (_Entry.derived and keep), None where nothing was kept."""
     record = resolve(record)
     key = str(record)
     started = _now()
@@ -156,18 +180,15 @@ def cached(record: Path, bound: int | None = record_file.DATABASE_BOUND) -> tupl
         entry = _entries.pop(key, None)
         if entry is not None and stamp[0][0] and entry.stamp == stamp and entry.bound == bound:
             _entries[key] = entry  # most recently used, last
-            return entry.stamp, entry.merged, entry.derived
+            return entry.stamp, entry.merged, entry
     after, merged = snapshot(record, bound)  # a gone path raises here, its entry already dropped
     if after != stamp or not _certified(after, started) or len(merged) > CACHE_BYTES:
         return after, merged, None
     entry = _Entry(after, bound, merged)
     with _lock:
         _entries[key] = entry
-        held = sum(len(kept.merged) for kept in _entries.values())
-        while len(_entries) > CACHE_ENTRIES or held > CACHE_BYTES:
-            _, evicted = _entries.popitem(last=False)
-            held -= len(evicted.merged)
-    return after, merged, entry.derived
+        _evict()
+    return after, merged, entry
 
 
 def forget() -> None:

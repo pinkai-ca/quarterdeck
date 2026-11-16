@@ -185,3 +185,45 @@ def test_every_opencode_reading_goes_through_the_cache(tmp_path, monkeypatch, fr
     assert fresh_cache == [record]
     con.close()
     assert not os.path.exists(f'{record}-wal')
+
+
+def test_kept_rows_count_toward_the_bound_and_go_with_their_snapshot(tmp_path, monkeypatch, fresh_cache):
+    records = [tmp_path / f'data-{n:03d}' / 'opencode' / 'opencode.db' for n in range(2)]
+    connections = [database(record) for record in records]
+    clock(monkeypatch, lambda: max(newest(record) for record in records) + sqlite_snapshot.TICK_NS + 1)
+    opencode_record._Rows(records[0])
+    entry = sqlite_snapshot._entries[str(records[0])]
+    rows = entry.derived(('opencode-rows', False))
+    assert rows is not None and entry.derived_size == opencode_record._measured(rows) > 0
+    assert entry.size() == len(entry.merged) + entry.derived_size
+    # A bound that holds both snapshots' bytes, but not both with the first one's rows: the rows push it over.
+    sqlite_snapshot.forget()
+    opencode_record._Rows(records[0])
+    first = sqlite_snapshot._entries[str(records[0])]
+    snapshot_only = len(sqlite_snapshot.cached(records[1])[1])
+    monkeypatch.setattr(sqlite_snapshot, 'CACHE_BYTES', len(first.merged) + snapshot_only + first.derived_size - 1)
+    sqlite_snapshot._entries.move_to_end(str(records[0]), last=False)  # the first, least recently used
+    opencode_record._Rows(records[1])  # its rows are counted too: the first entry, rows and all, is evicted
+    assert list(sqlite_snapshot._entries) == [str(records[1])]
+    assert first.derived(('opencode-rows', False)) is not None  # held only by what still names it, not the cache
+    for con in connections:
+        con.close()
+
+
+def test_one_derived_set_per_entry_the_latest(tmp_path, monkeypatch, fresh_cache):
+    record = tmp_path / 'data-001' / 'opencode' / 'opencode.db'
+    con = database(record)
+    settled(monkeypatch, record)
+    opencode_record._Rows(record)
+    entry = sqlite_snapshot._entries[str(record)]
+    plain = entry.derived_size
+    assert entry.derived(('opencode-rows', False)) is not None
+    opencode_record._Rows(record, resume_metadata=True)  # another reading replaces the first, never beside it
+    assert entry.derived(('opencode-rows', False)) is None
+    assert entry.derived(('opencode-rows', True)) is not None and entry.derived_size >= plain
+    assert entry.size() == len(entry.merged) + entry.derived_size
+    assert fresh_cache == [record]
+    again = opencode_record._Rows(record)  # and back: the same snapshot, rows queried once more
+    assert entry.derived(('opencode-rows', False)) is not None and entry.derived(('opencode-rows', True)) is None
+    assert again.sessions == [('root', 1, 1, None)] and fresh_cache == [record]
+    con.close()

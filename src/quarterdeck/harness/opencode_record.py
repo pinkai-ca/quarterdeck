@@ -139,21 +139,28 @@ def _queried(record: Path, merged_bytes: bytes, resume_metadata: bool) -> tuple:
     return sessions, permissions, directories, messages, parts
 
 
+def _measured(queried: tuple) -> int:
+    """What kept rows hold against the cache's bound: the length of every text and blob value in them, the JSON
+    bodies above all. Numbers and the tuples around them are left out, a small part beside the text."""
+    return sum(len(value) for table in queried for row in table for value in row if isinstance(value, (str, bytes)))
+
+
 class _Rows:
     """The three tables a reading needs, from one snapshot of the database.
 
     The snapshot is taken once per change of the database and its -wal (sqlite_snapshot.cached), and the rows
-    queried from it are kept beside it as SQLite returned them. Each reading parses its own copy of the JSON, so
-    nothing one reader changes reaches the next."""
+    queried from it are kept beside it as SQLite returned them, counted toward the cache's bound; one set per
+    snapshot, the latest. Each reading parses its own copy of the JSON, so nothing one reader changes reaches
+    the next."""
 
     def __init__(self, record: Path, *, resume_metadata: bool = False):
-        _, merged_bytes, derived = cached(record)
+        _, merged_bytes, entry = cached(record)
         key = ('opencode-rows', resume_metadata)
-        queried = derived.get(key) if derived is not None else None
+        queried = entry.derived(key) if entry is not None else None
         if queried is None:
             queried = _queried(record, merged_bytes, resume_metadata)
-            if derived is not None:
-                derived[key] = queried
+            if entry is not None:
+                entry.keep(key, queried, _measured(queried))  # the latest replaces another resume_metadata's rows
         sessions, permissions, directories, messages, parts = queried
         self.sessions = list(sessions)
         self.permissions = dict(permissions)
