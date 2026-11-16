@@ -1129,6 +1129,8 @@ class Service:
                     data = request_queue.load(path)
                     if data.get('kind') not in request_queue.SEAT_KINDS:
                         continue
+                    if 'control_confirmation' in meta:
+                        continue  # its command may be typed: the ordinary resume confirms it, never retyping
                     if 'terminal' in meta and meta.get('settlement') != 'service-restarted':
                         continue  # cancellation/supersession keeps its own durable outcome
                     meta['terminal'] = request_queue.RESTART_SETTLEMENT
