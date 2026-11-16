@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import post, post_retirement as retirement, retirement_gate as gate, trusted_files
+from quarterdeck import post, post_retirement as retirement, retirement_gate as gate
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def service(tmp_path, names=('builder',)):
     runtime = tmp_path / 'runtime'
     runtime.mkdir(parents=True)
     declaration = tmp_path / 'ship.toml'
-    declaration.write_text('synthetic declaration\n')
+    declaration.write_text('# Synthetic declaration\n')
     logs = []
     s = SimpleNamespace(runtime=runtime, ship=SimpleNamespace(file=declaration, seats=dict.fromkeys(names)),
         store=post.Store(runtime), attempts=post.Attempts(runtime),
@@ -31,6 +31,7 @@ def service(tmp_path, names=('builder',)):
         log=lambda event, **fields: logs.append((event, fields)), logs=logs)
     for name in names:
         (runtime / 'post' / 'pending' / name).mkdir(parents=True)
+    (runtime / 'post' / 'attempts').mkdir()
     s.store.all()
     s.attempts.all()
     return s

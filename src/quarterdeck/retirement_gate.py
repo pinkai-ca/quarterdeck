@@ -132,7 +132,8 @@ class Gate:
 
     def finish(self, service, result, progress, interval):
         after = capture(service) if self.before is not None else None
-        if (self.before is None or after != self.before or self.sweep is None or progress is None
+        if (self.before is None or after != self.before or after.at < self.before.at
+                or time.monotonic() < self.monotonic or self.sweep is None or progress is None
                 or progress.blocked or result.get('held') or result.get('failed')
                 or result['attempts'] or result['journals']):
             self.reject()
