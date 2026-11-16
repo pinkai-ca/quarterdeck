@@ -172,8 +172,16 @@ def test_child_only_updates_invalidate_a_presentation_cache(tmp_path, monkeypatc
         assert claude.ClaudeHarness.state(record).pending_tools == ('Agent',)
 
 
+def trusted(record):
+    """runtime/trusted/<seat>, where the service writes a seat's launch evidence since it left the seat's folder."""
+    seat = record.parent.parent.parent.parent
+    folder = seat.parent.parent/'trusted'/seat.name
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
 def launch(record, second=5, *, joined=True):
-    folder = record.parent.parent.parent.parent
+    folder = trusted(record)
     data = dict(at=(AT+timedelta(seconds=second)).isoformat(), harness='claude', version='2.1.325',
                 resume=SESSION, pid=12345, pool='synthetic-pool')
     (folder/'launch.json').write_text(json.dumps(data))
@@ -232,7 +240,7 @@ def test_unproved_launch_time_does_not_end_a_child_command(tmp_path, missing):
     root = tmp_path/'runtime/seats/synthetic/home/projects/synthetic'
     record, _ = fixture(root)
     launch(record)
-    folder = record.parent.parent.parent.parent
+    folder = trusted(record)
     data = json.loads((folder/'launch.json').read_text())
     data['at'] = '2032-04-05T06:07:05'
     if missing:
@@ -290,3 +298,29 @@ def test_a_record_not_named_as_a_native_root_has_no_children_to_join(tmp_path):
                   message('user', 2, [result('synthetic-call')], toolUseResult=dict(backgroundTaskId='synthetic-task')),
                   row('system', 3, subtype='turn_duration')])
     assert claude.state(named).pending_tools == ('Bash',)
+
+
+def test_the_launch_is_read_from_the_trusted_folder_alone(tmp_path):
+    """On the live layout the launch evidence is in runtime/trusted/<seat>, none of it in the seat's own folder, and
+    rule (4) settles an old child command from it."""
+    root = tmp_path/'runtime/seats/synthetic/home/projects/synthetic'
+    record, _ = fixture(root)
+    launch(record)
+    own = record.parent.parent.parent.parent
+    assert not any((own/name).exists() for name in ('launch.json', 'record', 'record-launches.jsonl'))
+    reader = claude._Reader(record)
+    state = reader.state()
+    assert reader.children.tasks['synthetic-child-call'].phase == 'ended-by-relaunch'
+    assert state.pending_tools == () and idle.check(state) is None
+
+
+def test_a_launch_planted_in_the_seats_own_folder_changes_nothing(tmp_path):
+    """The seat's own folder is writable from its jail: launch evidence there is never read."""
+    root = tmp_path/'runtime/seats/synthetic/home/projects/synthetic'
+    record, _ = fixture(root)
+    launch(record)
+    own = record.parent.parent.parent.parent
+    for name in ('launch.json', 'record', 'record-launches.jsonl'):
+        (trusted(record)/name).rename(own/name)  # the very evidence, planted where the jail can write
+    state = claude.state(record)
+    assert state.pending_tools == ('Bash', 'Agent'), 'no trusted launch: the old child command stays pending'

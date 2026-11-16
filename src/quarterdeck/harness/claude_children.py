@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import stat
 
+from .. import trusted_files
 from .claude_background import BackgroundBash
 from .json_record import object_lines, when
 from .types import ActiveTool
@@ -49,9 +50,16 @@ def seat_folder(record):
             and record.parent.parent.name == 'projects' else None)
 
 
+def launch_folder(record):
+    """The seat's trusted folder, runtime/trusted/<seat>, where the service writes its launch evidence; never the
+    seat's own folder, which its jail can write."""
+    folder = seat_folder(record)
+    return trusted_files.of_seat_folder(folder) if folder is not None else None
+
+
 def current_launch(record):
     """Only this joined record's current, measured resumed launch can end old child processes."""
-    folder = seat_folder(record)
+    folder = launch_folder(record)
     if folder is None:
         return None
     try:
@@ -60,14 +68,14 @@ def current_launch(record):
             if not stat.S_ISREG(path.lstat().st_mode):
                 raise ValueError('launch evidence is not regular')
             return path.read_text()
-        data = json.loads(text('launch.json'))
+        data = json.loads(text(trusted_files.LAUNCH))
         if (data.get('harness') != 'claude' or data.get('version') != VERSION
                 or data.get('resume') != Path(record).stem or type(data.get('pid')) is not int
-                or data['pid'] <= 0 or text('record').strip() != str(record)):
+                or data['pid'] <= 0 or text(trusted_files.RECORD).strip() != str(record)):
             return None
         at = datetime.fromisoformat(data['at'].replace('Z', '+00:00'))
         expected = dict(record=str(record), at=data.get('at'), pool=data.get('pool'), harness='claude')
-        joined = [json.loads(line) for line in text('record-launches.jsonl').splitlines() if line.strip()]
+        joined = [json.loads(line) for line in text(trusted_files.LAUNCHES).splitlines() if line.strip()]
         if at is not None and at.tzinfo is not None and any(
                 isinstance(row, dict) and all(row.get(key) == value for key, value in expected.items())
                 for row in joined):
@@ -82,8 +90,8 @@ def fingerprint(record):
     record = Path(record)
     paths = [record, *((record.with_suffix(''), record.with_suffix('') / 'subagents') if record.suffix == '.jsonl' else ()),
              *child_paths(record)]
-    if folder := seat_folder(record):
-        paths.extend(folder / name for name in ('launch.json', 'record', 'record-launches.jsonl'))
+    if folder := launch_folder(record):
+        paths.extend(folder / name for name in (trusted_files.LAUNCH, trusted_files.RECORD, trusted_files.LAUNCHES))
     return tuple(part for path in paths for part in record_fingerprint(path))
 
 
