@@ -224,8 +224,10 @@ class Client:
         selected = saved.get('variant', {}).get(f"{self.settings['provider']}/{self.settings['model']}", 'default')
         if selected not in ('default', OFF):
             return None
+        # A seat with a declared working folder shows it at the right of the same line, after the native padding
+        # (fixture working-wrapped-folder.txt); it is never a variant, which follows ' · ' directly.
         shown = re.search(r'^\s*┃  \S+ \S+ · ' + re.escape(self.settings['model'] + ' ' + self.settings['provider'])
-                          + r'(?: · (?P<variant>\S+))?\s*$', screen.text, re.M)
+                          + r'(?: · (?P<variant>\S+))?(?: {2,}[^\s·]\S*)?\s*$', screen.text, re.M)
         if shown is None:
             return None
         if selected == OFF and shown['variant'] == OFF:

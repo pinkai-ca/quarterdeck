@@ -128,6 +128,24 @@ def test_exact_original_and_off_state_require_agreeing_native_evidence(native):
         assert found.mode(state, screen) == 'off'
         path.write_text(json.dumps({'variant': {'synthetic/qwen3.8-27b': 'custom'}}))
         assert found.mode(state, screen) is None
+        # A seat with a working folder: OpenCode shows it at the right of the same line, after the native padding.
+        # Measured on two hands' panes, 478 columns wide, on 16 November 2026: two spaces, the bar, two spaces, the
+        # status, 401 spaces, the folder ('hands/' and the hand's name) and 29 spaces.
+        folder = ' ' * 401 + 'hands/synthetic' + ' ' * 29 + '\n'
+        path.write_text(json.dumps({'variant': {'synthetic/qwen3.8-27b': 'default'}}))
+        screen.text = '  ┃  Build auto · qwen3.8-27b synthetic' + folder
+        assert found.mode(state, screen) == 'original'
+        # The same pane on a fresh start: the box centred, 202 spaces in, and no folder on the line.
+        screen.text = ' ' * 202 + '┃  Build auto · qwen3.8-27b synthetic\n'
+        assert found.mode(state, screen) == 'original'
+        screen.text = '  ┃  Build auto · qwen3.8-27b synthetic · qd-recovery-off' + folder
+        assert found.mode(state, screen) is None, 'the variant shown still has to agree with the one saved'
+        path.write_text(json.dumps({'variant': {'synthetic/qwen3.8-27b': 'qd-recovery-off'}}))
+        assert found.mode(state, screen) == 'off'
+        screen.text = '  ┃  Build auto · qwen3.8-27b synthetic · custom' + folder
+        assert found.mode(state, screen) is None, 'a variant it does not know is never read as a folder'
+        screen.text = '  ┃  Build auto · qwen3.8-27b synthetic  · qd-recovery-off' + folder
+        assert found.mode(state, screen) is None, 'a variant is never taken for the folder field'
     else:
         screen = SimpleNamespace(shows={'model': 'qwen3.8-27b', 'effort': 'high'})
         assert found.mode(state, screen) == 'original'

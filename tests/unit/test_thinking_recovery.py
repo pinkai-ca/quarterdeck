@@ -26,12 +26,15 @@ class Native:
         self.calls, self.inputs = [], []
         self.auto_complete, self.failed_recovery, self.fault = True, False, None
         self.live = SimpleNamespace(id='%1', pid=12345, width=120, dead=False, in_mode=False)
+        self.folder = None  # a seat with a declared working folder: OpenCode shows it at the right of the status line
 
     def pane(self, ident):
         return self.live if self.live is not None and ident == self.live.id else None
 
     def capture(self, *args, **kwargs):
         suffix = '' if self.selected == 'default' else ' · qd-recovery-off'
+        if self.folder:
+            suffix += ' ' * 401 + self.folder + ' ' * 29  # the padding measured on a hand's 478-column pane
         return '\n'.join(['  ┃', *['  ┃  ' + line for line in self.box.split('\n')], '  ┃',
             '  ┃  Build auto · qwen3.8-27b synthetic' + suffix, '  ╹' + '▀' * 115,
             'esc interrupt' if self.working else '/synthetic']) + '\n'
@@ -533,3 +536,63 @@ def test_malformed_extension_is_a_visible_hold_not_an_absent_reservation(world, 
     assert 'journal unreadable' in Door(world.seat).reading().reason
     recovery.run(world.service)
     assert world.native.calls == calls
+
+
+def measured_hand_turn(record):
+    """The structure of a hand's capped grading turn as measured on 16 November 2026, with synthetic content:
+    one accepted order, two completed tool steps with brief reasoning, then a step whose whole 8,192-token output
+    went to reasoning, finished 'length' with no text part."""
+    for leftover in record.parent.glob(record.name + '*'):
+        leftover.unlink()
+    con = database(record)
+    from tests.unit.test_opencode_record import session
+    session(con)
+    message(con, 'input', 'root', 10, {'role': 'user', 'agent': 'build', 'time': {'created': MS + 10},
+        'model': {'providerID': 'synthetic', 'modelID': 'qwen3.8-27b'}})
+    part(con, 'input-text', 'input', 'root', 10, {'type': 'text', 'text': 'Synthetic grading order'})
+    at = 20
+    for step, (tools, input_tokens, output, reasoning) in enumerate(((3, 9724, 157, 22), (1, 11556, 52, 9))):
+        mid = f'step-{step}'
+        tokens = {'total': input_tokens + output, 'input': input_tokens, 'output': output, 'reasoning': reasoning,
+                  'cache': {'read': 0, 'write': 0}}
+        message(con, mid, 'root', at, {'role': 'assistant', 'parentID': 'input', 'agent': 'build', 'mode': 'build',
+            'modelID': 'qwen3.8-27b', 'providerID': 'synthetic', 'time': {'created': MS + at, 'completed': MS + at + 20},
+            'finish': 'tool-calls', 'tokens': tokens})
+        part(con, f'{mid}-start', mid, 'root', at + 1, {'type': 'step-start'})
+        part(con, f'{mid}-thinking', mid, 'root', at + 2, {'type': 'reasoning', 'text': 'Synthetic brief thought',
+            'time': {'start': MS + at + 2, 'end': MS + at + 3}})
+        for call in range(tools):
+            part(con, f'{mid}-tool-{call}', mid, 'root', at + 4 + call, {'type': 'tool', 'tool': 'read',
+                'callID': f'{mid}-call-{call}', 'state': {'status': 'completed',
+                                                          'time': {'start': MS + at + 4, 'end': MS + at + 10}}})
+        part(con, f'{mid}-end', mid, 'root', at + 19, {'type': 'step-finish', 'reason': 'tool-calls',
+                                                       'tokens': tokens, 'cost': 0})
+        at += 30
+    tokens = {'total': 20129 + 8192, 'input': 20129, 'output': 0, 'reasoning': 8192, 'cache': {'read': 0, 'write': 0}}
+    message(con, 'capped', 'root', at, {'role': 'assistant', 'parentID': 'input', 'agent': 'build', 'mode': 'build',
+        'modelID': 'qwen3.8-27b', 'providerID': 'synthetic', 'time': {'created': MS + at, 'completed': MS + at + 50},
+        'finish': 'length', 'tokens': tokens})
+    part(con, 'capped-start', 'capped', 'root', at + 1, {'type': 'step-start'})
+    part(con, 'thinking', 'capped', 'root', at + 2, {'type': 'reasoning', 'text': 'Synthetic thinking ' * 1600,
+        'time': {'start': MS + at + 2, 'end': MS + at + 49}})
+    part(con, 'capped-end', 'capped', 'root', at + 50, {'type': 'step-finish', 'reason': 'length',
+                                                        'tokens': tokens, 'cost': 0})
+    con.commit()
+    con.close()
+
+
+def test_a_seat_whose_status_line_shows_its_working_folder_still_gets_its_one_continuation(world):
+    """A hand's capped turn, measured: the status line ends with the seat's working folder, as OpenCode shows it
+    for a seat with a declared folder. The mode is read through it, and the one recovery runs."""
+    measured_hand_turn(world.record)
+    world.native.folder = 'hands/synthetic'
+    state = world.seat.harness.state(world.record)
+    assert (state.capped.reasoning, state.capped.written) == (8192, 0) and state.turn_open is False
+    recovery.run(world.service)
+    proof = journal(world)
+    assert proof.data['phase'] == 'delivered' and proof.data['recovery']['mode'] == 'done'
+    assert len(world.native.inputs) == 1 and world.native.selected == 'default'
+    assert [c for c in world.native.calls if c[0] == 'keys'] == [
+        ('keys', ('C-t',)), ('keys', ('Enter',)), ('keys', ('C-t',))]
+    recovery.run(world.service)
+    assert len(world.native.inputs) == 1, 'still the only automatic recovery'
