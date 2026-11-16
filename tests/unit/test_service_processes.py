@@ -265,3 +265,52 @@ def test_a_pid_reaped_mid_read_is_gone_for_the_stop(monkeypatch):
             raise ProcessLookupError(3, "No such process")
     monkeypatch.setattr(shutdown, "Path", Reaped)
     assert shutdown.process_gone(dict(pid=302, start="701"))
+
+
+def collected_world(tmp_path, monkeypatch, number):
+    """A bound scope whose cgroup folder holds the owner, 301, and a second process of its session, 302, which only
+    a fallback to the session would report."""
+    root, groups = tmp_path / "proc", tmp_path / "groups"
+    unit = f"qd-service-synthetic-0000000{number}.scope"
+    folder = groups / "user.slice" / unit
+    folder.mkdir(parents=True)
+    (folder / "cgroup.procs").write_text("301\n")
+    (folder / "cgroup.events").write_text("populated 1\n")
+    proc(root, 301, unit=unit)
+    proc(root, 302, start="702")  # of the owner's session, outside the cgroup
+    monkeypatch.setattr(scopes, "PROC", root)
+    monkeypatch.setattr(scopes, "CGROUPS", groups)
+    return root, folder, unit
+
+
+def test_a_scope_folder_read_in_this_stop_and_gone_after_its_owner_reads_as_empty(tmp_path, monkeypatch):
+    """systemd removes a --collect scope's folder once it is empty: after the owner's exit the last re-read meets
+    ENOENT on the folder itself. Read earlier in this stop and gone with its owner, it is an empty scope, not an
+    unavailable one: no fallback to the session."""
+    root, folder, unit = collected_world(tmp_path, monkeypatch, 5)
+    bound = scopes.capture(301, "700")
+    assert bound.read() == {301: "700"} and bound.proof == f"processes re-read: cgroup {unit}"
+    folder.joinpath("cgroup.procs").unlink()
+    folder.joinpath("cgroup.events").unlink()
+    folder.rmdir()  # removed while its owner still lives: proves nothing, and falls back as before
+    assert bound.read() == {301: "700", 302: "702"}
+    assert bound.proof == "processes re-read: session 301 (service cgroup unavailable: FileNotFoundError)"
+    proc(root, 301, state="Z", unit=unit)  # the owner has exited
+    assert bound.read() == {}
+    assert bound.proof == f"processes re-read: cgroup {unit} (service cgroup ended with it)"
+    (root / "301").joinpath("stat").unlink()
+    (root / "301").joinpath("comm").unlink()
+    (root / "301").joinpath("cgroup").unlink()
+    (root / "301").rmdir()  # reaped
+    assert bound.read() == {} and bound.proof.endswith("(service cgroup ended with it)")
+
+
+def test_a_scope_folder_never_read_in_this_stop_still_falls_back(tmp_path, monkeypatch):
+    root, folder, unit = collected_world(tmp_path, monkeypatch, 6)
+    bound = scopes.capture(301, "700")
+    for name in ("cgroup.procs", "cgroup.events"):
+        folder.joinpath(name).unlink()
+    folder.rmdir()
+    proc(root, 301, state="Z", unit=unit)
+    assert bound.read() == {302: "702"}, 'never read here: gone proves nothing, the session is read instead'
+    assert bound.proof == "processes re-read: session 301 (service cgroup unavailable: FileNotFoundError)"

@@ -87,6 +87,8 @@ class Scope:
     servers: dict = field(default_factory=dict)  # tmux servers met in the scope, left running with their panes
     ended: bool = False  # the owner ended and released the lock before its scope was bound: nothing to read
     unbound: str = 'none found'  # why no cgroup was bound at capture, for the fallback's line
+    owner: tuple[int, str] | None = None  # the service's own pid and start, as capture bound it
+    seen: bool = False  # its cgroup was read whole once in this stop: a folder gone since is a scope that ended
 
     def read(self):
         """The scope's live processes, less any tmux server in it and every process under one."""
@@ -115,9 +117,17 @@ class Scope:
                 found = self.read_cgroup()
             except Uncertain:
                 raise
+            except FileNotFoundError as error:
+                if self.collected():
+                    # Read in this stop, and gone once its owner is gone: systemd removed the emptied scope (it is
+                    # started with --collect), and the kernel removes no cgroup that holds a process. Empty.
+                    self.proof = f'processes re-read: cgroup {self.folder.name} (service cgroup ended with it)'
+                    return {}
+                unavailable = type(error).__name__
             except (OSError, ValueError, StopIteration) as error:
                 unavailable = type(error).__name__  # the cgroup itself: a member that ended is skipped inside
             else:
+                self.seen = True
                 self.proof = f'processes re-read: cgroup {self.folder.name}'
                 return found
         if self.fallback is None:
@@ -141,6 +151,18 @@ class Scope:
                 found[int(entry.name)] = start
         self.proof = f'processes re-read: {kind} {number} (service cgroup unavailable: {unavailable})'
         return found
+
+    def collected(self):
+        """Whether the bound cgroup folder, read whole earlier in this stop, is gone itself while its owner is proved
+        gone. A folder never read in this stop proves nothing, and falls back as before."""
+        if not self.seen or self.owner is None or os.path.lexists(self.folder):
+            return False
+        pid, start = self.owner
+        try:
+            state, actual = process(pid)[:2]
+        except VANISHED:
+            return True
+        return state in EXITED or actual != start
 
     def read_cgroup(self):
         if mark(self.folder) != self.identity:
@@ -203,4 +225,4 @@ def capture(pid, start, *, owners=None, runtime=None):
     if folder is None and fallback is None:
         raise Uncertain('service has no provable private process scope')
     anchor = fallback[1] if fallback is not None else pid
-    return Scope(anchor, owners.get(anchor, start), fallback, folder, identity, unbound=unbound)
+    return Scope(anchor, owners.get(anchor, start), fallback, folder, identity, unbound=unbound, owner=(pid, start))

@@ -67,7 +67,10 @@ that ends between the cgroup's listing and its own reading (its `/proc` file gon
 or reaped between the file's open and its read, which answers ESRCH) is skipped as
 ended; only a cgroup that cannot itself be read falls back, and a membership that
 changes mid-read in any other way stays uncertain. The proof line names this
-re-read and any fallback, with the error that caused it. A newly discovered process enters the
+re-read and any fallback, with the error that caused it. The service's scope is started with
+`--collect`, so systemd removes its folder once it is empty: a cgroup read whole earlier in
+this stop whose folder is gone once its owner is proved gone is an empty scope, and the line
+says `service cgroup ended with it`; a folder never read in this stop still falls back. A newly discovered process enters the
 barrier before the same tree kill runs; an incomplete reading or an unconfirmed
 exit refuses the stop. A tmux server in that scope (a process named `tmux: server`,
 which a seat's relaunch from the service may start there) and every process under it
