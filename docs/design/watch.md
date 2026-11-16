@@ -57,54 +57,27 @@ New seat windows copy the shown window's size while their placeholder runs when 
 
 Tmux runs `qd status --line` on its own timer, independent of service and doors. Kernel service-lock ownership proves liveness: late heartbeat means busy, missing/invalid heartbeat unknown, released lock down. Up restarts a dead service. A blocked desk door cannot hide a service alarm.
 
-A stop confirms the owner's exit by pid and start as well as the released lock.
-An owner that releases its lock but outlives the exit grace has its whole tree
-ended by the write-bound kill, which observes new children before each round's
-signals. Before confirming a stop, it reads the service's private systemd cgroup
-again, including its child cgroups. If that cgroup cannot be read, it uses only
-the private session or process group bound while the owner was alive. A member
-that ends between the cgroup's listing and its own reading (its `/proc` file gone,
-or reaped between the file's open and its read, which answers ESRCH) is skipped as
-ended; only a cgroup that cannot itself be read falls back, and a membership that
-changes mid-read in any other way stays uncertain. The proof line names this
-re-read and any fallback, with the error that caused it. The service's scope is started with
-`--collect`, so systemd removes its folder once it is empty: a cgroup read whole earlier in
-this stop whose folder is gone once its owner is proved gone is an empty scope, and the line
-says `service cgroup ended with it`; a folder never read in this stop still falls back. A newly discovered process enters the
-barrier before the same tree kill runs; an incomplete reading or an unconfirmed
-exit refuses the stop. A tmux server in that scope (a process named `tmux: server`,
-which a seat's relaunch from the service may start there) and every process under it
-are never ended: the proof line names it as left running with its panes, and the stop
-is judged on the rest. An owner proven gone, whose lock is already free, before its
-scope is bound has an empty scope, not an unreadable one. The proof line names any forced end. An atomic stop barrier under
-`runtime/locks` retains all observed identities before they are signalled. A
-start, including copy recovery, refuses while any recorded exit is unconfirmed
-or the barrier is unreadable, and names that hold in status. Once every identity
-is proved gone, the next start or recovery clears the barrier itself. A tmux
-server a barrier recorded, and everything under it, is never waited for, since
-no stop ends one: the proof line names it as left running. A stop run again while
-the barrier records the live service's own owner (an earlier stop interrupted, or
-one running beside it) gives that owner SIGTERM and its grace as a first stop does;
-only what the earlier stop recorded outside the owner's tree and scope is ended at
-once, and the line names it. An unreadable barrier holds a stop as it holds a start,
-and its refusal names the file, why, and what settles it: `qd service
---settle-barrier`, run by a systems seat or the operator, is the way. It reads, under
-the stop guard's lock: (a) the service's lock is free; (b) no live process of the user
-sits in a scope named for this ship's service (`qd-service-<ship>-*.scope`), a tmux
-server there and everything under one left out as a stop leaves them; (c) no live
-process of the user outside the ship's own tmux server's tree, and outside the act's
-own process and its ancestors, carries `QD_SHIP` naming this ship. Another process's
-environment is read only for that test, and no value is printed, logged or kept; before
-reading one the act makes itself non-dumpable with no core, for the rest of its life,
-and refuses where it cannot. When
-all three hold the file is moved, unchanged and never followed, into
-`runtime/evidence/stop-barrier/`, and the move is logged; otherwise it refuses, naming
-the condition, the pids, their process names and their cgroups. A barrier that reads
-cleanly is not its to move. Its limit: a child that cleared its own environment, or
-made itself unreadable, and left the scope escapes (b) and (c). A process whose
-environment the user cannot read is skipped by (c) and named by pid and process name
-in the logged line and the output, unless it sits in any service's scope
-(`qd-service-*`), where it refuses. No jail is shown this folder. Cached status cannot hide a standing barrier.
+An atomic stop barrier under `runtime/locks` retains all observed identities before they are signalled. A stop run again while the barrier records the live service's own owner (an earlier stop interrupted, or one running beside it) gives that owner SIGTERM and its grace as a first stop does; only what the earlier stop recorded outside the owner's tree and scope is ended at once, and the line names it.
+
+An owner proven gone, whose lock is already free, before its scope is bound has an empty scope, not an unreadable one.
+
+A stop confirms the owner's exit by pid and start as well as the released lock. An owner that releases its lock but outlives the exit grace has its whole tree ended by the write-bound kill, which observes new children before each round's signals.
+
+Before confirming a stop, it reads the service's private systemd cgroup again, including its child cgroups. If that cgroup cannot be read, it uses only the private session or process group bound while the owner was alive. A member that ends between the cgroup's listing and its own reading (its `/proc` file gone, or reaped between the file's open and its read, which answers ESRCH) is skipped as ended; only a cgroup that cannot itself be read falls back, and a membership that changes mid-read in any other way stays uncertain.
+
+A newly discovered process enters the barrier before the same tree kill runs; an incomplete reading or an unconfirmed exit refuses the stop.
+
+A tmux server in that scope (a process named `tmux: server`, which a seat's relaunch from the service may start there) and every process under it are never ended: the proof line names it as left running with its panes, and the stop is judged on the rest. A tmux server a barrier recorded, and everything under it, is never waited for, since no stop ends one: the proof line names it as left running.
+
+The service's scope is started with `--collect`, so systemd removes its folder once it is empty: a cgroup read whole earlier in this stop whose folder is gone once its owner is proved gone is an empty scope, and the line says `service cgroup ended with it`; a folder never read in this stop still falls back.
+
+The proof line names the cgroup's re-read and any fallback, with the error that caused it, and it names any forced end.
+
+A start, including copy recovery, refuses while any recorded exit is unconfirmed or the barrier is unreadable, and names that hold in status. Once every identity is proved gone, the next start or recovery clears the barrier itself. Cached status cannot hide a standing barrier.
+
+An unreadable barrier holds a stop as it holds a start, and its refusal names the file, why, and what settles it: `qd service --settle-barrier`, run by a systems seat or the operator, is the way. It reads, under the stop guard's lock: (a) the service's lock is free; (b) no live process of the user sits in a scope named for this ship's service (`qd-service-<ship>-*.scope`), a tmux server there and everything under one left out as a stop leaves them; (c) no live process of the user outside the ship's own tmux server's tree, and outside the act's own process and its ancestors, carries `QD_SHIP` naming this ship. Another process's environment is read only for that test, and no value is printed, logged or kept; before reading one the act makes itself non-dumpable with no core, for the rest of its life, and refuses where it cannot.
+
+When all three hold the file is moved, unchanged and never followed, into `runtime/evidence/stop-barrier/`, and the move is logged; no jail is shown this folder. Otherwise it refuses, naming the condition, the pids, their process names and their cgroups. A barrier that reads cleanly is not its to move. A process whose environment the user cannot read is skipped by (c) and named by pid and process name in the logged line and the output, unless it sits in any service's scope (`qd-service-*`), where it refuses. Its limit: a child that cleared its own environment, or made itself unreadable, and left the scope escapes (b) and (c).
 
 The service atomically publishes `runtime/status-line.json` for text status-line jobs, dating collection start (`wall`/`monotonic`) and the publication write (`written`) separately. The optional collection-age cache retains its three-second wall/monotonic bounds and owner/declaration/framework checks. Outside that cache, a publication from the current service with an ok lead reads plain through `ship.status_refresh + STALE_SECONDS` after its write: forty seconds at the default thirty-second refresh, including a ten-second collection allowance. Its collection-start timestamp remains unchanged. Older or unverified publications, and a busy service, retain their operational alerts under an explicit `status stale` marker and write age through three times the refresh interval (ninety seconds by default). Beyond that bound the command collects current facts itself and adds `publication <age>s old, collected here` to the lead. A down service is independently named `SERVICE DOWN` and also takes the collector. Missing, corrupt or undated publications, or an unknowable write age, take the collector too, so reuse can never be unbounded. The collector keeps its existing error/unknown handling. Slow collections still publish; failed collection discards old rendering. Receipt, lifecycle, usage and JSON readings still collect their own facts and never consume this file.
 

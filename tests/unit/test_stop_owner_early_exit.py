@@ -6,7 +6,7 @@ from quarterdeck import servicectl, shutdown
 from tests.unit import test_stop_owner_lifetime as lifetime
 
 
-def test_early_owner_exit_keeps_the_discovered_child_stop_proof(tmp_path, monkeypatch, capsys):
+def test_early_owner_exit_keeps_the_discovered_child_stop_proof(tmp_path, monkeypatch):
     native_kill = os.kill
     original_clock, original_stop = lifetime.stopping_clock, servicectl.stop
     seen = {}
@@ -50,6 +50,7 @@ def test_early_owner_exit_keeps_the_discovered_child_stop_proof(tmp_path, monkey
         assert seen.get('owner_ended_before_read') is True
         assert 'exit cannot be confirmed' in seen['exception']
         assert 'returned' not in seen
-    finally:
-        with capsys.disabled():
-            print('EARLY_OWNER_EXIT', {key: value for key, value in seen.items() if key != 'child'}, flush=True)
+    except BaseException:
+        # Only a failing run shows what the stop saw; pytest prints a failing test's captured output.
+        print('EARLY_OWNER_EXIT', {key: value for key, value in seen.items() if key != 'child'}, flush=True)
+        raise
