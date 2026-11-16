@@ -5,6 +5,8 @@ QD_ATTRIBUTION_MEASURE_SOURCE to the ship folder and
 QD_ATTRIBUTION_MEASURE_BASELINE to the previous installed quarterdeck package.
 Copies stay in the run's scratch, outside any repository, and the test tool
 removes that scratch whole. Only aggregate numbers reach the console.
+The copy leaves out the desk's and every human-session seat's records, their
+rows and their seat folders: the crew does not read them (left_out).
 """
 
 import importlib.util
@@ -18,6 +20,7 @@ import time
 from types import SimpleNamespace
 
 from quarterdeck import attribution_cache, post, record_owner
+from tests import runtime_copy
 from quarterdeck.harness import reader_stamp
 from quarterdeck.harness.json_record import release
 from quarterdeck.harness.sqlite_snapshot import snapshot
@@ -26,19 +29,29 @@ from quarterdeck.order_attribution import Threads
 from quarterdeck.order_attribution import moment
 
 
+def left_out(source):
+    """The seats whose records no copy takes (tests/runtime_copy.py, the one rule)."""
+    return runtime_copy.people(Path(source).parent)
+
+
 def copied_runtime(source, destination):
-    """No original SQLite connection or native reader; rewrite copied paths only."""
+    """No original SQLite connection or native reader; rewrite copied paths only. The people's records are left out:
+    not copied, their rows dropped from the copied ledger, their seat folders skipped."""
     destination.mkdir(parents=True)
+    people = left_out(source)
     _, raw = snapshot(source / 'ledger.sqlite')
     db = sqlite3.connect(':memory:')
     db.deserialize(raw)
     records = [row[0] for row in db.execute('SELECT DISTINCT record FROM turns')]
-    translated = {}
+    translated, dropped = {}, set()
     copied, size = 0, 0
     for record in records:
         path = Path(record)
         if not path.is_relative_to(source):
             continue  # legacy sources outside runtime stay unread, as in replay
+        if runtime_copy.theirs(path, source, people):
+            dropped.add(record)
+            continue  # a person's record: never copied, never read
         target = destination / path.relative_to(source)
         translated[record] = str(target)
         for suffix in ('', '-wal'):
@@ -59,6 +72,7 @@ def copied_runtime(source, destination):
     for table, in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
         quoted = '"' + table.replace('"', '""') + '"'
         if any(row[1] == 'record' for row in db.execute('PRAGMA table_info(' + quoted + ')')):
+            db.executemany('DELETE FROM ' + quoted + ' WHERE record=?', [(old,) for old in dropped])
             db.executemany('UPDATE ' + quoted + ' SET record=? WHERE record=?',
                            [(new, old) for old, new in translated.items()])
     for _, sql in triggers:
@@ -68,7 +82,7 @@ def copied_runtime(source, destination):
     db.close()
     # Only saved binding metadata is needed from seats; never credential homes.
     for folder in (source / 'seats').iterdir():
-        if not folder.is_dir():
+        if not folder.is_dir() or folder.name in people:
             continue
         for name in (record_owner.REGISTRY, 'record-launches.jsonl'):
             path = folder / name
@@ -89,7 +103,8 @@ def copied_runtime(source, destination):
         if old.exists():
             shutil.copytree(old, destination / 'post' / name)
     shutil.copy2(source.parent / 'ship.toml', destination.parent / 'ship.toml')
-    return dict(ledger_records=len(records), copied_files=copied, copied_bytes=size)
+    return dict(ledger_records=len(records) - len(dropped), copied_files=copied, copied_bytes=size,
+                left_out_seats=sorted(people), left_out_records=len(dropped))
 
 
 def growth_comparison(book, runtime, store, old_module, old_epoch, new_epoch,

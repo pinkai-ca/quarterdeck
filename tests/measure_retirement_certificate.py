@@ -20,13 +20,13 @@ import time
 import tomllib
 import types
 
+from tests import runtime_copy
 from quarterdeck import post, record_owner, service, service_timing, servicectl, ship as shipmod, trusted_files
 from quarterdeck.seat import Seat
 from quarterdeck.tmux import Tmux
 from tests.measure_status_service import copy_file
 
 
-PRIVATE = frozenset(('desk', 'counsel', 'communications', 'media', 'steward'))
 FAMILIES = ('post', 'trusted', 'status', 'brief', 'request-state', 'hwa', 'proven/check-outcomes')
 ROOT_FILES = ('accounting-health.json', 'pool-forecast-alerts.json', 'status-line.json',
               'retirement-status.json', 'seat-holds.json', 'server-recovery.json')
@@ -61,6 +61,7 @@ def backup(source, destination):
 
 
 def freeze(source, destination):
+    private = runtime_copy.people(source)  # the desk's and every office seat's: by the ship file (tests/runtime_copy.py)
     source = source.resolve()
     original = shipmod.load(source)
     counts = defaultdict(lambda: dict(files=0, bytes=0))
@@ -94,11 +95,11 @@ def freeze(source, destination):
     for spec in original.seats.values():
         paths = set(record_owner.bindings(Seat(original, spec, object()), publish=False))
         history.update(paths)
-        if spec.name in PRIVATE:
+        if spec.name in private:
             excluded.update(paths)
     current = {}
     for spec in original.seats.values():
-        if spec.name in PRIVATE:
+        if spec.name in private:
             continue
         seat = Seat(original, spec, object())
         try:
@@ -106,7 +107,7 @@ def freeze(source, destination):
         except Exception:
             path = None
         if path is not None and path not in excluded:
-            if any(path.is_relative_to(original.runtime / 'seats' / name / 'home') for name in PRIVATE):
+            if any(path.is_relative_to(original.runtime / 'seats' / name / 'home') for name in private):
                 continue
             current[path] = (seat.harness.name, spec.role)
 
@@ -173,7 +174,7 @@ def freeze(source, destination):
     (destination / 'workspace').mkdir()
     (destination / 'ship.toml').write_text(text)
     return dict(families=dict(counts), current_records=dict(record_counts),
-                private_record_seats_absent=len(PRIVATE), historical_logical_names_absent=len(history - set(current)),
+                private_record_seats_absent=len(private), historical_logical_names_absent=len(history - set(current)),
                 excluded=['all credential homes and sign-ins', 'desk and office native records',
                           'historical native bodies', 'active request queue', 'native programs and live panes',
                           'live service locks, heartbeat, installed environment and process bindings'])

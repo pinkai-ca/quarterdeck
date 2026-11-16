@@ -15,6 +15,7 @@ import statistics
 import time
 from types import SimpleNamespace
 
+from tests import runtime_copy
 from quarterdeck import post, record_owner, ship as shipmod
 from quarterdeck.accounting_gate import Gate, capture
 from quarterdeck.harness import get, reader_stamp
@@ -27,18 +28,23 @@ from quarterdeck.seat import Seat, seats
 STAGE = ['copy']
 
 def copied_runtime(source, destination, *, compact_sqlite=False):
-    """No original SQLite connection or native reader; rewrite copied paths only."""
+    """No original SQLite connection or native reader; rewrite copied paths only. The desk's and every office seat's
+    records are left out (tests/runtime_copy.py): not copied, their rows dropped, their seat folders skipped."""
     destination.mkdir(parents=True)
+    people = runtime_copy.people(Path(source).parent)
     _, raw = snapshot(source / 'ledger.sqlite')
     db = sqlite3.connect(':memory:')
     db.deserialize(raw)
     records = [row[0] for row in db.execute('SELECT DISTINCT record FROM turns')]
-    translated = {}
+    translated, dropped = {}, set()
     copied, size = 0, 0
     for record in records:
         path = Path(record)
         if not path.is_relative_to(source):
             continue  # legacy sources outside runtime stay unread, as in replay
+        if runtime_copy.theirs(path, source, people):
+            dropped.add(record)
+            continue  # a person's record: never copied, never read
         target = destination / path.relative_to(source)
         translated[record] = str(target)
         if compact_sqlite and path.suffix == '.db' and path.exists():
@@ -70,6 +76,7 @@ def copied_runtime(source, destination, *, compact_sqlite=False):
     for table, in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
         quoted = '"' + table.replace('"', '""') + '"'
         if any(row[1] == 'record' for row in db.execute('PRAGMA table_info(' + quoted + ')')):
+            db.executemany('DELETE FROM ' + quoted + ' WHERE record=?', [(old,) for old in dropped])
             db.executemany('UPDATE ' + quoted + ' SET record=? WHERE record=?',
                            [(new, old) for old, new in translated.items()])
     for _, sql in triggers:
@@ -79,7 +86,7 @@ def copied_runtime(source, destination, *, compact_sqlite=False):
     db.close()
     # Only saved binding metadata is needed from seats; never credential homes.
     for folder in (source / 'seats').iterdir():
-        if not folder.is_dir():
+        if not folder.is_dir() or folder.name in people:
             continue
         for name in (record_owner.REGISTRY, 'record-launches.jsonl'):
             path = folder / name
@@ -100,12 +107,14 @@ def copied_runtime(source, destination, *, compact_sqlite=False):
         if old.exists():
             shutil.copytree(old, destination / 'post' / name)
     shutil.copy2(source.parent / 'ship.toml', destination.parent / 'ship.toml')
-    return dict(ledger_records=len(records), copied_files=copied, copied_bytes=size)
+    return dict(ledger_records=len(records) - len(dropped), copied_files=copied, copied_bytes=size,
+                left_out_seats=sorted(people), left_out_records=len(dropped))
 
 
 def copied_selection_metadata(source, runtime):
+    people = runtime_copy.people(Path(source).parent)
     for folder in (source / 'seats').iterdir():
-        if not folder.is_dir():
+        if not folder.is_dir() or folder.name in people:
             continue
         for name in ('launch.json', 'launch-price.json', 'record', 'pool'):
             path = folder / name
