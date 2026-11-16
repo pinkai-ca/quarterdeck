@@ -159,6 +159,27 @@ def test_concurrent_change_discards_completed_examinations(tmp_path, clock):
     assert g.certificate is None and g.sweep is None
 
 
+@pytest.mark.parametrize('kind', ['wall', 'monotonic'])
+def test_clock_step_after_completion_is_compared_to_the_completed_reading(tmp_path, clock, kind):
+    s = service(tmp_path)
+    g = gate.Gate()
+    assert g.begin(s, 0)
+    clock.wall += 10_000_000_000
+    clock.mono = 10
+    g.finish(s, dict(attempts=0, journals=0),
+             SimpleNamespace(names=frozenset(), visited=set(), blocked=False), 300)
+    assert g.certificate is not None
+    assert g.until == 310
+    if kind == 'wall':
+        clock.wall -= 1
+        clock.mono = 11
+    else:
+        clock.wall += 1
+        clock.mono = 9
+    assert g.begin(s, clock.mono)
+    assert g.certificate is None
+
+
 def test_moving_batches_keep_draining_and_preserve_original_bytes(tmp_path, clock):
     s = service(tmp_path, ('alpha', 'beta', 'gamma'))
     originals = []

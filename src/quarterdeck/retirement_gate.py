@@ -132,8 +132,14 @@ class Gate:
 
     def finish(self, service, result, progress, interval):
         after = capture(service) if self.before is not None else None
-        if (self.before is None or after != self.before or after.at < self.before.at
-                or time.monotonic() < self.monotonic or self.sweep is None or progress is None
+        finished = time.monotonic()
+        reversed_clock = (self.monotonic is not None and finished < self.monotonic
+                          or after is not None and self.before is not None and after.at < self.before.at)
+        self.monotonic = finished
+        if after is not None:
+            self.wall = after.at
+        if (self.before is None or after != self.before or reversed_clock
+                or self.sweep is None or progress is None
                 or progress.blocked or result.get('held') or result.get('failed')
                 or result['attempts'] or result['journals']):
             self.reject()
@@ -146,5 +152,5 @@ class Gate:
         self.sweep.visited.update(progress.visited)
         if not result.get('paused') and self.sweep.visited >= self.sweep.names:
             self.certificate = after
-            self.until = time.monotonic() + interval
+            self.until = finished + interval
             self.sweep = None
