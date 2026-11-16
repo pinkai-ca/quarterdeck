@@ -361,8 +361,9 @@ class Ledger:
     def mark_unread_span(self, record: Path, seat: str, pool: str, size: int, bound: int, at: str, *,
                          commit: bool = True) -> None:
         """Keep the span of a record that was never read because it passed its read bound (law: every-turn-accounted):
-        the seat, the pool, its size and the bound, when it was first seen past the bound, when last, and how many of
-        its turns were counted before. Its turns since are unknown: no figure is made for them."""
+        the seat, the pool, its size and the bound, when it was first seen past the bound, when its figures last
+        changed (seen_at), and how many of its turns were counted before. Its turns since are unknown: no figure is
+        made for them. A pass that finds the span unchanged writes nothing."""
         old = self.db.execute("SELECT seat,pool,size,bound FROM unread_spans WHERE record=?", (str(record),)).fetchone()
         if old is None:
             self.db.execute("INSERT INTO unread_spans (record,seat,pool,size,bound,passed_at,seen_at,counted) "
@@ -371,7 +372,7 @@ class Ledger:
             self.db.execute("UPDATE unread_spans SET seat=?,pool=?,size=?,bound=?,seen_at=? WHERE record=?",
                             (seat, pool, size, bound, at, str(record)))
         else:
-            return  # the same span, as last seen: nothing to write
+            return  # the same span, its figures unchanged: nothing to write
         if commit and self.db.in_transaction:
             self.db.commit()
 
