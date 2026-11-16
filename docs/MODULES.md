@@ -46,6 +46,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `tmux.py` | the only module that runs tmux |
 | `trusted_files.py` | where the files the service writes for a seat and trusts are kept: `runtime/trusted/<seat>`, which no jail can see, and their names |
 | `turn_failure.py` | a turn that ended in a recorded error: the door's hold, its alarm, the receipts it unsettles and a human seat's operational metadata |
+| `output_limit.py` | a seat whose last turn stopped at its output limit with an order open: its status line and its one alarm to the systems seats, cleared when a new turn starts or the order closes |
 | `usage_cache.py` | the latest real reading of each usage window, and its last attempt |
 | `usage_forecast.py` | bounded weekly usage history, three-hour spending rates, exhaustion forecasts and once-per-period systems notifications |
 
