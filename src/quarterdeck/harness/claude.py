@@ -412,6 +412,7 @@ class _QueueSlot:
     at: datetime | None
     session: str | None
     known: bool
+    uncertain: bool = False
 
 
 def queued_notice(entry: dict) -> str | None:
@@ -453,6 +454,9 @@ class _Reader(JsonLinesReader):
 
     def state(self, *, launched_at=None):
         state = replace(self.background.state(super().state(), launched_at=launched_at), walls=tuple(self.walls))
+        if state.queue_error is None and any(slot.uncertain and slot.phase in ('queued', 'pending')
+                                             for slot in self.queue_slots):
+            state = replace(state, queue_error='unknown queue operation')
         return replace(state, failure=self.orphan_auth) if self.open is None and self.orphan_auth else state
 
     def take(self, entry: dict) -> None:
@@ -530,8 +534,9 @@ class _Reader(JsonLinesReader):
             self.queue_slots = [replace(slot, phase='pending') if slot.phase == 'queued' else slot
                                 for slot in self.queue_slots]
         elif entry.get('operation') not in ('enqueue', 'remove', 'dequeue'):
-            self.queue_error = 'unknown queue operation'
-            self.queue_slots = [replace(slot, phase='pending', known=False)
+            # Uncertainty belongs to these candidates, not every later queue reading.
+            # Keep their enqueue identity/time for a later native completion.
+            self.queue_slots = [replace(slot, phase='pending', uncertain=True)
                                 if slot.text.strip() == text.strip() and slot.phase not in ('echo', 'draft') else slot
                                 for slot in self.queue_slots]
 

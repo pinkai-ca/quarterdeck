@@ -167,7 +167,7 @@ def test_assistant_stop_or_new_prompt_does_not_expire_the_queue(tmp_path):
     assert write(record, [end(10)], append=True).queued == ()
 
 
-def test_completing_a_turn_cannot_end_a_background_tool_or_resolve_an_unknown_queue_operation(tmp_path):
+def test_completing_a_turn_expires_queue_uncertainty_but_cannot_end_a_background_tool(tmp_path):
     record = tmp_path / 'synthetic.jsonl'
     pending = 'Synthetic queued input'
     state = write(record, initial() + [enqueue(text=pending), prompt(5), end(7)])
@@ -175,9 +175,13 @@ def test_completing_a_turn_cannot_end_a_background_tool_or_resolve_an_unknown_qu
     assert state.pending_tools == ('Bash',)
     assert idle.check(state).dimension == 'tools-pending'
     state = write(record, [enqueue(8, pending), row('queue-operation', 9,
-                  operation='synthetic-unmeasured', content=pending), prompt(10), end(12)], append=True)
+                  operation='synthetic-unmeasured', content=pending)], append=True)
     assert state.queued == (pending,)
     assert state.queue_error == 'unknown queue operation'
+    state = write(record, [prompt(10), end(12)], append=True)
+    assert state.queued == () and state.queue_error is None
+    assert state.pending_tools == ('Bash',)
+    assert idle.check(state).dimension == 'tools-pending'
 
 
 def test_completed_notice_releases_idle_and_positive_human_wake_eligibility(tmp_path, monkeypatch):
