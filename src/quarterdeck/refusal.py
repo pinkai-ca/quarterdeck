@@ -87,16 +87,20 @@ def excluded(runtime: Path, seat: str) -> frozenset[str]:
 
 WITHHELD = 'withheld: refused by the provider · sender told'
 NOT_TOLD = 'withheld: refused by the provider · its sender is not a seat and was not told'
+UNTOLD = 'withheld: refused by the provider · its sender was not told'
 
 
-def withheld_words(told: bool) -> str:
-    """What a refused message's stub says of its sender: told only where the event holds its notice."""
-    return WITHHELD if told else NOT_TOLD
+def withheld_words(told: bool, seat: bool | None = None) -> str:
+    """What a refused message's stub says of its sender, true in every case: told only where the event holds its
+    notice; else not a seat where its sender is none, and plainly not told where it is a seat or that is unknown."""
+    if told:
+        return WITHHELD
+    return NOT_TOLD if seat is False else UNTOLD
 
 
-def stub(message: post.Message, told: bool = True) -> str:
+def stub(message: post.Message, told: bool = True, seat: bool | None = None) -> str:
     """The refused message as a notice for its addressee: no subject and no body (law: context-is-cache)."""
-    return f"qd > {message.kind} from {message.sender} · {message.short} · {withheld_words(told)}"
+    return f"qd > {message.kind} from {message.sender} · {message.short} · {withheld_words(told, seat)}"
 
 
 def told(runtime: Path, seat: str) -> frozenset[str]:

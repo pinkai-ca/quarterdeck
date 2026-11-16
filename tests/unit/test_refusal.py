@@ -357,6 +357,20 @@ def test_a_refused_message_from_no_seat_says_its_sender_was_not_told(world):
     assert refusal.NOT_TOLD in text and refusal.WITHHELD not in text and refused.body not in text
 
 
+def test_a_seats_refused_message_with_no_notice_held_says_plainly_it_was_not_told(world):
+    """A seat of this ship whose refused message has no notice in its event (a journal written so by hand): the stub
+    says only that its sender was not told, never that it is not a seat."""
+    world.launch('worker')
+    refused = world.order('worker', 'An invented order from a seat, refused, with no notice held.')
+    refusal.save(world.svc.runtime, 'worker', [{'stage': 'held', 'launch': {}, 'turn': None, 'notices': [],
+                                                 'quarantined': [{'message': refused.id}]}])
+    text = post.inbox_text(world.svc.store, 'worker')
+    assert refusal.UNTOLD in text and refusal.NOT_TOLD not in text and refusal.WITHHELD not in text
+    words = refusal.withheld_words
+    assert words(False, True) == refusal.UNTOLD and words(False, None) == refusal.UNTOLD
+    assert words(False, False) == refusal.NOT_TOLD and words(True, False) == refusal.WITHHELD
+
+
 def test_the_unsettled_count_counts_only_messages_still_open(world):
     from quarterdeck import watch
     world.launch('worker')

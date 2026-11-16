@@ -74,7 +74,9 @@ def test_read_only_exclusion_hook_filters_both_incoming_and_own_question_context
     first, incoming = seat.first_message()
     assert incoming == [answer]
     assert root.body not in first and question.body not in first and answer.body not in first
-    assert indexed(first)[root.id]['notice'] == refusal.NOT_TOLD  # withheld by the hook alone: no event holds a notice
+    # Withheld by the hook alone, so no event holds a notice; this ship has no file to say whether its sender is a
+    # seat, so the stub says only that it was not told.
+    assert indexed(first)[root.id]['notice'] == refusal.UNTOLD
     assert set(indexed(first)[root.id]['withheld']) == {root.id, question.id}
     printed = whole(svc.store, root, seat)
     assert root.body not in printed and question.body not in printed and answer.body in printed

@@ -1226,8 +1226,9 @@ INBOX_TAIL_BYTES = 256 * 1024
 
 
 def inbox_reading(store: Store, seat: str, *, recent: bool = False) -> dict:
-    told = _told(store, seat)
-    messages = [_shown(m, withheld, told) for withheld in [_withheld(store, seat)] for m in store.for_seat(seat)]
+    told, sender_seat = _told(store, seat), _sender_seat(store)
+    messages = [_shown(m, withheld, told, sender_seat) for withheld in [_withheld(store, seat)]
+                for m in store.for_seat(seat)]
     data = {"seat": seat, "open": [m for m in messages if store.is_open(m)],
             "received": list(reversed([m for m in messages if not store.is_open(m)])),
             "closed_by": {m.id: closed.id for m in messages if m.kind == "order"
@@ -1279,7 +1280,24 @@ def _told(store: Store, seat: str) -> frozenset[str]:
         return frozenset()
 
 
-def _shown(message: Message, withheld: frozenset[str] | None, told: frozenset[str] = frozenset()) -> Message:
+def _sender_seat(store: Store):
+    """A test of whether a sender is a seat of this ship or its fleet: True, False, or None where that cannot be
+    known (the ship cannot be read). 'ship' is never a seat, whatever the ship file says."""
+    from . import refusal, ship as shipmod
+    try:
+        ship = shipmod.load(store.dir.parent.parent.parent)
+    except (ShipError, OSError, ValueError):
+        ship = None
+
+    def test(sender):
+        if sender == SHIP:
+            return False
+        return None if ship is None else refusal.sender_seat(ship, sender)
+    return test
+
+
+def _shown(message: Message, withheld: frozenset[str] | None, told: frozenset[str] = frozenset(),
+           seat=None) -> Message:
     """The refused message as a notice without its subject or body (law: context-is-cache).
 
     An unreadable refusal journal withholds every body: the store keeps the text, nothing is lost.
@@ -1289,7 +1307,9 @@ def _shown(message: Message, withheld: frozenset[str] | None, told: frozenset[st
         return replace(message, subject=None, body='withheld: refusal journal unreadable; inspect runtime/seats')
     if message.id not in withheld:
         return message
-    return replace(message, subject=None, body=withheld_words(message.id in told))  # never a notice not made
+    told_it = message.id in told  # never a notice not made, never a seat not declared
+    words = withheld_words(told_it, None if told_it or seat is None else seat(message.sender))
+    return replace(message, subject=None, body=words)
 
 
 def inbox_text(store: Store, seat: str) -> str:

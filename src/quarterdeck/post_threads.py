@@ -76,6 +76,7 @@ def index_rows(store: post.Store, roots: tuple[post.Message, ...],
     settled = store.settled_notices(seat) if seat is not None else {}
     # Whose sender was told, as each refused message's own addressee's refusal journal holds it.
     told = frozenset().union(*(post._told(store, to) for to in {by_id[i].to for i in withheld if i in by_id}))
+    sender_seat = post._sender_seat(store) if withheld else None
 
     root_for: dict[str, str] = {}
 
@@ -109,13 +110,13 @@ def index_rows(store: post.Store, roots: tuple[post.Message, ...],
     rows = []
     for root in sorted((by_id[identifier] for identifier in selected_roots), key=lambda message: (message.at, message.id)):
         members = grouped[root.id] if seat is None else [m for m in grouped[root.id] if party(m, seat)]
-        shown = post._shown(root, withheld, told)
+        shown = post._shown(root, withheld, told, sender_seat)
         subject = shown.subject if seat is None or party(root, seat) else None
         amendments = tuple(message.id for message in members if message.id != root.id)
         waiting = tuple(f'{message.id}: sent, awaiting {message.to}' for message in sent
                         if root_for[message.id] == root.id)
         hidden = tuple(message.id for message in members if message.id in withheld)
-        notice = post._shown(by_id[hidden[0]], withheld, told).body if hidden else None
+        notice = post._shown(by_id[hidden[0]], withheld, told, sender_seat).body if hidden else None
         rows.append(IndexRow(root.id, root.kind, root.sender, subject, root.due, amendments,
                              notice,
                              tuple(message.id for message in members if message.id in active_ids), waiting,
@@ -153,9 +154,10 @@ def whole(store: post.Store, reference: str, reader: str) -> Thread:
                 heapq.heappush(waiting, (by_id[child].at, child))
     withheld = post._withheld(store, reader)
     told = post._told(store, reader)
+    sender_seat = post._sender_seat(store) if withheld else None
     mine = [message for message in ordered if party(message, reader)]
     others = tuple(f'{message.kind} {message.id}' for message in ordered if not party(message, reader))
-    shown = tuple(post._shown(message, withheld, told) for message in mine)
+    shown = tuple(post._shown(message, withheld, told, sender_seat) for message in mine)
     visible = [message for message, masked in zip(mine, shown) if masked is message]  # a refused one stays its notice
     from .forward_post import recorded
     forwards = []
