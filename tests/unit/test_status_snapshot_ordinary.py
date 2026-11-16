@@ -163,3 +163,32 @@ def test_whole_service_publication_uses_its_warm_store_and_both_indexes(tmp_path
     finally:
         actor.ledger.close()
         lock.close()
+
+
+def test_status_publication_and_demand_do_not_change_accounting_certificate(published, monkeypatch):
+    from quarterdeck import accounting_gate, trusted_files
+    ship, _, _, _ = published
+    trusted_files.root(ship.runtime).mkdir(exist_ok=True)
+    actor = service.Service(ship, SimpleNamespace())
+    native_time = time.time_ns
+    monkeypatch.setattr(accounting_gate, 'time', SimpleNamespace(
+        time_ns=lambda: native_time() + 10 * post.POST_TIMESTAMP_TICK_NS,
+        monotonic=time.monotonic))
+    gate = accounting_gate.Gate()
+    try:
+        actor.first_beat()
+        assert actor.publish_status()
+        gate.begin(actor, ())
+        gate.finish(actor, actor.ledger.db.total_changes, full=True)
+        assert gate.completed is not None and not gate.allowed(actor)
+        before = accounting_gate.capture(actor, ())
+        assert status_snapshot.path(ship.runtime).parent == ship.runtime / 'status'
+        assert actor.publish_status()
+        assert accounting_gate.capture(actor, ()) == before
+        assert not gate.allowed(actor)
+        assert status_snapshot.request(ship)
+        assert status_snapshot.served(ship) is not None
+        assert accounting_gate.capture(actor, ()) == before
+        assert not gate.allowed(actor)
+    finally:
+        actor.ledger.close()

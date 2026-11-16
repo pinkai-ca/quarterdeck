@@ -41,11 +41,11 @@ uses the independent reading and says `cold: independent reading at <time>`.
 All existing feed fields keep their names and values. Plain text status and watch
 continue to collect independently.
 
-Each JSON status call marks demand under the runtime's trusted folder. While no
+Each JSON status call marks demand under the runtime's private status folder. While no
 clients are attached, the service makes its ordinary periodic whole readings only
 for five minutes after the latest call. The minute-by-minute site feed keeps that
 demand alive; five quiet minutes stop headless collection. A call that cannot write
-the trusted stamp falls back cold. The stamp never renews a reading's own time.
+the private status stamp falls back cold. The stamp never renews a reading's own time.
 
 Detailed status and the ledger show each provider's allowance as it was last stored. A command that changes something keeps its proof line as text; that includes `watch --save-screen` and `doctor --fix`.
 

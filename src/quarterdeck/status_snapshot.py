@@ -4,10 +4,11 @@ from dataclasses import fields
 from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 import stat
 import time
 
-from . import durable, lock_holders, output, servicectl, trusted_files
+from . import durable, lock_holders, output, servicectl
 
 NAME = 'status-reading.json'
 DEMAND = 'status-demand.json'
@@ -19,11 +20,11 @@ TOP = frozenset(('service', 'seats', 'programs', 'programs_error', 'check_outcom
 
 
 def path(runtime, name=NAME):
-    return trusted_files.root(runtime) / name
+    return Path(runtime) / 'status' / name
 
 
 def _write(runtime, name, value):
-    folder = trusted_files.root(runtime)
+    folder = path(runtime).parent
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     durable.replace_file(folder / name, json.dumps(value, allow_nan=False) + '\n')
 
@@ -51,9 +52,9 @@ def _fresh(data, bound):
 def request(ship):
     """A JSON caller asks for five minutes of headless periodic readings.
 
-    A jail's trusted folder is its own private, empty, writable tmpfs: its
-    stamp reaches nothing outside, and its served reading is absent, so the
-    command reads cold. An unwritable destination also keeps the cold reader.
+    The real status folder is absent inside a jail: a private stamp cannot
+    reach the service, and its served reading is absent, so the command reads
+    cold. An unwritable destination also keeps the cold reader.
     """
     try:
         _write(ship.runtime, DEMAND, dict(wall=time.time_ns(), monotonic=time.monotonic_ns()))
