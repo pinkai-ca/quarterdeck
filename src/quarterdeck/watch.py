@@ -920,6 +920,11 @@ def _run_step(step: str, seat, ctx: dict, store, attempts, latest) -> _Step:
         if step == 'pending':
             ctx['pending'] = pending = attempts.undelivered(store, name, results=latest)
             ops.append(('waiting', pending, 'extend'))
+            if pending and getattr(getattr(seat, 'spec', None), 'role', None) == 'hand':
+                from . import hand_door
+                for message in pending:  # a hand's one order at a time: what its door holds is named
+                    if held := hand_door.held(seat, store, attempts, message):
+                        ops.append(('pending', f"{name}: {message.short} {held}", 'append'))  # law: nothing-waits-silently
         elif step == 'unresolved':
             if isinstance(seat, UnresolvedSeat):
                 ops.append(('needs_human', name, 'append'))

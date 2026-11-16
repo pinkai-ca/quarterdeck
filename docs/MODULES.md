@@ -32,6 +32,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `pr_screen.py` | a pull request from outside screened by a program before any seat reads it: fetched under made-up names, searched, read by its hand (or two hands, one on each model) with a planted check whose posts are held, judged by the answer's shape, and the desk or the First Officer told without quoting it |
 | `pr_screen_patterns.py` | the screen's one list of patterns: known forms of an instruction to a reader and of a harmful command |
 | `pricing.py` | a pool's stated rates, and the price saved beside a launch or a model choice |
+| `hand_door.py` | a hand's one order at a time at the door: its order in hand, read as its fresh start reads it; what does not belong to it waits, unread and named on the status line, for the report and the fresh start that carries the next |
 | `hand_transcripts.py` | accounted, closed hand transcripts retained outside the seat's write allowance |
 | `provenance.py` | which launch a record belongs to |
 | `providers.py` | normalizes declared companies and builds public identity metadata |

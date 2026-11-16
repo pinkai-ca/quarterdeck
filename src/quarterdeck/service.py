@@ -944,6 +944,11 @@ class Service:
             # A hand's conversation holds an outsider's text while its screen's hold stands: nothing but the screen's
             # own instruction is typed there. The message waits, unread and with no attempt, until the release.
             return f'{message.short} to {seat.name} · waits: {pr_screen.SCREENING}'
+        from . import hand_door
+        if held := hand_door.held(seat, self.store, getattr(self, 'attempts', None), message):
+            # A hand holds one order at a time: what does not belong to its order in hand waits, unread and with
+            # no attempt, for the report on it and the fresh start that carries the next (hand_door).
+            return f'{message.short} to {seat.name} · {held}'
         door = Door(seat)
         speed = message.speed
         reading = door.reading()
@@ -960,6 +965,8 @@ class Service:
                     return f"{seat.name}: compaction handoff/transition reserved; held for successor"
                 if not pr_screen.admits(self.runtime, seat.name, message.id):  # a hold set since the first look
                     return f'{message.short} to {seat.name} · waits: {pr_screen.SCREENING}'
+                if held := hand_door.held(seat, self.store, getattr(self, 'attempts', None), message):  # read again under admission
+                    return f'{message.short} to {seat.name} · {held}'
                 bound = pending_delivery.current_identity(seat)
                 if bound is None:
                     return f'{seat.name}: current pane/process/launch unproved; message waits unread'
@@ -1965,8 +1972,9 @@ class Service:
     def _fresh_after_order_ready(self, seat) -> bool:
         """The current orders, recovery and recorded completion; never a lifecycle action."""
         from . import compaction
+        from . import hand_door
         if (seat.session.human or seat.spec.fresh != "after-order" or not seat.is_up
-                or self.store.open_for(seat.name) or recovery.held(seat)):
+                or hand_door.blocks_fresh(seat, self.store, getattr(self, 'attempts', None)) or recovery.held(seat)):
             return False
         launched = seat.launched()
         if launched is None:

@@ -1203,13 +1203,11 @@ class Seat:
     def _in_hand(self, store: post.Store, messages: list[post.Message], refused) -> carriagemod.Carriage:
         """The order in hand: the oldest open order or question to this hand, and every message below it that the
         hand sent or received but an ack, each typed whole in thread order. The other open messages wait for it."""
+        from .hand_door import order_in_hand  # the door holds by this same reading
         from .post_threads import _descends
-        open_ = sorted((message for message in store.for_seat(self.name)
-                        if message.obligation and message.id not in refused and store.is_open(message)),
-                       key=lambda message: (message.at, message.id))
-        if not open_:
+        order = order_in_hand(store, self.name, refused)
+        if order is None:
             return carriagemod.Carriage(None, [], in_hand=True)
-        order = open_[0]
         by_id = {message.id: message for message in messages}
         below = [message for message in messages
                  if message.id not in refused and message.kind != 'ack'
