@@ -86,11 +86,12 @@ def consumed_ids(store: post.Store, seat: str, role: str, inputs: Iterable[Input
     from .refusal import stub
 
     messages = store.all()
+    told = post._told(store, seat) if excluded else frozenset()  # the stub says what the refusal's event holds
     tokens = {}
     for message in messages:
         incoming = message.to == seat and message.kind != 'ack'
         if message.id in excluded:
-            token = stub(message) if incoming else None
+            token = stub(message, message.id in told) if incoming else None
             incoming = False
         elif incoming:
             token = post.typed([message]).strip()

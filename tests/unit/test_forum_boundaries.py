@@ -550,10 +550,10 @@ def test_a_refused_copy_is_carried_as_a_notice_without_its_body(world):
     first, carried = world.seat('reviewer-2').first_message()
     assert carried == [] and BODY.strip() not in first
     [row] = [row for row in index_rows(first) if mine.id in row['withheld']]
-    assert row['notice'] == refusal.WITHHELD
+    assert row['notice'] == refusal.NOT_TOLD  # refuse() writes a journal that holds no notice
     whole = thread_text(world.store, mine.id, 'reviewer-2')
     assert BODY.strip() not in whole, 'neither its own refused copy nor a peer copy prints the refused words'
-    assert refusal.WITHHELD in whole
+    assert refusal.NOT_TOLD in whole
 
 
 def test_a_jailed_reviewer_still_reaches_the_shared_post_folder_but_no_peer_seat_folder(world):

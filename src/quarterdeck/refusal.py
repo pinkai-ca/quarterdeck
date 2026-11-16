@@ -86,11 +86,42 @@ def excluded(runtime: Path, seat: str) -> frozenset[str]:
 
 
 WITHHELD = 'withheld: refused by the provider · sender told'
+NOT_TOLD = 'withheld: refused by the provider · its sender is not a seat and was not told'
 
 
-def stub(message: post.Message) -> str:
+def withheld_words(told: bool) -> str:
+    """What a refused message's stub says of its sender: told only where the event holds its notice."""
+    return WITHHELD if told else NOT_TOLD
+
+
+def stub(message: post.Message, told: bool = True) -> str:
     """The refused message as a notice for its addressee: no subject and no body (law: context-is-cache)."""
-    return f"qd > {message.kind} from {message.sender} · {message.short} · {WITHHELD}"
+    return f"qd > {message.kind} from {message.sender} · {message.short} · {withheld_words(told)}"
+
+
+def told(runtime: Path, seat: str) -> frozenset[str]:
+    """The refused messages whose sender was given a notice, as the journal holds them. Read-only; an unreadable
+    journal raises."""
+    return frozenset(n['message'] for event in load(runtime, seat) for n in event['notices'])
+
+
+def sender_seat(ship, sender: str) -> bool:
+    """Whether a refused message's sender is a seat that can be told: one of this ship's, or a seat of another ship
+    of the fleet by its address, told through the fleet post as the same file (law: post-is-files). 'ship' and any
+    other name are no seat."""
+    if sender in ship.seats:
+        return True
+    from .fleet import peers
+    from .fleet_post import address
+    here = ship.folder.name
+    try:
+        seat, name = address(sender, here)
+    except ShipError:
+        return False
+    if name == here:
+        return False
+    other = peers(ship).get(name)
+    return other is not None and seat in other.seats
 
 
 def launch_key(seat: Seat) -> dict | None:
@@ -158,14 +189,18 @@ def _after_auto_fresh(events: list[dict], launch: dict, state) -> bool:
             and not any(t.failure is None for t in state.completed_turns))
 
 
-def notice(event: dict, entry: dict, seat: str) -> post.Message:
+def notice(event: dict, entry: dict, seat: str, runtime: Path | None = None) -> post.Message:
     body = (f"{seat}'s provider refused its conversation at your {entry['kind']} {post.short_of(entry['message'])} "
             f"({event['code'] or 'refusal'}, {event['turn'] or 'time unknown'}). The ship will not type it to {seat} "
             f"again: a fresh start of {seat} carries only a notice of it. It stays open: send a reworded message, "
             f"or close it.")  # the same words at every stage, so a republication matches the published notice
     record = next(n for n in event['notices'] if n['message'] == entry['message'])
-    return post.Message(record['id'], 'report', post.SHIP, entry['sender'], datetime.fromisoformat(record['at']),
-                        body, re=entry['message'])
+    sender, to = post.SHIP, entry['sender']
+    if runtime is not None:  # a seat of another ship is told as the fleet post carries it: the wire form
+        from .fleet_post import wire_parties
+        sender, to = wire_parties(runtime, sender, to)
+    return post.Message(record['id'], 'report', sender, to, datetime.fromisoformat(record['at']), body,
+                        re=entry['message'])
 
 
 def _publish(store: post.Store, message: post.Message) -> None:
@@ -239,7 +274,7 @@ def step(service: Service, seat: Seat) -> None:
     message, why = culprit(seat, failure, launch, service.store, service.attempts, record)
     if message is not None:
         event['quarantined'] = [{'message': message.id, 'sender': message.sender, 'kind': message.kind}]
-        if message.sender in service.ship.seats:
+        if sender_seat(service.ship, message.sender):  # this ship's seat, or another ship's by its address
             intent = service.store.prepare('report', post.SHIP, message.sender, '', re=message.id)
             event['notices'] = [{'message': message.id, 'id': intent.id, 'at': intent.at.isoformat()}]
     if message is None:
@@ -261,7 +296,7 @@ def step(service: Service, seat: Seat) -> None:
 
 
 CODE = re.compile(r'[A-Za-z0-9_.:-]{1,80}')
-NOTICE_ID = re.compile(r'rep-[A-Za-z0-9-]{1,80}')  # a report's plain name
+NOTICE_ID = re.compile(r'rep-[A-Za-z0-9-]{1,80}(@[A-Za-z0-9-]{1,80})?')  # a report's plain name, '@' in a fleet's
 
 
 def checked(service: Service, seat: Seat, event: dict, entry: dict, record: dict) -> tuple[dict, dict] | str:
@@ -284,8 +319,8 @@ def checked(service: Service, seat: Seat, event: dict, entry: dict, record: dict
         return 'it names no message in the store'
     if refused.id != entry['message'] or refused.to != seat.name:
         return 'it names a message not addressed to this seat'
-    if refused.sender not in service.ship.seats:
-        return 'the refused message was not sent by a seat of this ship'
+    if not sender_seat(service.ship, refused.sender):
+        return 'the refused message was not sent by a seat of this ship or of its fleet'
     code, turn = event.get('code'), event.get('turn')
     if code is not None and (not isinstance(code, str) or CODE.fullmatch(code) is None):
         return 'its code is not a short token'
@@ -313,7 +348,7 @@ def _tell(service: Service, seat: Seat, event: dict) -> None:
                 refused.add((seat.name, record.get('id')))
                 service.log('refusal-notice-refused', seat=seat.name, notice=str(record.get('id'))[:80], reason=found)
             continue
-        _publish(service.store, notice(*found, seat.name))
+        _publish(service.store, notice(*found, seat.name, service.runtime))
 
 
 def relaunch(service: Service, seat: Seat, events: list[dict], event: dict) -> None:

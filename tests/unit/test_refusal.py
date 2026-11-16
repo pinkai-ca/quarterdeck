@@ -278,3 +278,93 @@ def test_one_seats_refusal_failure_never_stops_the_next_seat_and_is_logged_once(
     assert seen.count('tester') == 3, 'the seats after it still ran, every tick'
     errors = [entry for entry in logged if entry.get('step') == 'refusals' and entry.get('seat') == 'worker']
     assert len(errors) == 1 and 'synthetic notice conflict' in errors[0]['error'], 'logged once while it stands'
+
+
+OTHER_SHIP = '''[ship]
+name = "other"
+operator = "operator"
+[pools.test]
+provider = "codex"
+[sessions.crew]
+title = "Crew"
+[seats.lead]
+session = "crew"
+role = "worker"
+harness = "codex"
+pool = "test"
+'''
+
+
+@pytest.fixture
+def fleet_world(tmp_path, monkeypatch):
+    """The refusal world as one ship of a fleet: ships/synthetic, beside ships/other with its seat 'lead'."""
+    here = tmp_path / 'ships' / 'synthetic'
+    here.mkdir(parents=True)
+    (tmp_path / 'ships' / 'other').mkdir()
+    (tmp_path / 'ships' / 'other' / 'ship.toml').write_text(OTHER_SHIP)
+    built = World(here)
+    built.fresh = []
+
+    def fresh(seat):
+        first, carried = seat.first_message()
+        built.fresh.append((seat.name, first, [m.id for m in carried]))
+        built.launch(seat.name)
+        return f'{seat.name} fresh (stand-in)'
+    monkeypatch.setattr(Seat, 'fresh', fresh)
+    yield built
+    built.svc.ledger.close()
+
+
+def test_a_refused_message_from_another_ships_seat_is_told_through_the_fleet_post(fleet_world):  # law: post-is-files
+    from quarterdeck import fleet_post as fleet, ship as shipmod
+    world = fleet_world
+    world.launch('worker')
+    other = shipmod.load(world.svc.ship.folder.parent / 'other')
+    sent = post.Store(other.runtime).new('order', 'lead', 'worker@synthetic',
+                                         'An invented order from another ship that the provider refused.')
+    fleet.run(other, post.Store(other.runtime))  # filed on other, carried by the fleet post
+    fleet.run(world.svc.ship, world.svc.store)
+    [refused] = [m for m in world.svc.store.all() if m.body == sent.body]  # an imported id names its ship
+    assert refused.sender == 'lead@other' and refused.to == 'worker'
+    world.turn('worker', refused, error=REFUSED)
+    world.svc.refusals()
+    [told] = notices(world, 'lead@other')
+    assert told.re == refused.id and told.kind == 'report' and refused.body not in told.body
+    events = refusal.load(world.svc.runtime, 'worker')
+    assert [n['message'] for n in events[0]['notices']] == [refused.id], 'the event holds the notice it made'
+    assert refusal.told(world.svc.runtime, 'worker') == {refused.id}
+    [row] = [row for row in index_rows(world.fresh[0][1]) if refused.id in row['withheld']]
+    assert row['notice'] == refusal.WITHHELD, 'its sender was told, and the stub says so'
+    fleet.run(world.svc.ship, world.svc.store)  # the fleet post carries the notice as the same file
+    fleet.run(other, post.Store(other.runtime))
+    arrived = [m for m in post.Store(other.runtime).all() if m.kind == 'report' and m.sender != 'lead'
+               and m.body == told.body]
+    assert arrived and arrived[0].re == sent.id and arrived[0].to == 'lead', [(m.re, m.to) for m in arrived]
+
+
+def test_a_refused_message_from_no_seat_says_its_sender_was_not_told(world):
+    world.launch('worker')
+    refused = world.order('worker', 'An invented order the ship itself sent, which the provider refused.',
+                          sender=post.SHIP)
+    world.turn('worker', refused, error=REFUSED)
+    world.svc.refusals()
+    assert notices(world, post.SHIP) == [] and refusal.told(world.svc.runtime, 'worker') == frozenset()
+    events = refusal.load(world.svc.runtime, 'worker')
+    assert events[0]['notices'] == [] and [q['message'] for q in events[0]['quarantined']] == [refused.id]
+    [row] = [row for row in index_rows(world.fresh[0][1]) if refused.id in row['withheld']]
+    assert row['notice'] == refusal.NOT_TOLD, 'the stub never claims a notice the event does not hold'
+    text = post.inbox_text(world.svc.store, 'worker')
+    assert refusal.NOT_TOLD in text and refusal.WITHHELD not in text and refused.body not in text
+
+
+def test_the_unsettled_count_counts_only_messages_still_open(world):
+    from quarterdeck import watch
+    world.launch('worker')
+    order = world.order('worker', 'An invented order whose delivery was left unsettled.')
+    attempt = world.svc.attempts.open(order, 'worker', '%1', 1, None)
+    world.svc.attempts.close(attempt, sorted(post.UNSETTLED)[0], 'synthetic unsettled')
+    latest = {order.id: sorted(post.UNSETTLED)[0]}
+    assert watch._unsettled(world.svc.store, latest) == 1
+    world.svc.store.new('report', 'worker', 'tester', 'Invented report.', re=order.id)
+    assert watch._unsettled(post.Store(world.svc.runtime), latest) == 0, 'reported on: no longer counted'
+    assert watch._unsettled(world.svc.store, {'ord-missing-zzzz': sorted(post.UNSETTLED)[0]}) == 1, 'unreadable stays'

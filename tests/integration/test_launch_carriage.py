@@ -270,9 +270,10 @@ def test_a_refused_message_is_only_its_notice_in_the_account_and_the_file(ship, 
     for shown in (opening, printed, launch, *generated):
         assert 'SYNTHETIC REFUSED' not in shown, 'neither its subject nor its body, anywhere'  # law: context-is-cache
     assert row['sender'] == 'desk' and row['subject'] is None
-    assert row['notice'] == refusal.WITHHELD and set(row['withheld']) == {refused.id, amended.id}
-    assert printed.count(refusal.WITHHELD) == 2, 'each withheld message remains its notice in the complete thread'
-    assert refusal.WITHHELD in opening
+    # The journal written here holds no notice, so the stub never claims one.
+    assert row['notice'] == refusal.NOT_TOLD and set(row['withheld']) == {refused.id, amended.id}
+    assert printed.count(refusal.NOT_TOLD) == 2, 'each withheld message remains its notice in the complete thread'
+    assert refusal.NOT_TOLD in opening
 
 
 def test_an_unreadable_refusal_journal_still_holds_the_launch(ship, tmux):

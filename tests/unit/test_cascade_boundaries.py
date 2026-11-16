@@ -117,7 +117,8 @@ def test_refused_current_step_ends_by_category_withholds_input_then_quarantines_
     assert len(world.fresh) == 1
     name, first, carried = world.fresh[0]
     assert name == "worker" and order.id not in carried
-    assert order.body not in first and order.id in first and refusal.WITHHELD in first
+    # Its sender is the ship, which no notice reaches: the stub says it was not told.
+    assert order.body not in first and order.id in first and refusal.NOT_TOLD in first
     assert order.body not in thread_text(world.svc.store, order.id, "worker"), "qd thread keeps the refusal"
     assert order.body not in thread_text(world.svc.store, world.question.id, "conductor"), \
         "the conductor neither sent nor received the step order: its words never reach it"
@@ -521,9 +522,9 @@ def test_a_refused_final_notice_is_named_by_stub_and_its_body_never_carried(tmp_
     assert [m.id for m in incoming] == [ring.question.id]
     assert final.body not in first and "Last full answer" not in first
     row = row_for(first, ring.question.id)
-    assert row["notice"] == refusal.WITHHELD and final.id in row["withheld"]
+    assert row["notice"] == refusal.NOT_TOLD and final.id in row["withheld"]  # the journal here holds no notice
     whole = thread_text(ring.store, ring.question.id, "conductor")
-    assert final.body not in whole and "Last full answer" not in whole and refusal.WITHHELD in whole
+    assert final.body not in whole and "Last full answer" not in whole and refusal.NOT_TOLD in whole
     assert ring.question.body in whole
     assert ring.store.is_open(ring.question)
 

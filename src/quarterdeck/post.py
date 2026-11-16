@@ -1226,7 +1226,8 @@ INBOX_TAIL_BYTES = 256 * 1024
 
 
 def inbox_reading(store: Store, seat: str, *, recent: bool = False) -> dict:
-    messages = [_shown(m, withheld) for withheld in [_withheld(store, seat)] for m in store.for_seat(seat)]
+    told = _told(store, seat)
+    messages = [_shown(m, withheld, told) for withheld in [_withheld(store, seat)] for m in store.for_seat(seat)]
     data = {"seat": seat, "open": [m for m in messages if store.is_open(m)],
             "received": list(reversed([m for m in messages if not store.is_open(m)])),
             "closed_by": {m.id: closed.id for m in messages if m.kind == "order"
@@ -1269,15 +1270,26 @@ def _withheld(store: Store, seat: str) -> frozenset[str] | None:
         return None
 
 
-def _shown(message: Message, withheld: frozenset[str] | None) -> Message:
+def _told(store: Store, seat: str) -> frozenset[str]:
+    """The refused messages whose sender the refusal's event holds a notice for; none when it cannot be read."""
+    from . import refusal
+    try:
+        return refusal.told(store.dir.parent.parent, seat)
+    except refusal.JournalError:
+        return frozenset()
+
+
+def _shown(message: Message, withheld: frozenset[str] | None, told: frozenset[str] = frozenset()) -> Message:
     """The refused message as a notice without its subject or body (law: context-is-cache).
 
     An unreadable refusal journal withholds every body: the store keeps the text, nothing is lost.
     """
-    from .refusal import WITHHELD
+    from .refusal import withheld_words
     if withheld is None:
         return replace(message, subject=None, body='withheld: refusal journal unreadable; inspect runtime/seats')
-    return replace(message, subject=None, body=WITHHELD) if message.id in withheld else message
+    if message.id not in withheld:
+        return message
+    return replace(message, subject=None, body=withheld_words(message.id in told))  # never a notice not made
 
 
 def inbox_text(store: Store, seat: str) -> str:

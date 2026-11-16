@@ -102,7 +102,7 @@ def test_a_refused_root_is_named_without_its_subject_or_body(store, tmp_path, mo
     result = built(tmp_path, [secret], refused={secret.id})
     printed = post_threads.render(post_threads.whole(store, secret.id, 'captain'))
     for text in (result.opening, printed, *result.files.values()):
-        assert secret.id in text and refusal.WITHHELD in text
+        assert secret.id in text and refusal.NOT_TOLD in text  # no refusal event holds a notice here
         assert 'SYNTHETIC REFUSED SUBJECT' not in text and 'SYNTHETIC REFUSED BODY' not in text
 
 

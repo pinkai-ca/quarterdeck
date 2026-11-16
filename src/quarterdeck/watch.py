@@ -1024,7 +1024,7 @@ def _post_fields(ship, store, attempts, post_held, records, latest, waiting, rea
         waiting=len(waiting),
         oldest=int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60),
         blind=sum(result == 'blind' for result in latest.values()),
-        unsettled=sum(result in post.UNSETTLED for result in latest.values()),
+        unsettled=_unsettled(store, latest),
         queued=len(queued),
         oldest_queued=int(max(((now - a.when).total_seconds() for a in queued), default=0) // 60),
         relaunches=relaunch_intent.status(ship, {seat.name: seat for seat in reading.selected
@@ -1035,6 +1035,23 @@ def _post_fields(ship, store, attempts, post_held, records, latest, waiting, rea
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, reading.readable),
     )
+
+
+def _unsettled(store, latest) -> int:
+    """Messages whose latest attempt left them unsettled after an error, while still open for their addressee, read
+    as the waiting count reads them: an order since reported on, or a question since answered, no longer counts. One
+    that cannot be read stays counted, never hidden."""
+    count = 0
+    for identifier, result in latest.items():
+        if result not in post.UNSETTLED:
+            continue
+        try:
+            message = store.get(identifier)
+        except ShipError:
+            count += 1
+            continue
+        count += store.is_open(message)
+    return count
 
 
 def _post_reading(ship, store, attempts, post_held):
