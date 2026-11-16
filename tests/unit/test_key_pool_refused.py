@@ -135,6 +135,17 @@ def test_qd_doctor_opens_its_seat_on_no_key_pool():
     assert [(c.name, c.passed) for c in found] == [('seat opened', False)]
 
 
+def test_qd_doctor_names_the_key_refusal_when_only_key_pools_could_carry_its_seat():
+    """A ship whose only pools a program runs on are paid by a key is told the key refusal, the true cause, never
+    that no program is on the PATH."""
+    found = doctor.fix(SimpleNamespace(pools={'paid': Pool('paid', 'synthetic', api_key=UNSET)}), [], None)
+    assert [(c.name, c.passed, c.detail) for c in found] == [('seat opened', False, f'doctor: its pool paid {LINE}')]
+    assert 'install one first' not in found[0].detail
+    nothing = doctor.fix(SimpleNamespace(pools={}), [], None)  # no pool at all: the program's absence, as before
+    assert [(c.name, c.passed, c.detail) for c in nothing] == [(
+        'seat opened', False, "no declared pool's program is on the PATH, so no seat can be asked; install one first")]
+
+
 # -- the plan: qd setup's proposal, read before anything is written --------------------------------------------------
 
 @pytest.mark.parametrize('pool,shown', [

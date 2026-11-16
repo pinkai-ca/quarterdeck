@@ -70,8 +70,8 @@ UNJAILED_PREFIXES = (*FROM_PANE_PREFIXES, *DESKTOP_PREFIXES)
 
 # The service starts from a declared list too, named exactly, with no prefix but the unjailed list's own: the
 # unjailed panes' list (it may start the ship's server, which they inherit), what it needs to run (a test namespace's
-# tmux folder, certificates and proxies for its readers), its own ship (QD_SHIP, QD_DEFAULT_SHIP), git's identity, and
-# the pools' keys the ship file names (api_key = "env:NAME"). Never QD_SEAT; no other QD_ or GIT_ name, so neither
+# tmux folder, certificates and proxies for its readers), its own ship (QD_SHIP, QD_DEFAULT_SHIP) and git's identity.
+# No pool's key: no seat runs on one (ship.key_refusal). Never QD_SEAT; no other QD_ or GIT_ name, so neither
 # GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY nor GIT_SSH*. QD_TMUX_SOCKET passes only where it is
 # declared (servicectl.start): a test's or the drill's private namespace.
 GIT_IDENTITY = ('GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL')
@@ -84,8 +84,9 @@ NEVER = ('QD_SEAT',)
 
 def declared(environ, names, prefixes, keys=()) -> dict[str, str]:
     """The variables of ``environ`` a list names, by name or prefix, but never QD_SEAT nor a secret-looking name; then
-    the ``keys`` named, a ship file's declared pool keys. A refused name is dropped from both, whatever names it.
-    Names are judged, never values."""
+    the ``keys`` named exactly. No caller of the framework passes ``keys`` now that no pool's key is carried; the
+    tests pass it to prove that a refused name is dropped from both, whatever names it. Names are judged, never
+    values."""
     kept = {name: value for name, value in environ.items()
             if name not in NEVER and (name in names or name.startswith(prefixes)) and not looks_secret(name)
             and not refused(name)}

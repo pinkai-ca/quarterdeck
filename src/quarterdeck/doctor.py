@@ -266,9 +266,12 @@ def pool_check(pool: Pool) -> Check:
 def fix(ship: Ship, failed: list[Check], tmux: Tmux) -> list[Check]:
     """Open a throwaway seat on the first pool whose program runs, hand it the failures as an order, and wait for its report."""
     searched = program_path()
-    available = next(((pool, reader) for pool in ship.pools.values() for name in harnesses.NAMES
-                      if (reader := harnesses.get(name)).accepts(pool) is None and not pool.paid_by_key
-                      and shutil.which(reader.program, path=searched)), None)
+    candidates = [(pool, reader) for pool in ship.pools.values() for name in harnesses.NAMES
+                  if (reader := harnesses.get(name)).accepts(pool) is None and shutil.which(reader.program, path=searched)]
+    available = next(((pool, reader) for pool, reader in candidates if not pool.paid_by_key), None)
+    if available is None and candidates:
+        # Only pools a key pays for could carry its seat: the cause is the key refusal, not a missing program.
+        return [Check("seat opened", False, f"doctor: {shipmod.key_refusal(candidates[0][0])}")]
     if available is None:
         return [Check("seat opened", False, "no declared pool's program is on the PATH, so no seat can be asked; install one first")]
     pool, reader = available
