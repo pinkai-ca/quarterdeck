@@ -57,11 +57,14 @@ def launch_ended(record: Path) -> bool:
     launch: that launch found this record in its home before it began (``records_before``), and does not resume it
     (its ``--session`` names another or none). A launch that has ended writes nothing more, so a turn it left open was
     cut, not paused. A record the current launch writes or resumes, or a home with no readable launch record, makes
-    no claim of an ending; nothing the seat's jail writes in its home counts here."""
-    from .. import trusted_files
+    no claim of an ending; nothing the seat's jail writes in its home counts here. A retired record has ended: it lies
+    in the service's own tree, which no jail writes and no launch resumes, whether it is named there or in the home."""
+    from .. import record_location, trusted_files
     record = Path(record)
     if record.parent.name != "sessions" or record.suffix != ".jsonl":
-        return False  # not a launch's own record in its home: no claim of an ending is made
+        return False  # not a launch's own record: no claim of an ending is made
+    if record_location.retired(record):
+        return True
     try:
         data = json.loads((trusted_files.of_home(record.parent.parent) / trusted_files.LAUNCH).read_text())
     except (OSError, ValueError):

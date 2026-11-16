@@ -691,6 +691,60 @@ def test_a_counted_cut_turn_stays_in_the_ledger_while_its_seat_is_down_and_after
         w.svc.ledger.close()
 
 
+@pytest.mark.parametrize('kind', ['pi', 'opencode'])
+def test_a_retired_cut_record_reads_closed_through_its_owner_as_through_its_home_path(tmp_path, monkeypatch, kind):
+    """Owned.read hands the reader the retired path (runtime/retired/hand-transcripts/<seat>/home/...), where no
+    trusted folder lies beside it. The ending is judged from the record's place in its home, as its stamp is, so the
+    reading and the stamp agree after the retirement as before it."""
+    w = world(tmp_path, monkeypatch, kind)
+    try:
+        record = pi_cut_mid_turn(w, listed=True) if kind == 'pi' else cut_mid_turn(w)
+        owned = lambda: next(o for o in record_owner.records(w.seat) if o.path == record)
+        stamp = ledger.record_stamp(owned())
+        assert stamp[2:] == (['later-launch', True],) and owned().read()[0].turn_open is False
+        assert retire(w, limit=0) == 1 and not record.exists(), f"declined: {retire.declined}"
+        kept = record_location.resolve(record)
+        assert kept.is_relative_to(w.svc.runtime / 'retired' / 'hand-transcripts')
+        for state, turns in (owned().read(), w.seat.harness.read(record), w.seat.harness.read(kept)):
+            assert state.turn_open is False and state.pending_tools == () and len(turns) == 1 and not turns[0].timed
+        # The move's rename touches the file's ctime, part of its fingerprint, as before this change; the ending
+        # the stamp records is unchanged, and it agrees with the reading.
+        assert ledger.record_stamp(owned())[2:] == stamp[2:] == (['later-launch', True],)
+        w.svc.account_records(process_table={})
+        assert w.svc.ledger.ingested(record) == 1
+    finally:
+        w.svc.ledger.close()
+
+
+@pytest.mark.parametrize('kind', ['pi', 'opencode'])
+def test_a_cut_record_retired_before_the_seats_current_launch_stays_ended(tmp_path, monkeypatch, kind):
+    """A hand starts fresh for each order, so its cut record is most often retired before the seat's next launch, whose
+    trusted launch record no longer names it: pi's records_before omits it, since it is gone from the home. A record
+    in the service's retired tree, which no jail writes and no launch resumes, has ended: it reads closed, its stamp
+    says so while the seat is down and after its fresh launch, and its counted turn is counted once."""
+    w = world(tmp_path, monkeypatch, kind)
+    try:
+        record = pi_cut_mid_turn(w, listed=True) if kind == 'pi' else cut_mid_turn(w)
+        counted = turn_rows(w, record)
+        assert len(counted) == 1 and w.svc.ledger.ingested(record) == 1, 'the cut turn is counted'
+        assert retire(w, limit=0) == 1 and not record.exists(), f"declined: {retire.declined}"
+        kept = record_location.resolve(record)
+        owned = lambda: next(o for o in record_owner.records(w.seat) if o.path == record)
+        fresh = (lambda: pi_launch(w, before=[w.record, w.current])) if kind == 'pi' else (lambda: trusted_launch(w, 3))
+        for step in ('fresh launch', 'down'):
+            if step == 'fresh launch':
+                fresh()  # its trusted launch record omits the retired record
+            else:
+                (w.seat.trusted / trusted_files.LAUNCH).unlink()  # as seat._finish_retirement does
+            w.svc.account_records(process_table={})
+            assert ledger.record_stamp(owned())[2:] == (['later-launch', True],), step
+            for state, turns in (owned().read(), w.seat.harness.read(record), w.seat.harness.read(kept)):
+                assert state.turn_open is False and state.pending_tools == () and len(turns) == 1, step
+            assert w.svc.ledger.ingested(record) == 1 and turn_rows(w, record) == counted, step
+    finally:
+        w.svc.ledger.close()
+
+
 def test_a_screening_record_leaves_even_before_the_next_launch_has_a_record(tmp_path, monkeypatch):
     w = world(tmp_path, monkeypatch, 'pi', age=timedelta(minutes=2))
     try:

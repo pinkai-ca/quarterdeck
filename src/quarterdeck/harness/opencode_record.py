@@ -61,10 +61,16 @@ def _launch_number(record: Path) -> int:
 def later_launch(record: Path) -> bool:
     """Whether this record's launch has ended: the seat's current launch, as qd's trusted launch record names it, was
     given a data folder numbered after this record's. A launch that has ended writes nothing more, so a turn it left
-    open was cut, not paused. Folder names in the home, which the seat's jail writes, count for nothing here."""
+    open was cut, not paused. Folder names in the home, which the seat's jail writes, count for nothing here. A
+    retired record has ended: it lies in the service's own tree, which no jail writes and no launch resumes, whether
+    it is named there or in the home."""
+    from .. import record_location
+    record = Path(record)
     folder = record.parents[1].name if len(record.parents) > 2 else ''
     if not folder.startswith(DATA_PREFIX) or not folder[len(DATA_PREFIX):].isdigit():
         return False  # not a launch's own record: no claim of an ending is made
+    if record_location.retired(record):
+        return True
     current = _current_data(record.parents[2])
     return current is not None and current > _launch_number(record)
 
