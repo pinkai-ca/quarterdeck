@@ -19,7 +19,7 @@ import sqlite3
 import time
 from types import SimpleNamespace
 
-from quarterdeck import attribution_cache, post, record_owner
+from quarterdeck import attribution_cache, post
 from tests import runtime_copy
 from quarterdeck.harness import reader_stamp
 from quarterdeck.harness.json_record import release
@@ -80,23 +80,9 @@ def copied_runtime(source, destination):
     db.commit()
     (destination / 'ledger.sqlite').write_bytes(db.serialize())
     db.close()
-    # Only saved binding metadata is needed from seats; never credential homes.
-    for folder in (source / 'seats').iterdir():
-        if not folder.is_dir() or folder.name in people:
-            continue
-        for name in (record_owner.REGISTRY, 'record-launches.jsonl'):
-            path = folder / name
-            if not path.is_file():
-                continue
-            target = destination / 'seats' / folder.name / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            rows = []
-            for line in path.read_text().splitlines():
-                if line.strip():
-                    row = json.loads(line)
-                    row['record'] = translated.get(row['record'], row['record'])
-                    rows.append(json.dumps(row))
-            target.write_text('\n'.join(rows) + '\n')
+    # Only saved launch and binding metadata is needed from seats, from runtime/trusted/<seat> where the service keeps
+    # it; never credential homes, and never a person's (tests/runtime_copy.py).
+    trusted_seats = runtime_copy.copy_trusted(source, destination, people)
     # Preserve the actual store's local projections/import provenance too, less the people's: every file of an
     # office-internal message, read for its sender and recipient alone (tests/runtime_copy.py).
     internal = runtime_copy.office_internal(source / 'post' / 'store', Path(source).parent, people)
@@ -108,7 +94,7 @@ def copied_runtime(source, destination):
     shutil.copy2(source.parent / 'ship.toml', destination.parent / 'ship.toml')
     return dict(ledger_records=len(records) - len(dropped), copied_files=copied, copied_bytes=size,
                 left_out_seats=sorted(people), left_out_records=len(dropped),
-                left_out_messages=len(internal), left_out_post_files=left_post)
+                left_out_messages=len(internal), left_out_post_files=left_post, trusted_seats=trusted_seats)
 
 
 def growth_comparison(book, runtime, store, old_module, old_epoch, new_epoch,

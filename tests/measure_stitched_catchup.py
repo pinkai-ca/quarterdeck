@@ -38,6 +38,14 @@ def table_rows(book, runtime):
             # every copy gives it a new one. Compared here is whether a record is settled, and with which kind of
             # evidence, never the copy's own stamps.
             rows = [row[:4] + (None if row[4] is None else row[4].split(':', 1)[0],) for row in rows]
+        elif table in ('attribution_records', 'record_accounting'):
+            # Each row's evidence is a certificate over the record's own file stamp, the copy's own: compared is which
+            # records hold one, not the hash.
+            rows = [row[:1] for row in rows]
+        elif table == 'wall_events':
+            # observed_at is the time the job saw the wall, the run's own clock: set aside.
+            names = [column[1] for column in book.db.execute('PRAGMA table_info(wall_events)')]
+            rows = [tuple(value for name, value in zip(names, row) if name != 'observed_at') for row in rows]
         rows = sorted(rows, key=repr)
         raw = json.dumps(rows, ensure_ascii=False, separators=(',', ':'), default=lambda value: value.hex()).encode()
         result[table] = dict(rows=len(rows), sha256=hashlib.sha256(raw).hexdigest())
@@ -109,7 +117,10 @@ def build(runtime, scopes):
                                     launched=lambda: None)
             bindings[seat] = record_owner.bindings(owner, publish=False)
         names = bindings[seat].get(path, set())
-        name = next(iter(names)) if len(names) == 1 else None
+        if names:
+            # Saved ownership evidence decides where it exists; otherwise the ledger's own reader stands, as in
+            # measure_accounting_scopes.
+            name = next(iter(names)) if len(names) == 1 else None
         reader = get(name) if name else None
         inventory.setdefault(seat, []).append(record_owner.Owned(path, name, reader,
                                               None if reader else 'reader unavailable in copied history'))

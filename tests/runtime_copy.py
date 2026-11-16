@@ -36,6 +36,59 @@ def seat_named(relative, names) -> bool:
     return bool(parts) and (any(part in names for part in parts[:-1]) or Path(parts[-1]).stem in names)
 
 
+def copy_trusted(source, destination, names) -> int:
+    """Each crew seat's launch files from runtime/trusted/<seat>, where the service keeps them out of every jail's reach
+    (trusted_files), into the copy's own trusted folder: the launch record, its price, the pool, the record pointer and
+    both registries, the files the accounting gate reads. A person's folder is left out (seat_named), and nothing else
+    of a trusted folder is copied (its alarms, holds and launch script). Every record path the pointer and the
+    registries name is moved into the copy, so no copy names a file of the source ship; a row naming a person's record
+    is left out. Returns how many seats' files were copied."""
+    from quarterdeck import trusted_files
+    source, destination = Path(source), Path(destination)
+    root = trusted_files.root(source)
+    def moved(value):
+        path = Path(value)
+        return str(destination / path.relative_to(source)) if path.is_relative_to(source) else value
+    seats = 0
+    for folder in sorted(root.iterdir()) if root.is_dir() else ():
+        if not folder.is_dir() or folder.is_symlink() or seat_named(Path(folder.name) / trusted_files.LAUNCH, names):
+            continue
+        target = trusted_files.folder(destination, folder.name)
+        copied = False
+        for name in (trusted_files.LAUNCH, trusted_files.PRICE, trusted_files.POOL):
+            path = folder / name
+            if path.is_file() and not path.is_symlink():
+                target.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target / name)
+                copied = True
+        path = folder / trusted_files.RECORD
+        if path.is_file() and not path.is_symlink():
+            named = path.read_text().strip()
+            if named and not theirs(Path(named), source, names):
+                target.mkdir(parents=True, exist_ok=True)
+                (target / trusted_files.RECORD).write_text(moved(named) + '\n')
+                copied = True
+        for name in (trusted_files.READERS, trusted_files.LAUNCHES):
+            path = folder / name
+            if not path.is_file() or path.is_symlink():
+                continue
+            rows = []
+            for line in path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if isinstance(row.get('record'), str):
+                    if theirs(Path(row['record']), source, names):
+                        continue
+                    row['record'] = moved(row['record'])
+                rows.append(json.dumps(row))
+            target.mkdir(parents=True, exist_ok=True)
+            (target / name).write_text(''.join(row + '\n' for row in rows))
+            copied = True
+        seats += copied
+    return seats
+
+
 def office_internal(store, ship_folder, names) -> frozenset[str]:
     """The ids of the messages in ``store`` whose sender and every recipient are people: not the crew's to read. A
     group's recipients are its members. Each message file is read for its sender and recipient alone, never a body."""

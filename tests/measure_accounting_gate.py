@@ -16,7 +16,7 @@ import time
 from types import SimpleNamespace
 
 from tests import runtime_copy
-from quarterdeck import post, record_owner, ship as shipmod
+from quarterdeck import post, ship as shipmod
 from quarterdeck.accounting_gate import Gate, capture
 from quarterdeck.harness import get, reader_stamp
 from quarterdeck.harness.json_record import release
@@ -84,23 +84,9 @@ def copied_runtime(source, destination, *, compact_sqlite=False):
     db.commit()
     (destination / 'ledger.sqlite').write_bytes(db.serialize())
     db.close()
-    # Only saved binding metadata is needed from seats; never credential homes.
-    for folder in (source / 'seats').iterdir():
-        if not folder.is_dir() or folder.name in people:
-            continue
-        for name in (record_owner.REGISTRY, 'record-launches.jsonl'):
-            path = folder / name
-            if not path.is_file():
-                continue
-            target = destination / 'seats' / folder.name / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            rows = []
-            for line in path.read_text().splitlines():
-                if line.strip():
-                    row = json.loads(line)
-                    row['record'] = translated.get(row['record'], row['record'])
-                    rows.append(json.dumps(row))
-            target.write_text('\n'.join(rows) + '\n')
+    # Only saved launch and binding metadata is needed from seats, from runtime/trusted/<seat> where the service keeps
+    # it; never credential homes, and never a person's (tests/runtime_copy.py).
+    trusted_seats = runtime_copy.copy_trusted(source, destination, people)
     # Preserve the actual store's local projections/import provenance too, less the people's: every file of an
     # office-internal message, read for its sender and recipient alone (tests/runtime_copy.py).
     internal = runtime_copy.office_internal(source / 'post' / 'store', Path(source).parent, people)
@@ -112,20 +98,17 @@ def copied_runtime(source, destination, *, compact_sqlite=False):
     shutil.copy2(source.parent / 'ship.toml', destination.parent / 'ship.toml')
     return dict(ledger_records=len(records) - len(dropped), copied_files=copied, copied_bytes=size,
                 left_out_seats=sorted(people), left_out_records=len(dropped),
-                left_out_messages=len(internal), left_out_post_files=left_post)
+                left_out_messages=len(internal), left_out_post_files=left_post, trusted_seats=trusted_seats)
 
 
 def copied_selection_metadata(source, runtime):
+    """The crew's launch selection, from runtime/trusted/<seat> (runtime_copy.copy_trusted, which copied_runtime has
+    already run: it is run again, the same files), and each crew seat's conversations.owned from its home."""
     people = runtime_copy.people(Path(source).parent)
+    runtime_copy.copy_trusted(source, runtime, people)
     for folder in (source / 'seats').iterdir():
         if not folder.is_dir() or folder.name in people:
             continue
-        for name in ('launch.json', 'launch-price.json', 'record', 'pool'):
-            path = folder / name
-            if path.is_file():
-                target = runtime / 'seats' / folder.name / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, target)
         path = folder / 'home' / 'conversations.owned'
         if path.is_file():
             target = runtime / 'seats' / folder.name / 'home' / path.name

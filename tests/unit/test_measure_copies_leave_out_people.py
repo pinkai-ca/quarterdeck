@@ -64,7 +64,13 @@ def source(tmp_path):
         record_owner.register(trusted, record, 'fake')
         (trusted / 'record').write_text(str(record) + '\n')
         (trusted / 'compaction.json').write_text('{}\n')
-        (runtime / 'seats' / seat / 'record-launches.jsonl').write_text(json.dumps({'record': str(record)}) + '\n')
+        # The launch files, where the service keeps them since they left the jail's reach: runtime/trusted/<seat>.
+        (trusted / trusted_files.LAUNCHES).write_text(json.dumps({'record': str(record), 'harness': 'fake'}) + '\n')
+        (trusted / trusted_files.LAUNCH).write_text(json.dumps(dict(
+            pane='%1', pid=1, at='2032-01-02T12:00:00+00:00', pool='fake', resume=None, argv=['fake'], version=None,
+            harness='fake', records_before=[])))
+        (trusted / trusted_files.PRICE).write_text(json.dumps({'price': None}))
+        (trusted / trusted_files.POOL).write_text('fake\n')
         rows.append((str(record), seat))
     db = sqlite3.connect(runtime / 'ledger.sqlite')
     db.execute('CREATE TABLE turns (record TEXT, turn INTEGER, seat TEXT)')
@@ -142,6 +148,44 @@ def test_the_accounting_measures_copy_leaves_out_the_people(source, tmp_path):
     db.close()
 
 
+LAUNCH_FILES = (trusted_files.LAUNCH, trusted_files.PRICE, trusted_files.POOL, trusted_files.RECORD,
+                trusted_files.READERS, trusted_files.LAUNCHES)
+
+
+def trusted_launch_files(source, copy):
+    """The crew seat's trusted launch files are in the copy, each record path the copy's own; no person's trusted file
+    is, and nothing of a trusted folder that is not a launch file."""
+    held = files(copy)
+    for name in LAUNCH_FILES:
+        assert f'trusted/builder/{name}' in held, name
+    assert not [path for path in held if path.startswith(('trusted/desk/', 'trusted/writer/'))]
+    assert 'trusted/builder/compaction.json' not in held
+    record = str(copy / 'seats' / 'builder' / 'home' / 'sessions' / 'record.jsonl')
+    folder = trusted_files.folder(copy, 'builder')
+    assert (folder / trusted_files.RECORD).read_text().strip() == record
+    for name in (trusted_files.READERS, trusted_files.LAUNCHES):
+        rows = [json.loads(line) for line in (folder / name).read_text().splitlines() if line.strip()]
+        assert rows and all(row['record'] == record for row in rows), name
+    assert str(source) not in ''.join((folder / name).read_text() for name in (trusted_files.READERS,
+                                       trusted_files.LAUNCHES, trusted_files.RECORD)), 'no path into the source ship'
+
+
+def test_the_attribution_measures_copy_holds_the_crews_trusted_launch_files(source, tmp_path):
+    copy = tmp_path / 'copy' / 'ship' / 'runtime'
+    measure_attribution_catchup.copied_runtime(source / 'runtime', copy)
+    trusted_launch_files(source, copy)
+
+
+def test_the_accounting_measures_copy_holds_the_crews_trusted_launch_files(source, tmp_path):
+    copy = tmp_path / 'copy' / 'ship' / 'runtime'
+    measure_accounting_gate.copied_runtime(source / 'runtime', copy)
+    trusted_launch_files(source, copy)
+    held = files(copy)
+    measure_accounting_gate.copied_selection_metadata(source / 'runtime', copy)
+    assert [path for path in files(copy) if path not in held] == [], 'the selection metadata is already in the copy'
+    trusted_launch_files(source, copy)
+
+
 @pytest.mark.parametrize('tool', [measure_reconcile_partition, measure_retirement_certificate],
                          ids=['reconcile', 'retirement'])
 def test_each_freeze_leaves_out_the_peoples_records(source, tmp_path, tool):
@@ -157,7 +201,7 @@ def test_each_freeze_leaves_out_the_peoples_records(source, tmp_path, tool):
     assert (frozen / 'runtime' / 'trusted' / 'builder' / 'compaction.json').exists()
     assert 'runtime/brief/builder.md' in copied and 'runtime/post/inbox/builder.md' in copied
     left = snapshot['families']['left-out']
-    assert left == {'post': 4, 'trusted': 2 * 3, 'brief': 2}, left  # post: the message, its attempt, two inboxes; trusted: three files each
+    assert left == {'post': 4, 'trusted': 2 * 7, 'brief': 2}, left  # post: the message, its attempt, two inboxes; trusted: seven files each
     assert snapshot['families']['office-internal-messages']['files'] == 1
     if tool is measure_reconcile_partition:  # the one freeze that keeps read aliases names the people private
         aliases = json.loads((frozen / 'frozen-native-records.json').read_text())
