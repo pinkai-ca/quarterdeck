@@ -453,7 +453,7 @@ class Seat:
         observation = self._observe_selection(selected, self.ship.pool(pool))
         same_program = selected.harness == self.spec.harness
         if same_program:
-            if not self._screened():
+            if not self._screened() and not self._never_resumed():
                 self.harness.preflight_resume(selected, self.home, self._resume_id)
         self.record()
         credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)
@@ -775,7 +775,7 @@ class Seat:
             selected = replace(self.spec.for_pool(target), human_session=self.session.human)
             observation = self._observe_selection(selected, self.ship.pool(target))
             same_program = selected.harness == self.spec.harness
-            if same_program and resume and not self._screened():
+            if same_program and resume and not self._screened() and not self._never_resumed():
                 self.harness.preflight_resume(selected, self.home, self._resume_id)
             if self.launched() is not None:
                 self._relaunch_down()  # retain the old record and reseed its source pool before changing selection
@@ -841,10 +841,16 @@ class Seat:
         from . import pr_screen
         return pr_screen.screening_left(self.ship.runtime, self.name)
 
+    def _never_resumed(self) -> bool:
+        """A hand takes one order at a time in a fresh context, so no launch of it ever resumes its conversation, by
+        whatever path it comes: qd up, restart or relaunch, the service's relaunch, a failover or pool move, an
+        alarm's or a server's recovery, a sync's relaunch. Each starts it fresh with its open messages carried."""
+        return self.spec.role == 'hand'
+
     def _up(self, resume: bool = True, *, observation=None) -> str:
         self.migrate()
-        if resume and self._screened():
-            resume = False  # a screening launch is never resumed
+        if resume and (self._never_resumed() or self._screened()):
+            resume = False  # a hand, and a screening launch, are never resumed
         self._accept_pool()
         if launchable := getattr(self.tmux, "launchable", None):
             launchable()  # a socket too long or not this user's refuses before anything of the launch is made
@@ -1333,14 +1339,16 @@ class Seat:
             self._accept_pool()
             from .recovery import require_clear
             require_clear(self)
-            if moved := self._relaunch_off_wall(resume=True):
+            hand = self._never_resumed()
+            if moved := self._relaunch_off_wall(resume=not hand):
                 return moved
             screened = self._screened()
-            if not screened:
+            if not screened and not hand:
                 self.harness.preflight_resume(self.spec, self.home, self._resume_id)
             observation = self._observe_selection()
-            return (self._relaunch_down() + "\n" + self._up(resume=True, observation=observation)
-                    + (" · fresh: a record of a launch that screened a pull request is still in its home"
+            return (self._relaunch_down() + "\n" + self._up(resume=not hand, observation=observation)
+                    + (" · fresh: a hand starts fresh on every launch" if hand else
+                       " · fresh: a record of a launch that screened a pull request is still in its home"
                        if screened else ""))
 
     def fresh(self) -> str:
@@ -1379,7 +1387,7 @@ class Seat:
         selected = replace(self.spec.for_pool(target), human_session=self.session.human)
         observation = self._observe_selection(selected, self.ship.pool(target))
         same_program = selected.harness == self.spec.harness
-        if same_program and resume:
+        if same_program and resume and not self._never_resumed():
             self.harness.preflight_resume(selected, self.home, self._resume_id)
         stopped = self._relaunch_down()
         self.move_to(target)

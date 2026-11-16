@@ -386,10 +386,12 @@ def test_scoped_hand_relaunch_refuses_unproved_directory_before_retirement(tmp_p
     assert seat.is_up
     retired = []
     monkeypatch.setattr(seat, "_down", lambda: retired.append(True) or "down")
-    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None: pytest.fail("a refused resume launched"))
+    # The resume of an unproved directory is refused before anything retires ...
     with pytest.raises(ShipError, match="qd fresh w starts a scoped session"):
-        seat.restart()
+        seat.harness.preflight_resume(spec, seat.home, seat._resume_id)
     assert not retired
-
-    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None: "resumed" if resume else "fresh")
-    assert seat.fresh() == "down\nfresh" and retired == [True]
+    # ... and a hand is never resumed: its restart is the fresh start that refusal names, never that resume.
+    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None:
+                        pytest.fail("a hand's restart asked to resume") if resume else "fresh")
+    assert seat.restart().startswith("down\nfresh") and retired == [True]
+    assert seat.fresh() == "down\nfresh" and retired == [True, True]

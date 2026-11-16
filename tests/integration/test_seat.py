@@ -193,3 +193,54 @@ def test_remote_control_is_refused_by_name_on_a_program_without_it(ship: shipmod
     with pytest.raises(ShipError, match="fake has no Remote Control; select a harness that offers it"):
         seat.up()
     assert not seat.is_up and tmux.sessions() == [], "refused before anything opened"
+
+
+def _talked(seat, tmux) -> Path:
+    """The seat up, one turn taken: a conversation a resume could continue."""
+    seat.up()
+    wait_for(lambda: seat.harness.screen(tmux.capture(seat.pane().id)).box is not None)
+    tmux.paste(seat.pane().id, "hello")
+    tmux.keys(seat.pane().id, "Enter")
+    record = wait_for(seat.record)
+    wait_for(lambda: seat.harness.state(record).turns == 1)
+    return record
+
+
+@pytest.fixture
+def handed(ship: shipmod.Ship) -> shipmod.Ship:
+    """The example ship with a hand on the fake program beside its worker."""
+    file = ship.folder / "ship.toml"
+    file.write_text(file.read_text() + '\n[seats.hand-1]\nsession = "crew"\nrole = "hand"\nharness = "fake"\n'
+                    'pool = "fake"\nmodel = "fake-1"\n')
+    return shipmod.load(ship.folder)
+
+
+def test_a_hand_is_never_resumed_whatever_relaunches_it(handed: shipmod.Ship, tmux: Tmux):
+    """A hand takes each order in a fresh context: a restart, and the launch every other path shares (the
+    service's relaunch, a recovery, a failover), start it fresh with its open messages, never on its old record."""
+    hand = seatmod.Seat(handed, handed.seat("hand-1"), tmux)
+    record = _talked(hand, tmux)
+    order = post.Store(handed.runtime).new("order", "worker-1", "hand-1", "still open across the restart")
+    proof = hand.restart()
+    assert " · resumed " not in proof and "· fresh" in proof and "a hand starts fresh on every launch" in proof
+    assert "· fresh · 1 thread indexed" in proof, "its open message is carried, as any fresh start carries it"
+    launched = json.loads((hand.trusted / "launch.json").read_text())
+    assert launched["resume"] is None, "the launch names no conversation to resume"
+    assert hand.record() != record and record.exists(), "a new conversation; the old record stays for the Ledger"
+    second = wait_for(hand.record)
+    wait_for(lambda: order.id in " ".join(t.input for t in hand.harness.turns(second)))
+    hand.down()
+    with hand._lifecycle():
+        proof = hand._up(resume=True)  # what the service's relaunch, a recovery and a failover call
+    assert " · resumed " not in proof and "· fresh" in proof
+    assert json.loads((hand.trusted / "launch.json").read_text())["resume"] is None
+    assert hand.record() != second
+
+
+def test_a_worker_beside_a_hand_still_resumes(handed: shipmod.Ship, tmux: Tmux):
+    worker = seatmod.Seat(handed, handed.seat("worker-1"), tmux)
+    record = _talked(worker, tmux)
+    proof = worker.restart()
+    assert " · resumed " in proof and "a hand starts fresh" not in proof
+    assert worker.record() == record, "the same conversation, in a new process"
+    assert json.loads((worker.trusted / "launch.json").read_text())["resume"] is not None

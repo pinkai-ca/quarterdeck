@@ -19,7 +19,7 @@ class SyntheticSeat(Seat):
     """Real join/lifecycle methods; only the native process and configuration are stand-ins."""
 
     def __init__(self, runtime, name):
-        self.spec = SimpleNamespace(name=name, harness='claude', pool_choices=False)
+        self.spec = SimpleNamespace(name=name, harness='claude', pool_choices=False, role='worker')
         self.ship = SimpleNamespace(runtime=runtime, session_of=lambda spec: SimpleNamespace(human=False))
         self.folder = runtime / 'seats' / name
         self.trusted = runtime / 'trusted' / name
