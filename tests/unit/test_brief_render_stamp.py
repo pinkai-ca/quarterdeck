@@ -122,10 +122,10 @@ pool = "alpha-synthetic"
         assert ('Your session belongs to the human' in text) == (session == 'office-synthetic')
         assert ('Messages reach you typed into your pane in full' in text) == (session == 'crew-synthetic')
         assert len(case.writes) == index
-        assert len(case.notices) == (index if running else 0)
+        assert case.notices == [], 'a changed brief wakes no seat, running or not'
         service.tick()
         assert len(case.writes) == index
-        assert len(case.notices) == (index if running else 0)
+        assert case.notices == [], 'a changed brief wakes no seat, running or not'
     assert not any(args == ('error',) for args, _ in case.logs)
 
 
@@ -296,21 +296,42 @@ def test_timestamps_and_stripped_whitespace_do_not_write_or_notice(case):
     assert not case.writes
 
 
-def test_card_change_keeps_existing_notice_policy_for_affected_running_seat(case):
+def test_a_card_change_wakes_no_running_seat_and_is_carried_with_its_next_message(case):
+    """A changed brief posts nothing and types nothing; the brief the seat last held is kept, so its next message
+    carries the change (brief_change)."""
+    from quarterdeck import brief_change
     service = case.service
     other = replace(case.spec, name='other-worker-synthetic', role='reader-synthetic')
     service.ship = replace(service.ship, seats={**service.ship.seats, other.name: other})
     standing.render(service.ship, other)
+    before = case.path.read_text()
     case.writes.clear()
     service.brief_stamp = service._brief_stamp()
     case.up.update((case.spec.name, other.name))
     (case.framework / 'roles' / 'worker-synthetic.md').write_text('Revised synthetic role\n')
     service.rebrief()
     assert case.writes == [case.path.name]
-    assert case.notices == [('report', 'ship', case.spec.name,
-        f"ship's orders changed · read runtime/brief/{case.spec.name}.md")]
+    assert case.notices == [], 'no seat is posted, so none is woken'
+    assert brief_change.told(service.runtime, case.spec.name) == before
+    assert 'Revised synthetic role' in brief_change.head(service.runtime, case.spec.name)[0]
+    assert brief_change.head(service.runtime, other.name) is None, 'an unchanged brief carries nothing'
     service.rebrief()
-    assert len(case.writes) == len(case.notices) == 1
+    assert len(case.writes) == 1 and case.notices == []
+
+
+def test_the_seat_whose_own_commit_changed_its_brief_is_not_told_of_it(case, monkeypatch):
+    from quarterdeck import brief_change
+    from quarterdeck.ship import Ship
+    service = case.service
+    before = case.path.read_text()
+    brief_change.seed(service.runtime, case.spec.name, before)
+    monkeypatch.setattr(Ship, 'is_repository', property(lambda ship: True))
+    monkeypatch.setattr(brief_change, 'editor', lambda folder, runtime: case.spec.name)
+    (case.framework / 'roles' / 'worker-synthetic.md').write_text('Its own synthetic edit\n')
+    service.rebrief()
+    assert case.notices == []
+    assert brief_change.told(service.runtime, case.spec.name) == case.path.read_text() != before
+    assert brief_change.head(service.runtime, case.spec.name) is None, 'not told of its own edit'
 
 
 def test_pending_upgrade_keeps_publication_ownership(case):

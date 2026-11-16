@@ -130,7 +130,8 @@ def consumed_ids(store: post.Store, seat: str, role: str, inputs: Iterable[Input
                 or item.kind == 'consumed' and (not isinstance(item.consumed_at, datetime)
                     or item.consumed_at.tzinfo is None or item.consumed_at < item.at)):
             continue
-        text = item.text.strip()
+        from .input_receipt import without_brief_head
+        text = without_brief_head(item.text).strip()  # a standing-orders head before a message is not the message
         first, separator, rest = text.partition('\n')
         if header(first):
             text = rest if separator else ''

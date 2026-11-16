@@ -976,6 +976,12 @@ class Service:
                 delivery_scope.enter_context(shutdown.transaction_scope(self))
                 attempt = self.attempts.open(message, seat.name, bound['pane'], bound['pid'], bound['launch'])
                 text = post.typed([message], second=(message.id,) if resend else ())  # a resend says it is one
+                # A change to the seat's standing orders since it last read them rides at the head of this message,
+                # typed with it as one input: the box check and the record's confirmation both take this whole text,
+                # and every matcher reads the message past the head (input_receipt.without_brief_head).
+                from . import brief_change
+                if changed := brief_change.head(self.runtime, seat.name):
+                    text = changed[0] + text
                 try:
                     proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True, attempt_history=history)
                 except pending_delivery.NoCurrentLaunch as error:
@@ -987,6 +993,8 @@ class Service:
             detail = delivery.detail + (" · resend" if resend else "")
             screen = door.screen()
             self.attempts.close(attempt, delivery.result, detail)
+            if changed and delivery.result != "withheld":
+                brief_change.mark(self.runtime, seat.name, changed[1])  # typed: the seat has been told
             if delivery.result == "withheld":
                 self.withheld[(attempt.message, seat.name)] = screen.text if screen else ""
             self.log("delivery", seat=seat.name, messages=[message.id], speed=speed, result=delivery.result, detail=detail)
@@ -2423,23 +2431,30 @@ class Service:
         stamp = self._brief_stamp()
         if stamp == self.brief_stamp:
             return
+        from . import brief_change
+        # A changed brief wakes no seat: nothing is posted. The change reaches each seat at the head of its next
+        # message (brief_change); the seat whose own commit made it is not told of it.
+        own = brief_change.editor(self.ship.folder, self.runtime) if getattr(self.ship, 'is_repository', False) else None
         selected = self.resolved_seats()
         for seat in selected:
             if (text := self.brief_texts.get(seat.name)) is None:
                 continue  # a selection resolved after the stamp; retry it next pass
             path = self.runtime / 'brief' / f'{seat.name}.md'
             before = path.read_text() if path.exists() else None
-            standing.render(self.ship, seat.spec, text=text)
-            if seat.is_up and path.read_text() != before:
-                self.store.new("report", "ship", seat.name, f"ship's orders changed · read runtime/brief/{seat.name}.md")
+            brief_change.seed(self.runtime, seat.name, before if before is not None else text)
+            path = standing.render(self.ship, seat.spec, text=text)
+            if seat.name == own and brief_change.told(self.runtime, seat.name) == before:
+                brief_change.mark(self.runtime, seat.name, path.read_text())
         if len(selected) == len(self.brief_texts) == len(self.ship.seats):
             self.brief_stamp = stamp
         self.log("rebrief", seats=[seat.name for seat in selected])
 
     def upgrade_rebrief(self, data: dict) -> str | None:
-        """A durable baseline survives rendering and retries; posting is not proof of reading."""
+        """A durable baseline survives rendering and retries. A changed brief wakes no seat: nothing is posted, and
+        each change reaches its seat at the head of that seat's next message (brief_change)."""
+        from . import brief_change
         stamp = self._brief_stamp()
-        affected, changed = [], []
+        changed = []
         selected = self.resolved_seats()
         for seat in selected:
             if (text := self.brief_texts.get(seat.name)) is None:
@@ -2450,50 +2465,18 @@ class Service:
             if same and data['before'].get(seat.name) is None:
                 return None  # no known prior brief to compare; never overwrite that unknown baseline
             digest = hashlib.sha256(text.encode()).hexdigest()
-            notice = self.upgrade_notice(data, seat.name, digest) if same else None
+            path = self.runtime / 'brief' / f'{seat.name}.md'
+            before = path.read_text() if path.exists() else None
+            brief_change.seed(self.runtime, seat.name, before if before is not None else text)
             standing.render(self.ship, seat.spec, text=text)
-            if notice is not None or (not same and digest != data['before'].get(seat.name)):
+            if digest != data['before'].get(seat.name):
                 changed.append(seat.name)
-            if notice is not None:
-                target = self.store.dir / f'{notice.id}.json'
-                if target.exists():
-                    if post.Message.from_json(target.read_text()) != notice:
-                        raise ShipError('sync brief notice identity conflicts with an immutable post')
-                else:
-                    self.store.write(notice)
-                affected.append(seat.name)
         if len(selected) != len(self.ship.seats) or len(self.brief_texts) != len(self.ship.seats):
             return None  # healthy briefs progressed; the unresolved seat keeps this operation held
         self.brief_stamp = stamp  # edits arriving during this pass still belong to ordinary rebrief
         if changed:
-            proof = 'rebrief complete · changed briefs: ' + ', '.join(changed)
-            proof += ' · notices posted: ' + (', '.join(affected) or 'none') + ' · delivery/read unconfirmed'
+            proof = ('rebrief complete · changed briefs: ' + ', '.join(changed)
+                     + " · each carried at the head of its seat's next message; no notice posted")
         else:
             proof = 'rebrief complete · no brief changed'
         return json.dumps(dict(token=data['token'], status='complete', proof=proof))
-
-    def upgrade_notice(self, data: dict, name: str, digest: str) -> post.Message | None:
-        """Advance from offered content, retaining one recoverable notice intent per seat."""
-        body = f"brief changed · read runtime/brief/{name}.md"
-        notices = data.setdefault('notices', {})
-        pending = notices.get(name)
-        before, previous = data['before'][name], f"{data['token']}:{name}"
-        if pending:
-            target = self.store.dir / f"{pending['id']}.json"
-            if target.exists():
-                expected = post.Message(pending['id'], 'report', post.SHIP, name,
-                                        datetime.fromisoformat(pending['at']), body)
-                if post.Message.from_json(target.read_text()) != expected:
-                    raise ShipError('sync brief notice identity conflicts with an immutable post')
-                before, previous = pending['hash'], pending['id']
-            else:
-                previous = pending['previous']
-        if digest == before:
-            return None
-        key = hashlib.sha256(f'{previous}:{digest}'.encode()).hexdigest()[:16]
-        identity = f'rep-upgrade-{key}'
-        at = pending['at'] if pending and pending['id'] == identity else post.now().isoformat()
-        data['before'][name] = before
-        notices[name] = dict(hash=digest, id=identity, at=at, previous=previous)
-        install.write_rebrief(self.runtime / 'requests' / f"upgrade-rebrief-{data['commit']}.json", data)
-        return post.Message(identity, 'report', post.SHIP, name, datetime.fromisoformat(at), body)

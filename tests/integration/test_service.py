@@ -156,16 +156,17 @@ def test_a_worker_starts_fresh_after_its_order_closes(ship: shipmod.Ship, tmux: 
     wait_for(lambda: '"event": "fresh"' in (ship.runtime / "log" / "service.jsonl").read_text())
 
 
-def test_changed_orders_rebrief_every_seat_with_a_message_from_ship(ship: shipmod.Ship, tmux: Tmux, capsys):
+def test_changed_orders_rebrief_every_seat_and_wake_none(ship: shipmod.Ship, tmux: Tmux, capsys):
     qd(capsys, "up", "captain")
     # The service captures its brief baseline before publishing its start event.
     log = ship.runtime / "log" / "service.jsonl"
     wait_for(lambda: log.exists() and '"event": "start"' in log.read_text(), seconds=1.2)
     (ship.folder / "orders.md").write_text("# Ship's orders: drydock\n\nNew orders.\n")
     wait_for(lambda: "New orders." in (ship.runtime / "brief" / "captain.md").read_text(), seconds=10)
-    notice = wait_for(lambda: [m for m in post.Store(ship.runtime).all() if m.sender == "ship"], seconds=10)[0]
-    assert notice.to == "captain" and notice.body == "ship's orders changed · read runtime/brief/captain.md"
-    assert wait_for(lambda: [a for a in post.Attempts(ship.runtime).for_message(notice.id) if a.result], seconds=15)[0].result == "delivered"
+    wait_for(lambda: '"event": "rebrief"' in log.read_text(), seconds=10)
+    assert [m for m in post.Store(ship.runtime).all() if m.sender == "ship"] == [], "a changed brief wakes no seat"
+    from quarterdeck import brief_change
+    assert "+New orders." in brief_change.head(ship.runtime, "captain")[0], "its next message carries the change"
 
 
 def test_the_service_clears_a_known_notice_and_delivers_behind_it(ship: shipmod.Ship, tmux: Tmux, capsys):

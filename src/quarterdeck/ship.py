@@ -792,7 +792,12 @@ def set_values(ship: Ship, edits: list[tuple[str, str, object]]) -> list[str]:
     _validate(_from_text(text, ship.folder))  # the file never holds a declaration qd cannot load
     _write_atomically(ship.file, text)
     if ship.is_repository:
-        suffix = f" · committed {commit(ship.folder, [ship.file.name], 'qd set ' + ', '.join(changed))}"
+        import os
+        caller = os.environ.get("QD_SEAT")
+        # The seat that runs qd set is named in its commit, so the change to the briefs is not carried back to it
+        # (brief_change.editor). A caller that is no seat of this ship names none.
+        trailer = f"\n\nQd-Seat: {caller}" if caller in ship.seats else ""
+        suffix = f" · committed {commit(ship.folder, [ship.file.name], 'qd set ' + ', '.join(changed) + trailer)}"
     else:
         suffix = f" · written; {ship.folder.name} is not a repository, so not committed"
     return [line + (suffix if edited else " already") for line, edited in lines]

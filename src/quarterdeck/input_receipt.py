@@ -8,9 +8,26 @@ from .harness import get
 from .harness.base import Harness
 
 
+# A change to a seat's standing orders since it last read them is carried at the head of its next message, between
+# these two lines (brief_change). The message itself is unchanged: every matcher reads an input past this head.
+BRIEF_HEAD = 'qd > your standing orders changed since you last read them'
+BRIEF_HEAD_END = 'qd > end of the change to your standing orders'
+
+
+def without_brief_head(text: str) -> str:
+    """The input past a standing-orders head at its start, or the input as it is. Between its first line and its
+    end line the head holds diff lines (each begins with a space, '+', '-' or '@@') or indented summary lines, so no
+    line of it can be the end line."""
+    stripped = text.lstrip()
+    if not stripped.startswith(BRIEF_HEAD):
+        return text
+    _, end, rest = stripped.partition('\n' + BRIEF_HEAD_END + '\n')
+    return rest if end else text
+
+
 def same_text(recorded: str, wanted: str) -> bool:
     """The native input boundary rule, shared by receipts and native identity projection."""
-    return recorded.strip() == wanted.strip()
+    return without_brief_head(recorded).strip() == without_brief_head(wanted).strip()
 
 
 def recorded_forms(harness: Harness, record: Path, payload: str, since: datetime) -> tuple[str, ...]:

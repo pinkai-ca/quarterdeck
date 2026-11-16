@@ -1,9 +1,9 @@
-"""Re-brief notices use private fake seats' normal door/watch paths without relaunch."""
+"""A sync's changed brief wakes no seat: it rides the next message through a real fake seat's door, without relaunch."""
 
 import json
 import shutil
 
-from quarterdeck import install, pending, post, standing
+from quarterdeck import brief_change, input_receipt, install, pending, post, standing
 from quarterdeck.door import Door
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
@@ -11,7 +11,7 @@ from quarterdeck.ship import load
 from .waiting import wait_for
 
 
-def test_changed_upgrade_brief_uses_door_and_human_watch_and_down_seat_launch(drydock,tmux,monkeypatch,tmp_path):
+def test_changed_upgrade_brief_rides_the_next_message_through_a_real_door_and_wakes_no_seat(drydock,tmux,monkeypatch,tmp_path):
     framework=tmp_path/'framework';shutil.copytree(standing.FRAMEWORK_DIR,framework)
     monkeypatch.setattr(standing,'FRAMEWORK_DIR',framework)
     monkeypatch.setenv('QD_TMUX_SOCKET',tmux.socket)
@@ -35,34 +35,38 @@ def test_changed_upgrade_brief_uses_door_and_human_watch_and_down_seat_launch(dr
         svc=Service(ship,tmux)
         try:
             svc.requests()
-            notices=[m for m in svc.store.all() if m.sender==post.SHIP]
-            assert sorted(m.to for m in notices)==['captain','desk']
+            # A changed brief wakes no seat: the sync posts nothing, and nothing is typed.
+            assert [m for m in svc.store.all() if m.sender==post.SHIP]==[]
             svc.deliveries()
-            cap=next(m for m in notices if m.to=='captain')
-            assert svc.attempts.latest()[cap.id]=='delivered'
+            assert {seat.name:(seat.pane().id,seat.pane().pid,seat.record(),seat.launched()) for seat in (captain,desk)}==before
+            # The captain's next message carries the change at its head: the real door types the two as one input,
+            # its box check passes, and the program's own record confirms the whole.
+            order=svc.store.new('order','operator','captain','A later synthetic order.')
+            svc.deliveries()
             journals, errors = pending.journals(captain)
             assert not errors
-            proof = next(proof for proof in journals if proof.data.get('message') == cap.id)
-            assert proof.data['phase'] == 'delivered'
-            assert proof.confirmed(captain) == 'delivered'
+            proof = next(proof for proof in journals if proof.data.get('message') == order.id)
+            assert proof.data['payload'].startswith(input_receipt.BRIEF_HEAD)
+            assert '+Changed synthetic instruction.' in proof.data['payload']
+            assert proof.data['payload'].endswith(post.typed([order]))
+            wait_for(lambda: proof.confirmed(captain) == 'delivered', seconds=15)
+            svc.reconcile()
+            assert svc.attempts.latest()[order.id]=='delivered'
             wait_for(lambda: not captain.is_working(), seconds=15)
-            assert Door(captain).reading().open, 'a confirmed upgrade notice leaves no pending door hold'
-            office=next(m for m in notices if m.to=='desk')
-            assert office.id not in svc.attempts.latest(), 'the human session is reached only through its watch'
+            assert Door(captain).reading().open, 'a confirmed message with its head leaves no pending door hold'
+            assert brief_change.head(ship.runtime,'captain') is None, 'told once'
+            # The office seat's change waits for its watch's next message; nothing reached its box.
             assert desk.harness.screen(tmux.capture(desk.pane().id)).box==''
-            delivered=post.wait(ship.runtime,'desk',interval=.05,stop_after=.5)
-            assert delivered and 'runtime/brief/desk.md' in delivered[0]
-            post.printed(ship.runtime,delivered[1])
-            assert svc.attempts.latest()[office.id]=='watch'
+            assert '+Changed synthetic instruction.' in brief_change.head(ship.runtime,'desk')[0]
             svc.requests();svc.rebrief();svc.deliveries()
-            assert [m.id for m in svc.store.all() if m.sender==post.SHIP]==[m.id for m in notices]
-            assert {seat.name:(seat.pane().id,seat.pane().pid,seat.record(),seat.launched()) for seat in (captain,desk)}==before
-            assert svc.store.open_for('captain')==[open_order] and svc.store.open_for('desk')==[open_question]
+            assert [m for m in svc.store.all() if m.sender==post.SHIP]==[]
+            assert svc.store.open_for('desk')==[open_question]
             worker=Seat(ship,ship.seat('worker-1'),tmux)
             assert not worker.is_up
             worker.up()
             try:
                 assert 'Changed synthetic instruction.' in (ship.runtime/'brief/worker-1.md').read_text()
+                assert brief_change.head(ship.runtime,'worker-1') is None, 'a launch loads the current brief'
                 assert not [m for m in svc.store.for_seat('worker-1') if m.sender==post.SHIP]
             finally:worker.down()
         finally:svc.ledger.close()

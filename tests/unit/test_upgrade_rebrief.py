@@ -1,4 +1,5 @@
-"""Upgrade carries old brief baselines across a new service's initial card stamp."""
+"""Upgrade carries old brief baselines across a new service's initial card stamp. A changed brief wakes no seat:
+the sync posts nothing, and each change rides at the head of its seat's next message (brief_change)."""
 
 from io import BytesIO
 from itertools import count
@@ -11,10 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import durable, install, post, service, standing
+from quarterdeck import brief_change, durable, install, post, service, standing
 from quarterdeck.ship import ShipError
 from quarterdeck.service import Service
 from quarterdeck.ship import load
+from quarterdeck.input_receipt import BRIEF_HEAD  # noqa: F401
+from quarterdeck import input_receipt
 from quarterdeck.tmux import Pane
 
 OLD='a'*40
@@ -106,13 +109,10 @@ def upgraded(drydock, tmp_path, monkeypatch):
 def notices(state):return [m for m in state.store.all() if m.sender==post.SHIP]
 
 
-def pending_upgrade(state):
-    proofs=install.upgrade(state.ship,'changed',state.tmux)
-    assert any('rebrief confirmation pending' in line for line in proofs)
-    data=json.loads((state.ship.runtime/'installed.json').read_text())
-    assert data['current']['commit']==NEW
-    assert data['last_failure']['reason']=='rebrief confirmation pending'
-    return proofs
+def carried(state, seat):
+    """The change the seat's next message would carry at its head, or None."""
+    found = brief_change.head(state.ship.runtime, seat)
+    return found[0] if found else None
 
 
 def poll_rebrief(state):
@@ -135,15 +135,14 @@ def test_upgrade_to_changed_card_rebriefs_affected_live_launch_without_restartin
     identities={p:p.read_bytes() for p in launch_files}
     proofs=install.upgrade(s.ship,'changed',s.tmux)
     assert 'Changed framework instruction.' in (s.ship.runtime/'brief/captain.md').read_text()
-    messages=notices(s)
-    assert len(messages)==1 and messages[0].to=='captain'
-    assert 'runtime/brief/captain.md' in messages[0].body and 'read' in messages[0].body
-    assert not any(word in messages[0].body for word in ('has read','delivered'))
-    assert any('captain' in line and 'posted' in line for line in proofs)
+    assert notices(s)==[], 'a changed brief wakes no seat'
+    assert '+Changed framework instruction.' in carried(s,'captain')
+    assert carried(s,'desk') is None
+    assert any('changed briefs: captain' in line and 'no notice posted' in line for line in proofs)
     assert {p:p.read_bytes() for p in launch_files}==identities
     assert s.store.open_for('captain')==[s.order]
     svc=s.started[-1];svc.requests();svc.rebrief()
-    assert notices(s)==messages
+    assert notices(s)==[]
 
 
 def change_archive(s, relative='laws.md'):
@@ -168,29 +167,18 @@ def test_code_only_and_same_commit_upgrades_are_quiet_and_ordinary_restart_is_qu
     svc=Service(s.ship,s.tmux);s.started.append(svc)
     svc.requests();svc.rebrief();svc.rebrief()
     assert notices(s)==[]
+    assert carried(s,'captain') is None
 
 
-def test_partial_notice_failure_keeps_original_baseline_and_deduplicates_after_same_commit_retry(upgraded,monkeypatch):
+def test_a_sync_posts_nothing_even_where_a_post_would_fail(upgraded,monkeypatch):
+    """Replaces the partial-notice and notice-conflict cases: no notice is written, so none can fail or conflict."""
     s=upgraded;change_archive(s)
-    original=post.Store.write;failed=[]
-    def write(self,message):
-        if message.sender==post.SHIP and message.to=='desk' and not failed:
-            failed.append(True);raise OSError('synthetic interrupted post')
-        return original(self,message)
-    monkeypatch.setattr(post.Store,'write',write)
-    pending_upgrade(s)
-    pending=s.ship.runtime/'requests'/f'upgrade-rebrief-{NEW}.json'
-    payload=json.loads(pending.read_text())
-    assert [m.to for m in notices(s)]==['captain']
-    assert 'Changed framework instruction.' in (s.ship.runtime/'brief/desk.md').read_text()
-    assert payload['before']['desk']!=install.brief_snapshot(s.ship)['before']['desk']
-    assert any('nothing to do' in line for line in install.upgrade(s.ship,'changed',s.tmux))
-    poll_rebrief(s)
-    assert sorted(m.to for m in notices(s))==['captain','desk']
-    ids={m.id for m in notices(s)}
-    assert len(ids)==2 and not pending.exists()
-    svc=Service(s.ship,s.tmux);s.started.append(svc);svc.requests();svc.rebrief()
-    assert {m.id for m in notices(s)}==ids
+    monkeypatch.setattr(post.Store,'write',lambda self,message:(_ for _ in ()).throw(AssertionError('nothing is posted')))
+    proofs=install.upgrade(s.ship,'changed',s.tmux)
+    assert any('rebrief complete' in line for line in proofs)
+    assert not (s.ship.runtime/'requests'/f'upgrade-rebrief-{NEW}.json').exists()
+    for seat in ('captain','desk','worker-1'):
+        assert '+Changed framework instruction.' in carried(s,seat), seat
 
 
 @pytest.mark.parametrize('stage',['install','queue'])
@@ -214,9 +202,10 @@ def test_interruption_after_service_stop_and_install_before_queue_recovers(upgra
     assert notices(s)==[]
     # Recovery preserves ordinary upgrade behavior: it does not start a previously down service.
     proofs=install.upgrade(s.ship,'changed',s.tmux)
-    assert any('posted' in line for line in proofs)
+    assert any('changed briefs' in line for line in proofs)
     s.start(s.ship)
-    assert sorted(m.to for m in notices(s))==['captain','desk']
+    assert notices(s)==[]
+    assert '+Changed framework instruction.' in carried(s,'captain') and '+Changed framework instruction.' in carried(s,'desk')
 
 
 def test_superseded_request_never_renders_and_wrong_running_revision_holds(upgraded,monkeypatch):
@@ -234,7 +223,7 @@ def test_superseded_request_never_renders_and_wrong_running_revision_holds(upgra
     assert notices(s)==[]
 
 
-def test_replaced_launch_gets_no_old_notice_and_down_seat_brief_is_current(upgraded,monkeypatch):
+def test_replaced_launch_gets_no_notice_and_down_seat_brief_is_current(upgraded,monkeypatch):
     s=upgraded;change_archive(s)
     start=s.start
     def replaced(ship,qd=None,**kwargs):
@@ -244,7 +233,8 @@ def test_replaced_launch_gets_no_old_notice_and_down_seat_brief_is_current(upgra
         return start(ship,qd)
     monkeypatch.setattr(install.servicectl,'start',replaced)
     install.upgrade(s.ship,'changed',s.tmux)
-    assert [m.to for m in notices(s)]==['captain']
+    assert notices(s)==[]
+    assert '+Changed framework instruction.' in carried(s,'captain')
     assert 'Changed framework instruction.' in (s.ship.runtime/'brief/worker-1.md').read_text()
     assert 'Changed framework instruction.' in standing.brief(s.ship,s.ship.seat('worker-1')).text
 
@@ -256,27 +246,27 @@ def test_older_service_unknown_kind_is_not_completion_and_force_can_recover(upgr
     proofs=install.upgrade(s.ship,'changed',s.tmux)
     assert any('rebrief incomplete' in line for line in proofs) and notices(s)==[]
     monkeypatch.setattr(Service,'answer',original)
-    install.upgrade(s.ship,'changed',s.tmux,force=True)
-    assert sorted(m.to for m in notices(s))==['captain','desk']
+    proofs=install.upgrade(s.ship,'changed',s.tmux,force=True)
+    assert notices(s)==[] and any('changed briefs' in line for line in proofs)
+    assert '+Changed framework instruction.' in carried(s,'captain') and '+Changed framework instruction.' in carried(s,'desk')
 
 
-def test_return_to_old_commit_is_new_event_but_only_content_changes_notify(upgraded,monkeypatch):
+def test_return_to_old_commit_is_new_event_but_only_content_changes_count(upgraded,monkeypatch):
     s=upgraded;change_archive(s)
     git=install.git
-    install.upgrade(s.ship,'first',s.tmux)
-    assert len(notices(s))==2
-    # Different framework revision with identical instructions: no notice.
+    assert any('changed briefs' in line for line in install.upgrade(s.ship,'first',s.tmux))
+    # Different framework revision with identical instructions: no brief changed.
     monkeypatch.setattr(install,'git',lambda repo,*args:(OLD+'\n').encode() if args[0]=='rev-parse' else git(repo,*args))
     assert any('no brief changed' in line for line in install.upgrade(s.ship,'return',s.tmux))
-    assert len(notices(s))==2
     # Returning to NEW after OLD must replace its old done state and compare actual content.
     change_archive(s)
     monkeypatch.setattr(install,'git',git)
-    install.upgrade(s.ship,'again',s.tmux)
-    assert len(notices(s))==4 and len({m.id for m in notices(s)})==4
+    assert any('changed briefs' in line for line in install.upgrade(s.ship,'again',s.tmux))
+    assert notices(s)==[]
+    assert carried(s,'captain').count('+Changed framework instruction.')==2, 'both changes fold into one head'
 
 
-def test_posted_notices_do_not_duplicate_when_request_answer_write_is_interrupted(upgraded,monkeypatch):
+def test_an_interrupted_request_answer_completes_once_and_posts_nothing(upgraded,monkeypatch):
     s=upgraded;change_archive(s)
     original=durable.replace_file;failed=[]
     def write(path,*args,**kwargs):
@@ -284,33 +274,12 @@ def test_posted_notices_do_not_duplicate_when_request_answer_write_is_interrupte
             failed.append(True);raise OSError('synthetic answer interruption')
         return original(path,*args,**kwargs)
     monkeypatch.setattr(durable,'replace_file',write)
-    pending_upgrade(s)
-    ids={m.id for m in notices(s)};assert len(ids)==2
+    proofs=install.upgrade(s.ship,'changed',s.tmux)
+    assert any('rebrief confirmation pending' in line for line in proofs)
     assert any('nothing to do' in line for line in install.upgrade(s.ship,'changed',s.tmux))
     poll_rebrief(s)
-    assert {m.id for m in notices(s)}==ids
-
-
-def test_immutable_notice_conflict_retains_the_exact_rebrief_intent_and_answers_later_requests(upgraded,monkeypatch):
-    s=upgraded;change_archive(s)
-    original=post.Store.write;conflicts=[]
-    def write(store,message):
-        if message.sender==post.SHIP and not conflicts:
-            conflict=replace(message,body='Synthetic immutable conflict')
-            conflicts.append(original(store,conflict))
-            raise ShipError('synthetic publication conflict')
-        return original(store,message)
-    monkeypatch.setattr(post.Store,'write',write)
-    pending_upgrade(s)
-    request=s.ship.runtime/'requests'/f'upgrade-rebrief-{NEW}.json'
-    before=request.read_bytes();notice_before=conflicts[0].read_bytes()
-    later=request.parent/'zz-synthetic-healthy.json'
-    later.write_text(json.dumps(dict(kind='synthetic-healthy')))
-    with pytest.raises(ShipError,match='identity conflicts'):
-        s.started[-1].requests()
-    assert request.read_bytes()==before and conflicts[0].read_bytes()==notice_before
-    assert not request.with_suffix('.done').exists() and not (request.parent/'failed').exists()
-    assert later.with_suffix('.done').read_text()=="unknown request 'synthetic-healthy'\n"
+    assert not (s.ship.runtime/'requests'/f'upgrade-rebrief-{NEW}.json').exists()
+    assert notices(s)==[] and carried(s,'captain').count(input_receipt.BRIEF_HEAD)==1
 
 
 def test_missing_running_baseline_holds_without_rendering_a_new_baseline(upgraded):
@@ -322,15 +291,16 @@ def test_missing_running_baseline_holds_without_rendering_a_new_baseline(upgrade
     assert notices(s)==[]
 
 
-def test_existing_edited_card_path_only_notifies_changed_running_briefs(upgraded):
+def test_an_edited_card_is_carried_only_for_the_seats_whose_brief_changed(upgraded):
     s=upgraded
     svc=Service(s.ship,s.tmux);s.started.append(svc)
     (s.framework/'roles/captain.md').write_text('Changed role instruction.\n')
     svc.rebrief();svc.rebrief()
     card=s.framework/'roles/captain.md';card.write_text(card.read_text())
     svc.rebrief()
-    assert [m.to for m in notices(s)]==['captain']
-    assert notices(s)[0].body=="ship's orders changed · read runtime/brief/captain.md"
+    assert notices(s)==[]
+    assert '+Changed role instruction.' in carried(s,'captain')
+    assert carried(s,'desk') is None and carried(s,'worker-1') is None
 
 
 @pytest.mark.parametrize('preempted',[False,True])
@@ -345,12 +315,13 @@ def test_brief_updated_by_old_service_during_install_is_the_upgrade_baseline(upg
         # A genuine card edit just before stop must become the comparison baseline.
         card=s.framework/'laws.md';card.write_text(card.read_text()+'\nChanged framework instruction.\n')
         old.rebrief()
-        assert len(notices(s))==2
+        assert notices(s)==[]
         return stop(runtime)
     monkeypatch.setattr(install.servicectl,'stop',stop_after_card_event)
     proofs=install.upgrade(s.ship,'changed',s.tmux)
     assert any('no brief changed' in line for line in proofs)
-    assert len(notices(s))==2, 'preserve existing notices rather than post the same content again'
+    assert notices(s)==[]
+    assert carried(s,'captain').count('+Changed framework instruction.')==1, 'the same content is carried once'
 
 
 def test_old_service_is_stopped_before_replacing_live_code_or_cards(upgraded,monkeypatch):
@@ -365,116 +336,22 @@ def test_old_service_is_stopped_before_replacing_live_code_or_cards(upgraded,mon
     assert notices(s)==[]
 
 
-@pytest.mark.parametrize('return_to_baseline',[False,True])
-@pytest.mark.parametrize('replace_desk',[False,True])
-def test_card_edit_during_partial_upgrade_gets_one_new_notice(upgraded,monkeypatch,return_to_baseline,replace_desk):
+def test_a_card_edit_after_the_sync_folds_into_the_one_head(upgraded):
+    """Replaces the cases of edits during a pending notice request: there is no notice to hold a request, and every
+    change since the brief last told folds into the seat's one head."""
     s=upgraded;change_archive(s)
-    original_brief=(s.ship.runtime/'brief/captain.md').read_text()
-    original=post.Store.write;failed=[]
-    def write(self,message):
-        if message.sender==post.SHIP and message.to=='desk' and not failed:
-            failed.append(True);raise OSError('synthetic desk post interruption')
-        return original(self,message)
-    monkeypatch.setattr(post.Store,'write',write)
-    pending_upgrade(s)
+    install.upgrade(s.ship,'changed',s.tmux)
     svc=s.started[-1]
-    first=notices(s)[0]
-    first_brief=(s.ship.runtime/'brief/captain.md').read_text()
-    assert first.to=='captain' and first_brief!=original_brief
-    assert 'Changed framework instruction.' in first_brief  # first version/file and immutable notice were offered
-    if replace_desk:
-        launch=s.ship.runtime/'trusted/desk/launch.json'
-        data=json.loads(launch.read_text());data['resume']='replacement';launch.write_text(json.dumps(data))
-    if return_to_baseline:
-        laws=standing.FRAMEWORK_DIR/'laws.md'
-        laws.write_text(laws.read_text().replace('\nChanged framework instruction.\n',''))
-    else:
-        card=standing.FRAMEWORK_DIR/'roles/captain.md'
-        card.write_text(card.read_text()+'\nLater independent instruction.\n')
+    card=standing.FRAMEWORK_DIR/'roles/captain.md'
+    card.write_text(card.read_text()+'\nLater independent instruction.\n')
     svc.requests();svc.rebrief()
-    captain=[m for m in notices(s) if m.to=='captain']
-    assert len(captain)==2 and len({m.id for m in captain})==2
-    current=(s.ship.runtime/'brief/captain.md').read_text()
-    assert current==original_brief if return_to_baseline else 'Later independent instruction.' in current
-    assert len([m for m in notices(s) if m.to=='desk'])==(0 if replace_desk or return_to_baseline else 1)
-    assert not [m for m in notices(s) if m.to=='worker-1']
-    ids={m.id for m in notices(s)}
-    svc.requests();svc.rebrief()
+    head=carried(s,'captain')
+    assert head.count(input_receipt.BRIEF_HEAD)==1
+    assert '+Changed framework instruction.' in head and '+Later independent instruction.' in head
+    assert '+Later independent instruction.' not in carried(s,'desk')
     restarted=Service(s.ship,s.tmux);s.started.append(restarted)
     restarted.requests();restarted.rebrief()
-    assert {m.id for m in notices(s)}==ids
-
-
-def test_repeated_content_changes_during_one_pending_request_each_get_one_notice(upgraded,monkeypatch):
-    s=upgraded;change_archive(s)
-    original=post.Store.write;hold=[True]
-    def write(self,message):
-        if message.sender==post.SHIP and message.to=='desk' and hold[0]:
-            raise OSError('synthetic desk held')
-        return original(self,message)
-    monkeypatch.setattr(post.Store,'write',write)
-    pending_upgrade(s)
-    svc=s.started[-1]
-    card=standing.FRAMEWORK_DIR/'roles/captain.md';base=card.read_text()
-    for index,text in enumerate((base+'\nLater edit.\n',base,base+'\nLater edit.\n'),2):
-        card.write_text(text)
-        with pytest.raises(OSError):svc.requests()
-        svc.rebrief()
-        captain=[m for m in notices(s) if m.to=='captain']
-        assert len(captain)==index and len({m.id for m in captain})==index
-    hold[0]=False;svc.requests();svc.rebrief()
-    ids={m.id for m in notices(s)}
-    assert len(ids)==5
-    svc.requests();svc.rebrief()
-    assert {m.id for m in notices(s)}==ids
-
-
-def test_unposted_intermediate_content_is_not_a_new_offered_baseline(upgraded,monkeypatch):
-    s=upgraded;change_archive(s)
-    original=post.Store.write;captain_calls=[];desk_failed=[]
-    def write(self,message):
-        if message.sender==post.SHIP and message.to=='captain':
-            captain_calls.append(True)
-            if len(captain_calls)==2:raise OSError('synthetic later failure')
-        if message.sender==post.SHIP and message.to=='desk' and not desk_failed:
-            desk_failed.append(True);raise OSError('synthetic first failure')
-        return original(self,message)
-    monkeypatch.setattr(post.Store,'write',write)
-    pending_upgrade(s)
-    svc=s.started[-1]
-    card=standing.FRAMEWORK_DIR/'roles/captain.md';base=card.read_text()
-    card.write_text(base+'\nUnposted version.\n')
-    with pytest.raises(OSError):svc.requests()
-    assert len([m for m in notices(s) if m.to=='captain'])==1
-    card.write_text(base+'\nFinal version.\n')
-    svc.requests();svc.rebrief()
-    assert len([m for m in notices(s) if m.to=='captain'])==2
-    assert 'Final version.' in (s.ship.runtime/'brief/captain.md').read_text()
-    assert len(notices(s))==3
-
-
-def test_intent_write_failure_does_not_duplicate_a_later_edit_via_ordinary_rebrief(upgraded,monkeypatch):
-    s=upgraded;change_archive(s)
-    original=post.Store.write;failed=[]
-    def write(self,message):
-        if message.sender==post.SHIP and message.to=='desk' and not failed:
-            failed.append(True);raise OSError('synthetic partial')
-        return original(self,message)
-    monkeypatch.setattr(post.Store,'write',write)
-    pending_upgrade(s)
-    svc=s.started[-1]
-    card=standing.FRAMEWORK_DIR/'roles/captain.md';card.write_text(card.read_text()+'\nLater edit.\n')
-    persist=install.write_rebrief;interrupted=[]
-    def save(*args):
-        if not interrupted:
-            interrupted.append(True);raise OSError('synthetic intent failure')
-        return persist(*args)
-    monkeypatch.setattr(install,'write_rebrief',save)
-    with pytest.raises(OSError):svc.requests()
-    svc.rebrief()
-    svc.requests();svc.rebrief()
-    assert len([m for m in notices(s) if m.to=='captain'])==2
-    assert len(notices(s))==3
+    assert notices(s)==[] and carried(s,'captain')==head
 
 
 def test_edit_arriving_during_recovery_remains_visible_to_ordinary_rebrief(upgraded,monkeypatch):
@@ -489,8 +366,6 @@ def test_edit_arriving_during_recovery_remains_visible_to_ordinary_rebrief(upgra
         return path
     monkeypatch.setattr(standing,'render',render_then_edit)
     install.upgrade(s.ship,'changed',s.tmux)
-    svc=s.started[-1]
-    assert len([m for m in notices(s) if m.to=='captain'])==2
+    svc=s.started[-1];svc.requests();svc.rebrief()
     assert 'Edit after captain rendering.' in (s.ship.runtime/'brief/captain.md').read_text()
-    ids={m.id for m in notices(s)};svc.requests();svc.rebrief()
-    assert {m.id for m in notices(s)}==ids
+    assert notices(s)==[] and '+Edit after captain rendering.' in carried(s,'captain')

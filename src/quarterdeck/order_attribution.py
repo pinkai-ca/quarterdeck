@@ -136,7 +136,8 @@ class Threads:
     def received(self, text, at, seat):
         """Exact complete top-level post envelopes only; quoted ids/body fragments prove nothing."""
         at = moment(at)
-        text = text.strip()
+        from .input_receipt import without_brief_head
+        text = without_brief_head(text).strip()  # a standing-orders head before the envelopes is no envelope
         found = []
         while text:
             matches = [(envelope, m) for envelope, m in self.by_header.get(text.partition('\n')[0], ())

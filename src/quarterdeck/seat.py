@@ -1081,6 +1081,11 @@ class Seat:
                             start=process_start(pane.pid))
         launched.write(self.trusted / trusted_files.LAUNCH)
         (self.trusted / REFUSED_RELAUNCH).unlink(missing_ok=True)  # up again: a refused relaunch is over
+        from . import brief_change
+        try:
+            brief_change.mark(self.ship.runtime, self.name, brief.read_text())  # this launch loads the current brief
+        except OSError:
+            pass  # unmarked, the next message carries the change once more: nothing is lost
         if self.spec.pool_choices:
             self.move_to(pool.name)
         if resume_id:

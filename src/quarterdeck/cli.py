@@ -990,12 +990,23 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     now = {attempt.path for attempt in opened}
     every = post.Attempts(ship.runtime)
     second = {m.id for m in messages if any(a.seat == seat and a.path not in now for a in every.for_message(m.id))}
-    batch = Reading({"seat": seat, "messages": messages},
-                    lambda data: post.typed(data["messages"], second=second).rstrip("\n"))
+    # A change to the seat's standing orders since it last read them rides at the head of the batch, as at a door.
+    from . import brief_change
+    changed = brief_change.head(ship.runtime, seat)
+    data = {"seat": seat, "messages": messages}
+    if changed:
+        data["standing_orders_changed"] = changed[0]
+    batch = Reading(data, lambda data: (data.get("standing_orders_changed", "")
+                                        + post.typed(data["messages"], second=second)).rstrip("\n"))
     emit(args, batch)  # serialization, output and flush must all succeed before the receipt
     if validate is not None:
         validate()
     post.printed(ship.runtime, opened)
+    if changed:
+        try:
+            brief_change.mark(ship.runtime, seat, changed[1])
+        except OSError:
+            pass  # a watch that cannot write it leaves the change for the next message: nothing is lost
     return None
 
 
