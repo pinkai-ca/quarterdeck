@@ -256,6 +256,19 @@ def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:
 
 
 def _bring_up(source: Path, path: Path, name: str, pool_name: str) -> str:
+    """The pool's credential brought up into the seat's copy (see _bring_up_copy). A link its jail planted on the way
+    is refused (seat_files.LinkRefused) and named, the copy retained, as an unwritable copy is: never raised."""
+    try:
+        return _bring_up_copy(source, path, name, pool_name)
+    except seat_files.LinkRefused as error:
+        try:
+            seat_files.unlink(path.with_name(f"{path.name}.qd-copy"))
+        except (OSError, seat_files.LinkRefused):
+            pass  # through the same link: nothing of ours can be there to remove
+        return f"{name} copy not brought up to {pool_name}: {error}; retained"
+
+
+def _bring_up_copy(source: Path, path: Path, name: str, pool_name: str) -> str:
     """Bring one home's older copy up to the pool's, while its program may be running and refreshing.
 
     The pool's copy is swapped with the home's file in one exchange, so the program never finds the place empty. What

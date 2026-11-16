@@ -195,7 +195,7 @@ def tell_desk(service, seat, launched, caller, act: str, reason: str, screen) ->
                 stream.write(json.dumps(dict(key=key, message=message.id, to=desk, at=_now(), act=act,
                                              caller=caller)) + "\n")
                 stream.flush()
-        except OSError as error:
+        except (OSError, seat_files.LinkRefused) as error:  # a planted link is refused: named, never raised
             return f"the desk is told ({', '.join(posted)}), but the notice could not be noted ({error})"
     return f"the desk is told ({', '.join(posted)})"
 
@@ -225,7 +225,8 @@ def bounded(text: str) -> str:
 
 
 def write(seat, entry: dict) -> None:
-    """Append one complete line; raises OSError when writing fails, so nothing is sent."""
+    """Append one complete line; raises OSError when writing fails, or seat_files.LinkRefused when a link stands at
+    the name or on its way, so nothing is sent."""
     target = path(seat)
     target.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(entry, ensure_ascii=False) + "\n"
@@ -339,7 +340,7 @@ def press(service, seat, choice: str, caller: str | None) -> str:
                outcome="pressing")
     try:
         write(seat, act)
-    except OSError as error:
+    except (OSError, seat_files.LinkRefused) as error:
         return f"refused: the act could not be recorded ({error}); nothing is pressed"  # law: one-door
     try:
         if how[0] == "key":
@@ -388,7 +389,7 @@ def type_line(service, seat, line: str, caller: str | None) -> str:
                outcome="typing")
     try:
         write(seat, act)
-    except OSError as error:
+    except (OSError, seat_files.LinkRefused) as error:
         return f"refused: the act could not be recorded ({error}); nothing is typed"
     door.since = datetime.now(timezone.utc)
     try:
@@ -413,7 +414,7 @@ def _finish(seat, act: dict, outcome: str, detail: str) -> str:
     try:
         write(seat, dict(act=act["act"], verb=act["verb"], at=_now(), outcome=outcome, detail=detail))
         kept = ""
-    except OSError as error:
+    except (OSError, seat_files.LinkRefused) as error:  # the act was sent: its outcome is named, never raised
         kept = f"; its outcome could not be recorded ({error})"
     what = f"pressed {act['choice']!r} by {act['by']}" if act["verb"] == "press" else f"typed {act['line']!r}"
     if outcome.startswith("not "):
