@@ -404,3 +404,62 @@ def test_unknown_between_attempts_calls_person_immediately(tmp_path, monkeypatch
     monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda _: state.failure)
     assert 'validity unknown' in auth_failure.status(seat)
     assert not auth_failure.waiting(auth_failure.status(seat))
+
+
+def real_alarm(monkeypatch, state):
+    """The service's own needs_human, its routing seams stubbed: what it would post is what it alarms."""
+    from quarterdeck import service as service_module
+    monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda s: state.failure)
+    monkeypatch.setattr(service_module, 'Door', lambda s: SimpleNamespace(human_obstruction=lambda: (None, AUTHENTICATION)))
+    alarm = service_module.Service.__new__(service_module.Service)
+    alarm.told, alarm.alarmed = {}, {}
+    alarm.alarm_recipients = Mock(return_value=['synthetic-systems'])
+    alarm.store = SimpleNamespace(new=Mock())
+    return alarm
+
+
+def held_relaunch(service):
+    def relaunch(seat, resume):
+        service.request_wait = ('recovery', 'a synthetic recovery hold')
+        return None
+    return relaunch
+
+
+@pytest.mark.parametrize('how', ['held', 'raised'])
+def test_a_relaunch_held_or_raised_alarms_at_once_with_its_reason(tmp_path, monkeypatch, how):
+    """A consumed attempt whose relaunch did not start is a failure, never the wait for the renewed pass."""
+    from quarterdeck.ship import ShipError
+    now, _, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    alarm = real_alarm(monkeypatch, state)
+    service.needs_human = alarm.needs_human
+    if how == 'held':
+        service.relaunch = Mock(side_effect=held_relaunch(service))
+        reason = 'held by the recovery hold: a synthetic recovery hold'
+    else:
+        service.relaunch = Mock(side_effect=ShipError('synthetic lifecycle failure'))
+        reason = 'raised ShipError'
+    auth_failure.run(service)
+    service.relaunch.assert_called_once_with(seat, True)
+    expected = f'{AUTHENTICATION}; sign-in resume {reason}; needs attention'
+    assert auth_failure.status(seat) == expected and not auth_failure.waiting(auth_failure.status(seat))
+    alarm.alarm_recipients.assert_called_once()
+    alarm.store.new.assert_called_once_with('report', 'ship', 'synthetic-systems', f'{seat.name} obstructed, {expected}')
+    clock(monkeypatch, now + timedelta(seconds=90))
+    auth_failure.run(service)  # the failed attempt stays consumed, and the standing alarm is not sent twice
+    service.relaunch.assert_called_once_with(seat, True)
+    alarm.store.new.assert_called_once()
+    assert 'synthetic lifecycle failure' not in json.dumps(auth_failure._attempt(seat))  # the error's kind only
+
+
+def test_a_started_relaunch_still_waits_for_the_renewed_pass(tmp_path, monkeypatch):
+    now, _, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    alarm = real_alarm(monkeypatch, state)
+    service.needs_human = Mock(side_effect=alarm.needs_human)
+    auth_failure.run(service)
+    service.relaunch.assert_called_once_with(seat, True)
+    service.needs_human.assert_not_called()
+    assert auth_failure.waiting(auth_failure.status(seat))
+    alarm.needs_human(seat)  # a reading in the window: no alarm while the started relaunch waits
+    alarm.store.new.assert_not_called()

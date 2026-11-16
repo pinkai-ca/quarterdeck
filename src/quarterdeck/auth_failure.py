@@ -131,6 +131,8 @@ def _decision(seat, failure, attempt, observation, now):
     validity, stamp, newer = observation
     if not seat.is_up or validity != 'valid':
         return 'attention'
+    if attempt is not None and failed(attempt):
+        return 'attention'  # its relaunch was held or raised: failed, never the wait for the renewed pass
     if attempt is None:
         if validity == 'valid' and newer:
             return 'retry'
@@ -170,6 +172,8 @@ def detail(seat, failure=None):
         attempt = _attempt(seat)
         if _decision(seat, failure, attempt, observation, now) != 'attention':
             return WAITING
+        if attempt is not None and failed(attempt):
+            return f'sign-in resume {failed(attempt)}; needs attention' + ('; ' + pool_note if state != 'valid' else '')
         if attempt is not None:
             return 'relaunch did not cure it; needs attention' + ('; ' + pool_note if state != 'valid' else '')
     except (OSError, ValueError, TypeError, AttributeError):
@@ -194,6 +198,19 @@ def _path(seat):
     return seat.ship.runtime / 'post' / 'auth-relaunch' / f'{seat.name}.json'
 
 
+def failed(attempt):
+    """Why the latest attempt's relaunch did not start (held by a lifecycle check, or raised), or None."""
+    return attempt['attempts'][-1].get('failed')
+
+
+def _fail_latest(seat, attempts, why):
+    """Record that the latest consumed attempt's relaunch did not start: a failure, read by status and alarm at
+    once. The reason is a check's name and its own reason, or an error's kind: never a credential or record."""
+    latest = dict(attempts[-1], failed=why)
+    attempts = attempts[:-1] + [latest]
+    durable.replace_file(_path(seat), json.dumps(dict(format=1, **latest, attempts=attempts)) + '\n')
+
+
 def _attempt(seat):
     try:
         data = json.loads(turn_failure.metadata(_path(seat)))
@@ -208,6 +225,7 @@ def _attempt(seat):
     previous = None
     for item in attempts:
         if (not isinstance(item, dict) or not isinstance(item.get('pool'), str)
+                or not isinstance(item.get('failed', ''), str)
                 or not isinstance(item.get('credential'), list) or len(item['credential']) != 5
                 or any(type(v) is not int for v in item['credential']) or not isinstance(item.get('at'), str)):
             raise ValueError('auth resume attempt unknown')
@@ -215,7 +233,7 @@ def _attempt(seat):
         if at.tzinfo is None or previous is not None and at <= previous:
             raise ValueError('auth resume attempt time unknown')
         previous = at
-    if any(data.get(key) != attempts[-1][key] for key in ('at', 'pool', 'credential')):
+    if any(data.get(key) != attempts[-1].get(key) for key in ('at', 'pool', 'credential', 'failed')):
         raise ValueError('auth resume latest attempt unknown')
     return dict(data, attempts=attempts)
 
@@ -269,11 +287,18 @@ def run(service):
                         proof=(f'{seat.name}: renewed pool sign-in; relaunch with resume ({len(attempts)}/{MAX_ATTEMPTS}) · {proof}'
                                if proof is not None else f'{seat.name}: sign-in resume held by {held_by(service)}'))
             if proof is None:
+                step = 'the record of a held relaunch'
+                _fail_latest(seat, attempts, f'held by {held_by(service)}')
                 service.needs_human(seat)
         except (OSError, ValueError, TypeError, AttributeError, ShipError) as error:
             # Do not report raw credential/record/state contents as an alarm or proof: the check and the error's kind only.
             service.log('authentication', seat=seat.name,
                         proof=f'{seat.name}: sign-in recovery held by {step} ({type(error).__name__}); needs attention')
+            if step == 'the relaunch':
+                try:
+                    _fail_latest(seat, attempts, f'raised {type(error).__name__}')
+                except (OSError, ValueError, TypeError):
+                    pass  # unrecorded, the alarm below still goes; the attempt stays consumed
             service.needs_human(seat)
 
 
