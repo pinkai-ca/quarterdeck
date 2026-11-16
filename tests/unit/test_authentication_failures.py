@@ -485,3 +485,28 @@ def test_a_started_relaunch_whose_log_write_fails_is_not_a_failed_relaunch(tmp_p
     assert 'held by the relaunch log (OSError)' in written[-1]['proof'], 'its own step, not the relaunch'
     assert auth_failure.waiting(auth_failure.status(seat)), 'it still waits for the renewed pass'
     alarm.store.new.assert_not_called()
+
+
+def test_a_held_relaunch_whose_log_write_fails_is_still_recorded_failed_and_alarms_once(tmp_path, monkeypatch):
+    """A held relaunch is recorded failed before any log line: a failing log cannot leave it reading as waiting."""
+    now, _, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    alarm = real_alarm(monkeypatch, state)
+    service.needs_human = alarm.needs_human
+    service.relaunch = Mock(side_effect=held_relaunch(service))
+    written = []
+
+    def log(kind, **fields):
+        written.append(fields)
+        if len(written) == 1:
+            raise OSError('synthetic log failure')
+    service.log = Mock(side_effect=log)
+    auth_failure.run(service)
+    service.relaunch.assert_called_once_with(seat, True)
+    assert auth_failure.failed(auth_failure._attempt(seat)) == 'held by the recovery hold: a synthetic recovery hold'
+    assert not auth_failure.waiting(auth_failure.status(seat))
+    alarm.store.new.assert_called_once()
+    clock(monkeypatch, now + timedelta(seconds=90))
+    auth_failure.run(service)
+    service.relaunch.assert_called_once_with(seat, True)
+    alarm.store.new.assert_called_once()
