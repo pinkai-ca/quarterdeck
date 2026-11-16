@@ -957,7 +957,7 @@ class Seat:
                 return carriage_plan.build(carriage.rows, handoff=carriage.text or '', header=carriage.header,
                                            directory=generation, limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES),
                                            inline_limit=carriagemod.INLINE_BYTES, force_files=force_files,
-                                           history=carriage.history)
+                                           history=carriage.history, idle=self._idle_line())
             except carriage_plan.ImpossibleBudget as error:
                 raise ShipError(f'{self.name}: {error}; nothing was started or published') from None
 
@@ -1019,8 +1019,13 @@ class Seat:
         carriage = self.carriage(resume_id=resume_id)
         planned = carriage_plan.build(carriage.rows, handoff=carriage.text or '', header=carriage.header,
                                       directory=self.folder / carriagemod.FOLDER / 'preview',
-                                      limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES), history=carriage.history)
+                                      limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES),
+                                      history=carriage.history, idle=self._idle_line())
         return planned.opening, carriage.carried
+
+    def _idle_line(self) -> str:
+        """A hand's opening with nothing open ends with this line: it runs no command and waits for an order."""
+        return carriagemod.HAND_IDLE if self.spec.role == 'hand' else ''
 
     def carriage(self, *, resume_id: str | None = None, brief_at=None) -> carriagemod.Carriage:
         """Index incoming work and outgoing waits; fresh self-handoffs alone are full.

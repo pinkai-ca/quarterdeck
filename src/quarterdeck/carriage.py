@@ -27,6 +27,10 @@ FOLDER = "carried"
 CUT = "…"
 
 
+# A hand with nothing open has no task: its fresh opening ends with this line, the same words as its card.
+HAND_IDLE = "Nothing is open for you: run no command, and wait for an order to arrive in your pane."
+
+
 @dataclass(frozen=True)
 class Carriage:
     """A fresh self-handoff, indexed incoming inventory and metadata-only thread rows."""

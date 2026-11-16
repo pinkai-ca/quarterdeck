@@ -50,7 +50,7 @@ class Plan:
 
 
 def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: Path,
-          limit: int, inline_limit: int = 32768, force_files: bool = False, history: str = '') -> Plan:
+          limit: int, inline_limit: int = 32768, force_files: bool = False, history: str = '', idle: str = '') -> Plan:
     if type(limit) is not int or limit <= 0:
         raise ValueError('carry_bytes must be a positive integer')
     if not rows and not handoff and not history:
@@ -128,6 +128,8 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
     inline_handoff = f'qd > your handoff, in full; read it first\n{handoff}\n' if handoff else ''
     prefix = header + '\n' + (history + '\n' if history else '')
     inline = prefix + inline_handoff + instructions + ''.join(line for _, line in lines)
+    if idle and not rows:
+        inline += idle + '\n'  # nothing open: the opening ends by saying so, plainly (a hand's)
     if not force_files and not files and size(inline) <= budget:
         return Plan(inline, {}, directory, limit)
 

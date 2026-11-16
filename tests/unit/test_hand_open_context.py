@@ -161,3 +161,51 @@ def test_hand_history_still_reads_whole_through_inbox_all_and_thread(tmp_path, m
         assert message.body in output
     assert post_threads.whole(w.store, w.history.id, w.seat.name).messages == (w.history,)
     assert w.answer in post_threads.whole(w.store, w.opened.id, w.seat.name).messages
+
+
+def _nothing_open(w):
+    w.store._write(post.Message(f'rep-20320102-1200-recipient-{9:06x}', 'report', 'recipient', 'issuer',
+                                AT + timedelta(seconds=9), 'Current task completed.', re=w.opened.id))
+    w.store._write(post.Message(f'ans-20320102-1200-recipient-{10:06x}', 'answer', 'recipient', 'issuer',
+                                AT + timedelta(seconds=10), 'Current question answered.', re=w.incoming.id))
+
+
+def _with_history(monkeypatch, seat):
+    """A fresh start that carries a notice history, as a hand's start after an order does."""
+    original = Seat.carriage
+
+    def carriage(self, **kwargs):
+        from dataclasses import replace
+        history = 'qd > notice history: 1 changed order: settled by a later launch'
+        return replace(original(self, **kwargs), history=history)
+    monkeypatch.setattr(Seat, 'carriage', carriage)
+
+
+def test_a_hand_with_nothing_open_ends_its_opening_with_the_line_of_its_card(tmp_path, monkeypatch):
+    from quarterdeck import carriage, standing
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
+    w = world(tmp_path / 'ship', 'hand')
+    _nothing_open(w)
+    _with_history(monkeypatch, w.seat)
+    opening, carried = w.seat.first_message()
+    assert carried == [] and opening.endswith(carriage.HAND_IDLE + '\n'), opening
+    assert carriage.HAND_IDLE in standing.card(w.ship, 'roles', 'hand')[0], 'the same words as the hand card'
+
+
+def test_a_hand_with_an_order_open_has_no_idle_line(tmp_path, monkeypatch):
+    from quarterdeck import carriage
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
+    w = world(tmp_path / 'ship', 'hand')
+    _with_history(monkeypatch, w.seat)
+    opening, _ = w.seat.first_message()
+    assert w.opened.id in opening and carriage.HAND_IDLE not in opening
+
+
+def test_a_worker_with_nothing_open_has_no_idle_line(tmp_path, monkeypatch):
+    from quarterdeck import carriage
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
+    w = world(tmp_path / 'ship', 'worker')
+    _nothing_open(w)
+    _with_history(monkeypatch, w.seat)
+    opening, _ = w.seat.first_message()
+    assert opening and carriage.HAND_IDLE not in opening
