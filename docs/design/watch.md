@@ -60,7 +60,12 @@ Tmux runs `qd status --line` on its own timer, independent of service and doors.
 A stop confirms the owner's exit by pid and start as well as the released lock.
 An owner that releases its lock but outlives the exit grace has its whole tree
 ended by the write-bound kill, which observes new children before each round's
-signals. The proof line names that forced end. An atomic stop barrier under
+signals. Before confirming a stop, it reads the service's private systemd cgroup
+again, including its child cgroups. If that cgroup cannot be read, it uses only
+the private session or process group bound while the owner was alive. The proof
+line names this re-read and any fallback. A newly discovered process enters the
+barrier before the same tree kill runs; an incomplete reading or an unconfirmed
+exit refuses the stop. The proof line names any forced end. An atomic stop barrier under
 `runtime/locks` retains all observed identities before they are signalled. A
 start, including copy recovery, refuses while any recorded exit is unconfirmed
 or the barrier is unreadable, and names that hold in status. Once every identity
