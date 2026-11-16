@@ -9,6 +9,7 @@ Power-loss persistence is left to the operating system; retirement forces no syn
 from __future__ import annotations
 
 from dataclasses import asdict
+from contextlib import contextmanager
 import json
 import hashlib
 from pathlib import Path
@@ -208,7 +209,7 @@ def _settled(store, records, progress):
 class _Progress:
     """The service fits complete mandatory inventories around its work allowance."""
 
-    def __init__(self, service, seconds, complete_reads):
+    def __init__(self, service, seconds, complete_reads, prior_names=()):
         self.service = service
         self.start = time.monotonic()
         self.deadline = self.start + seconds
@@ -220,6 +221,14 @@ class _Progress:
         self.candidates = None
         self.retirable = 0
         self.blocked = False
+        self.names = None
+        self.visited = set()
+        self.prior_names = frozenset(prior_names)
+
+    @contextmanager
+    def examining(self, name):
+        yield
+        self.visited.add(name)  # an interrupted examination never reaches this line
 
     def __call__(self):
         now = time.monotonic()
@@ -245,7 +254,7 @@ class _Progress:
             self.reading = False
 
 
-def run(service, *, limit=BATCH, seconds=SECONDS, complete_reads=False):
+def run(service, *, limit=BATCH, seconds=SECONDS, complete_reads=False, prior_names=()):
     """Fresh locked evidence always decides; service inventories finish before yielding.
 
     Direct callers retain the wall-time slice. The service separately accounts for
@@ -253,7 +262,7 @@ def run(service, *, limit=BATCH, seconds=SECONDS, complete_reads=False):
     allowance for selection and whole-file moves. No partial reading is authority.
     """
     counts = dict(attempts=0, journals=0)
-    progress = _Progress(service, seconds, complete_reads)
+    progress = _Progress(service, seconds, complete_reads, prior_names)
     result = None
     try:
         progress()
@@ -261,6 +270,7 @@ def run(service, *, limit=BATCH, seconds=SECONDS, complete_reads=False):
     except SliceEnded:
         result = {**counts, 'paused': True}
     finally:
+        service._post_retirement_progress = progress
         service.post_retirement_counts = dict(counts)
         service.post_retirement_observation = dict(
             seconds=time.monotonic() - progress.start, phase=progress.phase,
@@ -291,16 +301,19 @@ def _run(service, limit, counts, progress):
     names = sorted({a.seat for a in records if a.path.parent == service.attempts.dir
                     and a.path.name in eligible}
                    | set(post_dir.directory_names(service.runtime / 'post' / 'pending')))
+    progress.names = frozenset(names)
     cursor = getattr(service, 'post_retirement_cursor', None)
     if cursor in names:
         position = names.index(cursor)
         names = names[position:] + names[:position]
     for position, name in enumerate(names):
+        if name in progress.prior_names:
+            continue  # completed under this same stable sweep input, never permission for a move
         progress()
         if counts['attempts'] >= limit:
             break
         try:
-            with lifecycle.claim(service.runtime, name), post.admission(service.runtime, name):
+            with progress.examining(name), lifecycle.claim(service.runtime, name), post.admission(service.runtime, name):
                 # Reload beneath admission; message closure and a delivery can no
                 # longer change between the eligibility read and the rename.
                 with service.attempts._locked():
@@ -356,9 +369,12 @@ def _run(service, limit, counts, progress):
                             own = next((p for p in proofs if p.path == inflight), None)
                             if own:
                                 blocked.update(own.data['attempts'])
+                                progress.blocked = True
                             elif not isinstance(relative, str) or not inflight.is_file():
+                                progress.blocked = True
                                 continue
                         except (OSError, ValueError, KeyError, TypeError):
+                            progress.blocked = True
                             continue
                     mine = {n: a for n, a in mine.items() if n not in blocked}
                     mine = dict(list(mine.items())[:max(0, limit - counts['attempts'])])
@@ -447,17 +463,28 @@ def activity_stamp(runtime):
 
 def due(service, *, idle=False):
     now = time.monotonic()
-    if not idle and now < getattr(service, 'post_retirement_due', 0):
+    gate = None
+    if getattr(service, 'ship', None) is not None and getattr(service, 'ledger', None) is not None:
+        from .retirement_gate import Gate
+        if getattr(service, 'post_retirement_gate', None) is None:
+            service.post_retirement_gate = Gate()
+        gate = service.post_retirement_gate
+        if not gate.begin(service, now):
+            return
+    elif not idle and now < getattr(service, 'post_retirement_due', 0):
         return
     result = None
     try:
-        result = run(service, complete_reads=True)
+        result = (run(service, complete_reads=True, prior_names=gate.prior()) if gate is not None
+                  else run(service, complete_reads=True))
     finally:
         service.post_retirement_due = time.monotonic() + INTERVAL
         observation = service.post_retirement_observation
         if result is None:
             result = {**getattr(service, 'post_retirement_counts', dict(attempts=0, journals=0)),
                       'paused': True, 'failed': True}
+        if gate is not None:
+            gate.finish(service, result, getattr(service, '_post_retirement_progress', None), INTERVAL)
         _status(service, result, observation)
         # Catch-up gates retirement before any inventory/pass can begin.
         # Actual passes, including failures and zero moves, always have a line.
