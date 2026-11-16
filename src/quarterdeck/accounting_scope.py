@@ -58,8 +58,14 @@ class Partitions:
             self.owners = expanded
             self.seats = {item['name'] for item in inventory}
         else:
-            # Other seats' mapping must remain unchanged under the same barriers.
-            self.owners.update(expanded)
+            # A scoped job read only the scoped seats' inventory: it replaces their own entries, and keeps every other
+            # seat's as it stands. An owner it did not read is never removed, so a record another seat also lists
+            # stays ambiguous, and a change to it still calls for the full job.
+            scoped = set(scope)
+            merged = {path: names - scoped for path, names in self.owners.items()}
+            for path, names in expanded.items():
+                merged[path] = merged.get(path, frozenset()) | names
+            self.owners = {path: frozenset(names) for path, names in merged.items() if names}
 
     def refresh_dirty(self, reading):
         current = records(reading)

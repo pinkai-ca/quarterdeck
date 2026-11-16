@@ -211,3 +211,31 @@ def test_failed_or_targeted_retry_does_not_create_partition_certificates(world, 
     e.finish({'ordinary-alpha'}, committed=kind != 'failed')
     assert e.gate.partitions.baseline is None
     assert e.gate.allowed(e.service) and e.gate.scope is None
+
+
+def test_a_scoped_job_never_drops_an_owner_it_did_not_read(world):
+    """A record two seats list keeps both owners after a scoped job for one of them, so a later change to it still
+    calls for the full job; a record only the scoped seat lists updates as it always did."""
+    e = world
+    alpha, beta = e.inventory
+    extra = e.paths['ordinary-alpha'].with_name('ordinary-second-record')
+    extra.write_text('Ordinary synthetic native input.\n')
+    alpha['sources'].append((str(extra), 'fake', None, False))
+    e.db.execute('INSERT INTO turns VALUES (?,?)', (str(extra), 'ordinary-alpha'))
+    e.db.commit()
+    beta['sources'].append(alpha['sources'][0])  # beta lists alpha's record too, by its inventory alone
+    assert e.begin()
+    e.finish()
+    shared = str(Path(os.path.abspath(e.paths['ordinary-alpha'])))
+    assert e.gate.partitions.owners[shared] == {'ordinary-alpha', 'ordinary-beta'}
+    change(extra)  # alpha's own record: a scoped job for alpha alone
+    assert e.gate.allowed(e.service) and e.gate.scope == {'ordinary-alpha'}
+    assert e.begin(e.gate.scope)
+    e.finish({'ordinary-alpha'})
+    assert e.gate.partitions.owners[shared] == {'ordinary-alpha', 'ordinary-beta'}, 'beta was not read: it stays'
+    change(e.paths['ordinary-alpha'])
+    assert e.gate.allowed(e.service) and e.gate.scope is None, 'the shared record still calls for the full job'
+    assert e.begin()
+    e.finish()
+    change(extra)
+    assert e.gate.allowed(e.service) and e.gate.scope == {'ordinary-alpha'}, 'only alpha lists it: alpha alone'
