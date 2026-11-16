@@ -497,7 +497,7 @@ class Seat:
         same_program = selected.harness == self.spec.harness
         if same_program:
             if not self._screened() and not self._never_resumed():
-                self.harness.preflight_resume(selected, self.home, self._resume_id)
+                self.harness.preflight_resume(self.adapter_spec(selected), self.home, self._resume_id)
         self.record()
         credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)
         stopped = self._relaunch_down()
@@ -889,7 +889,7 @@ class Seat:
             observation = self._observe_selection(selected, self.ship.pool(target))
             same_program = selected.harness == self.spec.harness
             if same_program and resume and not self._screened() and not self._never_resumed():
-                self.harness.preflight_resume(selected, self.home, self._resume_id)
+                self.harness.preflight_resume(self.adapter_spec(selected), self.home, self._resume_id)
             if self.launched() is not None:
                 self._relaunch_down()  # retain the old record and reseed its source pool before changing selection
             # A person's choice is used up only by a launch that starts: _up clears it once its pane is open, and a
@@ -958,6 +958,13 @@ class Seat:
         from . import pr_screen
         return pr_screen.screening_left(self.ship.runtime, self.name)
 
+    def adapter_spec(self, spec: SeatSpec | None = None) -> SeatSpec:
+        """The seat as its adapter is given it, at a launch and at every resume's preflight alike: with the working
+        directory it runs in (ship.cwd_of: its declared cwd, else the ship's workspace), never None. One rule for
+        both, so the folder a resume is checked against is the folder its launch works in."""
+        spec = self.spec if spec is None else spec
+        return replace(spec, cwd=self.ship.cwd_of(spec))
+
     def _never_resumed(self) -> bool:
         """A hand takes one order at a time in a fresh context, so no launch of it ever resumes its conversation, by
         whatever path it comes: qd up, restart or relaunch, the service's relaunch, a failover or pool move, an
@@ -1017,7 +1024,7 @@ class Seat:
         brief = standing.render(self.ship, self.spec)
         pool = self.pool
         ship_home = self.ship.folder / "homes" / self.harness.name
-        spec = replace(self.spec, cwd=self.ship.cwd_of(self.spec))  # the adapter sees the seat's real working directory
+        spec = self.adapter_spec()  # the adapter sees the seat's real working directory, as every preflight does
         self.harness.build_home(self.home, spec, pool, ship_home if ship_home.is_dir() else None)
         resume_id = self._resume_id() if resume else None
         if resume and resume_id is None and prior:
@@ -1515,7 +1522,7 @@ class Seat:
                 return moved
             screened = self._screened()
             if not screened and not hand:
-                self.harness.preflight_resume(self.spec, self.home, self._resume_id)
+                self.harness.preflight_resume(self.adapter_spec(), self.home, self._resume_id)
             observation = self._observe_selection()
             return (self._relaunch_down() + "\n" + self._up(resume=not hand, observation=observation)
                     + (" · fresh: a hand starts fresh on every launch" if hand else
@@ -1559,7 +1566,7 @@ class Seat:
         observation = self._observe_selection(selected, self.ship.pool(target))
         same_program = selected.harness == self.spec.harness
         if same_program and resume and not self._never_resumed():
-            self.harness.preflight_resume(selected, self.home, self._resume_id)
+            self.harness.preflight_resume(self.adapter_spec(selected), self.home, self._resume_id)
         stopped = self._relaunch_down()
         self.move_to(target)
         self.spec = selected

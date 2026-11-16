@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -395,3 +396,93 @@ def test_scoped_hand_relaunch_refuses_unproved_directory_before_retirement(tmp_p
                         pytest.fail("a hand's restart asked to resume") if resume else "fresh")
     assert seat.restart().startswith("down\nfresh") and retired == [True]
     assert seat.fresh() == "down\nfresh" and retired == [True, True]
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_a_jailed_hand_launched_then_resumed_through_the_seat_is_checked_against_the_folder_it_launched_in(
+        tmp_path, monkeypatch, declared):
+    """One rule at launch and at a resume's preflight: the seat gives its adapter the folder it works in, its declared
+    cwd or, with none, the ship's workspace. A hand is never resumed today, so the restart below lets this one resume,
+    as any seat whose role may: the preflight passes, through the seat, whether the folder was declared or not."""
+    pool = Pool("local", "local", endpoint="http://127.0.0.1:9/v1")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    own = tmp_path / "work/hands/w"
+    own.mkdir(parents=True)
+    spec = SeatSpec("w", "crew", "hand", "opencode", (pool.name,), model="synthetic-model",
+                    cwd=own if declared else None)
+    ship = Ship(tmp_path / "ship", "synthetic", "operator", workspace, {pool.name: pool},
+                {"crew": Session("crew", "crew")}, {spec.name: spec})
+    pane = Pane("%1", "crew", "w", 101, 160, 48, False, False, None)
+    seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: pane if ident == pane.id else None))
+    assert ship.jailed(spec)
+    folder = own if declared else workspace
+    # Launched as the seat's launch gives its adapter the seat, with ship.cwd_of: the program's project is the folder
+    # it works in, the workspace where the hand declares none.
+    seat.home.mkdir(parents=True, exist_ok=True)
+    endpoint.Choice(pool.name, "synthetic-model", 32768, 8192).write(seat.home)
+    launched = seat.harness.launch(replace(spec, cwd=ship.cwd_of(spec)), pool, seat.home, seat.home / "brief",
+                                   None, None)
+    assert launched.argv[:2] == ("opencode", str(folder))
+    record = build_record(seat.home, number=2, directory=folder)  # the session saved where that launch worked
+    Launched(pane.id, pane.pid, datetime.now(timezone.utc).isoformat(), pool.name, None,
+             ["opencode"], VERSION, "opencode").write(seat.trusted / "launch.json")
+    monkeypatch.setattr(seat, "record", lambda: record)
+    monkeypatch.setattr(seat, "_never_resumed", lambda: False)  # stands for a seat whose role may resume
+    monkeypatch.setattr(seat, "_down", lambda: "down")
+    resumed = []
+    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None: resumed.append(resume) or "up")
+    assert seat.restart() == "down\nup" and resumed == [True], "the preflight passed and the seat resumed"
+    # A session saved anywhere else is still refused by the same preflight, naming both folders.
+    elsewhere = tmp_path / "elsewhere"
+    record = build_record(seat.home, number=3, directory=elsewhere, session="ses_elsewhere")
+    monkeypatch.setattr(seat, "record", lambda: record)
+    with pytest.raises(ShipError, match=f"recorded {str(elsewhere)!r}, expected {str(folder)!r}"):
+        seat.restart()
+    assert resumed == [True]
+
+
+class Given(Exception):
+    """Raised by the stand-in adapter once it has been given the seat: the path stops there."""
+
+
+PATHS = ["launch", "restart", "failover", "up on a chosen pool", "off a wall"]
+
+
+@pytest.mark.parametrize("declared", [False, True])
+@pytest.mark.parametrize("path", PATHS)
+def test_the_seat_gives_its_adapter_the_same_folder_at_launch_and_at_every_resume_preflight(
+        tmp_path, monkeypatch, path, declared):
+    """Seat.adapter_spec, one rule: the launch (build_home and launch) and the four preflights, a restart, a failover,
+    an up on a chosen pool and a relaunch off a walled pool, are each given the seat with the folder it works in."""
+    from quarterdeck import recovery
+    pools = {name: Pool(name, "local", endpoint="http://127.0.0.1:9/v1") for name in ("a", "b")}
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    own = tmp_path / "work/hands/w"
+    own.mkdir(parents=True)
+    spec = SeatSpec("w", "crew", "hand", "opencode", ("a", "b"), model="synthetic-model",
+                    cwd=own if declared else None, pool_choices={"a": {}, "b": {}})
+    ship = Ship(tmp_path / "ship", "synthetic", "operator", workspace, pools,
+                {"crew": Session("crew", "crew")}, {spec.name: spec})
+    seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: None))
+    given = []
+
+    def adapter(spec, *args, **kwargs):
+        given.append(spec.cwd)
+        raise Given
+
+    monkeypatch.setattr(seat.harness, "preflight_resume", adapter)
+    monkeypatch.setattr(seat.harness, "build_home", lambda home, spec, *args: adapter(spec))
+    monkeypatch.setattr(seat, "_never_resumed", lambda: False)  # stands for a seat whose role may resume
+    monkeypatch.setattr(seat, "_screened", lambda: False)
+    monkeypatch.setattr(seat, "_observe_selection", lambda *args: (VERSION, None))
+    monkeypatch.setattr(seat, "_walled_now", lambda: path == "off a wall")
+    monkeypatch.setattr(seat, "launch_choice", lambda: ("b", "synthetic room"))
+    monkeypatch.setattr(recovery, "require_clear", lambda seat: None)
+    run = {"launch": lambda: seat._up(resume=False), "restart": seat.restart,
+           "failover": lambda: seat._failover_to("b"), "up on a chosen pool": lambda: seat.up(pool="b"),
+           "off a wall": lambda: seat._relaunch_off_wall(resume=True)}[path]
+    with pytest.raises(Given):
+        run()
+    assert given == [own if declared else workspace] == [ship.cwd_of(spec)]

@@ -43,6 +43,9 @@ class SyntheticSeat(Seat):
     def _observe_selection(self):
         return 'synthetic', None
 
+    def adapter_spec(self, spec=None):
+        return self.spec if spec is None else spec  # a stand-in configuration: it declares no folder to give
+
     def _retire_window(self, launched):
         if self.retire_hook:
             self.retire_hook()
