@@ -341,7 +341,8 @@ def held(service, pool: str) -> bool:
     return time.monotonic() < service.usage_hold.get(pool, 0.0)
 
 
-def record_read(service, pool: str, usage: Usage, interval: int, attempted_at: datetime) -> None:
+def record_read(service, pool: str, usage: Usage, interval: int, attempted_at: datetime, *,
+                backoff: float | None = None) -> None:
     """Keep one read in the book; log a failed one with its reason and hold a refused pool by Retry-After.
 
     Every failed provider call is logged, so how often is readable. A state that made no call
@@ -357,8 +358,8 @@ def record_read(service, pool: str, usage: Usage, interval: int, attempted_at: d
         return
     service.usage_logged[pool] = usage.error
     entry = {"pool": pool, "error": usage.error}
-    if usage.retry_after is not None:
-        hold = min(max(usage.retry_after, interval), BACKOFF_MAX)
+    if usage.retry_after is not None or backoff is not None:
+        hold = min(max(usage.retry_after if usage.retry_after is not None else backoff, interval), BACKOFF_MAX)
         service.usage_hold[pool] = time.monotonic() + hold
         entry["backoff"] = round(hold)
     if not usage.called:
@@ -411,6 +412,9 @@ def refresh_declared(service) -> None:
         if pool.kind != "subscription":
             continue
         reader = harnesses.native_for(pool.provider)
+        if not reader.background_usage and getattr(reader, 'idle_usage', False):
+            refresh_idle(service, pool, reader)
+            continue
         if (not reader.background_usage or held(service, pool.name)
                 or not service.ledger.quota.due(pool.name, datetime.now(timezone.utc), reader.usage_interval)):
             continue
@@ -432,6 +436,29 @@ def refresh_declared(service) -> None:
         if key is not None:
             shared[key] = usage
         record_read(service, pool.name, usage, reader.usage_interval, datetime.now(timezone.utc))
+
+
+def refresh_idle(service, pool, reader) -> None:
+    """A declared pool read with its own sign-in on the service's tick, whether or not a seat sits on it, by the same
+    reader and on the same clock as a live seat's read (``last_read``): a live seat's read this pass makes this one
+    wait, so the pool is read once per ``usage_interval``, never on a reading's demand. A refusal holds it by its
+    Retry-After, as a live read does; a failed call with no Retry-After waits twice as long each time, at most
+    ``BACKOFF_MAX``, and a good read ends the wait. Each failure is kept in the book and logged with its wait."""
+    if held(service, pool.name) or time.monotonic() - last_read(service, pool.name) < reader.usage_interval:
+        return
+    now = datetime.now(timezone.utc)
+    service.usage_read[pool.name] = time.monotonic()
+    usage = read_usage(service, pool, reader) or Usage((), now, "provider usage unavailable")
+    failures = getattr(service, 'usage_idle_failures', None)
+    if failures is None:
+        failures = service.usage_idle_failures = {}
+    backoff = None
+    if not usage.error:
+        failures.pop(pool.name, None)
+    elif usage.called and usage.retry_after is None:  # a failed call with no Retry-After of its own
+        failures[pool.name] = failures.get(pool.name, 0) + 1
+        backoff = min(reader.usage_interval * 2 ** failures[pool.name], BACKOFF_MAX)
+    record_read(service, pool.name, usage, reader.usage_interval, now, backoff=backoff)
 
 
 def refresh(service, seat, live: bool, launched) -> None:

@@ -168,6 +168,9 @@ class Harness(ABC):
     sign_in_sources: tuple[str, ...] = ()
     usage_interval: int = 60
     background_usage: bool = False
+    # A reader that reads a pool with the pool's own sign-in, needing no seat: the service reads such a declared pool
+    # on its tick even when no seat sits on it, paced at usage_interval, so an idle pool's figure is never days old.
+    idle_usage: bool = False
     usage_from_records = None  # optional reader of (joined record, saved launch time) sources
     headline_window: tuple[str | None, str] | None = None
     headline_fallback: tuple[str | None, str] | None = None  # shown when a good read carries no headline window

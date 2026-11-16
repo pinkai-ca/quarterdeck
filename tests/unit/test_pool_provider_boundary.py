@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+from datetime import datetime, timezone
+
 import pytest
 
 from quarterdeck import credential, harness, watch
@@ -38,9 +40,12 @@ def test_endpoint_labels_and_valid_siblings_work_across_generic_metadata(tmp_pat
     ship = load(tmp_path)
     endpoint = ship.pools["local"]
     assert endpoint.kind == "endpoint" and endpoint.provider == label and not ship.seats
-    def no_usage(*args):
-        pytest.fail("metadata and an idle non-background pool must not query a provider")
-    monkeypatch.setattr(ClaudeHarness, "usage", no_usage)
+    read = []
+    def usage(pool):
+        read.append(pool.name)  # a stand-in: no provider is called
+        from quarterdeck.harness.limits import Usage
+        return Usage((), datetime.now(timezone.utc), "synthetic: no provider here", called=False)
+    monkeypatch.setattr(ClaudeHarness, "usage", staticmethod(usage))
     original = harness.get
     def get(name):
         assert name == "claude", "an endpoint label must never be looked up as a program"
@@ -51,11 +56,16 @@ def test_endpoint_labels_and_valid_siblings_work_across_generic_metadata(tmp_pat
     assert credential.grant_expiry(endpoint) is None
     assert credential.login_needed(ship) == []
     assert watch.ledger_usage(ship) == ['valid 5h usage unknown']
+    assert read == [], 'metadata never queries a provider'
     svc = Service(ship, SimpleNamespace())
     try:
         svc.account()  # includes the declared-pool refresh metadata scan, with no active seats
+        # A declared Claude subscription pool is read on the service's tick with its own sign-in, seat or none;
+        # the key pool and the endpoint never are.
+        assert read == ['valid'], read
         assert svc.known_open(SimpleNamespace(), "local")
         assert svc.known_open(SimpleNamespace(), "valid-key")
-        assert credential.login_needed(ship) == [] and watch.ledger_usage(ship) == ['valid 5h usage unknown']
+        assert credential.login_needed(ship) == []
+        assert watch.ledger_usage(ship) == ['valid 5h usage unknown: synthetic: no provider here'], 'shown as such'
     finally:
         svc.ledger.close()

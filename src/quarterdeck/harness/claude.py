@@ -1222,6 +1222,7 @@ class ClaudeHarness(Harness):
     model_scoped_usage = True
 
     usage_interval = 300  # the account's other callers share the endpoint; a minute's reads were refused
+    idle_usage = True  # usage(pool) reads the pool's own credential file: no seat needed
     credential_file = ".credentials.json"
     # refreshTokenExpiresAt ends the grant that renews access; only the human's login replaces it.
     grant_kind = "fixed"
