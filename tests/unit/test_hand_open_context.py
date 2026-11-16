@@ -250,3 +250,33 @@ def test_a_worker_with_nothing_open_under_force_files_has_no_idle_line(tmp_path,
     _with_history(monkeypatch, w.seat)
     planned = _forced_opening(w, tmp_path)
     assert planned.index_path is not None and planned.opening and carriage.HAND_IDLE not in planned.opening
+
+
+def qd_inbox(w, capsys, *flags):
+    capsys.readouterr()
+    assert cli.main(['--ship', str(w.ship.folder), 'inbox', w.seat.name, *flags]) == 0
+    return capsys.readouterr().out
+
+
+def test_a_hands_plain_qd_inbox_reads_open_only_as_its_file_does(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
+    monkeypatch.delenv('QD_SEAT', raising=False)
+    w = world(tmp_path / 'ship', 'hand')
+    text = qd_inbox(w, capsys)
+    assert text == post.inbox_text(w.store, w.seat.name), 'the same reading and the same line as its file'
+    assert w.opened.body in text and w.incoming.body in text and '## Received' not in text
+    assert text.count('Other messages stay in the message store.') == 1
+    for message in (w.old, w.closing, w.history, w.sent, w.question, w.answer):
+        assert message.body not in text
+    every = qd_inbox(w, capsys, '--all')
+    for message in (w.old, w.history, w.answer, w.opened, w.incoming):
+        assert message.body in every, '--all still prints the whole history'
+
+
+def test_a_workers_plain_qd_inbox_is_unchanged(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
+    monkeypatch.delenv('QD_SEAT', raising=False)
+    w = world(tmp_path / 'ship', 'worker')
+    text = qd_inbox(w, capsys)
+    expected = post.render_inbox_reading(post.inbox_reading(w.store, w.seat.name, recent=True)).rstrip('\n') + '\n'
+    assert text == expected and '## Received' in text and w.history.body in text

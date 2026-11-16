@@ -964,7 +964,9 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     ship = load_ship(args)
     seat, human, validate = _inbox_target(ship, args.seat)
     if not args.wait:
-        data = post.inbox_reading(post.Store(ship.runtime), seat, recent=not args.all)
+        # A hand reads only what is open for it, as its inbox file does; --all still prints the whole history.
+        open_only = not args.all and seat in ship.seats and ship.seat(seat).role == 'hand'
+        data = post.inbox_reading(post.Store(ship.runtime), seat, recent=not args.all, open_only=open_only)
         if validate is not None:
             validate()
         return Reading(data,

@@ -81,7 +81,7 @@ def test_inbox_all_prints_store_history_to_stdout_only(tmp_path, monkeypatch, ca
     store = post.Store(tmp_path)
     old = message(store, "old", at=AT - timedelta(days=3))
     new = message(store, "new")
-    ship = SimpleNamespace(runtime=tmp_path)
+    ship = SimpleNamespace(runtime=tmp_path, seats={})  # a worker seat it does not declare reads as before
     monkeypatch.setattr(cli, "load_ship", lambda args: ship)
     monkeypatch.setattr(cli, "_inbox_target", lambda ship, seat: ("worker", False, None))
     before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
