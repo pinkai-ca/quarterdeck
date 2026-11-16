@@ -199,6 +199,7 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | `antigravity_models.py` | exact Antigravity scope facts; a model's name alone establishes no quota membership |
 | `check_evidence.py` | bounded tool evidence from a check's own pinned record, never a receipt |
 | `claude_background.py` | Claude Code's root Bash background tasks, apart from turn accounting |
+| `claude_children.py` | Claude Code 2.1.325's subagent records joined to their root: a child's own background commands and its Agent call's lifetime |
 | `claude_limits.py` | Claude's native allowance fields, model families and safe shape diagnostics |
 | `claude_statusline.py` | Claude Code's default footer, run as a standalone standard-library script |
 | `claude_watch.py` | recorded watch output that a tool consumed, for attribution only, never a receipt |

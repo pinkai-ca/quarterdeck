@@ -241,3 +241,52 @@ def test_unproved_launch_time_does_not_end_a_child_command(tmp_path, missing):
     (folder/'record-launches.jsonl').write_text(json.dumps(dict(record=str(record), at=data.get('at'),
         pool=data['pool'], harness='claude'))+'\n')
     assert claude.state(record).pending_tools == ('Bash', 'Agent')
+
+
+def running(second):
+    return row('attachment', second, True, attachment=dict(type='task_status', taskType='local_bash',
+               taskId='synthetic-child-task', status='running', description='synthetic',
+               outputFilePath='/synthetic/output', deltaSummary=None,
+               shell=dict(command='synthetic command', kind='bash', toolUseId='synthetic-child-call')))
+
+
+# The background evidence rule meets the child join here: anything seen of a child's command after the launch,
+# dated after it or not dated at all, holds the command; it never ends by the relaunch.
+@pytest.mark.parametrize('seen', ['dated-after-launch', 'undated'])
+def test_a_child_command_seen_after_the_launch_is_never_ended_by_it(tmp_path, seen):
+    root = tmp_path/'runtime/seats/synthetic/home/projects/synthetic'
+    status = running(6)
+    if seen == 'undated':
+        del status['timestamp']
+    children = child_rows(ended=None)
+    children.append(status)
+    record, _ = fixture(root, children=children)
+    launch(record)
+    reader = claude._Reader(record)
+    state = reader.state()
+    task = reader.children.tasks['synthetic-child-call']
+    assert task.phase != 'ended-by-relaunch'
+    assert state.pending_tools is None if seen == 'undated' else state.pending_tools == ('Bash', 'Agent')
+
+
+def test_a_child_command_seen_only_before_the_launch_still_ends_by_it(tmp_path):
+    root = tmp_path/'runtime/seats/synthetic/home/projects/synthetic'
+    children = child_rows(ended=4.5)
+    children.insert(3, running(4))
+    record, _ = fixture(root, children=children)
+    launch(record)
+    reader = claude._Reader(record)
+    state = reader.state()
+    assert reader.children.tasks['synthetic-child-call'].phase == 'ended-by-relaunch'
+    assert state.pending_tools == () and idle.check(state) is None
+
+
+def test_a_record_not_named_as_a_native_root_has_no_children_to_join(tmp_path):
+    """Only '<session>.jsonl' has the measured child folder beside it; any other name joins nothing, and its own
+    background commands read as on main."""
+    named = tmp_path/'synthetic-record'
+    write(named, [message('user', 0, 'synthetic input'),
+                  message('assistant', 1, [use('synthetic-call', command='synthetic', run_in_background=True)]),
+                  message('user', 2, [result('synthetic-call')], toolUseResult=dict(backgroundTaskId='synthetic-task')),
+                  row('system', 3, subtype='turn_duration')])
+    assert claude.state(named).pending_tools == ('Bash',)

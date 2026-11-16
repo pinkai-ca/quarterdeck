@@ -23,6 +23,8 @@ FINISHED = frozenset({'ended', 'ended-by-relaunch'})
 
 def child_paths(record):
     record = Path(record)
+    if record.suffix != '.jsonl':
+        return []  # only a native root, '<session>.jsonl', has the measured child folder beside it
     parent = record.with_suffix('')
     folder = parent / 'subagents'
     for path in (parent, folder):
@@ -78,7 +80,8 @@ def current_launch(record):
 def fingerprint(record):
     from .base import record_fingerprint
     record = Path(record)
-    paths = [record, record.with_suffix(''), record.with_suffix('') / 'subagents', *child_paths(record)]
+    paths = [record, *((record.with_suffix(''), record.with_suffix('') / 'subagents') if record.suffix == '.jsonl' else ()),
+             *child_paths(record)]
     if folder := seat_folder(record):
         paths.extend(folder / name for name in ('launch.json', 'record', 'record-launches.jsonl'))
     return tuple(part for path in paths for part in record_fingerprint(path))
@@ -239,8 +242,12 @@ class Children:
                 view.task_calls[task.task] = call
                 for early in view.early.pop(call, ()):
                     view.notice(task, *early)
+                # The background evidence rule: anything seen of the command after the launch, or not dated at
+                # all, holds it; only a command whose evidence all precedes the launch ended with it.
                 if (task.phase == 'pending' and not task.invalid and relaunched is not None
-                        and leaf.call_times.get(call) is not None and leaf.call_times[call] < relaunched):
+                        and leaf.call_times.get(call) is not None and leaf.call_times[call] < relaunched
+                        and not task.undated_evidence
+                        and task.other_evidence_at is not None and task.other_evidence_at < relaunched):
                     task.phase, task.terminal, task.latest = 'ended-by-relaunch', 'relaunch', relaunched
         self.tasks = view.tasks
         extra = []

@@ -18,7 +18,7 @@ COMMON = (
     'harness/reading_scope.py', 'harness/compactions.py', 'record_location.py', 'harness/record_file.py',
 )
 CODEX = ('harness/codex.py', 'harness/codex_usage.py', 'harness/failures.py')
-CLAUDE = ('harness/claude.py', 'harness/claude_background.py',
+CLAUDE = ('harness/claude.py', 'harness/claude_background.py', 'harness/claude_children.py',
           'harness/claude_limits.py', 'harness/claude_watch.py',
           'harness/failures.py', 'seat_command.py')
 PI = ('harness/pi.py', 'harness/endpoint.py', 'harness/costs.py',
