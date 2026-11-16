@@ -314,6 +314,7 @@ class Gate:
             self.started = None
             self.begin_issues = {'unreadable': {'sql-revision': 1}}
         self.own_changes = 0
+        self.job_start = time.monotonic()  # a stitched certificate's backstop runs from its full job's start
         # A partial job cannot leave an older certificate usable.
         self.completed = None
         return True
@@ -337,7 +338,9 @@ class Gate:
         if self.started is not None:
             self.own_changes += after - max(before, self.started.sql[2])
 
-    def finish(self, service, step_before, *, full, committed=True):
+    def finish(self, service, step_before, *, full, committed=True, moved=(), emptied=False):
+        """``moved``: the seats a full job found moved, whose continuation retries them; ``emptied``: this retry
+        emptied that continuation, so every seat has now been read whole once (Partitions.stitch)."""
         issues = {}
         before = self.started
         after = (capture(service, self.records, issues=issues) if self.partitions is None else
@@ -351,11 +354,25 @@ class Gate:
             self.due = time.monotonic() + BACKSTOP
         else:
             self.completed = None
+        stitched = False
         if self.partitions is not None:
-            self.partitions.finish(before, after, self.own_changes + extra, time.monotonic(), BACKSTOP,
-                                   scope=self.job_scope, full=full, committed=committed, retry=self.job_retry)
+            own = self.own_changes + extra
+            if self.job_scope is None and moved:
+                self.partitions.hold_full(before, after, own, getattr(self, 'job_start', time.monotonic()), moved,
+                                          service.runtime)
+            elif self.job_retry and self.partitions.pending is not None:
+                if committed:
+                    self.partitions.add_retry(before, after, self.job_scope, own)
+                    if emptied:
+                        stitched = self.partitions.stitch(BACKSTOP)
+                else:
+                    # A retry that moved again: the continuation retries those seats, and the stitch waits for it.
+                    self.partitions.reject(keep_pending=True)
+            else:
+                self.partitions.finish(before, after, own, time.monotonic(), BACKSTOP,
+                                       scope=self.job_scope, full=full, committed=committed, retry=self.job_retry)
             self.due = self.partitions.due
-        self.previous = dict(completed=int(self.completed is not None), full=int(full),
+        self.previous = dict(completed=int(self.completed is not None), full=int(full), stitched=int(stitched),
                              begin_valid=int(before is not None and not before.young),
                              end_valid=int(after is not None and not after.young),
                              begin=evidence(None, None, self.begin_issues),

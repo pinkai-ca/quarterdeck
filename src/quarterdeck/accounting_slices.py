@@ -486,6 +486,7 @@ class Driver:
                     # it happens to name the seats of a held full-job retry.
                     raise RuntimeError('scoped accounting plan contains a global completion')
                 self.valid(service, tuple(self.watched))
+                moved, emptied = (), False
                 if self.invalid:
                     if self.scope is None:
                         self.full_continuation = FullContinuation(
@@ -494,6 +495,8 @@ class Driver:
                             and self.full_continuation.generation == self.full_generation):
                         self.retry_seats = set(self.invalid)
                         self.retry_generation = self.full_generation
+                        if self.scope is None:
+                            moved = set(self.invalid)  # the gate holds what this full job read of every other seat
                     else:
                         self.full_continuation = None
                         self.retry_seats.clear()
@@ -515,6 +518,7 @@ class Driver:
                                     (book.db.executemany if many else book.db.execute)(sql, parameters)
                                 self.full_continuation = None
                                 self.retry_generation = None
+                                emptied = True  # every seat has been read whole once: the gate may stitch
                 self.active = False
                 service.accounting_health.committed()
                 service.log('accounting-job-end', job=self.job, seconds=time.monotonic() - self.started,
@@ -524,7 +528,8 @@ class Driver:
                     service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
                 self.gate.finish(service, self.step_changes, full=self.scope is None and not self.invalid
                                  and not service.ledger.catching_up(),
-                                 committed=not self.invalid and not service.ledger.catching_up())
+                                 committed=not self.invalid and not service.ledger.catching_up(),
+                                 moved=moved, emptied=emptied)
         return not self.active
 
     def step(self, service, *, seconds=None, wait=True):
