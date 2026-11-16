@@ -593,13 +593,17 @@ def _validate(ship: Ship) -> None:
             if name not in ship.seats:
                 raise ShipError(f"pr_screen names {name!r}, which is not a declared seat; declared: {', '.join(ship.seats)}")
         first, second = (ship.seats[name] for name in screen.hands)
+        # Every declared pool of a hand, not its first alone: a hand moved on to a later pool screens there too.
         for hand in (first, second):
-            if not ship.jailed(hand):
-                raise ShipError(f"pr_screen.hands: {hand.name} is not jailed; a hand that reads an outsider's words "
-                                "must run in a jail (an endpoint pool, or sandbox = true)")
-        if first.pools[0] == second.pools[0] or (first.model is not None and first.model == second.model):
+            if unjailed := [pool for pool in hand.pools if not ship.jailed(hand, ship.pool(pool))]:
+                raise ShipError(f"pr_screen.hands: {hand.name} is not jailed on pool {unjailed[0]}; a hand that reads "
+                                "an outsider's words must run in a jail (an endpoint pool, or sandbox = true)")
+
+        def models(hand):
+            return {hand.for_pool(pool).model for pool in hand.pools} - {None}
+        if set(first.pools) & set(second.pools) or models(first) & models(second):
             raise ShipError(f"pr_screen.hands: {first.name} and {second.name} run on the same model; the screen "
-                            "needs one hand on each of two models")
+                            "needs one hand on each of two models, on every pool each declares")
         if screen.reader in screen.hands:
             raise ShipError("pr_screen.reader must not be one of its hands")
         # The hands read the planted check's instruction as well as the outsider's text, and the reader reads the

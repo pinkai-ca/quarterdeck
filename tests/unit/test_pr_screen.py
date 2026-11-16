@@ -1047,3 +1047,86 @@ def test_the_live_down_reads_the_hand_beneath_its_hold(world, monkeypatch, launc
     else:
         with pytest.raises(pr_screen.ScreenError, match='hand-a: qd down returned, but the hand reads off, no pane'):
             live.down('hand-a')
+
+
+def run_source(world, source):
+    runtime, hands_root = world
+    hands, outcomes, clock = Hands(runtime, hands_root, honest), Outcomes(), Clock()
+    results = pr_screen.run(runtime, source, hands, outcomes, hand_names=HANDS,
+                            seat_names=('reviewer', 'desk', 'lead', *HANDS), corpus=CORPUS,
+                            repository='owner/project', clock=clock, sleep=clock.sleep, poll=1.0,
+                            answer_seconds=30, idle_seconds=30)
+    return results, outcomes
+
+
+@pytest.mark.parametrize('error, reason', [
+    (OSError('the network is down'), r'it could not be read \(OSError\)'),
+    (ValueError('not JSON'), r'it could not be read \(ValueError\)'),
+    (pr_screen.ScreenError('/pulls/7/files: a page is over 8388608 bytes'), 'a page is over 8388608 bytes'),
+])
+def test_one_request_that_cannot_be_read_is_flagged_alone_and_the_pass_goes_on(world, error, reason):
+    class OneFails(pr_screen.FixtureSource):
+        def open(self):
+            first, second = super().open()
+            return [first, pr_screen.PullRequest(7, '07' * 20), second]
+
+        def texts(self, pr):
+            if pr.number == 7:
+                raise error
+            return super().texts(pr)
+
+    results, outcomes = run_source(world, OneFails(FIXTURES, ['clean-docs', 'clean-code']))
+    by_number = {result['number']: result for result in results}
+    assert len(by_number) == 3 and 7 in by_number, 'every request is reached'
+    failed = by_number[7]
+    assert failed['outcome'] == 'flagged' and re.search(reason, failed['findings'][0])
+    assert failed['findings'][0].startswith('not screened: ') and 'flagged unread' in failed['findings'][0]
+    assert [told for told in outcomes.told if told[1] == 7] == [('desk', 7, failed['findings'])], 'named to the desk'
+    others = [result for number, result in by_number.items() if number != 7]
+    assert [result['outcome'] for result in others] == ['clean', 'clean'], 'the others are screened all the same'
+    state = json.loads((world[0] / 'pr-screen' / 'state.json').read_text())
+    assert state['7']['outcome'] == 'flagged' and state['7']['head'] == '07' * 20
+
+
+class GitHub:
+    """GitHub's REST answers by path, as bytes, through an opener: no network."""
+
+    def __init__(self, pages):
+        self.pages = pages
+
+    def __call__(self, request, timeout):
+        import io
+        from urllib.parse import urlsplit
+        url = urlsplit(request.full_url)
+        path = url.path.removeprefix('/repos/owner/project')
+        query = dict(part.split('=') for part in url.query.split('&'))
+        answer = self.pages.get(path, [])
+        if isinstance(answer, list):  # one page of it, as GitHub pages a listing
+            per, page = int(query['per_page']), int(query['page'])
+            answer = answer[(page - 1) * per:page * per]
+        return io.BytesIO(answer if isinstance(answer, bytes) else json.dumps(answer).encode())
+
+
+def github_request(number, files):
+    head = f'{number:02d}' * 20
+    return {f'/pulls/{number}': dict(head=dict(sha=head), title='A small fix', body='It fixes a word.'),
+            f'/pulls/{number}/files': files}
+
+
+@pytest.mark.parametrize('limit', ['a page over its size', 'more pages than are read'])
+def test_a_request_github_answers_beyond_the_limits_is_flagged_alone(world, monkeypatch, limit):
+    monkeypatch.setattr(pr_screen, 'PAGE_BYTES', 4096, raising=False)
+    monkeypatch.setattr(pr_screen, 'PAGES', 3, raising=False)
+    pages = {'/pulls': [dict(number=3, head=dict(sha='03' * 20)), dict(number=4, head=dict(sha='04' * 20))]}
+    pages.update(github_request(3, [dict(filename='docs/a.md', patch='@@ -1 +1 @@\n-recieve\n+receive\n')]))
+    if limit == 'a page over its size':  # whole, it would parse as an empty list: it is never read cut short
+        pages.update(github_request(4, b'[' + b' ' * 8192 + b']'))
+    else:  # a full page each time: more than are read
+        pages.update(github_request(4, []))
+        pages['/pulls/4/commits'] = [dict(commit=dict(message=f'Fix word {n}')) for n in range(10)]
+    source = pr_screen.GitHubSource('owner/project', opener=GitHub(pages), page=1)
+    results, outcomes = run_source(world, source)
+    by_number = {result['number']: result for result in results}
+    assert by_number[3]['outcome'] == 'clean', 'the other request is screened'
+    assert by_number[4]['outcome'] == 'flagged' and by_number[4]['findings'][0].startswith('not screened: ')
+    assert ('over 4096 bytes' if limit == 'a page over its size' else 'more than 3 pages') in by_number[4]['findings'][0]

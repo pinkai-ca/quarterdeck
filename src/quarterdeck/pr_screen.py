@@ -1156,10 +1156,19 @@ def run(runtime: Path, source, hands, outcomes, *, repository: str, hand_names: 
         if isinstance(seen, dict) and seen.get('head') == pr.head and seen.get('outcome') in ('clean', 'flagged'):
             continue  # screened at this head; a new push starts it over
         key = f'{pr.number}-{pr.head[:12]}'
-        prepared = prepare(source.texts(pr))
-        hits = search(prepared, extra)
-        verdicts = []
-        if not prepared.flags:
+        try:
+            texts = source.texts(pr)
+        except Exception as error:
+            # One request's failure to be read is its own: it is flagged unread, by its number and the program's
+            # own words (never what the outsider wrote), and the pass goes on to the next request.
+            reason = str(error) if isinstance(error, ScreenError) else f'it could not be read ({type(error).__name__})'
+            prepared, found = None, [f'not screened: {reason}; flagged unread']
+        else:
+            prepared, found = prepare(texts), None
+        hits, verdicts = (), []
+        if prepared is not None:
+            hits = search(prepared, extra)
+        if prepared is not None and not prepared.flags:
             deadline = clock() + idle_seconds
             while not all(hands.idle(name) for name in hand_names) and clock() < deadline:
                 sleep(poll)
@@ -1170,7 +1179,7 @@ def run(runtime: Path, source, hands, outcomes, *, repository: str, hand_names: 
                 for name in hand_names:
                     verdicts.append(screen_piece(runtime, hands, name, key, index, prepared, numbers, corpus=corpus,
                                                  answer_seconds=answer_seconds, poll=poll, clock=clock, sleep=sleep))
-        found = findings(prepared, hits, verdicts)
+        found = found if prepared is None else findings(prepared, hits, verdicts)
         outcome = 'flagged' if found else 'clean'
         told = outcomes.flagged(pr, repository, found) if found else outcomes.clean(pr, repository)
         state[str(pr.number)] = dict(head=pr.head, outcome=outcome, told=told, at=_now())
@@ -1178,7 +1187,8 @@ def run(runtime: Path, source, hands, outcomes, *, repository: str, hand_names: 
         (runtime / ROOT / 'screens' / key).mkdir(parents=True, exist_ok=True, mode=0o700)
         durable.replace_file(runtime / ROOT / 'screens' / key / 'outcome.json', json.dumps(dict(
             number=pr.number, head=pr.head, outcome=outcome, findings=found, told=told,
-            names={number: origin['name'] for number, origin in prepared.origin.items() if origin['name']})) + '\n')
+            names={number: origin['name'] for number, origin in (prepared.origin if prepared else {}).items()
+                   if origin['name']})) + '\n')
         results.append(dict(number=pr.number, head=pr.head, outcome=outcome, findings=found, told=told))
     return results
 
@@ -1217,6 +1227,10 @@ class FixtureSource:
         return texts
 
 
+PAGE_BYTES = 8 * 1024 * 1024  # one page of GitHub's answer, read whole
+PAGES = 50  # the pages read of one listing; a listing with more is not read whole
+
+
 class GitHubSource:
     """A public repository's open pull requests through GitHub's REST API, read only and with no credential: a
     public read needs none, so no key sits in a process that holds an outsider's words. The change itself is the
@@ -1238,17 +1252,22 @@ class GitHubSource:
         import urllib.request
         items, url = [], f'{self.API}/repos/{self.repository}{path}'
         separator = '&' if '?' in url else '?'
-        for page in range(1, 51):
+        for page in range(1, PAGES + 1):
             request = urllib.request.Request(f'{url}{separator}per_page={self.page}&page={page}',
                                              headers={'Accept': 'application/vnd.github+json',
                                                       'User-Agent': 'quarterdeck-pr-screen'})
             with self.opener(request, timeout=60) as response:
-                data = json.loads(response.read(8 * 1024 * 1024 + 1))
+                raw = response.read(PAGE_BYTES + 1)
+            if len(raw) > PAGE_BYTES:  # read whole or not at all: a page cut short is never judged
+                raise ScreenError(f'{path.split("?")[0]}: a page is over {PAGE_BYTES} bytes')
+            data = json.loads(raw)
             if not isinstance(data, list):
                 return data
             items += data
             if len(data) < self.page:
                 break
+        else:  # every page full: there may be more than were read, and a part is never judged as the whole
+            raise ScreenError(f'{path.split("?")[0]}: more than {PAGES} pages')
         return items
 
     def open(self) -> list[PullRequest]:

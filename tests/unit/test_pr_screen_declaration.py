@@ -131,3 +131,51 @@ def test_no_table_is_no_screen_said_plainly(tmp_path, capsys):
 def test_a_table_that_does_not_fit_is_refused_at_load(tmp_path, table, refusal):
     with pytest.raises(ShipError, match=refusal):
         load(tmp_path, f'\n[pr_screen]\n{table}\n')
+
+
+LATER_POOLS = '''
+[pools.fake-c]
+provider = "synthetic"
+endpoint = "http://127.0.0.1:3/v1"
+
+[pools.fake-d]
+provider = "synthetic"
+endpoint = "http://127.0.0.1:4/v1"
+
+[seats.later-shared-pool]
+session = "crew"
+role = "hand"
+harness = "pi"
+pool = ["fake-b", "fake-a"]
+model = "model-x"
+sandbox = true
+
+[seats.later-shared-model]
+session = "crew"
+role = "hand"
+harness = "pi"
+pool = [{pool = "fake-c", harness = "pi", model = "model-x"}, {pool = "fake-d", harness = "pi", model = "model-a"}]
+sandbox = true
+
+[seats.later-paid]
+session = "crew"
+role = "hand"
+harness = "pi"
+pool = ["fake-c", {pool = "paid", harness = "fake", model = "model-y"}]
+model = "model-y"
+'''
+
+
+@pytest.mark.parametrize('hand, refusal', [
+    ('later-shared-pool', 'hand-a and later-shared-pool run on the same model'),
+    ('later-shared-model', 'hand-a and later-shared-model run on the same model'),
+    ('later-paid', 'later-paid is not jailed on pool paid'),
+])
+def test_every_declared_pool_of_a_hand_is_read_not_its_first_alone(tmp_path, hand, refusal):
+    with pytest.raises(ShipError, match=refusal):
+        load(tmp_path, LATER_POOLS + f'\n[pr_screen]\nhands = ["hand-a", "{hand}"]\nreader = "reviewer"\n')
+
+
+def test_hands_on_different_models_on_every_pool_are_the_screen(tmp_path):
+    ship = load(tmp_path, LATER_POOLS + '\n[pr_screen]\nhands = ["hand-b", "later-shared-model"]\nreader = "reviewer"\n')
+    assert ship.pr_screen.hands == ('hand-b', 'later-shared-model')
