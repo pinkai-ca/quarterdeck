@@ -296,6 +296,51 @@ def retirement_evidence(runtime):
     return families
 
 
+def test_synthetic_retirement_matches_baseline_bytes(tmp_path, monkeypatch):
+    """Freeze invented deliveries once; deterministic batch names permit literal byte comparison."""
+    from quarterdeck import post_retirement
+    baseline = types.ModuleType('quarterdeck.synthetic_old_retirement')
+    baseline.__package__ = 'quarterdeck'
+    source = subprocess.check_output(['git', 'show', os.environ['QD_RETIREMENT_BASE']
+                                     + ':src/quarterdeck/post_retirement.py'], text=True)
+    exec(compile(source, 'baseline/post_retirement.py', 'exec'), baseline.__dict__)
+    seed = tmp_path / 'seed' / 'runtime'
+    store, attempts = post.Store(seed), post.Attempts(seed)
+    for number in range(8):
+        name = 'builder' + str(number % 4)
+        message = store.new('order', 'lead', name, 'Synthetic task')
+        store.new('report', name, 'lead', 'Synthetic completion', re=message.id)
+        attempt = attempts.open(message, name, '%1', 100, '2000-01-01T00:00:00+00:00')
+        attempts.close(attempt, 'delivered')
+        journal = seed / 'post' / 'pending' / name / attempt.path.name
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text(json.dumps(dict(seat=name, identity=dict(pane='%1', pid=100, harness='fake',
+            launch=attempt.launched_at), at=attempt.at, since=attempt.at, payload=post.typed([message]),
+            phase='delivered', record=None, shown=None, attempts=[attempt.path.name])))
+    results = []
+    for number, module in enumerate((baseline, post_retirement)):
+        runtime = tmp_path / ('variant' + str(number)) / 'runtime'
+        shutil.copytree(seed, runtime)
+        actor = types.SimpleNamespace(runtime=runtime, store=post.Store(runtime), attempts=post.Attempts(runtime),
+                                      ledger=types.SimpleNamespace(catching_up=lambda: False))
+        counter = iter(range(100))
+        monkeypatch.setattr(module, 'secrets', types.SimpleNamespace(token_hex=lambda width: format(next(counter), '032x')))
+        monkeypatch.setattr(module, 'time', types.SimpleNamespace(monotonic=lambda: 0.0))
+        moved = dict(attempts=0, journals=0)
+        for _ in range(20):
+            result = module.run(actor, limit=1, complete_reads=True)
+            for key in moved:
+                moved[key] += result[key]
+            if not result['attempts'] and not result['journals']:
+                break
+        assert moved == dict(attempts=8, journals=8)
+        files = {str(path.relative_to(runtime)): path.read_bytes()
+                 for path in (runtime / 'post').rglob('*.json')}
+        results.append((files, [message.to_json() for message in actor.store.all()],
+                        [module.row(attempt) for attempt in actor.attempts.all()]))
+    assert results[0] == results[1]
+
+
 def run_child(folder, source, instrumented, variant='candidate', baseline=None):
     if variant == 'before':
         from quarterdeck import post_retirement
