@@ -200,7 +200,8 @@ def build_parser() -> argparse.ArgumentParser:
                 "same re, addressee and body (a group address is compared as written): it says 'Already posted "
                 "as <id>; not posted again' and exits 0. A post with no re "
                 "is never refused, so a standing report may recur. An ack is refused only while the identical "
-                "ack is still this seat's latest, so a claim can move back. Orders and questions are never refused.")
+                "ack is still this seat's latest, so a claim can move back. Orders and questions are never refused "
+                "as repeats. Message text must contain more than whitespace; an ack with no text argument uses 'claimed'.")
     p.add_argument("kind", choices=(*post.KINDS, "resend"))
     p.add_argument("body", nargs="*", help="the text; '-' reads it from stdin; with resend, the message id")
     p.add_argument("--to", help="the addressee seat, or declared group for an order (default: referenced sender)")
@@ -819,8 +820,6 @@ def cmd_post(args: argparse.Namespace) -> str:
             if to in ship.groups:
                 if args.kind != 'order':
                     raise ShipError(f'group {to}: {args.kind} is unsupported; groups accept orders only for now')
-                if not body.strip():
-                    raise ShipError('an empty group order: give the brief, --body-file, or - for stdin')
             elif to not in ship.seats and to not in getattr(ship, 'forward', {}) and to not in (ship.operator.lower(), post.SHIP):
                 raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
                                 f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
@@ -865,29 +864,30 @@ def not_posted_again(found: post.Message) -> str:
 
 
 def read_body(args: argparse.Namespace, *, preserve: bool = False) -> str:
+    if not args.body and not args.body_file and args.kind == "ack":
+        return "claimed"  # an ack needs no words: it names the order it claims
     if preserve:
         try:
             if args.body_file:
                 with open(args.body_file, encoding='utf-8', newline='') as stream:
-                    return stream.read()
-            if args.body == ['-']:
+                    body = stream.read()
+            elif args.body == ['-']:
                 raw = getattr(sys.stdin, 'buffer', None)
-                return raw.read().decode('utf-8') if raw is not None else sys.stdin.read()
+                body = raw.read().decode('utf-8') if raw is not None else sys.stdin.read()
+            else:
+                body = " ".join(args.body)
         except UnicodeError:
             raise ShipError('group brief must be valid UTF-8 text') from None
-    if args.body_file:
+    elif args.body_file:
         with open(args.body_file) as stream:
             body = stream.read()
-        return body.strip()
-    if args.body == ["-"]:
-        return sys.stdin.read().strip()
-    body = " ".join(args.body)
-    body = body if preserve else body.strip()
-    if not body and args.kind == "ack":
-        return "claimed"  # an ack needs no words: it names the order it claims
-    if not body:
-        raise ShipError("an empty body: give the text, --body-file, or '-' for stdin")
-    return body
+    elif args.body == ["-"]:
+        body = sys.stdin.read()
+    else:
+        body = " ".join(args.body)
+    if not body.strip():
+        raise ShipError("a message needs a body")
+    return body if preserve else body.strip()
 
 
 def _post_view_restricted(ship: shipmod.Ship) -> bool:

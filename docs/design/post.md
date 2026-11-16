@@ -29,6 +29,14 @@ is read again on the next pass; unchanged passes do not reread launch bodies.
 Delivery asks for notice settlement only when an informational ship report is
 otherwise eligible, so already accepted history adds no notice scan to a pass.
 
+### Message bodies
+
+`qd post` refuses empty or whitespace-only text before preparing a message or
+writing its drop, with `a message needs a body`. Arguments, body files and stdin
+use the same check. An acknowledgment with no text argument keeps its default
+body, `claimed`; explicitly blank text is refused. Nonempty group briefs retain
+their original bytes.
+
 ### Message ids
 
 New messages use six random hexadecimal digits after their kind, timestamp and
