@@ -157,10 +157,10 @@ class Cascade:
 
 @dataclass(frozen=True)
 class PullRequestScreen:
-    """[pr_screen]: the pull-request screen's two hands, one on each model, and the seat that reads a clean request.
-    The desk, told of a flagged one, is the seat whose role is desk unless ``desk`` names another."""
+    """[pr_screen]: the pull-request screen's hand, or two hands one on each model, and the seat that reads a clean
+    request. The desk, told of a flagged one, is the seat whose role is desk unless ``desk`` names another."""
 
-    hands: tuple[str, str]
+    hands: tuple[str, ...]
     reader: str
     desk: str | None = None
 
@@ -405,11 +405,11 @@ def _pr_screen(table: object) -> PullRequestScreen | None:
     if table is None:
         return None
     if not isinstance(table, dict) or set(table) - {"hands", "reader", "desk"}:
-        raise ShipError('pr_screen takes hands = ["a", "b"], reader = "seat" and, optionally, desk = "seat"')
+        raise ShipError('pr_screen takes hands = ["a"] or ["a", "b"], reader = "seat" and, optionally, desk = "seat"')
     hands, reader, desk = table.get("hands"), table.get("reader"), table.get("desk")
-    if (not isinstance(hands, list) or len(hands) != 2 or len(set(hands)) != 2
+    if (not isinstance(hands, list) or len(hands) not in (1, 2) or len(set(hands)) != len(hands)
             or not all(isinstance(name, str) and valid_name(name) for name in hands)):
-        raise ShipError(f"pr_screen.hands must name exactly two different seats; got {hands!r}")
+        raise ShipError(f"pr_screen.hands must name one seat, or exactly two different seats; got {hands!r}")
     for key, value in (("reader", reader), ("desk", desk)):
         if (value is not None or key == "reader") and (not isinstance(value, str) or not valid_name(value)):
             raise ShipError(f"pr_screen.{key} must name a declared seat; got {value!r}")
@@ -592,18 +592,20 @@ def _validate(ship: Ship) -> None:
         for name in (*screen.hands, screen.reader, *([screen.desk] if screen.desk else [])):
             if name not in ship.seats:
                 raise ShipError(f"pr_screen names {name!r}, which is not a declared seat; declared: {', '.join(ship.seats)}")
-        first, second = (ship.seats[name] for name in screen.hands)
+        chosen = [ship.seats[name] for name in screen.hands]
         # Every declared pool of a hand, not its first alone: a hand moved on to a later pool screens there too.
-        for hand in (first, second):
+        for hand in chosen:
             if unjailed := [pool for pool in hand.pools if not ship.jailed(hand, ship.pool(pool))]:
                 raise ShipError(f"pr_screen.hands: {hand.name} is not jailed on pool {unjailed[0]}; a hand that reads "
                                 "an outsider's words must run in a jail (an endpoint pool, or sandbox = true)")
 
         def models(hand):
             return {hand.for_pool(pool).model for pool in hand.pools} - {None}
-        if set(first.pools) & set(second.pools) or models(first) & models(second):
-            raise ShipError(f"pr_screen.hands: {first.name} and {second.name} run on the same model; the screen "
-                            "needs one hand on each of two models, on every pool each declares")
+        if len(chosen) == 2:  # two hands: one on each of two models, as before; one hand screens alone
+            first, second = chosen
+            if set(first.pools) & set(second.pools) or models(first) & models(second):
+                raise ShipError(f"pr_screen.hands: {first.name} and {second.name} run on the same model; the screen "
+                                "needs one hand on each of two models, on every pool each declares")
         if screen.reader in screen.hands:
             raise ShipError("pr_screen.reader must not be one of its hands")
         # The hands read the planted check's instruction as well as the outsider's text, and the reader reads the
@@ -617,7 +619,7 @@ def _validate(ship: Ship) -> None:
                                     f"(pool {pool}), whose provider's safeguard can refuse, and so lose, a "
                                     "conversation that reads an outsider's text or a planted instruction; name a "
                                     "seat on another program")
-        for hand in (first, second):
+        for hand in chosen:
             # A hand on a subscription keeps a sign-in in its home that qd does not write fresh at each launch, and a
             # refresh there is carried into the pool's own file: a hand that reads an outsider's text has none.
             if paid := [pool for pool in hand.pools if ship.pools[pool].kind != "endpoint"]:

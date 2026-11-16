@@ -115,7 +115,6 @@ def test_no_table_is_no_screen_said_plainly(tmp_path, capsys):
 
 
 @pytest.mark.parametrize('table, refusal', [
-    ('hands = ["hand-a"]\nreader = "reviewer"', 'exactly two different seats'),
     ('hands = ["hand-a", "hand-b", "hand-c"]\nreader = "reviewer"', 'exactly two different seats'),
     ('hands = ["hand-a", "hand-a"]\nreader = "reviewer"', 'exactly two different seats'),
     ('hands = ["hand-a", "nobody"]\nreader = "reviewer"', "'nobody', which is not a declared seat"),
@@ -179,3 +178,23 @@ def test_every_declared_pool_of_a_hand_is_read_not_its_first_alone(tmp_path, han
 def test_hands_on_different_models_on_every_pool_are_the_screen(tmp_path):
     ship = load(tmp_path, LATER_POOLS + '\n[pr_screen]\nhands = ["hand-b", "later-shared-model"]\nreader = "reviewer"\n')
     assert ship.pr_screen.hands == ('hand-b', 'later-shared-model')
+
+
+def test_one_jailed_hand_and_a_reader_are_the_screen(tmp_path):
+    ship = load(tmp_path, '\n[pr_screen]\nhands = ["hand-a"]\nreader = "reviewer"\n')
+    assert ship.pr_screen.hands == ('hand-a',) and ship.pr_screen.reader == 'reviewer'
+    assert ship.pr_screen_desk == 'desk'
+
+
+@pytest.mark.parametrize('table, refusal', [
+    ('hands = []\nreader = "reviewer"', 'one seat, or exactly two different seats'),
+    ('hands = ["nobody"]\nreader = "reviewer"', "'nobody', which is not a declared seat"),
+    ('hands = ["loose"]\nreader = "reviewer"', 'loose is not jailed'),
+    ('hands = ["hand-a"]\nreader = "hand-a"', 'must not be one of its hands'),
+    ('hands = ["refusing-hand"]\nreader = "reviewer"', "hands: refusing-hand runs on .* safeguard can refuse"),
+    ('hands = ["paid-hand"]\nreader = "reviewer"', "hands: paid-hand has pool paid, which is not an endpoint"),
+    ('hands = ["hand-a"]', 'reader must name a declared seat'),
+])
+def test_one_hand_is_held_to_every_rule_but_the_second_model(tmp_path, table, refusal):
+    with pytest.raises(ShipError, match=refusal):
+        load(tmp_path, f'\n[pr_screen]\n{table}\n')

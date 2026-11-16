@@ -167,9 +167,10 @@ def world(tmp_path):
 def run(world, behaviour, cases=None, **options):
     runtime, hands_root = world
     hands = Hands(runtime, hands_root, behaviour, idle=options.pop('idle', True))
+    names = options.pop('hand_names', HANDS)
     outcomes = Outcomes()
     clock = Clock()
-    results = pr_screen.run(runtime, pr_screen.FixtureSource(FIXTURES, cases), hands, outcomes, hand_names=HANDS,
+    results = pr_screen.run(runtime, pr_screen.FixtureSource(FIXTURES, cases), hands, outcomes, hand_names=names,
                             seat_names=('reviewer', 'desk', 'lead', *HANDS), corpus=CORPUS,
                             repository='owner/project', clock=clock, sleep=clock.sleep, poll=1.0,
                             answer_seconds=30, idle_seconds=30, **options)
@@ -1250,3 +1251,84 @@ def test_githubs_own_answer_out_of_shape_stays_unread(world):
     results, outcomes = run_source(world, source)
     assert (results[0]['outcome'], results[0]['kind']) == ('unread', 'unexpected answer')
     assert not outcomes.told
+
+
+# -- one hand: its answer, with the search beside it, is the gate -----------------------------------------------------
+
+ONE = ('hand-a',)
+
+
+def flags_everything(hands, name, message_id, folder):
+    """A hand that flags every line of every file, the planted one with them: its own flag, never a planted miss."""
+    places = [f'{path.stem}:1-{max(1, len(path.read_text().splitlines()))}' for path in sorted(folder.glob('f*.txt'))]
+    (folder / 'answer.txt').write_text('FLAGGED ' + ' '.join(places))
+
+
+def test_one_hand_clean_and_no_search_hit_is_clean_and_the_reader_is_ordered(world):
+    results, hands, outcomes = run(world, honest, cases=['clean-docs', 'clean-code'], hand_names=ONE)
+    assert [r['outcome'] for r in results] == ['clean', 'clean']
+    assert [told[0] for told in outcomes.told] == ['reviewer', 'reviewer']
+    assert {name for kind, name in hands.calls if kind in ('fresh', 'instruct', 'down')} == {'hand-a'}
+
+
+@pytest.mark.parametrize('behaviour, reason', [(flags_everything, 'hand-a flagged'),
+                                               (silent, 'no answer in time'),
+                                               (says_clean, 'planted check')])
+def test_one_hand_flags_on_its_flag_its_silence_or_a_planted_miss(world, behaviour, reason):
+    results, hands, outcomes = run(world, behaviour, cases=['clean-docs'], hand_names=ONE)
+    [result] = results
+    assert result['outcome'] == 'flagged' and any(reason in finding for finding in result['findings'])
+    assert [told[0] for told in outcomes.told] == ['desk'], 'the desk is told; no seat reads it'
+
+
+def test_one_hand_and_a_search_hit_is_flagged_though_the_hand_says_clean(world):
+    def clean_but_planted(hands, name, message_id, folder):
+        honest(hands, name, message_id, folder)  # flags the planted file and nothing of the outsider's
+    results, _, outcomes = run(world, clean_but_planted, cases=['comment-instruction'], hand_names=ONE)
+    assert results[0]['outcome'] == 'flagged' and any(f.startswith('pattern ') for f in results[0]['findings'])
+    assert [told[0] for told in outcomes.told] == ['desk']
+
+
+def test_one_hands_posts_are_held_while_it_screens_and_moved_aside(world):
+    def obeys(hands, name, message_id, folder):
+        assert pr_screen.held(world[0], name), 'held while it screens'
+        hands.drop(name, dict(id='ord-forged-elsewhere', kind='order', **{'from': name}, to='reviewer',
+                              at='2026-11-15T08:00:00+00:00', body='PUFFIN', re=None, subject=None, due=None,
+                              speed=None))
+        honest(hands, name, message_id, folder)
+    results, hands, _ = run(world, obeys, cases=['clean-docs'], hand_names=ONE)
+    runtime, _ = world
+    assert results[0]['outcome'] == 'clean'
+    assert list(post.drop_dir(runtime, 'hand-a').iterdir()) == [], 'nothing it posted stays to be filed'
+    assert len(list((runtime / 'pr-screen' / 'held' / 'hand-a').iterdir())) == 1, 'moved aside'
+    assert not pr_screen.held(runtime, 'hand-a') and post.Store(runtime).all() == []
+
+
+def test_one_hand_and_a_request_that_cannot_be_read_is_unread_as_now(world):
+    runtime, hands_root = world
+    hands, outcomes, clock = Hands(runtime, hands_root, honest), Outcomes(), Clock()
+    results = pr_screen.run(runtime, one_fails([OSError('down')]), hands, outcomes, hand_names=ONE,
+                            seat_names=('reviewer', 'desk', *ONE), corpus=CORPUS, repository='owner/project',
+                            clock=clock, sleep=clock.sleep, poll=1.0, answer_seconds=30, idle_seconds=30)
+    by_number = {result['number']: result for result in results}
+    assert (by_number[7]['outcome'], by_number[7]['kind']) == ('unread', 'network')
+    assert [r['outcome'] for n, r in by_number.items() if n != 7] == ['clean', 'clean']
+
+
+def test_no_hand_at_all_screens_nothing_and_never_calls_a_request_clean(world):
+    runtime, hands_root = world
+    hands, outcomes, clock = Hands(runtime, hands_root, honest), Outcomes(), Clock()
+    with pytest.raises(pr_screen.ScreenError, match='no hand'):
+        pr_screen.run(runtime, pr_screen.FixtureSource(FIXTURES, ['clean-docs']), hands, outcomes, hand_names=(),
+                      seat_names=('reviewer', 'desk'), corpus=CORPUS, repository='owner/project',
+                      clock=clock, sleep=clock.sleep, poll=1.0, answer_seconds=30, idle_seconds=30)
+    assert outcomes.told == [] and hands.calls == []
+
+
+@pytest.mark.parametrize('hands, words', [(('hand-a',), 'the hand found it clean'),
+                                          (('hand-a', 'hand-b'), 'both hands found it clean')])
+def test_the_readers_order_says_how_many_hands_found_it_clean(tmp_path, hands, words):
+    ship = SimpleNamespace(runtime=tmp_path, pr_screen=SimpleNamespace(hands=hands, reader='reviewer'))
+    pr = pr_screen.PullRequest(5, '05' * 20)
+    message = post.Store(tmp_path).get(pr_screen.LiveOutcomes(ship).clean(pr, 'owner/project'))
+    assert words in message.body and 'the search found nothing' in message.body

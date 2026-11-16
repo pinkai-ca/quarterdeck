@@ -4,7 +4,8 @@ as written and again with underscores, dashes, dots and slashes read as spaces (
 flags the pull request; the desk is told the pattern's name, the file's number and the line, never the text.
 
 The list is deliberately broad: a false flag costs the Admiral one look on GitHub, a miss costs a seat reading an
-outsider's instruction. It is one layer of three, beside two hands on two local models.
+outsider's instruction. It is one layer beside the screening hand's reading (two hands on two local models, where
+the ship file names two).
 """
 
 import re

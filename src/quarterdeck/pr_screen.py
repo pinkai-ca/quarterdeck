@@ -11,7 +11,8 @@ change. So this program, not a seat:
    outsider's paths, and the real names are kept in a separate list. Sizes are capped. A binary file goes to no
    hand: it is flagged. A change past the total bound goes to no hand: it is flagged;
 3. searches them with the one list of patterns (pr_screen_patterns);
-4. copies them, cut into pieces a hand can hold, into the folders of two hands, one on each local model. Beside
+4. copies them, cut into pieces a hand can hold, into the folder of the hand the ship file names, or of each of two
+   hands, one on each local model (the ship file's choice; one hand since the Admiral's word of 16 November). Beside
    the outsider's files in every piece goes one planted file: a known, harmless instruction under a numbered name
    like theirs. The program waits for each hand to be idle and starts it fresh;
 5. instructs each hand once per piece, with one short fixed instruction from ship naming the files and the answer's
@@ -25,9 +26,10 @@ change. So this program, not a seat:
    pointed, and removed from the hand's folder, and the hand is started fresh, so the record a seat watches never
    holds the outsider's words. The planted check's phrasings and words are not in this code: they are read at run
    time from a private corpus under the runtime (runtime/pr-screen/planted.json), and without it the screen refuses;
-6. clean from both hands and nothing from the search: the reader the ship file names ([pr_screen] reader, the First
-   Officer on a crew) is ordered to read the change and report to the desk. Flagged: no seat reads it, and the desk is told the number, the head and what flagged it (the
-   pattern's name or the hand, the file's number and kind, the line numbers), quoting nothing the outsider wrote.
+6. clean from the hand (from every hand named) and nothing from the search: the reader the ship file names
+   ([pr_screen] reader, the First Officer on a crew) is ordered to read the change and report to the desk. Flagged:
+   no seat reads it, and the desk is told the number, the head and what flagged it (the pattern's name or the hand,
+   the file's number and kind, the line numbers), quoting nothing the outsider wrote.
    Unread is neither: a request the reading itself failed on (the network, GitHub's rate limit, an answer not in its
    shape, a push while it was read) is read by no seat and tried again at the next run, and after UNREAD_REPORT_RUNS
    runs in a row at one head the desk is told, once, that it is unread, never that it is flagged. What the outsider's
@@ -35,8 +37,8 @@ change. So this program, not a seat:
    (UNDECODABLE); only GitHub's own envelope out of shape stays unread;
 7. a new push to a pull request starts it over.
 
-THE RESIDUAL, in the design's own words: a pull request written to fool both local models and to miss the search
-can still pass, and then the First Officer reads it with the key in reach. That is why the hold on a screening
+THE RESIDUAL, in the design's own words: a pull request written to fool the screening model (both, where two hands
+screen) and to miss the search can still pass, and then the First Officer reads it with the key in reach. That is why the hold on a screening
 hand's posts and the planted check matter: the first keeps a fooled hand from carrying the words to a seat, the
 second keeps a hand that did no work from passing anything.
 """
@@ -1150,8 +1152,9 @@ class LiveOutcomes:
     def clean(self, pr: PullRequest, repository: str) -> str:
         return post.Store(self.ship.runtime).new(
             'order', post.SHIP, self.ship.pr_screen.reader,
-            f'Pull request {pr.number} of {repository}, at head {pr.head}, passed the screen: both hands found it '
-            'clean and the search found nothing. Read the change and report to the desk on it: what it does, '
+            f'Pull request {pr.number} of {repository}, at head {pr.head}, passed the screen: '
+            f'{"both hands" if len(self.ship.pr_screen.hands) > 1 else "the hand"} found it clean and the search '
+            'found nothing. Read the change and report to the desk on it: what it does, '
             'whether it is sound, and whether to take it.',
             subject=f'Read pull request {pr.number} from outside after its screen').id
 
@@ -1200,6 +1203,8 @@ def run(runtime: Path, source, hands, outcomes, *, repository: str, hand_names: 
     runtime = Path(runtime)
     # Before anything else: an earlier screen that was killed is finished, and no piece goes to a hand still held.
     results = recover(runtime, hands, outcomes)
+    if not hand_names:  # the hand's answer is the gate: with none, the search alone would pass a request
+        raise ScreenError('no hand is named to screen with; nothing was screened')
     if still := [name for name in hand_names if held(runtime, name)]:
         raise ScreenError(f'{", ".join(still)}: held by a screen that is not finished and whose process cannot be '
                           'proved gone; nothing was screened')
