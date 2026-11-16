@@ -9,7 +9,6 @@ from __future__ import annotations
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-import fcntl
 import hashlib
 import json
 import os
@@ -198,9 +197,8 @@ def waits(ship, selected=()):
                 current = None
                 if seat is not None and hasattr(seat, '_lifecycle'):
                     try:
-                        with _status_lock(seat):
-                            found, _ = _proof(seat, order, readonly=True)
-                            current = json.loads(json.dumps(found[0][:8])) if found is not None else None
+                        found, _ = _unmoved(seat, lambda: _proof(seat, order, readonly=True))
+                        current = json.loads(json.dumps(found[0][:8])) if found is not None else None
                     except READ_ERRORS:
                         pass
                 if current != saved:
@@ -217,23 +215,39 @@ def waits(ship, selected=()):
     return lines
 
 
-@contextmanager
-def _status_lock(seat):
-    """Read the existing lifecycle inode without creating or repairing it."""
+def _lifecycle_view(seat):
+    """What a status reading of a seat's record depends on, read without a lock a claim could meet: the lifecycle lock's
+    identity, that no transition holds it (read from the kernel's table, never by taking it), and the seat's trusted
+    launch and record pointer, which a transition rewrites. A lock held, missing or not a regular file, or a table
+    that cannot say, reads as unknown (ValueError)."""
+    from . import lock_holders
     from .lifecycle import lock_path
     path = lock_path(seat.ship.runtime, seat.name)
-    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
-    try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode):
-            raise ValueError('lifecycle inode unknown')
-        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        current = path.lstat()
-        if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
-            raise ValueError('lifecycle inode changed')
-        yield
-    finally:
-        os.close(descriptor)
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('lifecycle inode unknown')
+    held = lock_holders.reading(path)
+    if held is None or held[0]:
+        raise ValueError('a lifecycle transition is in progress, or the lock table cannot say')
+
+    def stamp(name):
+        try:
+            item = os.stat(seat.trusted / name, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        return item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns, item.st_mode
+    return (info.st_dev, info.st_ino), stamp(trusted_files.LAUNCH), stamp(trusted_files.RECORD)
+
+
+def _unmoved(seat, read):
+    """``read()``, kept only when the seat's lifecycle stood still across it: no claim was ever held for the reading,
+    so a lifecycle claim made meanwhile is never refused because of it. A transition seen at either end, or anything
+    it rewrites changed, reads as unknown (ValueError)."""
+    before = _lifecycle_view(seat)
+    value = read()
+    if _lifecycle_view(seat) != before:
+        raise ValueError('lifecycle changed during the reading')
+    return value
 
 
 class _SavedSeat:

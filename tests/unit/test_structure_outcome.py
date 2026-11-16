@@ -380,3 +380,68 @@ def test_status_invalidates_stale_side_state_and_preserves_overflow_category(str
     assert '1 structure waits' in headlines.status_line(facts, ['Synthetic alert ' * 30])
     path.write_text('{')
     assert outcome.waits(case.ship, [seat]) == ['structure wait evidence unreadable']
+
+
+def reading_paused(monkeypatch):
+    """A status reading that stops inside its record proof until released: an event barrier, never a clock."""
+    import threading
+    inside, release = threading.Event(), threading.Event()
+    proof = outcome._proof
+
+    def paused(seat, order, readonly=False):
+        if readonly:
+            inside.set()
+            release.wait()
+        return proof(seat, order, readonly=readonly)
+    monkeypatch.setattr(outcome, '_proof', paused)
+    return inside, release
+
+
+def test_a_lifecycle_claim_made_while_a_status_reading_runs_is_never_refused_by_it(structures, monkeypatch):
+    """The reading holds no lock a claim can meet: a claim made at the moment it reads the record goes through, every
+    time, and a claim that changed nothing leaves the reading as it was."""
+    import threading
+    from quarterdeck import lifecycle
+    case = structures('cascade')
+    seat, _ = case.take(case.order)
+    pass_once(case)
+    for _ in range(5):
+        inside, release = reading_paused(monkeypatch)
+        result = {}
+        reader = threading.Thread(target=lambda: result.update(lines=outcome.waits(case.ship, [seat])))
+        reader.start()
+        try:
+            assert inside.wait(30), 'the reading reached its record proof'
+            with lifecycle.claim(case.ship.runtime, 'alpha'):  # refused before: 'another lifecycle transition...'
+                pass
+        finally:
+            release.set()
+            reader.join(30)
+        assert result['lines'] == ['waiting on alpha: turn ended, no report']
+        monkeypatch.undo()
+
+
+def test_a_reading_across_a_transition_reads_unknown(structures, monkeypatch):
+    """A claim held when the reading starts, or the seat's launch rewritten while it reads: unknown, never the old
+    word taken as current."""
+    import threading
+    from quarterdeck import lifecycle
+    case = structures('cascade')
+    seat, _ = case.take(case.order)
+    pass_once(case)
+    unknown = ['waiting on alpha: turn outcome unknown (record proof unknown)']
+    with lifecycle.claim(case.ship.runtime, 'alpha'):
+        assert outcome.waits(case.ship, [seat]) == unknown
+    assert outcome.waits(case.ship, [seat]) == ['waiting on alpha: turn ended, no report']
+    inside, release = reading_paused(monkeypatch)
+    result = {}
+    reader = threading.Thread(target=lambda: result.update(lines=outcome.waits(case.ship, [seat])))
+    reader.start()
+    try:
+        assert inside.wait(30)
+        launch = seat.trusted / 'launch.json'
+        launch.write_text(launch.read_text())  # rewritten, as a transition does
+    finally:
+        release.set()
+        reader.join(30)
+    assert result['lines'] == unknown
