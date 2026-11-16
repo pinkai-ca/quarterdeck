@@ -40,6 +40,7 @@ class Carriage:
     header: str = ""
     rows: tuple[IndexRow, ...] = ()  # open incoming, undelivered and sent-awaiting threads
     history: str = ''  # bounded notice-settlement count, without message bodies or ids
+    in_hand: bool = False  # a hand's fresh start: ``text`` is the order in hand, typed whole, and nothing else
 
     @property
     def size(self) -> int:

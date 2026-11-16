@@ -120,21 +120,18 @@ def test_hand_with_no_open_work_keeps_only_the_history_pointer(tmp_path, monkeyp
     assert w.seat.carriage().rows == ()
 
 
-def test_hand_fresh_index_selects_only_open_threads_with_their_amendments(tmp_path, monkeypatch):
+def test_a_fresh_hand_carries_no_index_and_a_resumed_hand_keeps_its_open_threads(tmp_path, monkeypatch):
     monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
     w = world(tmp_path / 'ship', 'hand')
-    carriage = w.seat.carriage()
-    assert [row.id for row in carriage.rows] == [w.opened.id, w.incoming.id]
-    assert carriage.rows[0].amendments == (w.question.id, w.answer.id)
-    assert [row.active for row in carriage.rows] == [(w.opened.id,), (w.incoming.id,)]
-    assert all(not row.awaiting for row in carriage.rows)
-    assert [message.id for message in carriage.carried] == [w.opened.id, w.incoming.id]
-    opening, carried = w.seat.first_message()
-    assert [message.id for message in carried] == [w.opened.id, w.incoming.id]
-    for message in (w.old, w.history, w.sent):
-        assert message.id not in opening
-    for message in (w.opened, w.incoming, w.question, w.answer):
-        assert message.id in opening
+    fresh = w.seat.carriage()
+    assert fresh.in_hand and fresh.rows == (), 'a fresh hand: the order in hand, no index (test_hand_brief_minimal)'
+    monkeypatch.setattr(Seat, '_consumed_messages', lambda self, *args: frozenset())
+    carriage = w.seat.carriage(resume_id='synthetic-conversation')
+    assert not carriage.in_hand
+    rows = {row.id: row for row in carriage.rows}
+    assert {w.opened.id, w.incoming.id} <= set(rows), 'its open threads, as a resumed seat carries them'
+    assert rows[w.opened.id].amendments == (w.question.id, w.answer.id)
+    assert w.opened.id in rows[w.opened.id].active and rows[w.incoming.id].active == (w.incoming.id,)
 
 
 def test_unrelated_received_history_does_not_grow_a_hand_context(tmp_path, monkeypatch):
@@ -181,15 +178,15 @@ def _with_history(monkeypatch, seat):
     monkeypatch.setattr(Seat, 'carriage', carriage)
 
 
-def test_a_hand_with_nothing_open_ends_its_opening_with_the_line_of_its_card(tmp_path, monkeypatch):
+def test_a_fresh_hand_with_nothing_open_has_no_first_message_and_its_card_says_to_wait(tmp_path, monkeypatch):
     from quarterdeck import carriage, standing
     monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
     w = world(tmp_path / 'ship', 'hand')
     _nothing_open(w)
     _with_history(monkeypatch, w.seat)
     opening, carried = w.seat.first_message()
-    assert carried == [] and opening.endswith(carriage.HAND_IDLE + '\n'), opening
-    assert carriage.HAND_IDLE in standing.card(w.ship, 'roles', 'hand')[0], 'the same words as the hand card'
+    assert carried == [] and opening is None, 'no notice history, no idle turn: the brief alone loads'
+    assert carriage.HAND_IDLE in standing.card(w.ship, 'roles', 'hand')[0], 'the hand card says to wait'
 
 
 def test_a_hand_with_an_order_open_has_no_idle_line(tmp_path, monkeypatch):
@@ -198,7 +195,8 @@ def test_a_hand_with_an_order_open_has_no_idle_line(tmp_path, monkeypatch):
     w = world(tmp_path / 'ship', 'hand')
     _with_history(monkeypatch, w.seat)
     opening, _ = w.seat.first_message()
-    assert w.opened.id in opening and carriage.HAND_IDLE not in opening
+    assert w.opened.short in opening and carriage.HAND_IDLE not in opening
+    assert 'notice history' not in opening
 
 
 def test_a_worker_with_nothing_open_has_no_idle_line(tmp_path, monkeypatch):
@@ -233,13 +231,15 @@ def test_a_hand_with_nothing_open_under_force_files_ends_with_the_same_line(tmp_
     assert planned.opening.count(carriage.HAND_IDLE) == 1
 
 
-def test_a_hand_with_an_order_open_under_force_files_has_no_idle_line(tmp_path, monkeypatch):
-    from quarterdeck import carriage
+def test_a_hand_with_an_order_open_under_force_files_reads_it_whole_from_one_file(tmp_path, monkeypatch):
+    from quarterdeck import carriage, carriage_plan
     monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
     w = world(tmp_path / 'ship', 'hand')
-    _with_history(monkeypatch, w.seat)
-    planned = _forced_opening(w, tmp_path)
-    assert planned.index_path is not None and carriage.HAND_IDLE not in planned.opening
+    carried = w.seat.carriage()
+    planned = carriage_plan.in_hand(carried.text, directory=tmp_path / 'generation', limit=100000,
+                                    inline_limit=carriage.INLINE_BYTES, force_files=True)
+    assert planned.files == {'order.txt': carried.text} and planned.index_path is None
+    assert 'order.txt' in planned.opening and carriage.HAND_IDLE not in planned.opening
 
 
 def test_a_worker_with_nothing_open_under_force_files_has_no_idle_line(tmp_path, monkeypatch):

@@ -35,6 +35,10 @@ where = ["src"]
     "standing-orders/harnesses/opencode.md",
     "standing-orders/harnesses/pi.md",
 ]
+"share/quarterdeck/standing-orders/harnesses/hand" = [
+    "standing-orders/harnesses/hand/opencode.md",
+    "standing-orders/harnesses/hand/pi.md",
+]
 "share/quarterdeck/standing-orders/roles" = [
     "standing-orders/roles/captain.md",
     "standing-orders/roles/desk.md",

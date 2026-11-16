@@ -223,12 +223,12 @@ def test_a_hand_is_never_resumed_whatever_relaunches_it(handed: shipmod.Ship, tm
     order = post.Store(handed.runtime).new("order", "worker-1", "hand-1", "still open across the restart")
     proof = hand.restart()
     assert " · resumed " not in proof and "· fresh" in proof and "a hand starts fresh on every launch" in proof
-    assert "· fresh · 1 thread indexed" in proof, "its open message is carried, as any fresh start carries it"
+    assert "· fresh · its order typed whole" in proof, "its open order is carried whole, as a hand's fresh start carries it"
     launched = json.loads((hand.trusted / "launch.json").read_text())
     assert launched["resume"] is None, "the launch names no conversation to resume"
     assert hand.record() != record and record.exists(), "a new conversation; the old record stays for the Ledger"
     second = wait_for(hand.record)
-    wait_for(lambda: order.id in " ".join(t.input for t in hand.harness.turns(second)))
+    wait_for(lambda: order.short in (text := " ".join(t.input for t in hand.harness.turns(second))) and order.body in text)
     hand.down()
     with hand._lifecycle():
         proof = hand._up(resume=True)  # what the service's relaunch, a recovery and a failover call
@@ -358,7 +358,8 @@ def test_qd_up_pool_on_a_plain_list_takes_a_declared_pool_and_refuses_another_in
 def test_a_screening_launch_carries_nothing_of_the_post_and_an_ordinary_one_still_does(handed: shipmod.Ship,
                                                                                          tmux: Tmux):
     """A launch the pull-request screen starts gets its brief and nothing else of the post: no index line, no
-    message id, no handoff. The same hand's ordinary fresh start, once the hold is released, carries its index."""
+    message id, no handoff. The same hand's ordinary fresh start, once the hold is released, carries the order in hand,
+    typed whole, and still no handoff."""
     from quarterdeck import pr_screen
     store = post.Store(handed.runtime)
     order = store.new("order", "worker-1", "hand-1", "An invented open order.", subject="Invented subject")
@@ -377,9 +378,9 @@ def test_a_screening_launch_carries_nothing_of_the_post_and_an_ordinary_one_stil
     hand.down()
     pr_screen.release(handed.runtime, "hand-1")
     opening, carried = hand.first_message()
-    assert opening.startswith("qd > briefed as hand-1, hand · 2 orders open") and order.id in opening
-    assert any(line.startswith("{") and order.id in line for line in opening.splitlines()), "its index again"
+    assert opening == post.typed([order]) and carried == [order], "the order in hand, whole, and nothing else"
+    assert handoff.body not in opening and handoff.short not in opening, "a hand never carries a handoff"
     hand.up(resume=False)
     record = wait_for(hand.record)
     first = wait_for(lambda: (turns := hand.harness.turns(record)) and turns[0].input)
-    assert order.id in first, "the ordinary fresh start carries its index"
+    assert order.short in first and order.body in first, "the ordinary fresh start carries the order whole"

@@ -235,6 +235,7 @@ _LAUNCH_FIELDS = {
 _LAUNCH_REQUIRED = ('pane', 'pid', 'at', 'pool', 'resume', 'argv', 'version')
 
 
+IN_HAND_LAUNCH_DETAIL = 'typed whole at launch, the order in hand'
 _LAUNCHES = trusted_cache.Kept()  # launch.json path -> its Launched, by its stamp and its price file's
 _LOOKUPS = trusted_cache.Kept()  # a seat's trusted folder -> its last read-only record reader answer
 
@@ -1041,6 +1042,10 @@ class Seat:
 
         def plan(force_files=False):
             try:
+                if carriage.in_hand:  # a hand's fresh start: the order in hand, whole, and nothing else
+                    return carriage_plan.in_hand(carriage.text, directory=generation,
+                                                 limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES),
+                                                 inline_limit=carriagemod.INLINE_BYTES, force_files=force_files)
                 # law: context-is-cache -- only admitted self-orders are full, and only on an actual fresh conversation
                 return carriage_plan.build(carriage.rows, handoff=carriage.text or '', header=carriage.header,
                                            directory=generation, limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES),
@@ -1080,9 +1085,11 @@ class Seat:
         attempts = post.Attempts(self.ship.runtime)
         for message in carried:
             attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)
-            attempts.close(attempt, "launch", post_threads.INDEXED_LAUNCH_DETAIL)
+            attempts.close(attempt, "launch", IN_HAND_LAUNCH_DETAIL if carriage.in_hand
+                           else post_threads.INDEXED_LAUNCH_DETAIL)
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
-        carried_note = f" · {len(carriage.rows)} thread{'s' if len(carriage.rows) != 1 else ''} indexed"
+        carried_note = (f" · its order typed whole" if carriage.in_hand and carried else
+                        f" · {len(carriage.rows)} thread{'s' if len(carriage.rows) != 1 else ''} indexed")
         if carried_file:
             carried_note += f" in {carried_file.relative_to(self.ship.runtime)}"
         jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
@@ -1107,6 +1114,10 @@ class Seat:
         """Preview the policy-bounded first message without publishing its files."""
         from . import carriage_plan
         carriage = self.carriage(resume_id=resume_id)
+        if carriage.in_hand:
+            planned = carriage_plan.in_hand(carriage.text, directory=self.folder / carriagemod.FOLDER / 'preview',
+                                            limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES))
+            return planned.opening, carriage.carried
         planned = carriage_plan.build(carriage.rows, handoff=carriage.text or '', header=carriage.header,
                                       directory=self.folder / carriagemod.FOLDER / 'preview',
                                       limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES),
@@ -1169,8 +1180,10 @@ class Seat:
                                 and not ((attempt := latest.get(message.id)) is not None
                                          and attempt.result == 'queued' and message.id not in queued_ids))
             if self.spec.role == 'hand' and not resume_id:
-                # A fresh hand starts with its open work, rather than unrelated unread history or outgoing waits.
-                pending_messages, unconfirmed, sent = (), (), ()
+                # law: context-is-cache -- a hand's fresh start carries the order in hand, typed whole, and nothing
+                # else: no index, no handoff, no earlier thread, no notice history. It holds one order at a time:
+                # its oldest open order or question, with that order's own conversation so far, in thread order.
+                return self._in_hand(store, messages, refused)
             rows = post_threads.index_rows(store, selection.roots, (*pending_messages, *unconfirmed), refused, sent,
                                            seat=self.name)
         handoffs = [entry.message for entry in selection.entries
@@ -1182,6 +1195,24 @@ class Seat:
         from .post_notices import summary
         return carriagemod.Carriage(post.typed(handoffs, whole=True) if handoffs else None, carried, header, rows,
                                    summary(settled))
+
+    def _in_hand(self, store: post.Store, messages: list[post.Message], refused) -> carriagemod.Carriage:
+        """The order in hand: the oldest open order or question to this hand, and every message below it that the
+        hand sent or received but an ack, each typed whole in thread order. The other open messages wait for it."""
+        from .post_threads import _descends
+        open_ = sorted((message for message in store.for_seat(self.name)
+                        if message.obligation and message.id not in refused and store.is_open(message)),
+                       key=lambda message: (message.at, message.id))
+        if not open_:
+            return carriagemod.Carriage(None, [], in_hand=True)
+        order = open_[0]
+        by_id = {message.id: message for message in messages}
+        below = [message for message in messages
+                 if message.id not in refused and message.kind != 'ack'
+                 and self.name in (message.sender, message.to) and _descends(message, {order.id}, by_id)]
+        in_hand = [order, *sorted(below, key=lambda message: (message.at, message.id))]
+        carried = [message for message in in_hand if message.to == self.name]
+        return carriagemod.Carriage(post.typed(in_hand), carried, in_hand=True)
 
     def _consumed_messages(self, store: post.Store, attempts: post.Attempts, resume_id: str | None,
                            excluded: frozenset[str]) -> frozenset[str]:

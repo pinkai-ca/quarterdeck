@@ -162,6 +162,23 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
     return Plan(opening, files, directory, limit)
 
 
+def in_hand(text: str | None, *, directory: Path, limit: int, inline_limit: int = 32768,
+            force_files: bool = False) -> Plan:
+    """A hand's fresh start: the order in hand, typed whole, as its first message and nothing else (law:
+    context-is-cache). Nothing open gives no first message, so no model turn. An order past the inline bound, or
+    one whose launch words do not fit, goes whole into one file the first message names."""
+    if type(limit) is not int or limit <= 0:
+        raise ValueError('carry_bytes must be a positive integer')
+    if not text:
+        return Plan(None, {}, directory, limit)
+    if not force_files and size(text) <= min(limit, inline_limit):
+        return Plan(text, {}, directory, limit)
+    if size(text) > limit:
+        raise ImpossibleBudget('carry_bytes cannot hold the order in hand')
+    return Plan(f'qd > read {directory / "order.txt"} whole first: it is the order in hand\n',
+                {'order.txt': text}, directory, limit)
+
+
 def publish(plan: Plan) -> None:
     """Atomically publish one complete private generation; never rewrite an earlier one."""
     if size(plan.opening) > plan.limit or any(size(text) > plan.limit for name, text in plan.files.items() if name != 'handoff.txt'):

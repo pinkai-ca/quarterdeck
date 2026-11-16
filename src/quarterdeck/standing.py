@@ -79,6 +79,19 @@ def brief(ship: Ship, seat: SeatSpec) -> Brief:
         seat = Seat(ship, seat, None).spec  # the selected program's card, including later re-briefs
     session = ship.session_of(seat)
     parts: list[tuple[str, str, Path | None]] = []
+    if seat.role == "hand":
+        # A hand is told only what its task needs: its own card, the least of its program's card (how a message
+        # arrives, the edge of its sandbox) and the seat lines it uses. No laws and no ship's orders: what of them a
+        # hand must keep is a line of its card (law: context-is-cache).
+        found = card(ship, "roles", seat.role)
+        parts.append(("role card", found[0] if found else "(no role card for hand)", found[1] if found else None))
+        found = card(ship, "harnesses/hand", seat.harness) or card(ship, "harnesses", seat.harness)
+        parts.append(("harness card", found[0] if found else f"(no harness card for {seat.harness})",
+                      found[1] if found else None))
+        parts.append(("your seat", hand_seat_section(ship, seat), None))
+        text = "\n\n".join(f"<!-- {name} -->\n{body}" for name, body, _ in parts)
+        header = f"# Standing orders for {seat.display}: {seat.name}, hand, on {ship.name}\n\n"
+        return Brief(header + text + "\n", [(name, path) for name, _, path in parts])
     laws_path = FRAMEWORK_DIR / "laws.md"
     parts.append(("laws", laws_path.read_text().strip(), laws_path))
     orders = ship.folder / "orders.md"
@@ -91,6 +104,24 @@ def brief(ship: Ship, seat: SeatSpec) -> Brief:
     text = "\n\n".join(f"<!-- {name} -->\n{body}" for name, body, _ in parts)
     header = f"# Standing orders for {seat.display}: {seat.name}, {seat.role}, on {ship.name}\n\n"
     return Brief(header + text + "\n", [(name, path) for name, _, path in parts])
+
+
+def hand_seat_section(ship: Ship, seat: SeatSpec) -> str:
+    """The seat lines a hand uses: who it is, its qd command, and how to report, ask and ack."""
+    qd = qd_command(ship.folder)
+    return "\n".join([
+        "# Your seat",
+        "",
+        f"You are seat `{seat.name}`, a hand, on the ship `{ship.name}`.",
+        "",
+        f"- Your qd command is `{qd}`. Use this absolute command for every `qd` you run.",
+        f"- Report on your order once, from a file: `{qd} post report --re <id> --body-file $HOME/report.md`. "
+        "Only your report closes your order.",
+        f"- Ask once, from a file: `{qd} post question --re <id> --body-file $HOME/question.md`; then stop until "
+        "the answer arrives in your pane.",
+        f"- Say you have started, if your order asks you to: `{qd} post ack --re <id>`; an ack never closes.",
+        "- A message that reaches you twice with the same id is one message: read it once and act on it once.",
+    ])
 
 
 def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
