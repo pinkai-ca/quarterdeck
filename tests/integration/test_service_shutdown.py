@@ -264,7 +264,7 @@ runtime = Path(sys.argv[1])
 lock = servicectl.acquire_lock(runtime)
 servicectl.write_heartbeat(runtime)
 signal.pause()
-""", str(runtime)])
+""", str(runtime)], start_new_session=True)
     try:
         wait_for(lambda: servicectl.started(runtime))
         assert shutdown.owner(runtime) is None

@@ -95,7 +95,12 @@ def test_unreadable_process_start_is_unknown(monkeypatch):
 
 
 def test_stop_keeps_a_heartbeat_that_now_names_another_pid(tmp_path, monkeypatch):
-    from quarterdeck import servicectl
+    from types import SimpleNamespace
+    from quarterdeck import service_processes, servicectl
+
+    # This case models process lifetime, including the private scope's empty re-read.
+    monkeypatch.setattr(service_processes, "capture", lambda *args, **kwargs:
+        SimpleNamespace(read=lambda: {}, proof="processes re-read: synthetic private scope"))
 
     stopped_pid, next_pid = 999999998, 999999999
     heartbeat = servicectl.heartbeat_path(tmp_path)
@@ -118,7 +123,12 @@ def test_stop_keeps_a_heartbeat_that_now_names_another_pid(tmp_path, monkeypatch
 
 def test_stop_waits_for_the_process_to_be_gone_after_its_lock_frees(tmp_path, monkeypatch):
     """The lock frees as the process closes its files, before the kernel marks it gone; stop waits for that event."""
-    from quarterdeck import servicectl
+    from types import SimpleNamespace
+    from quarterdeck import service_processes, servicectl
+
+    # This case models process lifetime, including the private scope's empty re-read.
+    monkeypatch.setattr(service_processes, "capture", lambda *args, **kwargs:
+        SimpleNamespace(read=lambda: {}, proof="processes re-read: synthetic private scope"))
 
     pid, stamp = 999999997, datetime.now(timezone.utc).isoformat()
     servicectl.heartbeat_path(tmp_path).parent.mkdir()
