@@ -23,9 +23,7 @@ def test_early_owner_exit_keeps_the_discovered_child_stop_proof(tmp_path, monkey
                 return native_kill(pid, sig)
             result = send(pid, sig)
             if sig == lifetime.signal.SIGTERM and response == 'release-tree':
-                child.stdin.write('x')
-                child.stdin.flush()
-                child.wait(timeout=20)
+                lifetime.release_owner(child)
                 seen['owner_ended_before_read'] = True
             return result
 
@@ -49,6 +47,9 @@ def test_early_owner_exit_keeps_the_discovered_child_stop_proof(tmp_path, monkey
     monkeypatch.setattr(servicectl, 'stop', observed_stop)
     try:
         lifetime.test_a_child_discovered_during_the_kill_holds_both_restart_paths(tmp_path, monkeypatch)
+        assert seen.get('owner_ended_before_read') is True
+        assert 'exit cannot be confirmed' in seen['exception']
+        assert 'returned' not in seen
     finally:
         with capsys.disabled():
             print('EARLY_OWNER_EXIT', {key: value for key, value in seen.items() if key != 'child'}, flush=True)

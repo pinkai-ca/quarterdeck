@@ -23,6 +23,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from quarterdeck import servicectl, shutdown
 runtime, place, response = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+exit_event = int(sys.argv[4])
 if place == 'earlier':
     lock = open(runtime / 'service.lock', 'a')
     fcntl.flock(lock, fcntl.LOCK_EX)
@@ -46,7 +47,10 @@ with scope:
             print('ignored', flush=True)
     signal.signal(signal.SIGTERM, term)
     print('held', flush=True)
-    sys.stdin.read(1)
+    # The owner remains alive across lock release until the driver explicitly
+    # permits exit. A signal interrupt or a stdio EOF cannot end this wait.
+    assert os.read(exit_event, 1) == b'x'
+    os.close(exit_event)
 lock.close()
 '''
 
@@ -55,9 +59,17 @@ lock.close()
 def stand_in(tmp_path, *, place="current", response="ignore"):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    child = subprocess.Popen([sys.executable, "-c", HOLDER, str(runtime), place, response],
-                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True, start_new_session=True)
+    exit_read, exit_write = os.pipe()
+    try:
+        child = subprocess.Popen([sys.executable, "-c", HOLDER, str(runtime), place, response, str(exit_read)],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, pass_fds=(exit_read,),
+                                 stderr=subprocess.PIPE, text=True, start_new_session=True)
+    except BaseException:
+        os.close(exit_write)
+        raise
+    finally:
+        os.close(exit_read)
+    child.exit_event = exit_write
     try:
         assert child.stdout.readline().strip() == "held"
         child.descendants = {}
@@ -66,7 +78,16 @@ def stand_in(tmp_path, *, place="current", response="ignore"):
     finally:
         if child.poll() is None:
             child.kill()
-        child.communicate(timeout=20)
+        try:
+            child.communicate(timeout=20)
+        finally:
+            os.close(exit_write)
+
+
+def release_owner(child):
+    """The one explicit event that lets a released stand-in exit normally."""
+    os.write(child.exit_event, b'x')
+    child.wait(timeout=20)
 
 
 def stopping_clock(monkeypatch, child, response="ignore"):
@@ -90,14 +111,13 @@ def stopping_clock(monkeypatch, child, response="ignore"):
                 child.descendants[int(descendant)] = start
                 line = child.stdout.readline().strip()
             assert line == ("released" if response.startswith("release") else "ignored")
+            assert child.poll() is None, "the owner waits for its explicit exit event"
         elif sig in (signal.SIGTERM, signal.SIGKILL):
             child.wait(timeout=20)
 
     def sleep(seconds):
         if response == "release-exit" and signal.SIGTERM in signals and child.poll() is None:
-            child.stdin.write("x")
-            child.stdin.flush()
-            child.wait(timeout=20)
+            release_owner(child)
         ticks[0] += seconds
 
     monkeypatch.setattr(servicectl, "time", SimpleNamespace(monotonic=lambda: ticks[0], sleep=sleep))
