@@ -97,16 +97,13 @@ def test_one_changed_record_or_wal_selects_only_its_seat(world, wal):
     assert e.gate.due == due
 
 
-# The post is no global barrier: each seat's attribution scope carries it (test_accounting_post_scopes).
-@pytest.mark.parametrize('barrier', ['launch', 'registry', 'settings', 'hash', 'sql', 'external-sql'])
+# The post and a known seat's own launch files are no global barrier: each is judged seat by seat
+# (test_accounting_post_scopes, test_accounting_launch_files).
+@pytest.mark.parametrize('barrier', ['settings', 'hash', 'sql', 'external-sql'])
 def test_each_global_barrier_requires_full_work(world, monkeypatch, barrier):
     e = world
     change(e.paths['ordinary-alpha'])
-    if barrier == 'launch':
-        (trusted_files.of_home(e.seats[1].home) / trusted_files.LAUNCH).write_text('Ordinary new launch.\n')
-    elif barrier == 'registry':
-        change(trusted_files.of_home(e.seats[1].home) / trusted_files.READERS)
-    elif barrier == 'settings':
+    if barrier == 'settings':
         e.seats[1].spec.model = 'another-ordinary-model'
     elif barrier == 'hash':
         monkeypatch.setattr(accounting_gate.reader_stamp, 'attributions', lambda: {'fake': ['reader', 'new-engine']})
@@ -155,8 +152,8 @@ def test_concurrent_outside_or_global_change_forces_a_full_followup(world, phase
     assert e.gate.allowed(e.service) and e.gate.scope == {'ordinary-alpha'}
     if phase == 'during-job':
         assert e.begin(e.gate.scope)
-    if global_change:  # another seat's launch metadata: a global barrier
-        (trusted_files.of_home(e.seats[1].home) / trusted_files.LAUNCH).write_text('Ordinary concurrent launch.\n')
+    if global_change:  # the ship file: a global barrier
+        (e.service.ship.folder / 'ship.toml').write_text('Synthetic declaration, changed concurrently.\n')
     else:
         change(e.paths['ordinary-beta'])
     if phase == 'before-start':

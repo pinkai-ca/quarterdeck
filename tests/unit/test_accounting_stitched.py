@@ -96,11 +96,13 @@ def test_a_global_change_across_the_span_still_forces_a_full_job(world):
     assert 'no-completed-certificate' in e.gate.decision
 
 
-def test_another_seats_launch_metadata_still_forces_a_full_job(world):
+def test_another_seats_launch_files_moving_during_the_retry_leave_that_seat_dirty(world):
+    """A known seat's own launch files are no global barrier: beta moving during alpha's retry leaves the stitch
+    standing and beta dirty, read again alone."""
     e = world
     full_then_retry(e, during_retry=[lambda: moved(e, BETA)])
-    assert e.gate.previous['stitched'] == 0 and e.gate.partitions.baseline is None
-    assert e.gate.allowed(e.service) and e.gate.scope is None
+    assert e.gate.previous['stitched'] == 1 and e.gate.partitions.baseline is not None
+    assert e.gate.allowed(e.service) and e.gate.scope == {BETA}
 
 
 def test_a_retried_seat_that_moves_again_within_its_retry_certifies_nothing(world):
@@ -110,13 +112,15 @@ def test_a_retried_seat_that_moves_again_within_its_retry_certifies_nothing(worl
 
 
 def test_a_retry_that_failed_to_read_its_seat_certifies_nothing_of_it(world):
-    """A retry whose guarded read of its seat failed did not read it whole: the seat whose identity moved was never
-    re-read, so its moved launch metadata stands as a global change, nothing is certified and the next job is full."""
+    """A retry whose guarded read of its seat failed did not read it whole: nothing of that seat is certified, its
+    records and launch files stay dirty and it is read again alone; the seats the full job read whole stand."""
     e = world
     full_then_retry(e, retry_read=False)
     p = e.gate.partitions
-    assert e.gate.previous['stitched'] == 0 and p.baseline is None and not p.marks
-    assert e.gate.allowed(e.service) and e.gate.scope is None
+    assert key(e.paths[ALPHA]) not in p.marks and key(e.paths[ALPHA]) in p.dirty, 'alpha was never read whole'
+    assert ALPHA not in p.meta_seen and ALPHA not in p.certified, 'nothing of alpha is certified'
+    assert key(e.paths[BETA]) in p.marks, 'beta, read whole by the full job, is'
+    assert e.gate.allowed(e.service) and e.gate.scope == {ALPHA}, 'alpha is read again, alone'
 
 
 def two_seats(tmp_path, monkeypatch):

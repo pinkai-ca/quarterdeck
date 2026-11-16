@@ -21,12 +21,14 @@ def records(reading):
     return {path: stamp for path, stamp in reading.inputs[0] if classes.get(path) in RECORD_CLASSES}
 
 
-def globals_of(reading):
-    """Every input but the records and the post folders. The post is no global barrier: each seat's attribution scope
-    (Threads.scope) carries it, seat by seat (Partitions.record_scopes)."""
+def globals_of(reading, set_aside=()):
+    """Every input but the records, the post folders and the paths set aside (a known seat's own launch files, judged
+    seat by seat). The post is no global barrier: each seat's attribution scope (Threads.scope) carries it, seat by
+    seat (Partitions.record_scopes)."""
     classes = dict(reading.classes)
     return (tuple((path, stamp) for path, stamp in reading.inputs[0]
-                  if classes.get(path) not in RECORD_CLASSES and classes.get(path) != POST_CLASS), *reading.inputs[1:])
+                  if classes.get(path) not in RECORD_CLASSES and classes.get(path) != POST_CLASS
+                  and path not in set_aside), *reading.inputs[1:])
 
 
 def post_of(reading):
@@ -62,11 +64,59 @@ def post_kept(before, now):
     return all(now.get(name) == identity for name, identity in before.items())
 
 
-def global_valid(reading):
+def global_valid(reading, set_aside=()):
     if reading is None:
         return False
     classes = dict(reading.classes)
-    return not {path for path in reading.young if classes.get(path) != POST_CLASS}.difference(records(reading))
+    return not {path for path in reading.young
+                if classes.get(path) != POST_CLASS and path not in set_aside}.difference(records(reading))
+
+
+REGISTRIES = ('record-readers.jsonl', 'record-launches.jsonl')
+
+
+def metadata_seat(path, runtime):
+    """The seat whose own launch file this is: runtime/trusted/<seat>/... or runtime/seats/<seat>/..., else None."""
+    try:
+        parts = Path(path).relative_to(Path(runtime)).parts
+    except ValueError:
+        return None
+    return parts[1] if len(parts) >= 3 and parts[0] in ('trusted', 'seats') else None
+
+
+def seat_files(reading, runtime, seats):
+    """{seat: {path: stamp}} of these seats' own launch files in a reading, and the seats with a young one."""
+    files, young = {}, set()
+    stamps = dict(reading.inputs[0])
+    for path, kind in reading.classes:
+        if kind != 'launch-metadata':
+            continue
+        seat = metadata_seat(path, runtime)
+        if seat in seats:
+            files.setdefault(seat, {})[path] = stamps.get(path)
+            if path in reading.young:
+                young.add(seat)
+    return files, young
+
+
+def named_records(path, offset=0):
+    """The records a registry names, from ``offset`` on: each line's 'record'. Unreadable lines name nothing."""
+    import json
+    named = set()
+    try:
+        with open(path, 'rb') as stream:
+            stream.seek(offset)
+            data = stream.read()
+    except OSError:
+        return None
+    for line in data.splitlines():
+        try:
+            record = json.loads(line).get('record')
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(record, str):
+            named.add(str(Path(os.path.abspath(record))))
+    return named
 
 
 def seat_metadata(reading, runtime, seats):
@@ -103,9 +153,9 @@ def globals_without(reading, paths):
                   and path not in paths), *reading.inputs[1:])
 
 
-def global_equal(before, after, own=0):
-    return (global_valid(before) and global_valid(after)
-            and globals_of(before) == globals_of(after)
+def global_equal(before, after, own=0, set_aside=()):
+    return (global_valid(before, set_aside) and global_valid(after, set_aside)
+            and globals_of(before, set_aside) == globals_of(after, set_aside)
             and before.sql[:2] == after.sql[:2] and before.sql[3:] == after.sql[3:]
             and after.sql[2] - before.sql[2] == own)
 
@@ -124,14 +174,70 @@ class Partitions:
         # compared at, and the message files then present.
         self.certified, self.dirty_seats = {}, set()
         self.post_seen, self.post_names, self.post_due = None, None, False
+        # Each known seat's own launch files, seat by seat: their stamps at the reading its last whole read began
+        # from (None when one was young there), and the records each registry then named.
+        self.runtime, self.meta_seen, self.meta_named = None, {}, {}
 
     def reject(self, *, keep_pending=False):
         self.baseline = None
         self.marks.clear()
         self.certified, self.dirty_seats = {}, set()
         self.post_seen, self.post_names = None, None
+        self.meta_seen, self.meta_named = {}, {}
         if not keep_pending:
             self.pending = None
+
+    def set_aside(self, *readings):
+        """The known seats' own launch files in these readings: no global barrier, judged seat by seat instead."""
+        if self.runtime is None:
+            return frozenset()
+        return frozenset(path for reading in readings if reading is not None
+                         for files in seat_files(reading, self.runtime, self.seats)[0].values() for path in files)
+
+    def record_meta(self, before, read):
+        """The seats a committed job read whole are certified at their launch files' stamps in ``before``, the
+        reading the job began from; a seat with a young launch file there is certified at none (read again)."""
+        if self.runtime is None:
+            return
+        files, young = seat_files(before, self.runtime, set(read))
+        for seat in read:
+            self.meta_seen[seat] = None if seat in young else dict(files.get(seat, {}))
+            for path in files.get(seat, {}):
+                if Path(path).name in REGISTRIES:
+                    self.meta_named[path] = named_records(path) or set()
+
+    def meta_dirty(self, reading):
+        """The seats whose own launch files moved since their last whole read, and the owners of every record a moved
+        registry names: its new lines after the old size under the same file, or, rewritten or shrunk, every record
+        it names now and named then. None when a record so named has an owner the partitions do not know."""
+        if self.runtime is None:
+            return set(self.seats)
+        files, dirty = seat_files(reading, self.runtime, self.seats)
+        dirty = set(dirty)
+        for seat in self.seats:
+            seen, now = self.meta_seen.get(seat), files.get(seat, {})
+            if seen is None:
+                dirty.add(seat)
+                continue
+            if now == seen:
+                continue
+            dirty.add(seat)
+            for path in seen.keys() | now.keys():
+                if Path(path).name not in REGISTRIES or seen.get(path) == now.get(path):
+                    continue
+                old, new = seen.get(path), now.get(path)
+                if old is not None and new is not None and old[:2] == new[:2] and new[3] >= old[3]:
+                    named = named_records(path, old[3])
+                else:
+                    named = (named_records(path) or set()) | self.meta_named.get(path, set())
+                if named is None:
+                    return None
+                for record in named:
+                    owners = self.owners.get(record, frozenset())
+                    if not owners <= self.seats:
+                        return None
+                    dirty |= owners
+        return dirty
 
     def record_scopes(self, before, scopes, read, runtime):
         """A committed job's post, seat by seat. ``scopes`` are the attribution scopes of every seat at the job's own
@@ -192,7 +298,7 @@ class Partitions:
         # identity, which moved) is judged instead by the retry that re-read it: equal and settled within that retry.
         moved = set().union(*(seats for _, _, seats, _, full in readings if not full))
         runtime = pending['runtime']
-        own = seat_metadata(first, runtime, moved) | seat_metadata(last, runtime, moved)
+        own = seat_metadata(first, runtime, moved) | seat_metadata(last, runtime, moved) | self.set_aside(first, last)
         posts = {path for reading in (first, last) for path, kind in reading.classes if kind == POST_CLASS}
         young = (set(first.young) | set(last.young)) - set(records(first)) - set(records(last)) - own - posts
         own_changes = sum(reading[3] for reading in readings) + pending.get('discarded', 0)
@@ -231,6 +337,9 @@ class Partitions:
             for seat in seats:
                 certified[seat] = scopes.get(seat) if scopes else None
         self.certified, self.post_names = certified, pending['post_names']
+        self.meta_seen, self.meta_named = {}, {}
+        for before, _, seats, _, _ in readings:
+            self.record_meta(before, seats)
         if not self.record_scopes(readings[-1][0], pending['scopes'][-1], set(), runtime):
             self.reject()
             self.refusal = ['post-unscoped' if pending['scopes'][-1] is None else 'post-removed']
@@ -243,6 +352,7 @@ class Partitions:
         return True
 
     def configure(self, service, inventory, scope):
+        self.runtime = getattr(service, 'runtime', None)
         owners = defaultdict(set)
         for item in inventory:
             for path, *_ in item['sources']:
@@ -278,7 +388,7 @@ class Partitions:
         """None means full, an empty set waits, otherwise these seats are dirty."""
         if self.baseline is None or catching_up or now >= self.due:
             return None
-        if not global_equal(self.baseline, reading):
+        if not global_equal(self.baseline, reading, set_aside=self.set_aside(self.baseline, reading)):
             return None
         self.refresh_dirty(reading)
         selected = set()
@@ -289,7 +399,11 @@ class Partitions:
             selected.update(owners)
         if not self.dirty_seats <= self.seats:
             return None
-        selected |= self.dirty_seats  # the seats whose attribution scope the post has moved
+        selected |= self.dirty_seats
+        moved = self.meta_dirty(reading)  # the seats whose own launch files moved, and whom their registries reach
+        if moved is None:
+            return None
+        selected |= moved  # the seats whose attribution scope the post has moved
         # The post has changed since the stamps every seat's scope was last compared at, or could not be read: a job
         # must take the seats' scopes again before anything stands on this post. With nothing else to read, that job
         # reads no seat (Gate.allowed).
@@ -307,7 +421,7 @@ class Partitions:
         return True
 
     def finish(self, before, after, own, now, backstop, *, scope, full, committed, retry, scopes=None, runtime=None):
-        if (not committed or retry or not global_equal(before, after, own)
+        if (not committed or retry or not global_equal(before, after, own, set_aside=self.set_aside(before, after))
                 or scope is None and not full
                 or scope is not None and not self.outside_equal(before, after, scope)):
             self.reject()
@@ -322,6 +436,9 @@ class Partitions:
         if not self.record_scopes(before, scopes, self.read if scope is None else scope, runtime):
             self.reject()
             return
+        if scope is None:
+            self.meta_seen, self.meta_named = {}, {}
+        self.record_meta(before, self.read if scope is None else scope)
         if scope is None:
             self.marks.clear()
             self.dirty = set(current)

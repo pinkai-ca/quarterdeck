@@ -115,6 +115,7 @@ def test_a_young_post_folder_keeps_the_post_due(tmp_path):
                        (1, 0, 0, 0, 0), 0, ((store, 'post-folder'),), (store,) if young else (), 0)
     partitions = Partitions()
     partitions.seats, partitions.certified = {ALPHA}, {ALPHA: 'synthetic-scope'}
+    partitions.runtime, partitions.meta_seen = tmp_path, {ALPHA: {}}  # no launch file of its own: nothing moved
     partitions.baseline, partitions.due = reading(False), float('inf')
     assert post_of(reading(True)) is None and post_of(reading(False)) == ((store, (1, 2, 3)),)
     assert partitions.record_scopes(reading(True), {ALPHA: 'synthetic-scope'}, set(), tmp_path)
