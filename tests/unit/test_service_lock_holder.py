@@ -44,7 +44,7 @@ def runtime(tmp_path):
 
 
 def child(*argv):
-    return subprocess.Popen([sys.executable, *argv], stdout=subprocess.PIPE, text=True)
+    return subprocess.Popen([sys.executable, *argv], stdout=subprocess.PIPE, text=True, start_new_session=True)
 
 
 def holding(runtime, script=HOLD):

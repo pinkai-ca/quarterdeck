@@ -105,7 +105,7 @@ runner.tick = runner.requests
 servicectl.write_heartbeat(runner.runtime)
 runner.run()
 ''', str(Path(request_queue.__file__).parents[1]), str(runtime), 'legacy' if legacy else 'current'],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         with selectors.DefaultSelector() as ready:
             ready.register(child.stdout, selectors.EVENT_READ)

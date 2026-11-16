@@ -138,7 +138,7 @@ def test_the_bound_releases_a_held_stop_leaves_the_intent_and_shows_on_the_line(
     runtime = tmp_path / 'runtime'
     runtime.mkdir()
     env = dict(os.environ, PYTHONPATH=str(Path(quarterdeck.__file__).resolve().parents[1]))
-    child = subprocess.Popen([sys.executable, '-c', CHILD, str(runtime)], env=env)
+    child = subprocess.Popen([sys.executable, '-c', CHILD, str(runtime)], env=env, start_new_session=True)
     try:
         deadline = time.monotonic() + 30
         while not (runtime / 'ready').exists():

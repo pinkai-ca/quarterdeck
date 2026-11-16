@@ -218,7 +218,8 @@ def test_a_busy_service_reads_busy_not_dead_and_qd_down_still_stops_it(ship: shi
     monkeypatch.setattr(shutdown, "ORDINARY_GRACE", 0.5)
     pause()
     proof = service.stop(ship.runtime)
-    assert proof == f"service killed · pid {pid} · it did not answer SIGTERM within 0.5s" and not service.alive(ship.runtime)
+    assert proof.startswith(f"service killed · pid {pid} · processes re-read: ")
+    assert proof.endswith(" · it did not answer SIGTERM within 0.5s") and not service.alive(ship.runtime)
 
 
 def aged(attempts: post.Attempts, attempt: post.Attempt, seconds: float) -> None:
