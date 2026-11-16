@@ -119,6 +119,7 @@ def freeze(source, destination):
     def mapped(path):
         return Path(external.get(str(path), str(path).replace(str(original.runtime), str(runtime))))
     record_counts = defaultdict(lambda: dict(files=0, bytes=0))
+    copied = {}
     for old, (program, role) in current.items():
         new = mapped(old)
         with old.open('rb') as stream:
@@ -135,6 +136,16 @@ def freeze(source, destination):
                         raise RuntimeError('unstable crew record') from None
         record_counts[program + '/' + role]['files'] += 1
         record_counts[program + '/' + role]['bytes'] += new.stat().st_size
+        copied[str(old)] = dict(path=str(new), program=program, role=role)
+
+    # Copy-only read aliases, never a receipt or a rewrite of a saved journal.
+    # Only records whose crew bodies were actually copied enter the allowed map.
+    aliases = dict(copied=copied,
+                   history=sorted({str(path) for path in history} | {str(mapped(path)) for path in history}),
+                   private=sorted({str(path) for path in excluded} | {str(mapped(path)) for path in excluded}),
+                   private_prefixes=[str(root / 'seats' / name / 'home') + '/'
+                                     for root in (original.runtime, runtime) for name in PRIVATE])
+    (destination / 'frozen-native-records.json').write_text(json.dumps(aliases))
 
     def rewrite(value):
         if isinstance(value, str):
@@ -188,6 +199,7 @@ class Audit:
         self.stack = []
         self.calls = defaultdict(Counter)
         self.blocked = Counter()
+        self.confirmations = Counter()
         self.enabled = False
         self.in_os_open = False
 
@@ -376,6 +388,28 @@ def run_child(folder, source, instrumented, variant='candidate', baseline=None):
     ship = shipmod.load(Path(folder))
     audit = Audit(ship.runtime, source)
     sys.addaudithook(audit.hook)
+    from quarterdeck import input_receipt
+    aliases = json.loads((Path(folder) / 'frozen-native-records.json').read_text())
+    copied = aliases['copied']
+    local = {value['path']: value for value in copied.values()}
+    private, history = set(aliases['private']), set(aliases['history'])
+    confirm = input_receipt.confirmed
+    def copied_confirmation(reader, record, text, since):
+        logical = str(record)
+        if logical in copied:
+            entry = copied[logical]
+            audit.confirmations['mapped'] += 1
+            audit.confirmations['mapped:' + entry['program'] + '/' + entry['role']] += 1
+            record = Path(entry['path'])
+        elif logical in local:
+            audit.confirmations['already-copy'] += 1
+        else:
+            reason = ('private' if logical in private or logical.startswith(tuple(aliases['private_prefixes']))
+                      else 'history' if logical in history else 'not-in-snapshot')
+            audit.confirmations['absent:' + reason] += 1
+            raise FileNotFoundError('saved record absent from the measured current crew inventory')
+        return confirm(reader, record, text, since)
+    input_receipt.confirmed = copied_confirmation
     def refused(name):
         def stop(*args, **kwargs):
             label = name
@@ -501,6 +535,7 @@ def run_child(folder, source, instrumented, variant='candidate', baseline=None):
                 actor.status_refresh = 0
             audit.enabled = instrumented
             guard_before = Counter(audit.blocked)
+            confirmations_before = Counter(audit.confirmations)
             plan_before = len(plans)
             before = time.process_time(), time.perf_counter()
             if instrumented:
@@ -517,6 +552,7 @@ def run_child(folder, source, instrumented, variant='candidate', baseline=None):
                 undeclared_attempt_seats=len({row.seat for row in actor.loaded_attempts or ()} - set(ship.seats)),
                 retired=dict(getattr(actor, 'post_retirement_counts', {})),
                 blocked_attempts=dict(Counter(audit.blocked) - guard_before),
+                confirmations=dict(Counter(audit.confirmations) - confirmations_before),
                 abandonment_calls=len(plans) - plan_before,
                 abandonment_planning_rows=sum(value for value in plans[plan_before:] if value is not None)))
         if instrumented:
@@ -528,6 +564,7 @@ def run_child(folder, source, instrumented, variant='candidate', baseline=None):
             for row in actor.attempts.all()], sort_keys=True).encode()).hexdigest()
         result['blocked'] = dict(blocked)
         result['blocked'].update(audit.blocked)
+        result['confirmations'] = dict(audit.confirmations)
         errors, kinds, frames = Counter(), Counter(), Counter()
         for line in actor.log_path.read_text().splitlines():
             row = json.loads(line)
@@ -603,6 +640,13 @@ except BaseException as error:
                         path.write_text(value.replace(str(frozen), str(folder)))
             declaration = folder / 'ship.toml'
             declaration.write_text(declaration.read_text().replace(str(frozen), str(folder)))
+            mapping = folder / 'frozen-native-records.json'
+            aliases = json.loads(mapping.read_text())
+            for value in aliases['copied'].values():
+                value['path'] = value['path'].replace(str(frozen), str(folder))
+            for key in ('history', 'private', 'private_prefixes'):
+                aliases[key] = [value.replace(str(frozen), str(folder)) for value in aliases[key]]
+            mapping.write_text(json.dumps(aliases))
             done = subprocess.run([sys.executable, '-I', '-c', code, str(Path.cwd()), str(folder), str(source), mode, str(baseline)],
                                   capture_output=True, text=True, env=child_environment)
             if done.returncode:
@@ -615,5 +659,6 @@ except BaseException as error:
         raise RuntimeError('quiet profile failed at ' + stage + ': ' + type(error).__name__ + '; opaque data withheld') from None
     evidence = [(sample['post_evidence'], sample['attempt_results']) for sample in result['samples']]
     assert all(item == evidence[0] for item in evidence), 'frozen reconciliation bytes or results differ'
+    assert all(sample['blocked'].get('source-access', 0) == 0 for sample in result['samples']), 'original source open attempted'
     with capsys.disabled():
         print('RECONCILE_PARTITION_PROOF ' + json.dumps(result, sort_keys=True), flush=True)
