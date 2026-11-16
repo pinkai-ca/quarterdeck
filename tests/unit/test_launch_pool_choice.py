@@ -121,6 +121,33 @@ def test_qd_set_on_a_down_seat_chooses_the_next_launch_and_it_is_taken_once(migr
     assert proof.startswith('worker: launched on first'), 'the next launch reads the ship file again'
 
 
+def test_a_refused_launch_keeps_the_qd_set_choice_and_the_next_up_takes_it(migrated, monkeypatch):
+    """A person's choice is used up only by a launch that starts: one refused at a door of _up leaves it as set."""
+    from quarterdeck import write_bound
+    r = migrated
+    walls(monkeypatch)  # room known on both: without the choice the next up would take first
+    r.worker.down()
+    seat = Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
+    cli.select(r.ship, seat, ['pool=second'])
+    real = write_bound.require_clear
+
+    def stopped_at_its_bound(seat):
+        raise ShipError(f'{seat.name}: stopped at its write bound')
+    monkeypatch.setattr(write_bound, 'require_clear', stopped_at_its_bound)
+    seat = Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
+    launches = len(r.launches)
+    with pytest.raises(ShipError, match='stopped at its write bound'):
+        seat.up()
+    assert seat.launched() is None and len(r.launches) == launches, 'refused before anything was started'
+    assert (seat.trusted / EXPLICIT).read_text() == 'second\n', 'a refused launch keeps the choice as the person set it'
+    assert (seat.trusted / 'pool').read_text() == 'second\n'
+    monkeypatch.setattr(write_bound, 'require_clear', real)
+    seat = Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
+    assert seat.up().startswith('worker: launched on second (chosen for this launch by qd set)')
+    assert not (seat.trusted / EXPLICIT).exists(), 'the launch that started takes the choice'
+    assert Seat(r.ship, r.ship.seat('worker'), r.tmux).launched().pool == 'second'
+
+
 def test_qd_set_never_writes_a_choice_while_a_launch_is_on_file(migrated):
     r = migrated
     r.live.clear()  # the pane is gone, its launch still on file

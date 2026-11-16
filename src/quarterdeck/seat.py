@@ -411,14 +411,16 @@ class Seat:
                     raise ShipError(f"{self.name}: saved pool missing with retained record; restore the selected pool")
         return self.ship.pool(name if name in self.spec.pools else self.spec.pools[0])
 
-    def move_to(self, pool: str, *, explicit: bool = False) -> None:
+    def move_to(self, pool: str, *, explicit: bool | None = False) -> None:
+        """Select ``pool``. ``explicit``: True records a person's choice for the next launch, False clears any, and
+        None leaves it as it is, for a selection made before a launch that can still be refused."""
         self.spec.for_pool(pool)
         trusted_files.make(self.ship.runtime, self.name)
         path = self.trusted / trusted_files.POOL
         durable.replace_file(path, pool + '\n')
         if explicit:
             durable.replace_file(self.trusted / EXPLICIT, pool + '\n')
-        else:
+        elif explicit is False:
             (self.trusted / EXPLICIT).unlink(missing_ok=True)
 
     def _saved_name(self) -> str | None:
@@ -876,7 +878,9 @@ class Seat:
                 self.harness.preflight_resume(selected, self.home, self._resume_id)
             if self.launched() is not None:
                 self._relaunch_down()  # retain the old record and reseed its source pool before changing selection
-            self.move_to(target)
+            # A person's choice is used up only by a launch that starts: _up clears it once its pane is open, and a
+            # launch refused at one of _up's doors leaves it as the person set it.
+            self.move_to(target, explicit=None)
             self.spec = selected
             if not same_program:
                 self.harness = harnesses.get(selected.harness)
