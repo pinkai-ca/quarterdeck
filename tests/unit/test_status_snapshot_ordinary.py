@@ -169,6 +169,9 @@ def test_status_publication_and_demand_do_not_change_accounting_certificate(publ
     from quarterdeck import accounting_gate, trusted_files
     ship, _, _, _ = published
     trusted_files.root(ship.runtime).mkdir(exist_ok=True)
+    status_snapshot.invalidate(ship.runtime)
+    status_snapshot.path(ship.runtime).parent.rmdir()
+    monkeypatch.setattr(presentation, 'time', status_snapshot.time)
     actor = service.Service(ship, SimpleNamespace())
     native_time = time.time_ns
     monkeypatch.setattr(accounting_gate, 'time', SimpleNamespace(
@@ -177,15 +180,15 @@ def test_status_publication_and_demand_do_not_change_accounting_certificate(publ
     gate = accounting_gate.Gate()
     try:
         actor.first_beat()
-        assert actor.publish_status()
         gate.begin(actor, ())
         gate.finish(actor, actor.ledger.db.total_changes, full=True)
         assert gate.completed is not None and not gate.allowed(actor)
         before = accounting_gate.capture(actor, ())
         assert status_snapshot.path(ship.runtime).parent == ship.runtime / 'status'
-        assert actor.publish_status()
-        assert accounting_gate.capture(actor, ()) == before
-        assert not gate.allowed(actor)
+        for _ in range(2):
+            assert actor.publish_status()
+            assert accounting_gate.capture(actor, ()) == before
+            assert not gate.allowed(actor)
         assert status_snapshot.request(ship)
         assert status_snapshot.served(ship) is not None
         assert accounting_gate.capture(actor, ()) == before
