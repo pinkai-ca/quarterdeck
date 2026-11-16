@@ -1030,7 +1030,14 @@ class Seat:
         other unread answers and reports still arrive as before.
         """
         from . import refusal, thread_context, post_threads
+        from .pr_screen import held as screening
 
+        if screening(self.ship.runtime, self.name):
+            # A launch the pull-request screen starts sits beside an outsider's text: it gets its brief and, once
+            # typed, the screen's own instruction, and nothing else of the post. No index line, no message id, no
+            # handoff, no notice history. A hand screens only with no open order of its own; an unreadable hold
+            # counts as one. The hand's next ordinary start, once the hold is released, carries its index again.
+            return carriagemod.Carriage(None, [])  # no first message at all: the native brief still loads
         store, attempts = post.Store(self.ship.runtime), post.Attempts(self.ship.runtime)
         with post.admission(self.ship.runtime, self.name):
             try:

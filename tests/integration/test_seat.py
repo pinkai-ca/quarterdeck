@@ -353,3 +353,33 @@ def test_qd_up_pool_on_a_plain_list_takes_a_declared_pool_and_refuses_another_in
     proof = seat.up(resume=False, pool="spare")
     assert proof.startswith("worker-1: launched on spare (chosen for this launch by qd up --pool)"), proof
     assert json.loads((seat.trusted / "launch.json").read_text())["pool"] == "spare"
+
+
+def test_a_screening_launch_carries_nothing_of_the_post_and_an_ordinary_one_still_does(handed: shipmod.Ship,
+                                                                                         tmux: Tmux):
+    """A launch the pull-request screen starts gets its brief and nothing else of the post: no index line, no
+    message id, no handoff. The same hand's ordinary fresh start, once the hold is released, carries its index."""
+    from quarterdeck import pr_screen
+    store = post.Store(handed.runtime)
+    order = store.new("order", "worker-1", "hand-1", "An invented open order.", subject="Invented subject")
+    handoff = store.new("order", "hand-1", "hand-1", "An invented handoff of its own.")
+    ids = {order.id, handoff.id, order.short, handoff.short}
+    hand = seatmod.Seat(handed, handed.seat("hand-1"), tmux)
+    pr_screen.hold(handed.runtime, "hand-1", "1-synthetic")
+    assert hand.first_message() == (None, []), "no first message: the brief alone"
+    proof = hand.up(resume=False)
+    assert "0 threads indexed" in proof or "indexed" not in proof, proof
+    launched = (hand.trusted / "launch.sh").read_text() + json.dumps(json.loads((hand.trusted / "launch.json").read_text()))
+    assert not any(ident in launched for ident in ids) and "ord-" not in launched, "no message id in what it was given"
+    assert handoff.body not in launched and order.body not in launched and "Invented subject" not in launched
+    assert not (hand.folder / "carried").exists() or not any(
+        ident in path.read_text() for path in (hand.folder / "carried").rglob("*") if path.is_file() for ident in ids)
+    hand.down()
+    pr_screen.release(handed.runtime, "hand-1")
+    opening, carried = hand.first_message()
+    assert opening.startswith("qd > briefed as hand-1, hand · 2 orders open") and order.id in opening
+    assert any(line.startswith("{") and order.id in line for line in opening.splitlines()), "its index again"
+    hand.up(resume=False)
+    record = wait_for(hand.record)
+    first = wait_for(lambda: (turns := hand.harness.turns(record)) and turns[0].input)
+    assert order.id in first, "the ordinary fresh start carries its index"
