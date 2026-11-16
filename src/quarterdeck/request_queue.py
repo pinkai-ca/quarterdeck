@@ -536,6 +536,10 @@ def _retire(runtime, name, reason, identifier=None):
             continue
         meta = metadata(path)
         if (claimed(path) is not False and not isinstance(meta.get('terminal'), str)
+                and 'control_confirmation' in meta):
+            raise ShipError(f'request {path.stem} not {reason}: its command may already be typed; '
+                            'the service confirms it; retained')
+        if (claimed(path) is not False and not isinstance(meta.get('terminal'), str)
                 and not (reason == 'cancelled' and stale_claim(path, meta))):
             raise ShipError(f'request {path.stem} already claimed; outcome unknown; retained')
         paths.append((path, data, meta))

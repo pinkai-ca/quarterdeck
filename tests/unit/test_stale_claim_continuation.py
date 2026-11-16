@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 SESSION, PRIOR, TARGET = 'synthetic-first-conversation', 'synthetic-prior', 'synthetic-next'
 
 
-def synthetic_seat(root: Path, when: str):
+def synthetic_seat(root: Path, when: str, name='synthetic-seat'):
     """A first-launch fake seat, built alike by the stopped service and the next one."""
     from quarterdeck.harness.fake import FakeHarness
     from quarterdeck.seat import Launched
@@ -28,7 +28,7 @@ def synthetic_seat(root: Path, when: str):
     launched = Launched('synthetic-pane', 123, when, 'synthetic-pool', None, ['fake'], 'fake', harness='fake')
     home = root / 'home'
     frame = '\n'.join(['─' * 40, '> ', '─' * 40, f'fake claude · model {TARGET} · effort low · idle'])
-    return SimpleNamespace(name='synthetic-seat', harness=harness, home=home,
+    return SimpleNamespace(name=name, harness=harness, home=home,
                            record=lambda: harness.join(home, launched.when).record,
                            launched=lambda: launched, read_pane=lambda: (object(), frame),
                            spec=SimpleNamespace(settings={'as': 'claude'}, model_mode='named', model=TARGET))
@@ -60,7 +60,7 @@ from test_stale_claim_continuation import service, synthetic_seat
 from quarterdeck import servicectl
 from quarterdeck.service import Service
 root, runtime = Path(sys.argv[3]), Path(sys.argv[4])
-seat = synthetic_seat(root, sys.argv[5])
+seat = synthetic_seat(root, sys.argv[5], sys.argv[6])
 typed = root / 'typed.jsonl'
 
 def deliver(command, confirm):
@@ -86,14 +86,12 @@ runner.run()
 '''
 
 
-@pytest.mark.parametrize('confirmed', [True, False])
-def test_a_typed_model_control_survives_a_service_stop_and_is_resumed_not_settled(tmp_path, monkeypatch, confirmed):
-    runtime = tmp_path / 'runtime'
+def typed_then_stopped(root: Path, runtime: Path, seat_name: str):
+    """A real service loop types the model control, and is stopped before its record confirms it."""
     when = (post.now() - timedelta(seconds=1)).isoformat()
-    path = request_queue.enqueue(runtime, 'control', dict(seat='synthetic-seat', name='model', value=TARGET),
-                                 name='model')
+    path = request_queue.enqueue(runtime, 'control', dict(seat=seat_name, name='model', value=TARGET), name='model')
     child = subprocess.Popen([sys.executable, '-c', CHILD, str(Path(request_queue.__file__).parents[1]), str(HERE),
-                              str(tmp_path), str(runtime), when],
+                              str(root), str(runtime), when, seat_name],
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              start_new_session=True)  # the stop binds a service by its own private session
     try:
@@ -111,21 +109,24 @@ def test_a_typed_model_control_survives_a_service_stop_and_is_resumed_not_settle
         if child.poll() is None:
             child.kill()
             child.communicate(timeout=5)
-
     # The claiming service is proved gone, and its claim carries the typed control's continuation.
     assert request_queue.stale_claim(path)
-    typed = (tmp_path / 'typed.jsonl').read_text().splitlines()
+    typed = (root / 'typed.jsonl').read_text().splitlines()
     assert typed == [f'/model {TARGET}']
+    return path, when, typed
+
+
+def resumed_by_next_service(root, runtime, path, when, typed, seat_name, monkeypatch, *, confirmed):
     started = datetime.fromisoformat(request_queue.control_continuation(path).started)
     # An injected clock: within the confirmation window, or past its deadline. No wall time decides.
     clock = started + timedelta(seconds=1 if confirmed else 31)
     monkeypatch.setattr(post, 'now', lambda: clock)
     if confirmed:
         from quarterdeck.harness.synthetic_record import ClaudeShape
-        ClaudeShape(tmp_path / 'home', tmp_path, SESSION, PRIOR).command(
+        ClaudeShape(root / 'home', root, SESSION, PRIOR).command(
             typed[0], f'Set model to {TARGET} and saved as your default for new sessions')
 
-    seat = synthetic_seat(tmp_path, when)
+    seat = synthetic_seat(root, when, seat_name)
     resumed = []
     runner = service(runtime, None)
 
@@ -149,13 +150,39 @@ def test_a_typed_model_control_survives_a_service_stop_and_is_resumed_not_settle
             runner.lock.close()
 
     done = path.with_suffix('.done').read_text().strip()
-    assert request_queue.RESTART_SETTLEMENT not in done
+    assert request_queue.RESTART_SETTLEMENT not in done and 'never applied' not in done
     assert resumed == [TARGET]
     if confirmed:
         assert done.startswith(f'model = {TARGET} · applied by /model {TARGET}') and 'confirmed by' in done
     else:
         assert done.startswith(f'model = {TARGET} · ') and 'unconfirmed' in done
     assert not path.exists() and not path.with_suffix('.claimed').exists()
-    assert (tmp_path / 'typed.jsonl').read_text().splitlines() == typed  # never typed again
+    assert (root / 'typed.jsonl').read_text().splitlines() == typed  # never typed again
     events = [json.loads(line) for line in runner.log_path.read_text().splitlines()]
     assert not [event for event in events if event['event'] == 'request-settled']
+
+
+@pytest.mark.parametrize('confirmed', [True, False])
+def test_a_typed_model_control_survives_a_service_stop_and_is_resumed_not_settled(tmp_path, monkeypatch, confirmed):
+    runtime = tmp_path / 'runtime'
+    path, when, typed = typed_then_stopped(tmp_path, runtime, 'synthetic-seat')
+    resumed_by_next_service(tmp_path, runtime, path, when, typed, 'synthetic-seat', monkeypatch, confirmed=confirmed)
+
+
+def test_cancel_refuses_a_typed_model_control_and_the_next_service_confirms_it(drydock, tmp_path, monkeypatch, capsys):
+    from quarterdeck import cli
+    from quarterdeck.ship import load
+
+    monkeypatch.delenv('QD_TMUX_SOCKET', raising=False)
+    runtime = load(drydock).runtime
+    path, when, typed = typed_then_stopped(tmp_path, runtime, 'worker-1')
+    before = {p: p.read_bytes() for p in (path, path.with_suffix('.claimed'), request_queue.state_path(path))}
+    assert cli.main(['--ship', str(drydock), 'restart', 'worker-1', '--cancel', path.stem]) == 2
+    err = capsys.readouterr().err
+    assert 'its command may already be typed; the service confirms it' in err and 'never applied' not in err
+    # Without an id, cancel withdraws only pending relaunches: the control is not one of them.
+    assert cli.main(['--ship', str(drydock), 'restart', 'worker-1', '--cancel']) == 0
+    assert 'no pending relaunch; nothing cancelled' in capsys.readouterr().out
+    assert {p: p.read_bytes() for p in before} == before
+    assert not path.with_suffix('.done').exists()
+    resumed_by_next_service(tmp_path, runtime, path, when, typed, 'worker-1', monkeypatch, confirmed=True)
