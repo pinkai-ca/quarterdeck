@@ -325,3 +325,31 @@ def test_a_down_seat_keeps_its_saved_pool_where_the_first_ones_room_is_unknown(
     monkeypatch.setattr(ledger.Ledger, "reading", classmethod(
         lambda cls, path: _Book(walled={"spare"}, unknown={"fake"})))
     assert seat.launch_choice() == ("spare", "saved choice retained; room unknown on fake")
+
+
+def test_a_saved_pool_no_longer_declared_gives_way_to_the_first_declared_even_with_no_ledger(
+        listed: shipmod.Ship, tmux: Tmux, monkeypatch):
+    from quarterdeck import ledger
+    _saved_on_spare(listed, tmux)
+    file = listed.folder / "ship.toml"  # the Admiral takes spare out of the list, and declares another
+    text = file.read_text().replace('pool = ["fake", "spare"]', 'pool = ["fake", "other"]', 1)
+    file.write_text(text.replace('[pools.spare]', '[pools.other]\nprovider = "synthetic"\n\n[pools.spare]', 1))
+    changed = shipmod.load(listed.folder)
+    monkeypatch.setattr(ledger.Ledger, "reading", classmethod(lambda cls, path: None))  # room known nowhere
+    seat = seatmod.Seat(changed, changed.seat("worker-1"), tmux, launching=True)
+    assert seat.launch_choice() == ("fake", "its saved spare is no longer declared; the first declared choice not "
+                                            "shown walled, its room unknown")
+    proof = seat.up(resume=False)
+    assert proof.startswith("worker-1: launched on fake (its saved spare is no longer declared"), proof
+    assert "its saved choice was spare" in proof
+    assert json.loads((seat.trusted / "launch.json").read_text())["pool"] == "fake"
+
+
+def test_qd_up_pool_on_a_plain_list_takes_a_declared_pool_and_refuses_another_in_true_words(
+        listed: shipmod.Ship, tmux: Tmux):
+    seat = seatmod.Seat(listed, listed.seat("worker-1"), tmux, launching=True)
+    with pytest.raises(ShipError, match=r"--pool 'elsewhere' is not one of its declared choices \(fake, spare\)"):
+        seat.up(resume=False, pool="elsewhere")
+    proof = seat.up(resume=False, pool="spare")
+    assert proof.startswith("worker-1: launched on spare (chosen for this launch by qd up --pool)"), proof
+    assert json.loads((seat.trusted / "launch.json").read_text())["pool"] == "spare"

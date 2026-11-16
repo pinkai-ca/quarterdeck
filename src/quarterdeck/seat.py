@@ -438,6 +438,13 @@ class Seat:
         finally:
             if book is not None:
                 book.close()
+        if saved not in pools:
+            # The ship file is the Admiral's order: a saved choice it no longer declares gives way even where no
+            # declared choice's room is known, to the first one not shown walled, else to the first declared.
+            if unknown:
+                return unknown[0], (f'its saved {saved} is no longer declared; the first declared choice not shown '
+                                    f'walled, its room unknown')
+            return pools[0], f'its saved {saved} is no longer declared and every declared choice is walled'
         if unknown:
             return current, f"saved choice retained; room unknown on {', '.join(unknown)}"
         return current, 'every declared choice is walled; its saved choice stays'
@@ -756,9 +763,9 @@ class Seat:
         ``pool`` for this one launch; a move to another program starts it fresh, as failover does."""
         with self._lifecycle():
             self.migrate()  # before the launch choice reads the pool selection in its new place
-            if pool is not None and (not self.spec.pool_choices or pool not in self.spec.pools):
-                raise ShipError(f"{self.name}: --pool {pool!r} is not one of its declared choices"
-                                + (f" ({', '.join(self.spec.pools)})" if self.spec.pool_choices else ""))
+            if pool is not None and pool not in self.spec.pools:  # a plain list declares its choices as tables do
+                raise ShipError(f"{self.name}: --pool {pool!r} is not one of its declared choices "
+                                f"({', '.join(self.spec.pools)})")
             reported = (resume and self.spec.fresh == 'after-order' and not self.is_up
                         and self._last_delivered_order_reported())
             if reported:
