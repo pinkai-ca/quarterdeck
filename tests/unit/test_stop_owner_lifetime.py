@@ -57,7 +57,7 @@ def stand_in(tmp_path, *, place="current", response="ignore"):
     runtime.mkdir()
     child = subprocess.Popen([sys.executable, "-c", HOLDER, str(runtime), place, response],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True)
+                             stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         assert child.stdout.readline().strip() == "held"
         child.descendants = {}
