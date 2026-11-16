@@ -130,3 +130,22 @@ def test_for_ship_names_its_own_server_for_the_scope(tmp_path, monkeypatch):
     ship = SimpleNamespace(name='test ship', runtime=tmp_path / 'runtime', folder=tmp_path)
     tmux = Tmux.for_ship(ship)
     assert tmux.ship and not tmux.legacy and tmux.name == 'test ship'
+
+
+def test_a_server_question_that_hangs_reads_as_not_answering_and_the_start_is_scoped(tmp_path, systemd_run):
+    import subprocess
+    from quarterdeck.tmux import PRIVATE_COMMAND_WAIT
+    runner = Runner()
+    asked = []
+
+    def hung(command, **kwargs):
+        if command[-1] == 'list-sessions':
+            asked.append(kwargs.get('timeout'))
+            raise subprocess.TimeoutExpired(command, kwargs.get('timeout'))
+        return runner(command, **kwargs)
+
+    tmux = ship_tmux(tmp_path, hung)
+    assert tmux._run(*NEW) == '$1\n'
+    assert asked == [PRIVATE_COMMAND_WAIT], 'the question is bounded'
+    [(command, _)] = runner.commands('new-session')
+    assert command[0] == str(systemd_run) and tmux.started_server.startswith('tmux server started in its own scope')

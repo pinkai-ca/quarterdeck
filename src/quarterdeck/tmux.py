@@ -416,9 +416,14 @@ class Tmux:
         return done.stdout
 
     def _answers(self, env) -> bool:
-        """Whether the ship's own server already runs: only a new-session that starts it is given a scope."""
-        done = self._runner(['tmux', '-u', '-S', self.socket, '-N', 'list-sessions'], capture_output=True, text=True,
-                            env=env)
+        """Whether the ship's own server already runs: only a new-session that starts it is given a scope. Bounded:
+        a server that does not answer in time reads as not answering, and the new-session goes into a scope, which
+        is harmless where a server does run (the client exits, and its scope with it)."""
+        try:
+            done = self._runner(['tmux', '-u', '-S', self.socket, '-N', 'list-sessions'], capture_output=True,
+                                text=True, env=env, timeout=PRIVATE_COMMAND_WAIT)
+        except subprocess.TimeoutExpired:
+            return False
         return done.returncode == 0
 
     def _in_own_scope(self, command: list[str], env) -> list[str]:
