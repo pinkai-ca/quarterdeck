@@ -39,15 +39,27 @@ def post_of(reading):
 
 
 def post_names(runtime):
-    """The message files of the post folders: a file that leaves breaks the post's contract (messages are immutable)."""
-    names = set()
+    """The message files of the post folders, each with its identity (device, inode) and size. Messages are
+    immutable: a file that leaves, or whose identity or size changes under its name, breaks the post's contract
+    (post_kept)."""
+    names = {}
     for folder in POST_FOLDERS:
-        path = Path(runtime) / 'post' / folder
         try:
-            names.update(folder + '/' + name for name in os.listdir(path))
+            with os.scandir(Path(runtime) / 'post' / folder) as entries:
+                for entry in entries:
+                    try:
+                        info = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    names[folder + '/' + entry.name] = (info.st_dev, info.st_ino, info.st_size)
         except FileNotFoundError:
             continue
-    return frozenset(names)
+    return names
+
+
+def post_kept(before, now):
+    """Every message file listed before is still here as it was: under its name, with its identity and its size."""
+    return all(now.get(name) == identity for name, identity in before.items())
 
 
 def global_valid(reading):
@@ -130,7 +142,7 @@ class Partitions:
         if scopes is None or runtime is None:
             return False
         names = post_names(runtime)
-        if self.post_names is not None and not self.post_names <= names:
+        if self.post_names is not None and not post_kept(self.post_names, names):
             return False
         for seat in read:
             self.certified[seat] = scopes.get(seat)

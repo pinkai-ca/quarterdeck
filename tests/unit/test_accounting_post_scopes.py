@@ -121,3 +121,48 @@ def test_a_young_post_folder_keeps_the_post_due(tmp_path):
     assert partitions.choose(reading(False), 0) == set() and partitions.post_due, 'young: taken again'
     assert partitions.record_scopes(reading(False), {ALPHA: 'synthetic-scope'}, set(), tmp_path)
     assert partitions.choose(reading(False), 0) == set() and not partitions.post_due, 'settled: covered'
+
+
+def certified_with(e, *names):
+    """The post certified with these message files present: a post-only job (reads no seat) takes their listing."""
+    for name in names:
+        (e.runtime / 'post' / 'store' / name).write_text('{"synthetic": "an ordinary message"}\n')
+    assert e.gate.allowed(e.service) and e.gate.scope == set()
+    assert e.begin(set())
+    e.finish(set())
+    assert e.gate.partitions.baseline is not None and not e.gate.allowed(e.service)
+
+
+def post_job(e):
+    assert e.gate.allowed(e.service) and e.gate.scope == set()
+    assert e.begin(set())
+    e.finish(set())
+
+
+def test_a_message_file_rewritten_in_place_under_its_name_forces_a_full_job(world):
+    e = world
+    certified_with(e, 'ordinary-message.json')
+    (e.runtime / 'post' / 'store' / 'ordinary-message.json').write_text('{"synthetic": "rewritten, longer than before"}\n')
+    (e.runtime / 'post' / 'store' / 'ordinary-new-message.json').write_text('{}\n')  # the folder moves too
+    post_job(e)
+    assert e.gate.partitions.baseline is None, 'its size changed under its name: the post contract is broken'
+    assert e.gate.allowed(e.service) and e.gate.scope is None
+
+
+def test_a_message_file_replaced_under_its_name_forces_a_full_job(world):
+    e = world
+    certified_with(e, 'ordinary-message.json')
+    replacement = e.runtime / 'post' / 'store' / 'ordinary-replacement.tmp'
+    replacement.write_text('{"synthetic": "an ordinary message"}\n')  # the same size, a new file
+    replacement.replace(e.runtime / 'post' / 'store' / 'ordinary-message.json')
+    post_job(e)
+    assert e.gate.partitions.baseline is None, 'its identity changed under its name: the post contract is broken'
+    assert e.gate.allowed(e.service) and e.gate.scope is None
+
+
+def test_an_unchanged_file_and_a_new_file_keep_the_post_narrowed(world):
+    e = world
+    certified_with(e, 'ordinary-message.json')
+    (e.runtime / 'post' / 'store' / 'ordinary-new-message.json').write_text('{}\n')
+    post_job(e)
+    assert e.gate.partitions.baseline is not None and not e.gate.allowed(e.service)
