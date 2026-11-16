@@ -460,7 +460,7 @@ def scoped(ship: Ship, environment: dict[str, str]) -> tuple[list[str], str | No
 
 
 def stop(runtime: Path) -> str:
-    """Signal the service that holds the lock and wait for the lock to drop; one that ignores SIGTERM is killed."""
+    """Signal the lock's owner; confirm its exit, ending its tree if it outlives the grace."""
     if not alive(runtime):
         remove_heartbeat(runtime)
         return "service was not running"
@@ -471,19 +471,33 @@ def stop(runtime: Path) -> str:
             return "service was not running"
         raise ShipError(f"a service holds {lock_path(runtime)} but its holder cannot be read"
                         f" (lock table: {_lock_rows(lock_path(runtime))}); fuser {lock_path(runtime)} names it")
-    from . import shutdown
+    from . import shutdown, write_bound
+    start = shutdown.process_start(pid)
+    identity = dict(pid=pid, start=start)
+    if start is None and not shutdown.process_gone(identity):
+        raise ShipError(f"service {pid} start cannot be read; exit cannot be confirmed")
     owner = shutdown.owner(runtime, pid)
-    if owner is not None and shutdown.process_start(pid) != owner["start"]:
+    if owner is not None and start != owner["start"]:
         owner = None
+    known = {pid: start} if start is not None else {}
+    try:
+        known.update(write_bound.tree(pid, start))
+    except OSError as error:
+        raise ShipError(f"service {pid} tree cannot be read ({type(error).__name__}); exit cannot be confirmed") from None
     from . import relaunch_intent
     term_started = time.monotonic()
     extended = shutdown.inflight(runtime, owner) is not None
     relaunching = bool(relaunch_intent.held_by(runtime, owner))
     for sig, patience, how in ((signal.SIGTERM, shutdown.ORDINARY_GRACE, "stopped"), (signal.SIGKILL, 2.0, "killed")):
         try:
-            os.kill(pid, sig)
+            if sig == signal.SIGKILL:
+                write_bound.kill(known, observed=known)
+            elif not shutdown.process_gone(identity):
+                os.kill(pid, sig)
         except ProcessLookupError:
             pass
+        except OSError as error:
+            raise ShipError(f"service {pid} tree could not be ended ({type(error).__name__}); exit cannot be confirmed") from None
         deadline = time.monotonic() + patience
         if sig == signal.SIGTERM and extended:
             deadline = max(deadline, term_started + shutdown.DELIVERY_GRACE)
@@ -501,10 +515,23 @@ def stop(runtime: Path) -> str:
             # The lock frees as the process closes its files, a moment before the kernel marks it gone: wait for
             # that event itself, within the same bound, so a slow machine is not read as an owner still alive.
             gone_by = time.monotonic() + EXIT_SETTLE
-            while owner is not None and time.monotonic() < gone_by and not shutdown.process_gone(owner):
+            while time.monotonic() < gone_by and not shutdown.process_gone(identity):
                 time.sleep(0.05)
+            released_alive = how == "stopped" and not shutdown.process_gone(identity)
+            remaining = any(not shutdown.process_gone(dict(pid=child, start=began))
+                            for child, began in known.items())
+            if remaining or released_alive:
+                try:
+                    write_bound.kill(known, observed=known)
+                except OSError as error:
+                    raise ShipError(f"service {pid} tree could not be ended ({type(error).__name__}); exit cannot be confirmed") from None
+            unconfirmed = [child for child, began in known.items()
+                           if not shutdown.process_gone(dict(pid=child, start=began))]
+            if unconfirmed or not shutdown.process_gone(identity):
+                names = ', '.join(map(str, sorted(set(unconfirmed) | {pid})))
+                raise ShipError(f"service {pid} exit cannot be confirmed after ending its tree; processes {names}")
             extended = extended or shutdown.inflight(runtime, owner) is not None
-            detail = shutdown.annotate(runtime, owner, forced=how == "killed")
+            detail = shutdown.annotate(runtime, owner, forced=how == "killed" or remaining or released_alive)
             stopped_beat = read_heartbeat(runtime)
             if stopped_beat is not None and stopped_beat[0] == pid:
                 remove_heartbeat(runtime)
@@ -513,6 +540,8 @@ def stop(runtime: Path) -> str:
             bound = max(shutdown.DELIVERY_GRACE if extended else shutdown.ORDINARY_GRACE,
                         relaunch_intent.GRACE if relaunching else 0)
             return (f"service {how} · pid {pid}"
+                    + (" · it released its lock but did not exit; killed with its tree" if released_alive else "")
+                    + (" · its remaining children were killed" if remaining and not released_alive and how == "stopped" else "")
                     + (f" · it did not answer SIGTERM within {bound:g}s" if how == "killed" else "")
                     + (f" · waited {time.monotonic() - term_started:.2f}s for delivery boundary (limit {shutdown.DELIVERY_GRACE:g}s)"
                        if extended else "")

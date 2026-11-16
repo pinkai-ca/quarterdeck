@@ -17,7 +17,7 @@ from quarterdeck.ship import ShipError
 
 
 HOLDER = r'''
-import fcntl, os, signal, sys
+import fcntl, os, signal, subprocess, sys
 from contextlib import nullcontext
 from pathlib import Path
 from quarterdeck import servicectl, shutdown
@@ -33,7 +33,12 @@ with scope:
     def term(*_):
         if response == 'exit':
             raise SystemExit(0)
-        if response == 'release':
+        if response == 'release-tree':
+            descendant = subprocess.Popen([sys.executable, '-c',
+                "import signal; print('ready', flush=True); signal.pause()"], stdout=subprocess.PIPE, text=True)
+            assert descendant.stdout.readline().strip() == 'ready'
+            print(f'child {descendant.pid} {shutdown.process_start(descendant.pid)}', flush=True)
+        if response.startswith('release'):
             lock.close()
             print('released', flush=True)
         else:
@@ -54,6 +59,7 @@ def stand_in(tmp_path, *, place="current", response="ignore"):
                              stderr=subprocess.PIPE, text=True)
     try:
         assert child.stdout.readline().strip() == "held"
+        child.descendants = {}
         yield runtime, child
     finally:
         if child.poll() is None:
@@ -68,15 +74,26 @@ def stopping_clock(monkeypatch, child, response="ignore"):
     kill = os.kill
 
     def send(pid, sig):
-        assert pid == child.pid
+        assert pid == child.pid or pid in child.descendants
         signals.append(sig)
         kill(pid, sig)
+        if pid != child.pid:
+            return
         if sig == signal.SIGTERM and response != "exit":
-            assert child.stdout.readline().strip() == ("released" if response == "release" else "ignored")
-        else:
+            line = child.stdout.readline().strip()
+            if line.startswith("child "):
+                _, descendant, start = line.split()
+                child.descendants[int(descendant)] = start
+                line = child.stdout.readline().strip()
+            assert line == ("released" if response.startswith("release") else "ignored")
+        elif sig in (signal.SIGTERM, signal.SIGKILL):
             child.wait(timeout=20)
 
     def sleep(seconds):
+        if response == "release-exit" and signal.SIGTERM in signals and child.poll() is None:
+            child.stdin.write("x")
+            child.stdin.flush()
+            child.wait(timeout=20)
         ticks[0] += seconds
 
     monkeypatch.setattr(servicectl, "time", SimpleNamespace(monotonic=lambda: ticks[0], sleep=sleep))
@@ -91,7 +108,7 @@ def test_ignoring_term_is_killed_before_the_proof_returns(tmp_path, monkeypatch,
         signals = stopping_clock(monkeypatch, child)
         result = servicectl.stop(runtime)
         assert result.startswith("service killed")
-        assert signals == [signal.SIGTERM, signal.SIGKILL]
+        assert signals == [signal.SIGTERM, signal.SIGSTOP, signal.SIGKILL]
         assert child.poll() is not None
         assert not servicectl.locked(runtime)
 
@@ -158,13 +175,41 @@ def test_an_owner_that_ends_between_readings_is_not_running(tmp_path, monkeypatc
         assert child.poll() is not None and not servicectl.locked(runtime)
 
 
-def test_a_released_lock_does_not_prove_its_owner_has_ended(tmp_path, monkeypatch):
-    with stand_in(tmp_path, response="release") as (runtime, child):
+@pytest.mark.parametrize("response", ["release", "release-tree"])
+def test_a_released_lock_does_not_prove_its_owner_has_ended(tmp_path, monkeypatch, response):
+    with stand_in(tmp_path, response=response) as (runtime, child):
         expected = shutdown.owner(runtime, child.pid)
         assert expected is not None
+        signals = stopping_clock(monkeypatch, child, response=response)
+        result = servicectl.stop(runtime)
+        assert result.startswith("service stopped")
+        assert f"pid {child.pid}" in result
+        assert "released its lock but did not exit; killed with its tree" in result
+        assert signal.SIGKILL in signals
+        assert child.poll() is not None and shutdown.process_gone(expected)
+        assert not servicectl.locked(runtime)
+        if response == "release-tree":
+            assert child.descendants
+            assert all(shutdown.process_gone(dict(pid=pid, start=start))
+                       for pid, start in child.descendants.items())
+
+
+def test_a_normal_exit_after_release_is_not_killed(tmp_path, monkeypatch):
+    with stand_in(tmp_path, response="release-exit") as (runtime, child):
+        signals = stopping_clock(monkeypatch, child, response="release-exit")
+        result = servicectl.stop(runtime)
+        assert result.startswith("service stopped")
+        assert "killed" not in result
+        assert signals == [signal.SIGTERM]
+        assert child.poll() == 0 and not servicectl.locked(runtime)
+
+
+def test_an_unconfirmed_exit_refuses_by_process_name(tmp_path, monkeypatch):
+    from quarterdeck import write_bound
+
+    with stand_in(tmp_path, response="release") as (runtime, child):
         stopping_clock(monkeypatch, child, response="release")
-        try:
-            result = servicectl.stop(runtime)
-        except ShipError:
-            return  # Refusing an owner that is still alive is an honest outcome.
-        assert child.poll() is not None or not result.startswith(("service stopped", "service was not running"))
+        monkeypatch.setattr(write_bound, "kill", lambda *args, **kwargs: [])
+        with pytest.raises(ShipError, match=f"service {child.pid} exit cannot be confirmed"):
+            servicectl.stop(runtime)
+        assert child.poll() is None and not servicectl.locked(runtime)
