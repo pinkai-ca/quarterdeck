@@ -97,7 +97,7 @@ Quarterdeck is written by its own crew of agents, on a ship that runs Quarterdec
 1. One agent builds the change on a branch of its own, in a worktree under `work/`, with the tests that prove the change.
 2. The captain reviews the change once.
 3. The first officer runs the whole suite at the branch's last commit, and signs that exact commit.
-4. On the captain's order, the first officer lands the signed commit on `main` and pushes `main` to GitHub.
-5. GitHub runs the tests again, as a second witness.
+4. On the captain's order, the first officer lands the signed commit on `main`.
+5. Four times a day `main` is pushed to GitHub, and GitHub runs the tests again on what was pushed, as a second witness.
 
 A change from outside the crew comes as a pull request on GitHub. The pull request's branch takes the place of step 1, and steps 2 to 5 follow.
