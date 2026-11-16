@@ -538,7 +538,7 @@ def test_malformed_extension_is_a_visible_hold_not_an_absent_reservation(world, 
     assert world.native.calls == calls
 
 
-def measured_hand_turn(record):
+def measured_hand_turn(record, *, capped_reasoning=8192, capped_written=0, tool=False):
     """The structure of a hand's capped grading turn as measured on 16 November 2026, with synthetic content:
     one accepted order, two completed tool steps with brief reasoning, then a step whose whole 8,192-token output
     went to reasoning, finished 'length' with no text part."""
@@ -568,13 +568,18 @@ def measured_hand_turn(record):
         part(con, f'{mid}-end', mid, 'root', at + 19, {'type': 'step-finish', 'reason': 'tool-calls',
                                                        'tokens': tokens, 'cost': 0})
         at += 30
-    tokens = {'total': 20129 + 8192, 'input': 20129, 'output': 0, 'reasoning': 8192, 'cache': {'read': 0, 'write': 0}}
+    tokens = {'total': 20129 + capped_reasoning + capped_written, 'input': 20129, 'output': capped_written,
+              'reasoning': capped_reasoning,
+              'cache': {'read': 0, 'write': 0}}
     message(con, 'capped', 'root', at, {'role': 'assistant', 'parentID': 'input', 'agent': 'build', 'mode': 'build',
         'modelID': 'qwen3.8-27b', 'providerID': 'synthetic', 'time': {'created': MS + at, 'completed': MS + at + 50},
         'finish': 'length', 'tokens': tokens})
     part(con, 'capped-start', 'capped', 'root', at + 1, {'type': 'step-start'})
     part(con, 'thinking', 'capped', 'root', at + 2, {'type': 'reasoning', 'text': 'Synthetic thinking ' * 1600,
         'time': {'start': MS + at + 2, 'end': MS + at + 49}})
+    if tool:  # a call made within the capped step: work, not thinking alone
+        part(con, 'capped-tool', 'capped', 'root', at + 40, {'type': 'tool', 'tool': 'read', 'callID': 'capped-call',
+             'state': {'status': 'completed', 'time': {'start': MS + at + 40, 'end': MS + at + 45}}})
     part(con, 'capped-end', 'capped', 'root', at + 50, {'type': 'step-finish', 'reason': 'length',
                                                         'tokens': tokens, 'cost': 0})
     con.commit()
@@ -596,3 +601,24 @@ def test_a_seat_whose_status_line_shows_its_working_folder_still_gets_its_one_co
         ('keys', ('C-t',)), ('keys', ('Enter',)), ('keys', ('C-t',))]
     recovery.run(world.service)
     assert len(world.native.inputs) == 1, 'still the only automatic recovery'
+
+
+def test_a_hand_that_wrote_a_few_tokens_at_its_cap_gets_its_one_continuation(world):
+    """Measured on a hand on 16 November 2026: reasoning 8,189 and written 3 at the 8,192 cap, no text part."""
+    measured_hand_turn(world.record, capped_reasoning=8189, capped_written=3)
+    world.native.folder = 'hands/synthetic'
+    state = world.seat.harness.state(world.record)
+    assert (state.capped.reasoning, state.capped.written) == (8189, 3)
+    recovery.run(world.service)
+    proof = journal(world)
+    assert proof.data['phase'] == 'delivered' and proof.data['recovery']['mode'] == 'done'
+    assert len(world.native.inputs) == 1
+
+
+def test_a_capped_turn_with_a_tool_call_gets_no_continuation(world):
+    measured_hand_turn(world.record, capped_reasoning=8189, capped_written=3, tool=True)
+    world.native.folder = 'hands/synthetic'
+    assert world.seat.harness.state(world.record).capped is None, 'a call is work: never a thinking-only cap'
+    recovery.run(world.service)
+    proofs, errors = pending.journals(world.seat)
+    assert not errors and proofs == [] and world.native.inputs == []

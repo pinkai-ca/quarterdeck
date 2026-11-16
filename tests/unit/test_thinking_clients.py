@@ -11,6 +11,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from quarterdeck.harness import opencode_thinking
+
 from quarterdeck import endpoint
 from quarterdeck.harness import get
 from quarterdeck.harness.types import CappedGeneration
@@ -51,7 +53,12 @@ def test_only_the_proved_native_budget_contract_is_eligible(native):
     assert not found.eligible(replace(cap, provider='other'))
     if native.name == 'opencode':
         assert found.eligible(replace(cap, reasoning=8191, written=1))
-        assert not found.eligible(replace(cap, reasoning=8190, written=2))
+        assert found.eligible(replace(cap, reasoning=8189, written=3)), 'measured on a hand on 16 November 2026'
+        bound = opencode_thinking.WRITTEN_BOUND
+        assert found.eligible(replace(cap, reasoning=8192 - bound, written=bound)), 'the bound itself'
+        assert not found.eligible(replace(cap, reasoning=8192 - bound - 1, written=bound + 1)), 'past it: a cut answer'
+        assert not found.eligible(replace(cap, reasoning=8189, written=2)), 'short of the cap'
+        assert not found.eligible(replace(cap, reasoning=8189, written=4)), 'past the cap'
         assert native.launch.env['OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX'] == '8192'
         assert native.launch.recovery['environment']['OPENCODE_EXPERIMENTAL_NATIVE_LLM'] == '0'
     else:

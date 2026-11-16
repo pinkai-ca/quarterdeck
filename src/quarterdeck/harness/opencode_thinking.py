@@ -16,6 +16,12 @@ FILES = ('config/opencode/opencode.json',)
 OVERRIDE = {'chat_template_kwargs': {'enable_thinking': False}}
 CAP_KEYS = {'max_tokens', 'max_completion_tokens', 'max_output_tokens', 'maxOutputTokens', 'maxTokens', 'outputTokenMax'}
 THINKING_KEYS = {'thinking', 'reasoning_effort', 'reasoningEffort', 'thinking_budget', 'reasoningBudget'}
+# The most tokens a turn capped in thought may account as written. Measured on the hands' capped turns of 16 November
+# 2026: twelve at the 8,192 cap, eleven with 0 written and one with 3, and none with a text part. Those few tokens are
+# the end of the thinking block and its whitespace, counted as output though no text is returned (as the loopback
+# proof showed for 1). 32 is ten times the most measured. The reader already refuses a capped turn with any text or
+# tool part, so this bounds only the accounting, and a real cut answer never reaches it.
+WRITTEN_BOUND = 32
 
 
 def competing(value, keys):
@@ -122,11 +128,13 @@ class Client:
 
     def eligible(self, capped):
         limit = self.settings['output']
-        # These are two exact native accounting shapes, not a character-derived
-        # estimate or a generic length retry. Loopback accounting proof preserves
-        # completion8192/reasoning8191 as output1 despite no returned text part.
+        # The native accounting of a turn that spent its whole allowance thinking: reasoning and written together
+        # reach the cap exactly, and written is at most WRITTEN_BOUND tokens, never a character-derived estimate or
+        # a generic length retry. The reader has already refused any text or tool part (opencode_record._generation).
         return (capped.model == self.settings['model'] and capped.provider == self.settings['provider']
-                and (capped.reasoning, capped.written) in ((limit, 0), (limit - 1, 1)))
+                and type(capped.reasoning) is int and type(capped.written) is int
+                and capped.reasoning > 0 and 0 <= capped.written <= WRITTEN_BOUND
+                and capped.reasoning + capped.written == limit)
 
     def accepted_input(self, record, text, since, conversation):
         from .opencode_record import _Rows
