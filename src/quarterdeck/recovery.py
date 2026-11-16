@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import datetime
 import time
 
-from . import post, record_owner
+from . import post, record_owner, seat_files
 from .harness.types import CappedGeneration
 from .harness.thinking import digest, validate_launch
 from .ship import ShipError
@@ -278,7 +278,7 @@ def run(service):
     for seat in service.resolved_seats():
         try:
             _seat(service, seat, pending)
-        except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, seat_files.LinkRefused) as error:
             service.log('error', step='thinking-recovery', seat=seat.name, error=str(error))
             proofs, errors = pending.journals(seat)
             if not errors:

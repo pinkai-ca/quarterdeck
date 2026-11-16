@@ -20,7 +20,7 @@ from datetime import datetime
 from contextlib import nullcontext
 from pathlib import Path
 
-from . import harness as harnesses, human_wake, inbox_watch, input_receipt, lifecycle, post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import harness as harnesses, human_wake, inbox_watch, input_receipt, lifecycle, post, seat as seatmod, seat_files, service, ship as shipmod, standing, watch
 from . import service_wait
 from .post import Attempts, Store
 from .pending import journals
@@ -299,7 +299,7 @@ class Drill:
                     reason = "a delivery is still being typed or confirmed"
                     return None
                 was_blind = bool(current and current[-1].result == 'blind')
-            except (OSError, ValueError, TypeError):
+            except (OSError, ValueError, TypeError, seat_files.LinkRefused):  # the stand-in watch's file, refused
                 reason = "delivery evidence is unreadable"
                 return None
             try:

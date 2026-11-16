@@ -706,10 +706,11 @@ class Seat:
             if self.harness.home_variable is not None and not inside_home(record, self.home):
                 # A home is its jail's to write: a pin through a link there is never this seat's record.
                 return Join(None, f"record outside the home: {record.name} is not this seat's own; inspect with qd watch {self.name}")  # law: one-record
+            from . import seat_files
             try:
                 owner = (record_owner.pinned_reader(self, record) if publish else
                          self._lookup_reader(record))
-            except OSError as error:
+            except (OSError, seat_files.LinkRefused) as error:  # a link its jail planted on the way: refused, named
                 return Join(None, f"record reader unknown: {error}; inspect with qd watch {self.name}")
             if owner != self.spec.harness:
                 return Join(None, f"record reader {'unknown' if owner is None else 'changed'}: retained {owner or 'untyped'} record {record.name}; "
@@ -721,7 +722,8 @@ class Seat:
                 return Join(None, f"record retired: {record.name}; use qd fresh {self.name}")
             if record.exists():
                 if publish and not self._join_retained(record, self.launched()):
-                    self._note_owned(record)
+                    if refused := self._noted_or_refused(record):
+                        return refused
                 return Join(record)
             return Join(None, f"record missing: {record.name}; restore the owned record if available; inspect with qd watch {self.name}")
         return None
@@ -755,8 +757,19 @@ class Seat:
         if found.record is not None:
             trusted_files.make(self.ship.runtime, self.name)
             durable.replace_file(pinned, str(found.record) + "\n")  # law: one-record
-            self._note_owned(found.record)
+            if refused := self._noted_or_refused(found.record):
+                return refused
         return found
+
+    def _noted_or_refused(self, record: Path) -> Join | None:
+        """Note the record as owned; a link its jail planted where the home belongs refuses that, and the join with
+        it: a record found through such a link is not this seat's own. Named, never raised."""
+        from . import seat_files
+        try:
+            self._note_owned(record)
+        except seat_files.LinkRefused as error:
+            return Join(None, f"record ownership refused: {error}; inspect with qd watch {self.name}")
+        return None
 
     def _note_owned(self, record: Path) -> None:
         record_owner.register(self.trusted, record, self.spec.harness)
@@ -783,11 +796,12 @@ class Seat:
                     pinned = sibling.trusted / trusted_files.RECORD
                     if not pinned.is_file():
                         return True
+                    from . import seat_files
                     try:
                         record = Path(pinned.read_text().strip())
                         if not record.exists() or record_owner.pinned_reader(sibling, record) != sibling.spec.harness:
                             return True
-                    except OSError:
+                    except (OSError, seat_files.LinkRefused):  # a sibling's planted link: it cannot certify either
                         return True
         return False
 
