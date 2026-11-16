@@ -53,6 +53,16 @@ def notice(status='completed', *, note=False, version='2.1.317'):
                   message=dict(role='user', content=text)), 'version': version}
 
 
+@pytest.fixture(autouse=True)
+def old_notice_clock(monkeypatch):
+    """The reader judges a notice's age on its own clock, never wall time: here every notice is an hour old."""
+    at_clock(monkeypatch, 3600)
+
+
+def at_clock(monkeypatch, seconds):
+    monkeypatch.setattr(claude._Reader, 'clock', staticmethod(lambda: AT + timedelta(seconds=seconds)), raising=False)
+
+
 def record(tmp_path, rows):
     path = tmp_path / 'record-spruce.jsonl'
     path.write_text(''.join(json.dumps(entry) + '\n' for entry in rows))
@@ -352,3 +362,123 @@ def test_other_task_evidence_is_never_hidden_by_the_resume_allowance(tmp_path, m
     seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=True, rows=rows + [entry])
     assert idle.reading(seat, explicit=True, relaunch=True).hold is not None
     assert service.relaunch(seat, True) is None and calls == []
+
+
+GRACE = getattr(claude, 'NOTICE_GRACE_SECONDS', 60)
+REPLY = dict(role='assistant', id='message-elm', model='synthetic-model', stop_reason='end_turn',
+             content=[dict(type='text', text='synthetic notice response')], usage=dict(input_tokens=7, output_tokens=3))
+
+
+def append(path, *rows):
+    with path.open('a') as stream:
+        stream.write(''.join(json.dumps(entry) + '\n' for entry in rows))
+
+
+@pytest.mark.parametrize('age', [0, 2, GRACE - 0.001])
+@pytest.mark.parametrize('stopped', [False, True])
+def test_a_fresh_unanswered_notice_reads_turn_unknown_and_a_restart_waits(tmp_path, monkeypatch, age, stopped):
+    seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=stopped)
+    at_clock(monkeypatch, 5 + age)  # the notice is at second 5
+    state = seat.harness.state(seat.record())
+    assert state.turn_open is None
+    assert state == claude._Reader(seat.record()).state()
+    assert state.last_input_at == AT and state.queued == () and state.completed_turns[-1].ended == AT + timedelta(seconds=3)
+    assert idle.check(state).dimension == 'turn-unknown'
+    assert watch.activity(seat, now=AT + timedelta(seconds=5 + age)).state == 'unknown'
+    assert idle.reading(seat, explicit=True, relaunch=True).hold.dimension == 'turn-unknown'
+    answer = service.relaunch_request(dict(seat=seat.name, resume=True, caller='synthetic-controller',
+                                         created_at=(AT + timedelta(seconds=6)).isoformat()))
+    assert answer.startswith('refused: seat-spruce waits for turn state unknown') and calls == []
+    assert service.relaunch(seat, True) is None and calls == []
+    assert service.request_wait == ('turn-unknown', 'turn state unknown')
+
+
+@pytest.mark.parametrize('working', [True, False])
+def test_while_a_notice_is_fresh_the_screen_decides_whether_the_seat_works(tmp_path, monkeypatch, working):
+    seat, _, _ = resumed_seat(tmp_path, monkeypatch, stopped=False)
+    at_clock(monkeypatch, 6)
+    screen = Screen('synthetic composer', box='', working=working, queued=0)
+    monkeypatch.setattr(seat.harness, 'screen', lambda _: screen)
+    assert seat.harness.state(seat.record()).turn_open is None
+    assert seat.is_working() is working
+
+
+@pytest.mark.parametrize('age', [GRACE, GRACE + 1, 3600])
+@pytest.mark.parametrize('stopped', [False, True])
+def test_an_old_unanswered_notice_reads_idle_and_its_restart_applies(tmp_path, monkeypatch, age, stopped):
+    seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=stopped)
+    at_clock(monkeypatch, 5 + age)
+    state = seat.harness.state(seat.record())
+    assert state.turn_open is False
+    assert seat.is_working() is False
+    answer = service.relaunch_request(dict(seat=seat.name, resume=True, caller='synthetic-controller',
+                                         created_at=(AT + timedelta(seconds=6)).isoformat()))
+    assert answer == 'synthetic restart applied' and calls == ['restart']
+
+
+def test_the_same_cached_reading_turns_idle_once_the_grace_has_passed(tmp_path, monkeypatch):
+    seat, _, _ = resumed_seat(tmp_path, monkeypatch, stopped=False)
+    path = seat.record()
+    at_clock(monkeypatch, 6)
+    assert claude.state(path).turn_open is None
+    at_clock(monkeypatch, 5 + GRACE)
+    assert claude.state(path).turn_open is False  # the same bytes: only the reader's clock moved
+    at_clock(monkeypatch, 6)
+    assert claude.state(path).turn_open is None
+
+
+def test_an_assistant_row_after_a_fresh_notice_reads_as_before(tmp_path, monkeypatch):
+    seat, _, _ = resumed_seat(tmp_path, monkeypatch, stopped=False)
+    path = seat.record()
+    at_clock(monkeypatch, 6)
+    append(path, row('assistant', 6, message=REPLY))
+    working = claude.state(path)
+    assert working.turn_open is True and working == claude._Reader(path).state()
+    assert idle.check(working).dimension == 'turn-open'
+    append(path, row('system', 8, subtype='turn_duration'))
+    at_clock(monkeypatch, 9)
+    done = claude.state(path)
+    assert done.turn_open is False and done.turns == 2 and idle.check(done) is None
+
+
+def test_an_unclassified_assistant_row_ends_the_window_as_before(tmp_path, monkeypatch):
+    path = record(tmp_path, completed_background_turn() + [notice(), row('assistant', 6, message=dict(
+        role='assistant', content=[dict(type='synthetic-unknown-block')]))])
+    at_clock(monkeypatch, 6)
+    state = claude.state(path)
+    assert state.turn_open is False and state.pending_tools is None
+    assert idle.check(state).dimension == 'tools-unknown'
+
+
+def test_rows_other_than_an_assistant_row_keep_the_window_open(tmp_path, monkeypatch):
+    path = record(tmp_path, completed_background_turn() + [
+        notice(), row('api-request', 5.2), row('attachment', 5.3, attachment=dict(type='synthetic-attachment'))])
+    at_clock(monkeypatch, 6)
+    assert claude.state(path).turn_open is None
+    at_clock(monkeypatch, 5 + GRACE)
+    assert claude.state(path).turn_open is False
+
+
+def test_a_typed_prompt_after_a_fresh_notice_opens_its_turn_as_before(tmp_path, monkeypatch):
+    path = record(tmp_path, completed_background_turn() + [
+        notice(), row('user', 6, message=dict(role='user', content='synthetic next input'))])
+    at_clock(monkeypatch, 6)
+    state = claude.state(path)
+    assert state.turn_open is True and state.last_input == 'synthetic next input'
+
+
+def test_a_notice_whose_time_cannot_be_read_stays_unknown_until_a_reply(tmp_path, monkeypatch):
+    entry = notice()
+    del entry['timestamp']
+    path = record(tmp_path, completed_background_turn() + [entry])
+    assert claude.state(path).turn_open is None  # an hour after every other row: its own age is not known
+    append(path, row('assistant', 6, message=REPLY))
+    assert claude.state(path).turn_open is True
+
+
+def test_a_notice_during_an_open_turn_opens_no_window_of_its_own(tmp_path, monkeypatch):
+    path = record(tmp_path, completed_background_turn()[:-1] + [notice()])
+    at_clock(monkeypatch, 6)
+    assert claude.state(path).turn_open is True
+    append(path, row('system', 7, subtype='turn_duration'))
+    assert claude.state(path).turn_open is False

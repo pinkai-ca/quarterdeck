@@ -436,9 +436,24 @@ def queued_notice(entry: dict) -> str | None:
 
 
 
+# A measured notice is the program's own input and opens no turn, so between it and the first assistant row of the
+# program's reply to it the record alone would read idle. For that window turn_open reads unknown and the screen
+# decides (law: record-first); once an assistant row is written, or the grace has passed, it reads as before.
+# Measured on the crew's Claude records of 16 November 2026 (767 records, 2.1.317 and 2.1.325): of 894
+# task-notification user rows followed by an assistant row, that row came after a median of 2.9 s, 11.7 s at the
+# 99th percentile and 42.4 s at most; a typed prompt's first assistant row (7991) came within 60.5 s at the 99.9th
+# percentile. The grace is above every measured notice and at that percentile of typed prompts.
+NOTICE_GRACE_SECONDS = 60
+
+
+def _wall_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class _Reader(JsonLinesReader):
     kinds = ('assistant', 'queue-operation', 'system', 'user')
     label = "Claude Code"
+    clock = staticmethod(_wall_clock)  # the notice grace is judged on this clock alone; a test injects its own
 
     def __init__(self, record: Path, snapshot=None):
         self.orphan_auth = None
@@ -450,6 +465,7 @@ class _Reader(JsonLinesReader):
         self.background = BackgroundBash(record)
         self.walls = []
         self.notice_input = None  # accounting candidate only: a notice cannot open a turn
+        self.notice_unanswered, self.notice_at = False, None  # a notice no assistant row has followed, and its time
         super().__init__(record, snapshot)
 
     def state(self, *, launched_at=None):
@@ -457,7 +473,22 @@ class _Reader(JsonLinesReader):
         if state.queue_error is None and any(slot.uncertain and slot.phase in ('queued', 'pending')
                                              for slot in self.queue_slots):
             state = replace(state, queue_error='unknown queue operation')
+        if self.answering_notice():
+            state = replace(state, turn_open=None)
         return replace(state, failure=self.orphan_auth) if self.open is None and self.orphan_auth else state
+
+    def answering_notice(self) -> bool:
+        """No turn is open, the program's own notice came within the grace and no assistant row has followed it.
+
+        The program may be answering it: the record alone cannot say the seat is idle. A notice whose time cannot be
+        read cannot be shown old, so it reads the same until an assistant row or a turn's end follows it.
+        """
+        if self.open is not None or not self.notice_unanswered:
+            return False
+        at = self.notice_at
+        if at is None or at.tzinfo is None:
+            return True
+        return (self.clock() - at).total_seconds() < NOTICE_GRACE_SECONDS
 
     def take(self, entry: dict) -> None:
         entry = self.textless_dequeue.take(entry)
@@ -493,6 +524,7 @@ class _Reader(JsonLinesReader):
             self.assistant(entry)
         elif kind == "system" and entry.get("subtype") == "turn_duration":
             self.notice_input = None
+            self.notice_unanswered = False
             if self.open is not None:
                 self.end(when(entry.get("timestamp")), native_end=True)  # the one entry that says the turn is over
                 self.complete_queue(entry)
@@ -624,6 +656,7 @@ class _Reader(JsonLinesReader):
             self.consume_queued(content)
             if self.open is None:
                 self.notice_input = content
+                self.notice_unanswered, self.notice_at = True, when(entry.get('timestamp'))
             return
         if isinstance(content, str) and content.startswith("<local-command-stdout>"):
             if match := SET_MODEL.search(content):
@@ -637,6 +670,7 @@ class _Reader(JsonLinesReader):
             return
         if text is not None:
             self.notice_input = None
+            self.notice_unanswered = False
             self.orphan_auth = None
             self.last_input, self.last_input_at = text, when(entry.get("timestamp"))
             self.consume_queued(text)
@@ -658,6 +692,7 @@ class _Reader(JsonLinesReader):
         next prompt does.
         """
         message = entry.get("message", {})
+        self.notice_unanswered = False  # the program has answered: its reply row decides from here
         if (self.open is None and self.notice_input is not None
                 and message.get('role') == 'assistant'
                 and self.content_known(message.get('content'), 'assistant')):
@@ -717,6 +752,7 @@ class _Reader(JsonLinesReader):
 
     def end(self, at: datetime | None, *, completed: bool = True, native_end: bool = False) -> None:
         self.notice_input = None
+        self.notice_unanswered = False
         turn = self.close_turn()
         tokens = sum(turn["usage"].values(), Tokens()) if turn["usage"] else Tokens.unknown()
         self.record_turn(
