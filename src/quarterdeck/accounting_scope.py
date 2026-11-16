@@ -10,6 +10,10 @@ from pathlib import Path
 
 
 RECORD_CLASSES = frozenset(('record', '-wal'))
+POST_CLASS = 'post-folder'
+# The post's own reading: Threads.scope at an unbounded end, which holds every message any of the seat's verdicts can see.
+SCOPE_END = '9999-12-31T23:59:59+00:00'
+POST_FOLDERS = ('store', 'imports', 'forwarded', 'addressed')
 
 
 def records(reading):
@@ -18,13 +22,39 @@ def records(reading):
 
 
 def globals_of(reading):
+    """Every input but the records and the post folders. The post is no global barrier: each seat's attribution scope
+    (Threads.scope) carries it, seat by seat (Partitions.record_scopes)."""
     classes = dict(reading.classes)
     return (tuple((path, stamp) for path, stamp in reading.inputs[0]
-                  if classes.get(path) not in RECORD_CLASSES), *reading.inputs[1:])
+                  if classes.get(path) not in RECORD_CLASSES and classes.get(path) != POST_CLASS), *reading.inputs[1:])
+
+
+def post_of(reading):
+    """The post folders' stamps in a reading, or None when one is young: a message may still be landing within the
+    filesystem's tick, so this reading cannot stand for the post."""
+    paths = {path for path, kind in reading.classes if kind == POST_CLASS}
+    if paths & set(reading.young):
+        return None
+    return tuple((path, stamp) for path, stamp in reading.inputs[0] if path in paths)
+
+
+def post_names(runtime):
+    """The message files of the post folders: a file that leaves breaks the post's contract (messages are immutable)."""
+    names = set()
+    for folder in POST_FOLDERS:
+        path = Path(runtime) / 'post' / folder
+        try:
+            names.update(folder + '/' + name for name in os.listdir(path))
+        except FileNotFoundError:
+            continue
+    return frozenset(names)
 
 
 def global_valid(reading):
-    return reading is not None and not set(reading.young).difference(records(reading))
+    if reading is None:
+        return False
+    classes = dict(reading.classes)
+    return not {path for path in reading.young if classes.get(path) != POST_CLASS}.difference(records(reading))
 
 
 def seat_metadata(reading, runtime, seats):
@@ -57,7 +87,8 @@ def barriers(first, last, set_aside, young, own_changes):
 def globals_without(reading, paths):
     classes = dict(reading.classes)
     return (tuple((path, stamp) for path, stamp in reading.inputs[0]
-                  if classes.get(path) not in RECORD_CLASSES and path not in paths), *reading.inputs[1:])
+                  if classes.get(path) not in RECORD_CLASSES and classes.get(path) != POST_CLASS
+                  and path not in paths), *reading.inputs[1:])
 
 
 def global_equal(before, after, own=0):
@@ -76,21 +107,47 @@ class Partitions:
         self.due = 0.0
         self.pending = None  # a full job some seats moved under, waiting for its retries (stitch)
         self.refusal = []  # the barrier classes that refused the last stitch: classes only, never a path or seat
+        # The post, seat by seat: each seat's attribution scope (Threads.scope at SCOPE_END) as its last whole read
+        # used it, the seats whose scope has moved since, the post folders' stamps every seat's scope was last
+        # compared at, and the message files then present.
+        self.certified, self.dirty_seats = {}, set()
+        self.post_seen, self.post_names, self.post_due = None, None, False
 
     def reject(self, *, keep_pending=False):
         self.baseline = None
         self.marks.clear()
+        self.certified, self.dirty_seats = {}, set()
+        self.post_seen, self.post_names = None, None
         if not keep_pending:
             self.pending = None
 
-    def hold_full(self, before, after, own, moved, runtime):
+    def record_scopes(self, before, scopes, read, runtime):
+        """A committed job's post, seat by seat. ``scopes`` are the attribution scopes of every seat at the job's own
+        post (its child's Threads, built after ``before``): the seats it read whole are certified at theirs, and every
+        seat whose scope differs from its certified one is dirty, to be read by a scoped job. The post is then
+        compared up to ``before``'s stamps, unless a post folder was young there. A message file that has left
+        breaks the post's contract: False, and nothing is certified."""
+        if scopes is None or runtime is None:
+            return False
+        names = post_names(runtime)
+        if self.post_names is not None and not self.post_names <= names:
+            return False
+        for seat in read:
+            self.certified[seat] = scopes.get(seat)
+        self.dirty_seats = {seat for seat in self.seats
+                            if self.certified.get(seat) is None or scopes.get(seat) != self.certified[seat]}
+        self.post_seen, self.post_names = post_of(before), names
+        return True
+
+    def hold_full(self, before, after, own, moved, runtime, scopes=None):
         """A full job found these seats moved: what it read whole of every other seat waits for their retries, which
         read the moved seats whole once. Nothing is certified until they have."""
         self.reject()
         if before is None or after is None:
             return
         kept = set(self.seats) - set(moved)
-        self.pending = dict(runtime=runtime, readings=[(before, after, kept, own, True)], discarded=0)
+        self.pending = dict(runtime=runtime, readings=[(before, after, kept, own, True)], discarded=0,
+                            scopes=[scopes], post_names=post_names(runtime))
 
     def discard_retry(self, own):
         """A retry that was itself reset: it certifies nothing, but its own ledger writes are the job's, not another
@@ -99,11 +156,12 @@ class Partitions:
         if self.pending is not None:
             self.pending['discarded'] += own
 
-    def add_retry(self, before, after, scope, own):
+    def add_retry(self, before, after, scope, own, scopes=None):
         """A retry of moved seats read them whole: its readings certify those seats' records. A seat its read failed
         for was not read whole: the retry certifies nothing of it, and its records go dirty at the stitch."""
         if self.pending is not None and before is not None and after is not None:
             self.pending['readings'].append((before, after, set(scope) & self.read, own, False))
+            self.pending['scopes'].append(scopes)
 
     def stitch(self, now, backstop):
         """The full job's continuation has emptied: every seat was read whole once, by the full job or by a retry.
@@ -123,7 +181,8 @@ class Partitions:
         moved = set().union(*(seats for _, _, seats, _, full in readings if not full))
         runtime = pending['runtime']
         own = seat_metadata(first, runtime, moved) | seat_metadata(last, runtime, moved)
-        young = (set(first.young) | set(last.young)) - set(records(first)) - set(records(last)) - own
+        posts = {path for reading in (first, last) for path, kind in reading.classes if kind == POST_CLASS}
+        young = (set(first.young) | set(last.young)) - set(records(first)) - set(records(last)) - own - posts
         own_changes = sum(reading[3] for reading in readings) + pending.get('discarded', 0)
         refusal = barriers(first, last, own, young, own_changes)
         if refusal:
@@ -152,6 +211,18 @@ class Partitions:
                 if (path in old and old[path] == stamp
                         and path not in before.young and path not in after.young):
                     marks[path] = stamp
+        # The post, seat by seat: each seat is certified at the scope its own reading's child used, and the newest
+        # child's scopes say which seats the post has moved since. The certificate's post stands only at the stamps
+        # those digests were taken after; a later message keeps the post due (choose) until a job covers it.
+        certified = {}
+        for (_, _, seats, _, _), scopes in zip(readings, pending['scopes']):
+            for seat in seats:
+                certified[seat] = scopes.get(seat) if scopes else None
+        self.certified, self.post_names = certified, pending['post_names']
+        if not self.record_scopes(readings[-1][0], pending['scopes'][-1], set(), runtime):
+            self.reject()
+            self.refusal = ['post-unscoped' if pending['scopes'][-1] is None else 'post-removed']
+            return False
         current = records(last)
         self.marks = marks
         self.dirty = {path for path in current if path not in marks}
@@ -204,6 +275,13 @@ class Partitions:
             if len(owners) != 1 or not set(owners) <= self.seats:
                 return None  # ambiguous, retired or unknown ownership is a full-job barrier
             selected.update(owners)
+        if not self.dirty_seats <= self.seats:
+            return None
+        selected |= self.dirty_seats  # the seats whose attribution scope the post has moved
+        # The post has changed since the stamps every seat's scope was last compared at, or could not be read: a job
+        # must take the seats' scopes again before anything stands on this post. With nothing else to read, that job
+        # reads no seat (Gate.allowed).
+        self.post_due = self.post_seen is None or post_of(reading) != self.post_seen
         return selected
 
     def outside_equal(self, before, after, scope):
@@ -216,7 +294,7 @@ class Partitions:
                 return False
         return True
 
-    def finish(self, before, after, own, now, backstop, *, scope, full, committed, retry):
+    def finish(self, before, after, own, now, backstop, *, scope, full, committed, retry, scopes=None, runtime=None):
         if (not committed or retry or not global_equal(before, after, own)
                 or scope is None and not full
                 or scope is not None and not self.outside_equal(before, after, scope)):
@@ -225,6 +303,13 @@ class Partitions:
         old, current = records(before), records(after)
         if scope is not None:
             scope = set(scope) & self.read  # a scoped seat whose read failed is outside the job: nothing of it is marked
+        if scope is None:
+            # A full job's child built its post afresh: every seat it read is certified at it, and no earlier post
+            # listing is its to compare.
+            self.certified, self.post_names = {}, None
+        if not self.record_scopes(before, scopes, self.read if scope is None else scope, runtime):
+            self.reject()
+            return
         if scope is None:
             self.marks.clear()
             self.dirty = set(current)

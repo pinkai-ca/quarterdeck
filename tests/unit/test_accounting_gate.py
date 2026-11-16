@@ -315,7 +315,8 @@ def test_a_change_made_while_collecting_starts_the_next_job(example, monkeypatch
         yield
     def pump():
         if driver.active and not driver.events and not driver.ready:
-            driver.ready.append(('done',))
+            from tests.unit.test_accounting_scoped_jobs import with_scopes
+            driver.ready.extend(with_scopes(driver, [('done',)]))
         return False
     monkeypatch.setattr(driver, 'collect', collect)
     monkeypatch.setattr(driver, 'pump', pump)

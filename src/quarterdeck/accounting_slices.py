@@ -29,6 +29,7 @@ from .harness import reader_stamp
 from .harness.sqlite_snapshot import snapshot
 from .harness.json_record import release
 from .harness.base import record_fingerprint
+from .accounting_scope import SCOPE_END
 from .ledger import Ledger
 from .order_attribution import Threads
 from .provenance import UNKNOWN, Provenance
@@ -256,6 +257,10 @@ def worker():
                     staged.finish_catchup(job['epoch'])
             if last_attribution[0] is not None:
                 release(last_attribution[0])
+            # Every seat's attribution scope at the post this job's replay read: Threads.scope itself, at an unbounded
+            # end, which holds every message any of the seat's verdicts can see. A superset: it may dirty a seat more
+            # often than its turns need, never less. The parent compares them seat by seat (Partitions.record_scopes).
+            send(('scopes', post_scopes(graph, job.get('names', ()))))
             send(('done',))
         except Exception as error:
             send(('error', accounting_health.cause(error)))
@@ -263,6 +268,13 @@ def worker():
         finally:
             if book is not None:
                 book.close()
+
+
+def post_scopes(graph, names):
+    """Each seat's attribution scope at this post: Threads.scope itself, at an unbounded end (SCOPE_END). Every message
+    any of the seat's verdicts can see is in it, so it moves whenever a turn's own scope could: it may dirty a seat more
+    often than its turns need, never less. The accounting child sends these; the parent compares them seat by seat."""
+    return {name: graph.scope(name, SCOPE_END) for name in names}
 
 
 @dataclass
@@ -297,6 +309,7 @@ class Driver:
         self.scope = None
         self.watched = set()
         self.completion = []
+        self.scopes = None
         self.job = 0
         self.counts, self.records = Counter(), set()
         self.completed_records = self.reported_records = 0
@@ -392,8 +405,10 @@ class Driver:
             self.plan.truncate(0)
             os.lseek(self.plan.fileno(), 0, os.SEEK_SET)
         self.plan_offset = 0
+        names = sorted(self.gate.partitions.seats) if self.gate.partitions is not None else []
+        self.scopes = None
         self.outgoing.extend(frame(dict(runtime=str(service.runtime), epoch=service.accounting_epoch,
-                                        seats=self.seats, reset=self.reset_child,
+                                        seats=self.seats, reset=self.reset_child, names=names,
                                         scope=sorted(self.scope) if self.scope is not None else None)))
         self.reset_child = False
         self.started = time.monotonic()
@@ -532,7 +547,7 @@ class Driver:
                 self.gate.finish(service, self.step_changes, full=self.scope is None and not self.invalid
                                  and not service.ledger.catching_up(),
                                  committed=not self.invalid and not service.ledger.catching_up(),
-                                 moved=moved, emptied=emptied)
+                                 moved=moved, emptied=emptied, scopes=self.scopes)
         return not self.active
 
     def step(self, service, *, seconds=None, wait=True):
@@ -663,6 +678,8 @@ class Driver:
                         self.gate.hold(packet[1], packet[2])
                     elif packet[0] == 'error':
                         raise RuntimeError(packet[1])
+                    elif packet[0] == 'scopes':
+                        self.scopes = packet[1]
                     elif packet[0] == 'done':
                         self.events.append((packet, self.context[1]))
                         break

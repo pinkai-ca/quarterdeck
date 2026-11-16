@@ -268,8 +268,12 @@ class Gate:
                 # A held seat the partitions no longer know cannot be read alone: the job is full.
                 self.held = held
                 self.scope = self.scope | held if held <= p.seats else None
-            allowed = self.scope is None or bool(self.scope)
+            # Only the post moved: a job that reads no seat takes every seat's scope again (Partitions.record_scopes).
+            post_only = self.scope is not None and not self.scope and p.post_due
+            allowed = self.scope is None or bool(self.scope) or post_only
             self.decision = evidence(p.baseline, reading, issues) if allowed else {}
+            if post_only:
+                self.decision['post-scopes'] = 1
             if due and allowed:
                 self.decision['held-reading'] = due  # a class and a count: never a seat, path or record
             if self.scope:
@@ -337,9 +341,10 @@ class Gate:
         if self.started is not None:
             self.own_changes += after - max(before, self.started.sql[2])
 
-    def finish(self, service, step_before, *, full, committed=True, moved=(), emptied=False):
+    def finish(self, service, step_before, *, full, committed=True, moved=(), emptied=False, scopes=None):
         """``moved``: the seats a full job found moved, whose continuation retries them; ``emptied``: this retry
-        emptied that continuation, so every seat has now been read whole once (Partitions.stitch)."""
+        emptied that continuation, so every seat has now been read whole once (Partitions.stitch); ``scopes``: every
+        seat's attribution scope at the post the job's child read (Partitions.record_scopes)."""
         issues = {}
         before = self.started
         after = (capture(service, self.records, issues=issues) if self.partitions is None else
@@ -357,10 +362,10 @@ class Gate:
         if self.partitions is not None:
             own = self.own_changes + extra
             if self.job_scope is None and moved:
-                self.partitions.hold_full(before, after, own, moved, service.runtime)
+                self.partitions.hold_full(before, after, own, moved, service.runtime, scopes)
             elif self.job_retry and self.partitions.pending is not None:
                 if committed:
-                    self.partitions.add_retry(before, after, self.job_scope, own)
+                    self.partitions.add_retry(before, after, self.job_scope, own, scopes)
                     if emptied:
                         stitched = self.partitions.stitch(time.monotonic(), BACKSTOP)
                         if not stitched and self.partitions.refusal:
@@ -372,7 +377,8 @@ class Gate:
                     self.partitions.discard_retry(own)
             else:
                 self.partitions.finish(before, after, own, time.monotonic(), BACKSTOP,
-                                       scope=self.job_scope, full=full, committed=committed, retry=self.job_retry)
+                                       scope=self.job_scope, full=full, committed=committed, retry=self.job_retry,
+                                       scopes=scopes, runtime=service.runtime)
             self.due = self.partitions.due
         self.previous = dict(completed=int(self.completed is not None), full=int(full), stitched=int(stitched),
                              begin_valid=int(before is not None and not before.young),

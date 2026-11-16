@@ -7,7 +7,7 @@ from pathlib import Path
 
 from quarterdeck import trusted_files
 from quarterdeck.accounting_gate import BACKSTOP
-from .test_accounting_scoped_jobs import change, world  # noqa: F401
+from .test_accounting_scoped_jobs import change, scopes_of, world  # noqa: F401
 
 ALPHA, BETA = 'ordinary-alpha', 'ordinary-beta'
 
@@ -29,7 +29,7 @@ def full_then_retry(e, *, during_full=(), between=(), during_retry=(), retry_rea
     for act in during_full:
         act()
     e.clock.mono += span
-    e.gate.finish(e.service, e.db.total_changes, full=False, committed=False, moved={ALPHA})
+    e.gate.finish(e.service, e.db.total_changes, full=False, committed=False, moved={ALPHA}, scopes=scopes_of(e.gate))
     assert e.gate.partitions.pending is not None and e.gate.partitions.baseline is None
     for act in between:
         act()
@@ -43,7 +43,7 @@ def full_then_retry(e, *, during_full=(), between=(), during_retry=(), retry_rea
     for act in during_retry:
         act()
     e.clock.mono += 5
-    e.gate.finish(e.service, e.db.total_changes, full=False, committed=True, emptied=True)
+    e.gate.finish(e.service, e.db.total_changes, full=False, committed=True, emptied=True, scopes=scopes_of(e.gate))
     return started, e.clock.mono
 
 
@@ -88,8 +88,8 @@ def test_a_record_that_changed_while_the_job_read_it_is_never_marked(world):
 
 def test_a_global_change_across_the_span_still_forces_a_full_job(world):
     e = world
-    post = e.runtime / 'post' / 'store' / 'synthetic-message.json'
-    full_then_retry(e, between=[lambda: post.write_text(json.dumps({'id': 'synthetic'}))])
+    settings = e.service.ship.folder / 'ship.toml'
+    full_then_retry(e, between=[lambda: settings.write_text('Synthetic declaration, changed.\n')])
     p = e.gate.partitions
     assert e.gate.previous['stitched'] == 0 and p.baseline is None
     assert e.gate.allowed(e.service) and e.gate.scope is None
@@ -222,8 +222,26 @@ def test_a_refused_stitch_logs_its_barrier_class_only(world):
     e = world
     logged = []
     e.service.log = lambda event, **fields: logged.append((event, fields))
-    post = e.runtime / 'post' / 'store' / 'synthetic-message.json'
-    full_then_retry(e, between=[lambda: post.write_text(json.dumps({'id': 'synthetic'}))])
+    settings = e.service.ship.folder / 'ship.toml'
+    full_then_retry(e, between=[lambda: settings.write_text('Synthetic declaration, changed.\n')])
     refused = [fields for event, fields in logged if event == 'accounting-stitch-refused']
-    assert refused == [dict(classes=['post-folder'])]
-    assert e.gate.previous['stitch-refused'] == ['post-folder']
+    assert refused == [dict(classes=['settings'])]
+    assert e.gate.previous['stitch-refused'] == ['settings']
+
+
+def test_a_message_that_lands_after_the_retry_began_keeps_the_post_due_after_the_stitch(world):
+    """The race: the certificate's post stands only at the stamps the newest digests were taken after. A message that
+    lands after the retry began is not in them: after the stitch the post is due, and a job takes the scopes again."""
+    e = world
+    late = e.runtime / 'post' / 'store' / 'synthetic-late-message.json'
+    full_then_retry(e, during_retry=[lambda: late.write_text(json.dumps({'id': 'synthetic-late'}))])
+    assert e.gate.previous['stitched'] == 1, 'the post is no global barrier'
+    assert e.gate.allowed(e.service) and e.gate.scope == set() and e.gate.decision.get('post-scopes') == 1
+
+
+def test_a_message_that_lands_before_the_retry_began_is_covered_by_its_scopes(world):
+    e = world
+    early = e.runtime / 'post' / 'store' / 'synthetic-early-message.json'
+    full_then_retry(e, between=[lambda: early.write_text(json.dumps({'id': 'synthetic-early'}))])
+    assert e.gate.previous['stitched'] == 1
+    assert not e.gate.allowed(e.service), 'the retry\'s scopes were taken after it: covered'

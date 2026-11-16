@@ -53,7 +53,7 @@ def world(tmp_path, monkeypatch):
         gate.begin(service, sources)
         return gate.confirm(service, sources)
     def finish(scope=None, *, committed=True):
-        gate.finish(service, db.total_changes, full=scope is None, committed=committed)
+        gate.finish(service, db.total_changes, full=scope is None, committed=committed, scopes=scopes_of(gate))
     assert begin()
     finish()
     assert not gate.allowed(service)
@@ -61,6 +61,17 @@ def world(tmp_path, monkeypatch):
                           inventory=inventory, seats=seats, pending=pending,
                           begin=begin, finish=finish, runtime=runtime)
     db.close()
+
+
+def scopes_of(gate, value='synthetic-scope'):
+    """Every known seat's attribution scope, as a job's child reports it: one constant, the post being unchanged."""
+    return {name: value for name in (gate.partitions.seats if gate.partitions is not None else ())}
+
+
+def with_scopes(driver, packets):
+    """A fake child's replies, with its scopes before its 'done', as the real child sends them."""
+    return [item for packet in packets
+            for item in ((('scopes', scopes_of(driver.gate)), packet) if packet[0] == 'done' else (packet,))]
 
 
 def change(path):
@@ -86,13 +97,12 @@ def test_one_changed_record_or_wal_selects_only_its_seat(world, wal):
     assert e.gate.due == due
 
 
-@pytest.mark.parametrize('barrier', ['post', 'launch', 'registry', 'settings', 'hash', 'sql', 'external-sql'])
+# The post is no global barrier: each seat's attribution scope carries it (test_accounting_post_scopes).
+@pytest.mark.parametrize('barrier', ['launch', 'registry', 'settings', 'hash', 'sql', 'external-sql'])
 def test_each_global_barrier_requires_full_work(world, monkeypatch, barrier):
     e = world
     change(e.paths['ordinary-alpha'])
-    if barrier == 'post':
-        (e.runtime / 'post/store/ordinary-message').write_text('Ordinary immutable publication.\n')
-    elif barrier == 'launch':
+    if barrier == 'launch':
         (trusted_files.of_home(e.seats[1].home) / trusted_files.LAUNCH).write_text('Ordinary new launch.\n')
     elif barrier == 'registry':
         change(trusted_files.of_home(e.seats[1].home) / trusted_files.READERS)
@@ -145,8 +155,8 @@ def test_concurrent_outside_or_global_change_forces_a_full_followup(world, phase
     assert e.gate.allowed(e.service) and e.gate.scope == {'ordinary-alpha'}
     if phase == 'during-job':
         assert e.begin(e.gate.scope)
-    if global_change:
-        (e.runtime / 'post/store/ordinary-message').write_text('Ordinary concurrent publication.\n')
+    if global_change:  # another seat's launch metadata: a global barrier
+        (trusted_files.of_home(e.seats[1].home) / trusted_files.LAUNCH).write_text('Ordinary concurrent launch.\n')
     else:
         change(e.paths['ordinary-beta'])
     if phase == 'before-start':

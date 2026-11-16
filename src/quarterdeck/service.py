@@ -259,7 +259,7 @@ class Service:
 
     def timings(self):
         if getattr(self, 'service_timings', None) is None:
-            self.service_timings = service_timing.Timings()
+            self.service_timings = service_timing.Timings(changes=lambda: self.ledger.db.total_changes)
         return self.service_timings
 
     def tick(self) -> None:

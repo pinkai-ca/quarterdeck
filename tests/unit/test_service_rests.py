@@ -490,7 +490,7 @@ def test_status_summaries_count_full_collections_separately_from_cheap_checks(sc
     service.status_due()  # a real input check, unchanged; no collection
     timing = service.timings()
     assert timing.status_checks == 101
-    assert timing.rows['status'] == dict(calls=1, wall=2.0, cpu=1.0, max_wall=2.0, max_cpu=1.0)
+    assert timing.rows['status'] == dict(calls=1, wall=2.0, cpu=1.0, max_wall=2.0, max_cpu=1.0, ledger_writes=0)
     lines = []
     clock[0] = 60.0
     timing.publish(lambda event, **row: lines.append(row))
@@ -540,3 +540,28 @@ def test_the_door_is_read_again_only_for_seats_whose_own_pending_or_drop_folder_
     assert service_status.door_seats(ship, before, before) == frozenset()
     posted, other = service_status.split(ship, before + ((str(ship.runtime / 'seats/worker'), 1),))
     assert posted == before and other == ((str(ship.runtime / 'seats/worker'), 1),)
+
+
+def test_each_duty_counts_the_ledger_rows_it_writes_and_nothing_else():
+    """The duty counter: a duty's row counts the ledger rows written while it ran, a number under its fixed name, and
+    a duty that writes nothing counts none; a counter that cannot be read leaves the count out."""
+    import sqlite3
+    from quarterdeck import service_timing
+    db = sqlite3.connect(':memory:')
+    db.execute('CREATE TABLE ordinary(value TEXT)')
+    timing = service_timing.Timings(changes=lambda: db.total_changes)
+    with timing.measure('refresh_usage'):
+        db.executemany('INSERT INTO ordinary VALUES (?)', [('a',), ('b',), ('c',)])
+    with timing.measure('views'):
+        pass
+    logged = []
+    timing.since -= service_timing.INTERVAL
+    timing.publish(lambda event, **fields: logged.append(fields))
+    duties = logged[0]['duties']
+    assert duties['refresh_usage']['ledger_writes'] == 3 and duties['views']['ledger_writes'] == 0
+    def unreadable():
+        raise sqlite3.ProgrammingError('closed')
+    timing = service_timing.Timings(changes=unreadable)
+    with timing.measure('views'):
+        pass
+    assert 'ledger_writes' not in timing.rows['views']

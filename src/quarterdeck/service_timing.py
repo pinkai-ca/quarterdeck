@@ -19,8 +19,12 @@ def duty_name(name):
 
 
 class Timings:
-    def __init__(self):
+    def __init__(self, changes=None):
+        """``changes``: the service's ledger write count (its connection's total_changes). Each duty's row then counts
+        the ledger rows it wrote, a number under its fixed name: which duties write the ledger outside the accounting
+        job, read before any narrowing of the accounting gate's other-writers barrier is built on them."""
         self.since = time.monotonic()
+        self.changes = changes
         self.rows = {}
         self.status_checks = 0
         self.accounting_waits = 0
@@ -31,16 +35,28 @@ class Timings:
         # put runtime identities into the summary or create unbounded rows.
         name = duty_name(name)
         wall, cpu = time.monotonic(), time.process_time()
+        written = self.written()
         try:
             yield
         finally:
             elapsed, used = max(0.0, time.monotonic() - wall), max(0.0, time.process_time() - cpu)
             row = self.rows.setdefault(name, dict(calls=0, wall=0.0, cpu=0.0, max_wall=0.0, max_cpu=0.0))
+            after = self.written()
+            if written is not None and after is not None and after >= written:
+                row['ledger_writes'] = row.get('ledger_writes', 0) + after - written
             row['calls'] += 1
             row['wall'] += elapsed
             row['cpu'] += used
             row['max_wall'] = max(row['max_wall'], elapsed)
             row['max_cpu'] = max(row['max_cpu'], used)
+
+    def written(self):
+        if self.changes is None:
+            return None
+        try:
+            return int(self.changes())
+        except Exception:  # a ledger being reopened or closed: this duty's count is simply not taken
+            return None
 
     def publish(self, log):
         now = time.monotonic()

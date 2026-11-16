@@ -20,7 +20,7 @@ from quarterdeck.accounting_health import Health
 from quarterdeck.accounting_slices import Driver, frame, receive
 from quarterdeck.harness import claude, held_reading
 from tests.unit.test_accounting_gate import example  # noqa: F401  (fixture)
-from tests.unit.test_accounting_scoped_jobs import change, world  # noqa: F401  (fixture)
+from tests.unit.test_accounting_scoped_jobs import change, with_scopes, world  # noqa: F401  (fixture)
 from tests.unit.test_resume_notice_ordinary import AT
 
 
@@ -125,7 +125,7 @@ def test_the_driver_starts_a_job_for_a_due_hold_before_the_backstop(world, monke
 
     def pump():
         if driver.active and not driver.events and not driver.ready:
-            driver.ready.extend(replies.pop(0) if replies else [('done',)])
+            driver.ready.extend(with_scopes(driver, replies.pop(0) if replies else [('done',)]))
         return False
 
     monkeypatch.setattr(driver, 'collect', collect)
