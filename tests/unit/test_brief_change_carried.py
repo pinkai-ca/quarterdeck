@@ -201,3 +201,37 @@ def test_an_office_seats_watch_delivery_carries_the_change_too(drydock, monkeypa
     assert printed.startswith(input_receipt.BRIEF_HEAD) and '+Order two, amended.' in printed
     assert post.typed([order]).strip() in printed
     assert brief_change.told(ship.runtime, 'desk') == NEW
+
+
+def test_the_one_looks_retype_carries_the_head_the_first_typing_held_and_is_confirmed(setup, monkeypatch):  # noqa: F811
+    """A blind first paste of a message with its head: the door's one look types it once more with that same head,
+    under the second-delivery line, and the record confirms it. Nothing of the change is lost."""
+    from quarterdeck import idle
+    svc, seat, live, record = setup
+    publish(svc.runtime, seat.name, OLD)
+    brief_change.seed(svc.runtime, seat.name, OLD)
+    publish(svc.runtime, seat.name, NEW)
+    order = svc.store.new('order', 'desk', seat.name, 'An invented order.')
+    svc.deliver(seat, [order])
+    first = pending.active(seat)[-1]
+    assert first.data['payload'].startswith(input_receipt.BRIEF_HEAD)
+    assert brief_change.told(svc.runtime, seat.name) == NEW, 'typed once, so marked told'
+    later = post.now() + timedelta(seconds=pending.WAIT_SECONDS + 5)
+    monkeypatch.setattr(post, 'now', lambda: later)
+    live['box'] = ''  # blind: the box is empty and the record never shows it
+    monkeypatch.setattr(idle, 'reading', lambda seat, **kwargs: (None, None))
+    [line] = pending.one_look(svc, seat)
+    assert 'typed once more' in line and live['pasted'] == 2
+    retyped = live['box']
+    assert retyped.startswith(input_receipt.BRIEF_HEAD), 'the retype carries the head the first typing held'
+    head = brief_change.carried(first.data['payload'])
+    assert retyped.startswith(head.rstrip('\n')) and '+Order two, amended.' in retyped
+    assert f'qd > second delivery of {order.id}' in retyped and retyped.endswith(post.typed([order]).rstrip('\n'))
+    second = next(p for p in pending.journals(seat)[0] if p.path != first.path)
+    assert second.data['payload'] == head + post.typed([order], second=(order.id,))
+    live['box'] = ''
+    input_row(record, second.data['payload'].strip(), later)
+    svc.reconcile()
+    assert svc.attempts.latest()[order.id] == 'delivered', "the record confirms the retype, head and all"
+    item = Input(second.data['payload'], later + timedelta(seconds=1), 'accepted')
+    assert thread_context.consumed_ids(svc.store, seat.name, 'worker', [item]) == {order.id}

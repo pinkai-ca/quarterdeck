@@ -1038,7 +1038,11 @@ def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Atte
                        phase="cancelled", resolution=RETYPED)
             for name in data["attempts"]:
                 service.attempts.close(known[name], "blind", RETYPED)
-            proof_line = service._deliver_claimed(seat, [message], resend=True)
+            from .brief_change import carried
+            # The retype carries what the first typing held, its standing-orders head included, under the
+            # second-delivery line: never a text re-rendered without the head the seat was to read.
+            proof_line = service._deliver_claimed(seat, [message], resend=True,
+                                                  carried_head=carried(data["payload"]) or None)
             # The second delivery's journal is named by its new attempt: only this message's journals are listed.
             folder = seat.ship.runtime / "post" / "pending" / seat.name
             prefix = f"{message.id}-"

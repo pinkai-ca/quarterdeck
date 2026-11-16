@@ -904,8 +904,10 @@ class Service:
         except lifecycle.Busy as error:
             return str(error)
 
-    def _deliver_claimed(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
-        """One seat's batch, with its existing lifecycle claim already held."""
+    def _deliver_claimed(self, seat: Seat, messages: list[post.Message], resend: bool = False,
+                         carried_head: str | None = None) -> str:
+        """One seat's batch, with its existing lifecycle claim already held. ``carried_head``: the standing-orders
+        head an earlier typing of this one message held (the door's one look retypes it with it)."""
         if resend:
             from . import paste_refusal
             door = Door(seat)
@@ -919,7 +921,7 @@ class Service:
         ordered = sorted(messages, key=lambda message: latest.get(message.id) == "withheld")
         lines = []
         for message in ordered:
-            lines.append(self._deliver_current(seat, message, resend))
+            lines.append(self._deliver_current(seat, message, resend, carried_head))
             reading = Door(seat).reading()
             if not reading.open and reading.clears != "dismissable":
                 break  # an occupied or uncertain door holds every remaining item
@@ -935,7 +937,8 @@ class Service:
         except lifecycle.Busy as error:
             return str(error)
 
-    def _deliver_current(self, seat: Seat, message: post.Message, resend: bool = False) -> str:
+    def _deliver_current(self, seat: Seat, message: post.Message, resend: bool = False,
+                         carried_head: str | None = None) -> str:
         """The caller owns the same seat claim as every lifecycle transition."""
         if message.id in self.store.settled_notices(seat.name):
             return f'{message.short} to {seat.name} · settled notice; not delivered'
@@ -980,7 +983,11 @@ class Service:
                 # typed with it as one input: the box check and the record's confirmation both take this whole text,
                 # and every matcher reads the message past the head (input_receipt.without_brief_head).
                 from . import brief_change
-                if changed := brief_change.head(self.runtime, seat.name):
+                if carried_head:
+                    # The one look types again exactly what the first typing carried, head included; the brief it
+                    # told of was marked told then, and a later change waits for the next message.
+                    text, changed = carried_head + text, None
+                elif changed := brief_change.head(self.runtime, seat.name):
                     text = changed[0] + text
                 try:
                     proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True, attempt_history=history)

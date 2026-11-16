@@ -85,6 +85,16 @@ def head(runtime: Path, name: str) -> tuple[str, str] | None:
     return compose(name, before, after), after
 
 
+def carried(text: str) -> str:
+    """The standing-orders head a typed text carries at its start, or ''."""
+    from .input_receipt import without_brief_head
+    rest = without_brief_head(text)
+    if rest is text:
+        return ''
+    stripped = text.lstrip()
+    return stripped[:len(stripped) - len(rest)]
+
+
 def compose(name: str, before: str, after: str) -> str:
     old, new = before.splitlines(), after.splitlines()
     first = f'{BRIEF_HEAD}; what changed, then your message (qd brief {name} prints the whole):'
