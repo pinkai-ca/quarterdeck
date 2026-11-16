@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import copy_state, install, ship as shipmod
 from .ship import ShipError
-from .tmux import Tmux
+from .tmux import Tmux, TmuxError
 
 
 def observe(folder: Path) -> tuple[str | None, str | None]:
@@ -98,8 +98,10 @@ def run(project: Path, ref: str = 'HEAD', *, force: bool = False) -> dict:
             row.update(disposition='synced', reason=None)
         except Exception as error:
             commit, observation = observe(ship.folder)
+            # The framework's own refusals say why in its own words: a ship's (ShipError) and its tmux server's
+            # (TmuxError and its private-server kinds). Anything else is named by its type alone.
             row.update(disposition='failed', commit=commit,
-                       reason=str(error) if isinstance(error, ShipError) else f'sync failed ({type(error).__name__})')
+                       reason=str(error) if isinstance(error, (ShipError, TmuxError)) else f'sync failed ({type(error).__name__})')
             if observation:
                 row['reason'] += '; ' + observation
             stopped = True

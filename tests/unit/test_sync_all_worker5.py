@@ -291,3 +291,42 @@ def test_cli_all_passes_each_ships_own_server_to_its_installer(tmp_path, monkeyp
     assert len({server.socket for _, server in servers}) == 2
     assert servers[0][1] is not servers[1][1]
     assert capsys.readouterr().out.count('synced to ' + TARGET) == 2
+
+
+@pytest.mark.parametrize('kind', ['TmuxError', 'PrivateTmuxError', 'TmuxUnanswered'])
+def test_a_refused_ship_server_keeps_its_reason_in_the_line(tmp_path, monkeypatch, kind):
+    from quarterdeck import tmux as tmuxmod
+    world = modeled_project(tmp_path, monkeypatch)
+    for name in ['practice', '.hidden-ship-zzzz']:
+        folder = world.project / 'ships' / name
+        (folder / 'ship.toml').unlink()
+        folder.rmdir()
+        del world.states[name]
+    reason = ('QD_TMUX_SOCKET names /synthetic/elsewhere, which is not this ship\'s server; '
+              'qd will not run this ship there')
+    refused = world.crew[1]
+
+    def for_ship(ship):
+        if ship.folder.name == refused:
+            raise getattr(tmuxmod, kind)(reason)
+        return SimpleNamespace(ship=ship.folder)
+
+    monkeypatch.setattr(sync_all.Tmux, 'for_ship', for_ship)
+    result = sync_all.run(world.project)
+    row = next(row for row in result['ships'] if row['ship'] == refused)
+    assert row['disposition'] == 'failed' and row['reason'] == reason
+    text = '\n'.join(sync_all.render(result))
+    assert f'{refused}: failed and still on {OLD}: {reason}' in text, text
+
+
+def test_an_error_of_no_known_kind_is_still_named_by_its_type_alone(tmp_path, monkeypatch):
+    world = modeled_project(tmp_path, monkeypatch)
+
+    def for_ship(ship):
+        raise RuntimeError('words the line never shows')
+
+    monkeypatch.setattr(sync_all.Tmux, 'for_ship', for_ship)
+    result = sync_all.run(world.project)
+    failed = next(row for row in result['ships'] if row['disposition'] == 'failed')
+    assert failed['reason'] == 'sync failed (RuntimeError)'
+    assert 'words the line never shows' not in '\n'.join(sync_all.render(result))
