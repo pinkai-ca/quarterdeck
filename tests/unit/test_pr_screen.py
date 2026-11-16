@@ -932,3 +932,92 @@ def test_a_hand_swept_during_its_piece_is_flagged(world):
         honest(hands, name, message_id, folder)
     verdict, hands, runtime = one_piece(world, swept_while_screening)
     assert not verdict.clean and 'not proved ended after the piece' in verdict.reason, verdict.reason
+
+
+class QdHands(pr_screen.LiveHands):
+    """The live hands' own down, over a scripted qd: ``exits`` is what qd's down exits with, and ``reads`` the activity
+    state a watch reads after it. Everything else is the stand-in's."""
+
+    def __init__(self, stand_in, exits=0, reads='down'):
+        runtime = stand_in.runtime
+        super().__init__(SimpleNamespace(runtime=runtime, folder=runtime.parent), Path('qd'), stand_in.root)
+        self.stand_in, self.exits, self.reads, self.qd_calls = stand_in, exits, reads, []
+
+    def _qd(self, *args, timeout=300):
+        import subprocess
+        self.qd_calls.append(args)
+        if args[:1] == ('down',):
+            return subprocess.CompletedProcess(args, self.exits, '', 'refused' if self.exits else '')
+        watched = dict(seat=dict(activity=dict(state=self.reads)))
+        return subprocess.CompletedProcess(args, 0, json.dumps(watched), '')
+
+    def folder(self, name):
+        return self.stand_in.folder(name)
+
+    def home(self, name):
+        return self.stand_in.home(name)
+
+    def records(self, name):
+        return self.stand_in.records(name)
+
+    def kept_in_home(self, name, records):
+        return self.stand_in.kept_in_home(name, records)
+
+    def idle(self, name):
+        return self.stand_in.idle(name)
+
+    def fresh(self, name):
+        self.stand_in.fresh(name)
+
+    def launch_record(self, name):
+        return self.stand_in.launch_record(name)
+
+    def instruct(self, name, body):
+        return self.stand_in.instruct(name, body)
+
+
+NOT_PROVED_DOWN = [pytest.param(dict(exits=1), id='down exits nonzero'),
+                   pytest.param(dict(exits=0, reads='idle'), id='down exits 0 and the hand is still up')]
+
+
+@pytest.mark.parametrize('down', NOT_PROVED_DOWN)
+def test_a_down_not_proved_leaves_the_hold_and_its_journal_until_a_later_recovery_finishes_it(world, down):
+    runtime, hands_root = world
+    stand_in = Hands(runtime, hands_root, honest)
+    stand_in.launched = {}
+    piece = stand_in.folder('hand-a') / 'screen-0123456789ab'
+    piece.mkdir()
+    (piece / 'f01.txt').write_text('the outsider\'s text, left by a killed screen\n')
+    interrupted_hold(runtime, 'hand-a')
+    journal = runtime / 'pr-screen' / 'journal' / 'hand-a.json'
+    hands, outcomes = QdHands(stand_in, **down), Outcomes()
+    with pytest.raises(pr_screen.ScreenError, match='hand-a: .*it stays held'):
+        pr_screen.recover(runtime, hands, outcomes)
+    assert pr_screen.held(runtime, 'hand-a') and journal.is_file(), 'the hold and its journal stand'
+    assert piece.is_dir() and outcomes.told == [], 'nothing of the finish ran past the down'
+    with pytest.raises(pr_screen.ScreenError, match='hand-a: .*it stays held'):
+        pr_screen.recover(runtime, hands, outcomes)
+    assert pr_screen.held(runtime, 'hand-a') and journal.is_file(), 'tried again, and held again'
+    hands.exits, hands.reads = 0, 'off'
+    finished = pr_screen.recover(runtime, hands, outcomes)
+    assert [(f['number'], f['hand']) for f in finished] == [(7, 'hand-a')], 'the next recovery finishes it once'
+    assert not pr_screen.held(runtime, 'hand-a') and not journal.exists() and not piece.exists()
+    assert pr_screen.recover(runtime, hands, outcomes) == [] and len(outcomes.told) == 1
+
+
+@pytest.mark.parametrize('down', NOT_PROVED_DOWN)
+def test_a_screen_whose_down_is_not_proved_keeps_its_hold_and_journal(world, down):
+    runtime, hands_root = world
+    stand_in = Hands(runtime, hands_root, honest)
+    hands = QdHands(stand_in, **down)
+    prepared = pr_screen.prepare(texts('clean-docs'))
+    clock = Clock()
+    try:
+        with pytest.raises(pr_screen.ScreenError, match='hand-a: .*it stays held'):
+            pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files),
+                                   corpus=CORPUS, answer_seconds=30, poll=1.0, clock=clock, sleep=clock.sleep)
+    finally:
+        end_launch(getattr(stand_in, 'launched', {}).pop('hand-a', None))
+    assert pr_screen.held(runtime, 'hand-a'), 'a hand not proved down is never released'
+    assert (runtime / 'pr-screen' / 'journal' / 'hand-a.json').is_file(), 'its journal stands for the next run'
+    assert ('down', 'hand-a') in hands.qd_calls and ('fresh after', 'hand-a') not in stand_in.calls

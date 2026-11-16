@@ -585,16 +585,27 @@ class LiveHands:
         so the order is done first, and the request waits for the next pass."""
         if post.Store(self.ship.runtime).open_for(name):
             return False
+        data = self._watched(name)
+        if data is None:
+            return False
+        if self._is_down(data):
+            return True  # down: the screen starts it fresh
+        row, state = data.get('seat') or {}, data.get('state') or {}
+        return row.get('activity', {}).get('state') == 'idle' and state.get('turn_open') is not True
+
+    def _watched(self, name: str) -> dict | None:
+        """The hand as qd's watch reads it, or None where the reading cannot be had."""
         result = self._qd('--json', 'watch', name, timeout=60)
         try:
             data = json.loads(result.stdout)
-        except ValueError:
-            return False
+        except (TypeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _is_down(data: dict) -> bool:
         row = data.get('seat') or {}
-        if row.get('activity', {}).get('state') in ('off', 'down'):
-            return True  # down: the screen starts it fresh
-        state = data.get('state') or {}
-        return row.get('activity', {}).get('state') == 'idle' and state.get('turn_open') is not True
+        return isinstance(row, dict) and (row.get('activity') or {}).get('state') in ('off', 'down')
 
     def fresh(self, name: str) -> None:
         result = self._qd('fresh', name)
@@ -602,7 +613,17 @@ class LiveHands:
             raise ScreenError(f'{name}: qd fresh failed: {result.stderr.strip()[:200]}')
 
     def down(self, name: str) -> None:
-        self._qd('down', name)
+        """The hand down, proved: qd's down must succeed, and a reading after it must show the hand off or down, by
+        the reading idle() takes. Otherwise this raises, and the screen's finish leaves the hold and its journal, so
+        that a hand still running with the outsider's text in its context is never released, and the next run's
+        recovery tries the finish again."""
+        result = self._qd('down', name)
+        if result.returncode != 0:
+            raise ScreenError(f'{name}: qd down failed ({result.returncode}): {(result.stderr or "").strip()[:200]}; '
+                              'it stays held')
+        data = self._watched(name)
+        if data is None or not self._is_down(data):
+            raise ScreenError(f'{name}: qd down returned, but the hand is not read as off or down; it stays held')
 
     def instruct(self, name: str, body: str) -> str:
         """The screen's instruction, from ship, as an answer: a non-obligation that wakes the hand and leaves
