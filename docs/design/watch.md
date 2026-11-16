@@ -94,7 +94,9 @@ sits in a scope named for this ship's service (`qd-service-<ship>-*.scope`), a t
 server there and everything under one left out as a stop leaves them; (c) no live
 process of the user outside the ship's own tmux server's tree, and outside the act's
 own process and its ancestors, carries `QD_SHIP` naming this ship. Another process's
-environment is read only for that test, and no value is printed, logged or kept. When
+environment is read only for that test, and no value is printed, logged or kept; before
+reading one the act makes itself non-dumpable with no core, for the rest of its life,
+and refuses where it cannot. When
 all three hold the file is moved, unchanged and never followed, into
 `runtime/evidence/stop-barrier/`, and the move is logged; otherwise it refuses, naming
 the condition, the pids, their process names and their cgroups. A barrier that reads

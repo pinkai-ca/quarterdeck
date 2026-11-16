@@ -44,6 +44,18 @@ signal.pause()
 '''
 
 
+@pytest.fixture(autouse=True)
+def dumpable_again():
+    """The act leaves its own process non-dumpable, with no core, for the rest of its life. Here that process is the
+    test's, so each test gives it back what it had."""
+    import ctypes
+    import resource
+    core = resource.getrlimit(resource.RLIMIT_CORE)
+    yield
+    resource.setrlimit(resource.RLIMIT_CORE, core)
+    ctypes.CDLL(None).prctl(barrier_settle.PR_SET_DUMPABLE, 1, 0, 0, 0)
+
+
 def ship_at(tmp_path):
     folder = tmp_path / 'synthetic-ship'
     folder.mkdir()
@@ -254,3 +266,85 @@ def test_the_act_is_run_by_the_ships_own_copy_while_the_service_and_controls_by_
         handed.clear()
         assert cli.main(argv) == 0
         assert bool(handed) is expected, argv
+
+
+SENTINEL = 'QD_SYNTHETIC_SENTINEL_TOKEN'
+
+
+def test_no_value_of_any_environment_is_shown_for_a_refusal_or_a_settle(tmp_path):
+    """A secret-looking sentinel, a synthetic name with a unique synthetic value, set in a QD_SHIP carrier and in a
+    stand-in that carries no QD_SHIP: its value appears in neither the act's output nor its log, refusing or settling."""
+    import secrets
+    value = f'synthetic-sentinel-{secrets.token_hex(16)}'
+    ship = ship_at(tmp_path)
+    bare = {key: word for key, word in os.environ.items() if key != 'QD_SHIP'}
+    carrier, _ = started(SLEEPER, env={**bare, 'QD_SHIP': str(ship.folder), SENTINEL: value})
+    other, _ = started(SLEEPER, env={**bare, SENTINEL: value})  # carries no QD_SHIP
+    server, pane = started(SERVER, env={**bare, 'QD_SHIP': str(ship.folder), SENTINEL: value})
+    pane = int(pane)
+    log = ship.runtime / 'log' / 'service.jsonl'
+    try:
+        reading = scope_of(ship, {server.pid, pane})
+        refused = barrier_settle.settle(ship, tmux(server.pid), 'ops', cgroup_of=reading)
+        assert refused.startswith('refused: ') and f'pid {carrier.pid} ' in refused, refused
+        assert f'pid {other.pid} ' not in refused, 'a process that carries no QD_SHIP is not named'
+        assert log_lines(ship)[-1]['event'] == 'stop-barrier-settle-refused'
+        assert value not in refused and value not in log.read_text(), 'refusing, no value is shown or logged'
+        assert SENTINEL not in refused and SENTINEL not in log.read_text()
+        ended(carrier)
+        settled = barrier_settle.settle(ship, tmux(server.pid), 'ops', cgroup_of=reading)
+        assert settled.startswith('service stop barrier moved aside unchanged'), settled
+        assert log_lines(ship)[-1]['event'] == 'stop-barrier-settled'
+        assert value not in settled and value not in log.read_text(), 'settling, no value is shown or logged'
+        assert SENTINEL not in settled and SENTINEL not in log.read_text()
+    finally:
+        if carrier.poll() is None:
+            ended(carrier)
+        _end(pane, shutdown.process_start(pane))
+        ended(other, server)
+
+
+def dumpability():
+    """This process's dumpable flag, as prctl gives it, and its soft core limit."""
+    import resource
+    return barrier_settle._prctl(barrier_settle.PR_GET_DUMPABLE, 0), resource.getrlimit(resource.RLIMIT_CORE)[0]
+
+
+def readable_by_a_sibling():
+    """Whether another process of this user can read this process's environment, as the act reads others'."""
+    probe = subprocess.run([sys.executable, '-c', "import sys; open(f'/proc/{sys.argv[1]}/environ', 'rb').read()",
+                            str(os.getpid())], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    assert probe.returncode == 0 or 'PermissionError' in probe.stderr, probe.stderr
+    return probe.returncode == 0
+
+
+def test_the_act_is_not_dumpable_with_no_core_while_it_reads_environments_and_stays_so(tmp_path):
+    ship = ship_at(tmp_path)
+    seen, exposed = [], []
+
+    def watched(pid, proc):  # the act's own reader, observed from inside it at each read
+        seen.append(dumpability())
+        if not exposed:
+            exposed.append(readable_by_a_sibling())
+        return barrier_settle._environ(pid, proc)
+
+    other, _ = started(SLEEPER)  # at least one environment of this user to read
+    try:
+        assert dumpability()[0] == 1 and readable_by_a_sibling(), 'dumpable before the act'
+        result = barrier_settle.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()), environ_of=watched)
+        assert result.startswith('service stop barrier moved aside unchanged'), result
+        assert seen and set(seen) == {(0, 0)}, seen
+        assert exposed == [False], "while it reads, no other process of this user can read the act's own"
+        assert dumpability() == (0, 0), 'it stays so for the rest of the act: a freed copy may linger'
+    finally:
+        ended(other)
+
+
+def test_an_act_that_cannot_make_itself_non_dumpable_reads_no_environment_and_refuses(tmp_path, monkeypatch):
+    ship = ship_at(tmp_path)
+    read = []
+    monkeypatch.setattr(barrier_settle, '_prctl', lambda option, value: -1)  # refused, as by a seccomp filter
+    result = barrier_settle.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()),
+                                   environ_of=lambda pid, proc: read.append(pid) or b'')
+    assert "(c) this act could not make itself non-dumpable, so it read no other process's environment" in result
+    assert result.startswith('refused: ') and not read and stop_barrier.path(ship.runtime).exists()

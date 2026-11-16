@@ -21,6 +21,13 @@ Its limit: a child that cleared its own environment, or made itself unreadable, 
 named, by pid and process name, in the logged line and the output; but one that sits in any service's scope
 (``qd-service-*``) is not skipped, and refuses.
 
+Before (c) reads any other process's environment, the act makes its own process non-dumpable
+(``prctl(PR_SET_DUMPABLE, 0)``) with no core (``RLIMIT_CORE`` 0, its soft limit), so that nothing of what it read can
+be taken from it by another process of this user, through ptrace or ``/proc/<pid>/mem``, or written in a core
+dump. It stays so for the rest of its life, which ends with the act: the bytes it read are dropped, but a freed copy
+may linger in its memory, so dumpability is not restored after (c). Where it cannot make itself so, (c) reads
+nothing and the act refuses.
+
 Only a systems seat may run it, as with qd press and qd type, or the operator's own shell (no ``QD_SEAT``), which
 holds the ship's power in any case.
 """
@@ -37,6 +44,7 @@ from .procstat import EXITED
 from .ship import Ship, ShipError
 
 PROC = Path('/proc')
+PR_GET_DUMPABLE, PR_SET_DUMPABLE = 3, 4  # linux/prctl.h
 EVIDENCE = 'stop-barrier'
 GUARD = 'service-stop-guard.lock'
 
@@ -100,6 +108,32 @@ def in_scope(ship: Ship, *, cgroup_of=_cgroup, proc=PROC) -> dict[int, tuple[str
     return {pid: seen for pid, seen in found.items() if pid not in spared}
 
 
+def _prctl(option: int, value: int) -> int:
+    import ctypes
+    return ctypes.CDLL(None, use_errno=True).prctl(option, value, 0, 0, 0)
+
+
+def undumpable() -> str | None:
+    """Make this act's own process non-dumpable, with no core, before (c) reads another process's environment; it
+    stays so for the act's life (see the module's docstring). None once it holds, else why it could not."""
+    import resource
+    try:
+        _, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
+        if _prctl(PR_SET_DUMPABLE, 0) != 0 or _prctl(PR_GET_DUMPABLE, 0) != 0:
+            return "this act could not make itself non-dumpable, so it read no other process's environment"
+    except (OSError, ValueError, AttributeError) as error:
+        return (f"this act could not make itself non-dumpable ({type(error).__name__}), so it read no other "
+                "process's environment")
+    return None
+
+
+def _environ(pid: int, proc: Path = PROC) -> bytes:
+    """Another process's environment, read once, for (c)'s test alone."""
+    with open(proc / str(pid) / 'environ', 'rb') as stream:
+        return stream.read()
+
+
 def _ancestors(pid: int, proc=PROC) -> set[int]:
     found = set()
     while pid > 1 and pid not in found:
@@ -125,8 +159,8 @@ def _names_ship(value: bytes, folder: str, pid: int, proc: Path) -> bool:
         return False
 
 
-def carriers(ship: Ship, server: int | None, *, cgroup_of=_cgroup,
-             proc=PROC) -> tuple[dict[int, str], dict[int, str], dict[int, str]]:
+def carriers(ship: Ship, server: int | None, *, cgroup_of=_cgroup, proc=PROC,
+             environ_of=_environ) -> tuple[dict[int, str], dict[int, str], dict[int, str]]:
     """(c): this user's live processes outside the ship's tmux server's tree and this act's own line that carry
     QD_SHIP naming this ship; those whose environment this user cannot read, skipped; and those of that kind that sit
     in any service's scope (qd-service-*), never skipped. Each pid -> process name (and its unit, for the last)."""
@@ -138,8 +172,7 @@ def carriers(ship: Ship, server: int | None, *, cgroup_of=_cgroup,
         if pid in left_out:
             continue
         try:
-            with open(proc / str(pid) / 'environ', 'rb') as stream:
-                environment = stream.read()
+            environment = environ_of(pid, proc)
         except PermissionError:  # not dumpable: its environment is not this user's to read
             try:
                 unit = next((part for part in Path(cgroup_of(pid)).parts if service_processes.UNIT.fullmatch(part)),
@@ -187,7 +220,7 @@ def ship_server(tmux) -> tuple[int | None, str | None]:
     return None, "the ship's tmux server runs but its pid cannot be read, so its tree cannot be left out"
 
 
-def settle(ship: Ship, tmux, caller: str | None, *, cgroup_of=_cgroup, proc=PROC) -> str:
+def settle(ship: Ship, tmux, caller: str | None, *, cgroup_of=_cgroup, proc=PROC, environ_of=_environ) -> str:
     """Move an unreadable stop barrier aside, unchanged, under (a), (b) and (c); else refuse, naming what was seen."""
     if refusal := authority(ship, caller):
         return refusal
@@ -213,8 +246,10 @@ def settle(ship: Ship, tmux, caller: str | None, *, cgroup_of=_cgroup, proc=PROC
         unreadable = {}
         if unknown:
             seen.append(f"(c) {unknown}")
+        elif why := undumpable():
+            seen.append(f"(c) {why}")
         else:
-            found, unreadable, scoped = carriers(ship, server, cgroup_of=cgroup_of, proc=proc)
+            found, unreadable, scoped = carriers(ship, server, cgroup_of=cgroup_of, proc=proc, environ_of=environ_of)
             if found:
                 seen.append("(c) outside the ship's tmux server, QD_SHIP names this ship in: " + ', '.join(
                     f"pid {pid} {comm}" for pid, comm in sorted(found.items())))
