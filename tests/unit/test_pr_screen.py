@@ -148,6 +148,10 @@ class Outcomes:
         self.told.append(('desk', pr.number, found))
         return f'rep-desk-{pr.number}'
 
+    def interrupted(self, number):
+        self.told.append(('desk', number, 'an interrupted screen was finished'))
+        return f'rep-desk-interrupted-{number}'
+
 
 @pytest.fixture
 def world(tmp_path):
@@ -822,3 +826,81 @@ def test_the_live_hands_name_an_opencode_launchs_record_from_the_trusted_launch_
                                                 launch=[4242, '123'])
     launch.write_text(json.dumps(dict(pid=4242, start='123', harness='pi', argv=['pi'])))
     assert hands.launch_record('hand') is None, 'a program whose record is not named in advance: none'
+
+
+
+# -- an interrupted screen, finished by the next run ----------------------------------------------------------------
+
+def interrupted_hold(runtime, hand, *, start=True, journal=True, screen=None):
+    """A hold as a killed screen leaves it: its screen process given (one that has ended, unless ``screen`` runs),
+    with its journal; or, as an older hold, with no start."""
+    process = screen or launch_process()
+    pid, start_of = process.pid, pr_screen_start(process.pid)
+    if screen is None:
+        end_launch(process)
+    folder = runtime / 'pr-screen' / 'screening'
+    folder.mkdir(parents=True, exist_ok=True)
+    hold = dict(seat=hand, screen='7-0123456789ab', since='2026-11-15T21:00:00+00:00', pid=pid)
+    if start:
+        hold['start'] = start_of
+    (folder / f'{hand}.json').write_text(json.dumps(hold))
+    if journal:
+        (runtime / 'pr-screen' / 'journal').mkdir(parents=True, exist_ok=True)
+        (runtime / 'pr-screen' / 'journal' / f'{hand}.json').write_text(json.dumps(dict(
+            key='7-0123456789ab', index=0, folder='screen-0123456789ab', records_before={}, before={},
+            home_before={})))
+
+
+@pytest.mark.parametrize('why', ['its screen still runs', 'an older hold with no start', 'no journal'])
+def test_a_hold_that_cannot_be_proved_finished_stays_held_and_the_run_screens_nothing(world, why):
+    runtime, hands_root = world
+    screen = launch_process() if why == 'its screen still runs' else None
+    try:
+        interrupted_hold(runtime, 'hand-a', start=why != 'an older hold with no start',
+                         journal=why != 'no journal', screen=screen)
+        hands = Hands(runtime, hands_root, honest)
+        assert pr_screen.recover(runtime, hands, Outcomes()) == [] and pr_screen.held(runtime, 'hand-a')
+        assert hands.calls == [], 'the hand is not touched'
+        with pytest.raises(pr_screen.ScreenError, match='hand-a: held by a screen that is not finished'):
+            run(world, honest, ['clean-docs'])
+    finally:
+        end_launch(screen)
+
+
+def test_a_hold_whose_screen_is_gone_is_finished_once_and_told_by_its_number_alone(world):
+    runtime, hands_root = world
+    hands = Hands(runtime, hands_root, honest)
+    piece = hands.folder('hand-a') / 'screen-0123456789ab'
+    piece.mkdir()
+    (piece / 'f01.txt').write_text('the outsider\'s text, left by a killed screen\n')
+    interrupted_hold(runtime, 'hand-a')
+    hands.launched = {}
+    outcomes = Outcomes()
+    finished = pr_screen.recover(runtime, hands, outcomes)
+    assert [(f['number'], f['hand'], f['outcome']) for f in finished] == [(7, 'hand-a', 'interrupted screen finished')]
+    assert outcomes.told == [('desk', '7', 'an interrupted screen was finished')]
+    assert ('down', 'hand-a') in hands.calls and not piece.exists() and not pr_screen.held(runtime, 'hand-a')
+    kept = runtime / 'pr-screen' / 'screens' / '7-0123456789ab'
+    assert (kept / 'piece-0-hand-a' / 'f01.txt').is_file(), 'the piece is kept where no seat is pointed'
+    assert json.loads((kept / 'piece-0-hand-a.verdict.json').read_text())['interrupted'] is True
+    assert not (runtime / 'pr-screen' / 'journal' / 'hand-a.json').exists()
+    assert pr_screen.recover(runtime, hands, outcomes) == [] and len(outcomes.told) == 1, 'finished once'
+
+
+def test_a_screen_takes_its_hold_with_its_own_pid_and_start_and_leaves_no_journal(world):
+    seen = []
+    real = pr_screen._write_piece
+
+    def writing(folder, name, files):
+        runtime = world[0]
+        hold = json.loads((runtime / 'pr-screen' / 'screening' / 'hand-a.json').read_text())
+        journal = json.loads((runtime / 'pr-screen' / 'journal' / 'hand-a.json').read_text())
+        seen.append((hold['pid'], hold['start'], sorted(journal)))
+        return real(folder, name, files)
+    import unittest.mock
+    with unittest.mock.patch.object(pr_screen, '_write_piece', writing):
+        verdict, hands, runtime = one_piece(world, honest)
+    [(pid, start, fields)] = seen
+    assert pid == os.getpid() and start == pr_screen_start(os.getpid())
+    assert fields == ['before', 'folder', 'home_before', 'index', 'key', 'records_before'], 'all its finally needs'
+    assert not (runtime / 'pr-screen' / 'journal' / 'hand-a.json').exists(), 'finished: no journal is left'

@@ -328,8 +328,92 @@ def held(runtime: Path, seat: str) -> bool:
 def hold(runtime: Path, seat: str, screen: str) -> None:
     folder = _screening_dir(runtime)
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    durable.replace_file(folder / f'{seat}.json',
-                         json.dumps(dict(seat=seat, screen=screen, since=_now(), pid=os.getpid())) + '\n')
+    durable.replace_file(folder / f'{seat}.json', json.dumps(dict(
+        seat=seat, screen=screen, since=_now(), pid=os.getpid(), start=_start_of(os.getpid()))) + '\n')
+
+
+def _start_of(pid: int) -> str | None:
+    """A process's start, in ticks since boot, as /proc gives it; None where it cannot be read."""
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()
+    except OSError:
+        return None
+    return fields[19] if len(fields) > 19 else None
+
+
+# -- an interrupted screen, finished by the next ---------------------------------------------------------------------
+# A screen killed after it gave a hand a piece never runs its finally: the piece stays in the hand's folder, the
+# screening launch runs on, and the hold stands. Each screen therefore keeps a journal of what its finally needs, under
+# the runtime where no seat is pointed, written before its hold and completed before the piece goes in; and the next
+# screen run, before anything else, finishes any hold whose screen process is gone, as that finally would have.
+
+JOURNAL = 'journal'
+
+
+def _journal_path(runtime: Path, hand: str) -> Path:
+    return Path(runtime) / ROOT / JOURNAL / f'{hand}.json'
+
+
+def _journal(runtime: Path, hand: str, **fields) -> None:
+    path = _journal_path(runtime, hand)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        data = json.loads(path.read_text()) if fields.get('key') is None else {}
+    except (OSError, ValueError):
+        data = {}
+    data.update(fields)
+    durable.replace_file(path, json.dumps(data) + '\n')
+
+
+def _listing(data) -> dict | None:
+    """A listing read back from the journal, with its tuples as folder_listing and record_listing give them."""
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError('a listing in the journal is not one')
+    return {name: (tuple(value) if isinstance(value, list) else value) for name, value in data.items()}
+
+
+def recover(runtime: Path, hands, outcomes=None) -> list[dict]:
+    """Finish every hold whose screen process is gone, by its pid and start, as that screen's finally would have:
+    the hand down, its posts swept, the piece kept and removed, its folder and home swept, the records listed, the
+    hold released. A hold whose process cannot be read (no start, or none at all), or whose journal cannot be read,
+    stays held. Each finished one is told, by its pull request number alone."""
+    folder = _screening_dir(runtime)
+    finished = []
+    for path in sorted(folder.glob('*.json')) if folder.is_dir() else []:
+        hand = path.stem
+        try:
+            data = json.loads(path.read_text())
+            pid, start = data['pid'], data['start']
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # its process cannot be read: it stays held
+        if not isinstance(pid, int) or not isinstance(start, str) or launch_runs([pid, start]):
+            continue  # cannot be read, or its screen still runs
+        try:
+            journal = json.loads(_journal_path(runtime, hand).read_text())
+            key, index = journal['key'], journal['index']
+            before, home_before = _listing(journal.get('before')), _listing(journal.get('home_before'))
+            records_before = _listing(journal['records_before'])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # what its finally needs cannot be read: it stays held
+        piece = hands.folder(hand) / journal['folder'] if isinstance(journal.get('folder'), str) else None
+        if piece is not None and not piece.exists():
+            piece = None
+        moved, aside, screened, home_aside = _finish(runtime, hands, hand, key, index, piece=piece, before=before,
+                                                     home_before=home_before, records_before=records_before,
+                                                     instruction=None)
+        number = key.split('-', 1)[0]
+        record = Path(runtime) / ROOT / 'screens' / key
+        record.mkdir(parents=True, exist_ok=True, mode=0o700)
+        durable.replace_file(record / f'piece-{index}-{hand}.verdict.json', json.dumps(dict(
+            clean=False, reason=f'{hand}: its screen was interrupted, and finished by the next', places=(),
+            moved_aside=moved, folder_moved_aside=len(aside or []), home_moved_aside=len(home_aside),
+            screening_records=len(screened), interrupted=True)) + '\n')
+        told = outcomes.interrupted(number) if outcomes is not None else None
+        finished.append(dict(number=int(number) if number.isdigit() else number, head=key.split('-', 1)[-1],
+                             outcome='interrupted screen finished', hand=hand, told=told))
+    return finished
 
 
 def release(runtime: Path, seat: str) -> None:
@@ -783,6 +867,56 @@ def _read_answer(piece: Path) -> bytes | None:
         os.close(fd)
 
 
+def _finish(runtime: Path, hands, hand: str, key: str, index: int, *, piece, before, home_before, records_before,
+            instruction):
+    """A screen's end, whether its own finally runs it or the next screen does for one that was killed."""
+    # However the wait ended, the hand goes down while the hold still stands. Everything it posted is moved aside,
+    # and the outsider's text is taken out of its folder: the piece is kept under the runtime, where no seat is
+    # pointed, and removed, and every other entry new or changed since the piece went in is moved aside. Only then
+    # is the hold released, so nothing written in a context that read the outsider's text is filed or left where a
+    # seat reads. A step that fails leaves the hold, and the status line says so.
+    record = Path(runtime) / ROOT / 'screens' / key
+    moved = aside = None
+    screened, home_aside = [], []
+    cleared = False
+    try:
+        hands.down(hand)
+        moved = sweep(runtime, hand)
+        held_here = Path(runtime) / ROOT / 'held' / hand
+        stamp = f'{key}-{index}-{time.time_ns()}'
+        if piece is not None:
+            keep_and_remove(piece, record / f'piece-{index}-{hand}')
+        if before is not None:
+            aside = move_aside_new(hands.folder(hand), before, held_here / f'folder-{stamp}')
+        # The records the screening launch wrote, new or changed in the home: listed, so that no launch resumes
+        # while one is there and the retirement moves each out of the home once it is accounted.
+        screened = [path for path, now in record_listing(hands.records(hand)).items()
+                    if now is not None and records_before.get(path) != now]
+        mark_screening(runtime, hand, screened)
+        # The home is the jail's HOME and writable too: everything else new or changed there since the listing is
+        # moved aside, as in the folder. The listed records stay for the retirement, which keeps their ledger
+        # keys, and the credential file for qd.
+        if home_before is not None:
+            home_aside = move_aside_new(hands.home(hand), home_before, held_here / f'home-{stamp}',
+                                        keep=hands.kept_in_home(hand, screened))
+        if instruction is not None:
+            # Delivered once while the hand screened; listed now, while the hand is down and the hold stands,
+            # so that no later delivery and no later launch of the hand brings it back.
+            note_instruction(runtime, hand, instruction)
+        else:
+            # instruct() raised, or never ran: a message it may have filed has no id here. Every answer of the
+            # instruction's form to this hand is listed instead, by the strict match; a store that cannot be read
+            # leaves the hold.
+            for message_id in instruction_answers(runtime, hand):
+                note_instruction(runtime, hand, message_id)
+        cleared = True
+    finally:
+        if cleared:
+            _journal_path(runtime, hand).unlink(missing_ok=True)  # finished: nothing for a later screen to finish
+            release(runtime, hand)  # a sweep, a move or a listing that failed leaves the hold, and the line says so
+    return moved, aside, screened, home_aside
+
+
 def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared: Prepared, numbers: list[str], *,
                  corpus: Corpus, answer_seconds: float = ANSWER_SECONDS, poll: float = POLL_SECONDS,
                  clock=time.monotonic, sleep=time.sleep) -> Verdict:
@@ -807,10 +941,12 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
         return verdict
     durable.replace_file(record / f'piece-{index}-{hand}.json', json.dumps(dict(
         folder=folder, names=names, planted=f'f{planted_slot:02d}', planted_lines=sorted(lines))) + '\n')
-    hold(runtime, hand, key)
-    answer = moved = instruction = aside = piece = before = home_before = None
-    screened, home_aside = [], []
     records_before = record_listing(hands.records(hand))  # the home's records before the screening launch
+    # The journal is written before the hold, so that a hold always has one: what the next screen needs to finish
+    # this one, should it be killed.
+    _journal(runtime, hand, key=key, index=index, folder=folder, records_before=records_before)
+    hold(runtime, hand, key)
+    answer = instruction = piece = before = home_before = None
     try:
         hands.fresh(hand)
         # The record this launch writes is listed before any outsider's word is in reach, named from qd's trusted
@@ -827,6 +963,7 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
         # are listed now, before any outsider's word is in reach: the piece goes in after.
         home_before = folder_listing(hands.home(hand))
         before = folder_listing(hands.folder(hand))
+        _journal(runtime, hand, home_before=home_before, before=before)
         piece = _write_piece(hands.folder(hand), folder, dict(sorted(files.items())))
         instruction = hands.instruct(hand, INSTRUCTION.format(files=', '.join(sorted(files)), folder=folder))
         deadline = clock() + answer_seconds
@@ -835,46 +972,9 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
             sleep(poll)
             answer = _read_answer(piece)
     finally:
-        # However the wait ended, the hand goes down while the hold still stands. Everything it posted is moved aside,
-        # and the outsider's text is taken out of its folder: the piece is kept under the runtime, where no seat is
-        # pointed, and removed, and every other entry new or changed since the piece went in is moved aside. Only then
-        # is the hold released, so nothing written in a context that read the outsider's text is filed or left where a
-        # seat reads. A step that fails leaves the hold, and the status line says so.
-        cleared = False
-        try:
-            hands.down(hand)
-            moved = sweep(runtime, hand)
-            held_here = Path(runtime) / ROOT / 'held' / hand
-            stamp = f'{key}-{index}-{time.time_ns()}'
-            if piece is not None:
-                keep_and_remove(piece, record / f'piece-{index}-{hand}')
-            if before is not None:
-                aside = move_aside_new(hands.folder(hand), before, held_here / f'folder-{stamp}')
-            # The records the screening launch wrote, new or changed in the home: listed, so that no launch resumes
-            # while one is there and the retirement moves each out of the home once it is accounted.
-            screened = [path for path, now in record_listing(hands.records(hand)).items()
-                        if now is not None and records_before.get(path) != now]
-            mark_screening(runtime, hand, screened)
-            # The home is the jail's HOME and writable too: everything else new or changed there since the listing is
-            # moved aside, as in the folder. The listed records stay for the retirement, which keeps their ledger
-            # keys, and the credential file for qd.
-            if home_before is not None:
-                home_aside = move_aside_new(hands.home(hand), home_before, held_here / f'home-{stamp}',
-                                            keep=hands.kept_in_home(hand, screened))
-            if instruction is not None:
-                # Delivered once while the hand screened; listed now, while the hand is down and the hold stands,
-                # so that no later delivery and no later launch of the hand brings it back.
-                note_instruction(runtime, hand, instruction)
-            else:
-                # instruct() raised, or never ran: a message it may have filed has no id here. Every answer of the
-                # instruction's form to this hand is listed instead, by the strict match; a store that cannot be read
-                # leaves the hold.
-                for message_id in instruction_answers(runtime, hand):
-                    note_instruction(runtime, hand, message_id)
-            cleared = True
-        finally:
-            if cleared:
-                release(runtime, hand)  # a sweep, a move or a listing that failed leaves the hold, and the line says so
+        moved, aside, screened, home_aside = _finish(runtime, hands, hand, key, index, piece=piece, before=before,
+                                                     home_before=home_before, records_before=records_before,
+                                                     instruction=instruction)
     # A hand whose sandbox was held at its down, or of which a stray sandbox was swept while it screened, did not
     # prove that what read the outsider's text has ended: that screen is never clean, and the hand stays down, held.
     unended = jail_end.unproved(runtime, hand, started)
@@ -938,6 +1038,12 @@ class LiveOutcomes:
             'no seat. What flagged it, in the screen\'s own terms:\n' + '\n'.join(f'- {line}' for line in found),
             subject=f'Pull request {pr.number} from outside was flagged').id
 
+    def interrupted(self, number: str) -> str:
+        return post.Store(self.ship.runtime).new(
+            'report', post.SHIP, self.ship.pr_screen_desk,
+            f'An interrupted screen of pull request {number} was finished.',
+            subject=f'An interrupted screen of pull request {number} was finished').id
+
 
 # -- the run ------------------------------------------------------------------------------------------------------
 
@@ -960,12 +1066,16 @@ def run(runtime: Path, source, hands, outcomes, *, repository: str, hand_names: 
     """One pass over the open pull requests; what each new number and head came to. Without its private corpus
     (runtime/pr-screen/planted.json, unless one is given) the screen refuses before it reads anything."""
     runtime = Path(runtime)
+    # Before anything else: an earlier screen that was killed is finished, and no piece goes to a hand still held.
+    results = recover(runtime, hands, outcomes)
+    if still := [name for name in hand_names if held(runtime, name)]:
+        raise ScreenError(f'{", ".join(still)}: held by a screen that is not finished and whose process cannot be '
+                          'proved gone; nothing was screened')
     corpus = corpus if corpus is not None else load_corpus(runtime / ROOT / CORPUS)
     (runtime / ROOT).mkdir(parents=True, exist_ok=True, mode=0o700)
     state = _state(runtime)
     named = seat_pattern(seat_names)
     extra = (named,) if named else ()
-    results = []
     for pr in source.open():
         seen = state.get(str(pr.number))
         if isinstance(seen, dict) and seen.get('head') == pr.head and seen.get('outcome') in ('clean', 'flagged'):

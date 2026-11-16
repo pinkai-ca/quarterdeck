@@ -721,9 +721,10 @@ time.sleep(600)
 '''
 
 
+@pytest.mark.parametrize('recovered', ['no', 'yes'])
 @pytest.mark.parametrize('tool_output', ['no', 'yes'])
 def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_walk_retires_it(tmp_path, monkeypatch,
-                                                                                               tool_output):
+                                                                                               tool_output, recovered):
     """Security's gate for the listing written before a piece goes in, on a throwaway hand. The screen program is
     killed (SIGKILL) the moment the piece is written; the hand's launch, which outlives it, writes its record holding
     the piece's text only after that. The record is listed all the same, the hand's next launch starts fresh, the
@@ -733,6 +734,7 @@ def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_w
     import signal
     import subprocess
     import sys
+    parent, downs = os.getpid(), []
     w = world(tmp_path, monkeypatch, 'opencode')
     runtime, home = w.svc.runtime, w.seat.home
     hands_root, signals = tmp_path / 'hands', tmp_path / 'signals'
@@ -764,8 +766,23 @@ def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_w
                 argv=['bwrap', '--setenv', 'XDG_DATA_HOME', str(home / 'data-003'), '--', 'opencode'])))
             (signals / 'launch').write_text(json.dumps([self.launch.pid, start]))
 
-        def down(self, name):
-            raise AssertionError('the screen is killed before it reaches its down')
+        def down(self, name):  # as qd's down: the launch ends. Only the next screen's recovery reaches it.
+            assert os.getpid() == parent, 'the killed screen never reaches its down'
+            started = json.loads((signals / 'launch').read_text())
+            try:
+                os.killpg(started[0], signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            # Not this process's child (the killed screen started it), so it is waited for by its pid and start.
+            until(lambda: not pr_screen.launch_runs(started), 30)  # the launch has ended
+            downs.append(name)
+
+        def kept_in_home(self, name, records):  # each record's whole unit, as the live hands keep it
+            kept = []
+            for record in map(Path, records):
+                bundle = get('opencode').retirement_bundle(home, record, record_location.destination(record))
+                kept.append(bundle[0] if bundle else record)
+            return [str(path.relative_to(home)) for path in kept]
 
     case = 'note-elsewhere'
     source = pr_screen.FixtureSource(FIXTURES, [case])
@@ -782,7 +799,8 @@ def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_w
             os.kill(os.getpid(), signal.SIGKILL)
             return written
         pr_screen._write_piece = then_killed
-        pr_screen.screen_piece(runtime, Throwaway(), 'hand', 'gate', 0, prepared, numbers, corpus=corpus,
+        pr_screen.screen_piece(runtime, Throwaway(), 'hand', f'{pr.number}-{pr.head[:12]}', 0, prepared, numbers,
+                               corpus=corpus,
                                answer_seconds=30, poll=0.05)
     child = multiprocessing.get_context('fork').Process(target=screen)
     child.start()
@@ -803,11 +821,22 @@ def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_w
             assert any('tool-output' in path for path in holds(home, strings)), 'and so does its tool output'
             assert w.seat.harness.retirement_bundle(home, named, record_location.destination(named)), 'whole'
         assert pr_screen.screening_left(runtime, 'hand'), 'so the hand\'s next launch starts fresh, never resumed'
+        assert pr_screen.held(runtime, 'hand'), 'the killed screen\'s hold stands'
+        if recovered == 'yes':
+            # The next screen run, before anything else, finishes the killed one as its finally would have.
+            told = []
+            finished = pr_screen.recover(runtime, Throwaway(), SimpleNamespace(interrupted=lambda n: told.append(n)))
+            assert [(f['number'], f['hand']) for f in finished] == [(pr.number, 'hand')] and told == [str(pr.number)]
+            assert downs == ['hand'] and not pr_screen.launch_runs(launch), 'the hand is down'
+            assert list(hands_root.glob('hand/screen-*')) == [], 'no piece is left in the hand\'s folder'
+            assert holds(hands_root / 'hand', strings) == [], 'nor the case\'s text anywhere in it'
+            assert not pr_screen.held(runtime, 'hand'), 'the hold is released'
+            assert pr_screen.recover(runtime, Throwaway()) == [], 'finished once'
     finally:
-        os.killpg(launch[0], signal.SIGKILL)  # the next fresh start ends the old launch
         try:
+            os.killpg(launch[0], signal.SIGKILL)  # the next fresh start ends the old launch, if the recovery did not
             os.waitpid(launch[0], 0)
-        except ChildProcessError:
+        except (ProcessLookupError, ChildProcessError):
             pass
     try:
         # qd joins the record to its launch, and the next fresh launch is named in the trusted record: data-004.
@@ -822,6 +851,8 @@ def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_w
         assert holds(home, strings) == [], 'nothing under the hand\'s home holds the case\'s text'
         assert record_location.resolve(named).is_relative_to(runtime / 'retired' / 'hand-transcripts')
         assert not pr_screen.screening_left(runtime, 'hand')
+        if recovered == 'yes':
+            assert holds(hands_root / 'hand', strings) == [], 'nor in the hand\'s folder'
     finally:
         w.svc.ledger.close()
 
