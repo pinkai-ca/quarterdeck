@@ -28,7 +28,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `paste_refusal.py` | proved owned-unsubmitted paste cleanup, and refusal evidence scoped by payload, version and geometry |
 | `pending.py`, `delivery_record.py` | saved paste evidence and historical receipts; the service schedules each message |
 | `post_notices.py` | derived settlement of exact informational notices; never a read receipt |
-| `post_view.py` | a jailed seat's view of the post: copies of what it sent or received, its own inbox, the shorts taken; kept by the service, bound in the post's place |
+| `post_view.py` | a jailed seat's view of the post: copies of what it sent or received, a refused message only as its notice, its own inbox, the shorts taken; kept by the service, bound in the post's place |
 | `pr_screen.py` | a pull request from outside screened by a program before any seat reads it: fetched under made-up names, searched, read by two hands with a planted check whose posts are held, judged by the answer's shape, and the desk or the First Officer told without quoting it |
 | `pr_screen_patterns.py` | the screen's one list of patterns: known forms of an instruction to a reader and of a harmful command |
 | `pricing.py` | a pool's stated rates, and the price saved beside a launch or a model choice |

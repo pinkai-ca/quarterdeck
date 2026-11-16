@@ -1256,9 +1256,14 @@ class InboxContext:
         self._senders: dict[str, bool | None] = {}
 
     def refused(self, seat: str) -> tuple[frozenset[str] | None, frozenset[str]]:
-        """What the seat's journal withholds (None where it cannot be read) and which of those its sender was told."""
+        """What the seat's journal withholds (None where it cannot be read) and which of those its sender was told.
+        Inside a jailed seat's view, what the view says the service withheld (``_in_view``)."""
         if seat not in self._journals:
             from . import refusal
+            view = _in_view(self._store)
+            if view is not None:
+                self._journals[seat] = (view.withheld, view.told)
+                return self._journals[seat]
             try:
                 events = refusal.load(self._runtime, seat)
             except refusal.JournalError:
@@ -1269,6 +1274,9 @@ class InboxContext:
         return self._journals[seat]
 
     def sender_seat(self, sender: str) -> bool | None:
+        view = _in_view(self._store)
+        if view is not None:
+            return view.sender_seat(sender)
         if sender not in self._senders:
             if self._test is None:
                 self._test = _sender_seat(self._store)
@@ -1317,9 +1325,52 @@ def _older_line(count: int) -> str:
             "`qd thread <id>` prints a thread whole, as far as the seat sent or received it.")
 
 
+class ViewRefusals:
+    """What a jailed seat's view says the service withheld from it, as the service read the seat's refusal journal
+    outside the jail: the refused messages (None where the journal could not be read, so that every body is
+    withheld), those whose sender was told, and for each refused message's sender whether it is a seat."""
+
+    def __init__(self, withheld: frozenset[str] | None, told: frozenset[str], senders: dict[str, bool | None]):
+        self.withheld, self.told, self._senders = withheld, told, senders
+
+    def sender_seat(self, sender: str) -> bool | None:
+        return False if sender == SHIP else self._senders.get(sender)
+
+
+def _in_view(store: Store) -> ViewRefusals | None:
+    """Inside a jailed seat's view of the post, what the view says was refused; None outside a view.
+
+    Inside a jail the refusal journal is not visible (``runtime/trusted`` is an empty tmpfs there), so its absence
+    is never read as 'nothing refused': the reading relies on the view the service wrote, whose refused messages are
+    already their notices, and claims nothing else. A view that cannot say (its account missing or unreadable)
+    withholds every body."""
+    from .post_view import REFUSED, SHORTS
+    folder = store.dir.parent
+    if not any(os.path.lexists(folder / name) for name in (SHORTS, REFUSED)):
+        return None  # the post itself, never a view: the service writes both into every view, and only there
+    try:
+        data = json.loads(post_dir.read_text(folder / REFUSED))
+        if data.get('journal') != 'read':
+            raise ValueError('the journal was not read')
+        withheld, told = frozenset(data['withheld']), frozenset(data['told'])
+        if not all(isinstance(item, str) for item in withheld | told):
+            raise ValueError('not message ids')
+        senders = {str(sender): value for sender, value in data['senders'].items()
+                   if value is None or isinstance(value, bool)}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, ShipError):
+        return ViewRefusals(None, frozenset(), {})
+    return ViewRefusals(withheld, told, senders)
+
+
+UNREADABLE = 'withheld: refusal journal unreadable; inspect runtime/trusted/<seat>'
+
+
 def _withheld(store: Store, seat: str) -> frozenset[str] | None:
     """What this seat's provider refused, never shown it again; None when that cannot be read."""
     from . import refusal
+    view = _in_view(store)
+    if view is not None:
+        return view.withheld
     try:
         return refusal.excluded(store.dir.parent.parent, seat)
     except refusal.JournalError:
@@ -1329,6 +1380,9 @@ def _withheld(store: Store, seat: str) -> frozenset[str] | None:
 def _told(store: Store, seat: str) -> frozenset[str]:
     """The refused messages whose sender the refusal's event holds a notice for; none when it cannot be read."""
     from . import refusal
+    view = _in_view(store)
+    if view is not None:
+        return view.told
     try:
         return refusal.told(store.dir.parent.parent, seat)
     except refusal.JournalError:
@@ -1337,8 +1391,12 @@ def _told(store: Store, seat: str) -> frozenset[str]:
 
 def _sender_seat(store: Store):
     """A test of whether a sender is a seat of this ship or its fleet: True, False, or None where that cannot be
-    known (the ship cannot be read). 'ship' is never a seat, whatever the ship file says."""
+    known (the ship cannot be read). 'ship' is never a seat, whatever the ship file says. Inside a view, what the
+    view says of each refused message's sender."""
     from . import refusal, ship as shipmod
+    view = _in_view(store)
+    if view is not None:
+        return view.sender_seat
     try:
         ship = shipmod.load(store.dir.parent.parent.parent)
     except (ShipError, OSError, ValueError):
@@ -1359,7 +1417,7 @@ def _shown(message: Message, withheld: frozenset[str] | None, told: frozenset[st
     """
     from .refusal import withheld_words
     if withheld is None:
-        return replace(message, subject=None, body='withheld: refusal journal unreadable; inspect runtime/seats')
+        return replace(message, subject=None, body=UNREADABLE)
     if message.id not in withheld:
         return message
     told_it = message.id in told  # never a notice not made, never a seat not declared

@@ -5,7 +5,13 @@ office's mail included. So a jailed seat is never shown the post itself. The ser
 folder ``runtime/views/<seat>/post`` laid out as the post is, and the jail binds it read-only in the post's place:
 
 - ``store/``: a copy of every message the seat sent or received, and nothing else. Messages are immutable, so each
-  is copied once; a copy, never a hard link, since a link would share the store file's inode with the jail.
+  is copied once; a copy, never a hard link, since a link would share the store file's inode with the jail. A message
+  the seat's provider refused is there as its notice alone, never as the message (law: context-is-cache): the same
+  file with no subject and, for its body, the words the notice says outside. While the seat's refusal journal cannot
+  be read, every message is there so, without its subject or body, as the inbox shows it outside; when it reads
+  again, each comes back whole.
+- ``refused.json``: what the service withheld, as it read the seat's refusal journal outside the jail (inside, the
+  journal is not visible). The seat's own readings rely on it and claim nothing else (``post._in_view``).
 - ``inbox/<seat>.md``: the seat's own inbox, as the service renders it.
 - the seat's own files of the post's per-seat folders (``PER_SEAT``), such as its watch offer, when they exist.
 - ``attempts/``, only while the seat's watch offer stands: the seat's own delivery attempts of the messages the offer
@@ -18,7 +24,9 @@ folder ``runtime/views/<seat>/post`` laid out as the post is, and the jail binds
   new id the seat chooses never takes a short another seat's message holds.
 
 Nothing else of the post is there: no other seat's inbox or messages, no drop holds (whose reasons could tell a seat
-whether a message it cannot read exists), no other attempts, no journals or groups. The view is refreshed before the seat's
+whether a message it cannot read exists), no other attempts, no journals or groups. Beside the view, in
+``runtime/views/<seat>/withheld``, which no jail is shown, the service keeps which of the view's messages it wrote
+as notices, so that it brings each one back whole when it is no longer withheld. The view is refreshed before the seat's
 launch, on each service pass before deliveries, and in the door, so a message is in it before it is typed to the seat;
 and in the service's filing step as soon as a message leaves the seat's drop, so what the seat posted is never in neither.
 
@@ -43,6 +51,8 @@ from .ship import ShipError
 
 FOLDER = "views"
 SHORTS = "shorts"
+REFUSED = "refused.json"  # in the view: what the service withheld from the seat, for its jailed readings
+WITHHELD = "withheld"  # beside the view, never in it: the ids the view holds as their notices
 INDEX = ".parties"  # under runtime/views: each message's sender and addressee, for the service alone
 # The post's per-seat folders a seat's own file may be shown from: <folder>/<seat><suffix>.
 PER_SEAT = (("watch-offers", ".json"),)
@@ -93,12 +103,7 @@ def refresh(runtime: Path, seat: str, snapshot: Snapshot | None = None) -> Path:
     view = folder(runtime, seat)
     for child in (view / "store", view / "inbox", view / "drop" / seat):
         child.mkdir(parents=True, exist_ok=True)
-    copied = {name for name in os.listdir(view / "store") if name.endswith(".json")}
-    for name in snapshot.party(seat):
-        if f"{name}.json" in copied:
-            continue  # immutable: a message once copied never changes
-        text = post_dir.read_text(snapshot.dir / f"{name}.json")
-        durable.replace_file(view / "store" / f"{name}.json", text)
+    _store(runtime, seat, snapshot, view)
     _mirror(runtime / "post" / "inbox" / f"{seat}.md", view / "inbox" / f"{seat}.md")
     for name, suffix in PER_SEAT:
         _mirror(runtime / "post" / name / f"{seat}{suffix}", view / name / f"{seat}{suffix}")
@@ -115,6 +120,52 @@ def refresh(runtime: Path, seat: str, snapshot: Snapshot | None = None) -> Path:
     _offered_attempts(runtime, seat, view)
     _write_if_changed(view / SHORTS, snapshot.shorts)
     return view
+
+
+def _store(runtime: Path, seat: str, snapshot: Snapshot, view: Path) -> None:
+    """The seat's messages in its view: each copied once, a refused one as its notice (law: context-is-cache).
+
+    The refusal journal is read here, outside every jail. What it quarantines, and while it cannot be read every
+    message, is written as ``post._shown`` shows it outside: the same file with no subject and the notice's words
+    for its body, never the original. The view's account of it (``REFUSED``) is written first, so a jailed reading
+    withholds a message whose file is still being written. The ids written as notices are recorded beside the view
+    before they are written, and dropped only once their message is back whole."""
+    party = snapshot.party(seat)
+    store = post.Store(runtime)
+    context = post.InboxContext(store)
+    withheld, told = context.refused(seat)
+    held = set(party) if withheld is None else withheld & set(party)
+    texts = {name: post_dir.read_text(snapshot.dir / f"{name}.json") for name in held}
+    messages = {name: post.Message.from_json(text) for name, text in texts.items()}
+    senders = {} if withheld is None else {  # as the jailed reading meets each sender: in the file, as written
+        sender: context.sender_seat(sender) for sender in sorted({message.sender for message in messages.values()})}
+    _write_if_changed(view / REFUSED, json.dumps(
+        {'journal': 'unreadable' if withheld is None else 'read', 'withheld': sorted(held), 'told': sorted(told & held),
+         'senders': senders}, indent=2, sort_keys=True) + '\n')
+    record = view.parent / WITHHELD
+    written = _read_ids(record)
+    if not held <= written:
+        _write_if_changed(record, ''.join(f'{name}\n' for name in sorted(written | held)))
+    copied = {name for name in os.listdir(view / "store") if name.endswith(".json")}
+    for name in party:
+        target = view / "store" / f"{name}.json"
+        if name in held:
+            data = json.loads(texts[name])
+            shown = post._shown(messages[name], withheld, told, context.sender_seat)
+            data['subject'], data['body'] = shown.subject, shown.body
+            _write_if_changed(target, json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+        elif f"{name}.json" not in copied or name in written:
+            # immutable: a message once copied never changes, unless the view held it as its notice
+            durable.replace_file(target, post_dir.read_text(snapshot.dir / f"{name}.json"))
+    if written - held:
+        _write_if_changed(record, ''.join(f'{name}\n' for name in sorted(held)))
+
+
+def _read_ids(path: Path) -> set[str]:
+    try:
+        return {line for line in post_dir.read_text(path).splitlines() if line}
+    except FileNotFoundError:
+        return set()
 
 
 def _offered_attempts(runtime: Path, seat: str, view: Path) -> None:
