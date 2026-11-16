@@ -1988,6 +1988,12 @@ class Service:
                       and not (order.sender == order.to and order.re in protocol)
                       and (report := self.store.closing_report(order))
                       and report.at > launched.when), default=None)
+        if seat.spec.role == "hand":
+            # A hand's order in hand may be a question: closed by the hand's own answer, it ends that order as a
+            # report ends an order, and the fresh start carries the next (hand_door).
+            from . import hand_door
+            answered = hand_door.closed_by_hand(self.store, seat.name, launched.when, protocol)
+            closed = max((at for at in (closed, answered) if at is not None), default=None)
         if closed is None or (record := seat.record()) is None:
             return False
         try:

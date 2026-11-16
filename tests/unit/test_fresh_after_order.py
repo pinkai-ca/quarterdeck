@@ -269,3 +269,49 @@ def test_a_report_on_a_question_does_not_qualify_as_an_order_closure(worker):
     w.record.begin(30)
     w.record.finish(40)
     held(w)
+
+
+def asked(w, *, first_answer_by):
+    """A hand whose order in hand is a question, given to this launch: the earlier order closed before it."""
+    from quarterdeck import hand_door
+    w.seat.spec = replace(w.seat.spec, role="hand")
+    old_launch = w.seat.launched()
+    launched = replace(old_launch, at=at(26).isoformat())
+    current = [launched]
+    w.seat.launched = lambda: current[0]
+    started = w.seat.fresh
+
+    def fresh():  # a fresh start is a new launch, as the fixture's own makes one
+        proof = started()
+        current[0] = replace(launched, pane="%2", at=at(100).isoformat())
+        return proof
+    w.seat.fresh = fresh
+    w.clock[0] = at(30)
+    question = w.svc.store.new("question", "operator", "worker", "A synthetic question")
+    attempt = w.svc.attempts.open(question, "worker", "%1", 123, launched.at)
+    w.svc.attempts.close(attempt, "delivered", "synthetic")
+    w.clock[0] = at(33)
+    following = w.svc.store.new("order", "operator", "worker", "The next synthetic order")
+    w.clock[0] = at(35)
+    if first_answer_by != "worker":
+        w.svc.store.new("answer", first_answer_by, "worker", "Answered by another", re=question.id)
+        w.clock[0] = at(36)
+    w.svc.store.new("answer", "worker", "operator", "Answered", re=question.id)
+    w.record.begin(30)
+    w.record.finish(40)
+    return hand_door, question, following
+
+
+def test_a_hand_that_answers_its_question_starts_fresh_and_its_next_order_arrives(worker):
+    w = worker
+    hand_door, question, following = asked(w, first_answer_by="worker")
+    assert hand_door.order_in_hand(w.svc.store, "worker").id == following.id
+    assert hand_door.held(w.seat, w.svc.store, w.svc.attempts, following).startswith("waits: it comes at the fresh start")
+    released_once(w)
+    assert hand_door.held(w.seat, w.svc.store, w.svc.attempts, following) is None, "the fresh launch takes it"
+
+
+def test_a_hand_whose_question_another_answered_first_does_not_start_fresh(worker):
+    w = worker
+    asked(w, first_answer_by="operator")
+    held(w)

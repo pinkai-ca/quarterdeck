@@ -8,7 +8,8 @@ message below it in its thread, by ``re`` at any depth.
 The door types into a hand only what belongs to its order in hand, and that only while the hand's current launch
 has been given no other order or question. So a correction or a further order sent ``--re`` the order in hand, and an
 answer to the hand's own question in that thread, still reach it as they come. A further order or question outside
-that thread waits, unread and with no attempt, until the order in hand is reported; then the hand starts fresh
+that thread waits, unread and with no attempt, until the hand closes its order in hand: reports on an order, or
+answers a question, first; then the hand starts fresh
 (``Service.fresh_after_order``), and that launch carries the next order in hand whole. A message that is neither an
 order nor a question, and does not belong to the order in hand, asks nothing of the hand and is delivered as before.
 Every held message is named on the status line (law: nothing-waits-silently). Every other role is unchanged.
@@ -61,6 +62,16 @@ def held(seat, store: post.Store, attempts: post.Attempts, message: post.Message
     if other:
         return f'waits: it comes at the fresh start after {other[-1].short}'
     return None
+
+
+def closed_by_hand(store: post.Store, name: str, since, excluded=frozenset()):
+    """When the hand last closed, after ``since``, a question it held in hand: by its own answer, the first, which is
+    what closes a question by the post's own rule. A question someone else answered first was not closed by the hand.
+    (An order the hand holds is closed by its report, which the fresh-start reading already counts.)"""
+    return max((closing.at for message in store.for_seat(name)
+                if message.kind == 'question' and message.id not in excluded
+                and (closing := store.closing(message)) is not None and closing is not message
+                and closing.sender == name and closing.at > since), default=None)
 
 
 def blocks_fresh(seat, store: post.Store, attempts: post.Attempts) -> bool:
