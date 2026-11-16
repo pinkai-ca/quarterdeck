@@ -493,7 +493,10 @@ class Driver:
                             self.full_generation, tuple(self.completion), set(self.invalid))
                     if (self.full_continuation is not None
                             and self.full_continuation.generation == self.full_generation):
-                        self.retry_seats = set(self.invalid)
+                        # A retry that is itself reset re-queues every seat still in the continuation: its slices are
+                        # discarded for every seat it read, not only the one that moved again, so none is stranded.
+                        self.retry_seats = (set(self.invalid) if self.scope is None
+                                            else set(self.full_continuation.remaining))
                         self.retry_generation = self.full_generation
                         if self.scope is None:
                             moved = set(self.invalid)  # the gate holds what this full job read of every other seat

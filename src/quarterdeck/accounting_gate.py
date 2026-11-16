@@ -314,7 +314,6 @@ class Gate:
             self.started = None
             self.begin_issues = {'unreadable': {'sql-revision': 1}}
         self.own_changes = 0
-        self.job_start = time.monotonic()  # a stitched certificate's backstop runs from its full job's start
         # A partial job cannot leave an older certificate usable.
         self.completed = None
         return True
@@ -358,16 +357,19 @@ class Gate:
         if self.partitions is not None:
             own = self.own_changes + extra
             if self.job_scope is None and moved:
-                self.partitions.hold_full(before, after, own, getattr(self, 'job_start', time.monotonic()), moved,
-                                          service.runtime)
+                self.partitions.hold_full(before, after, own, moved, service.runtime)
             elif self.job_retry and self.partitions.pending is not None:
                 if committed:
                     self.partitions.add_retry(before, after, self.job_scope, own)
                     if emptied:
-                        stitched = self.partitions.stitch(BACKSTOP)
+                        stitched = self.partitions.stitch(time.monotonic(), BACKSTOP)
+                        if not stitched and self.partitions.refusal:
+                            log = getattr(service, 'log', None)
+                            if log is not None:
+                                log('accounting-stitch-refused', classes=list(self.partitions.refusal))
                 else:
-                    # A retry that moved again: the continuation retries those seats, and the stitch waits for it.
-                    self.partitions.reject(keep_pending=True)
+                    # A retry that moved again: the continuation retries its seats, and the stitch waits for it.
+                    self.partitions.discard_retry(own)
             else:
                 self.partitions.finish(before, after, own, time.monotonic(), BACKSTOP,
                                        scope=self.job_scope, full=full, committed=committed, retry=self.job_retry)
@@ -379,5 +381,7 @@ class Gate:
                              end=evidence(before, after, issues, own=self.own_changes + extra))
         if self.partitions is not None:
             self.previous['dirty-records'] = len(self.partitions.dirty)
+            if self.partitions.refusal and not stitched and emptied:
+                self.previous['stitch-refused'] = list(self.partitions.refusal)
         self.started = None
         self.own_changes = 0

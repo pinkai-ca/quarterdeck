@@ -35,6 +35,25 @@ def seat_metadata(reading, runtime, seats):
             if kind == 'launch-metadata' and any(Path(path).is_relative_to(root) for root in roots)}
 
 
+def barriers(first, last, set_aside, young, own_changes):
+    """Which global barriers moved between two readings, as classes: the class of each changed or young path (post
+    folder, launch metadata, settings), the declarations, the ship's settings, the reader hashes, the epoch, the
+    ledger's identity, and other writers' ledger rows. Never a path or a seat."""
+    classes = dict(first.classes) | dict(last.classes)
+    found = {classes.get(path, 'launch-metadata') + '-young' for path in young}
+    files = [dict(globals_without(reading, set_aside)[0]) for reading in (first, last)]
+    found.update(classes.get(path, 'launch-metadata') for path in files[0].keys() | files[1].keys()
+                 if files[0].get(path) != files[1].get(path))
+    for index, name in ((1, 'declarations'), (2, 'settings'), (3, 'hashes'), (4, 'epoch')):
+        if first.inputs[index] != last.inputs[index]:
+            found.add(name)
+    if first.sql[:2] != last.sql[:2] or first.sql[3:] != last.sql[3:]:
+        found.add('ledger-identity')
+    elif last.sql[2] - first.sql[2] != own_changes:
+        found.add('other-writers')
+    return sorted(found)
+
+
 def globals_without(reading, paths):
     classes = dict(reading.classes)
     return (tuple((path, stamp) for path, stamp in reading.inputs[0]
@@ -53,8 +72,10 @@ class Partitions:
         self.baseline = None
         self.marks, self.owners = {}, {}
         self.seats, self.dirty = set(), set()
+        self.read = set()  # the seats the current job read whole: those its collect did not skip
         self.due = 0.0
         self.pending = None  # a full job some seats moved under, waiting for its retries (stitch)
+        self.refusal = []  # the barrier classes that refused the last stitch: classes only, never a path or seat
 
     def reject(self, *, keep_pending=False):
         self.baseline = None
@@ -62,26 +83,36 @@ class Partitions:
         if not keep_pending:
             self.pending = None
 
-    def hold_full(self, before, after, own, start, moved, runtime):
+    def hold_full(self, before, after, own, moved, runtime):
         """A full job found these seats moved: what it read whole of every other seat waits for their retries, which
         read the moved seats whole once. Nothing is certified until they have."""
         self.reject()
         if before is None or after is None:
             return
         kept = set(self.seats) - set(moved)
-        self.pending = dict(start=start, runtime=runtime, readings=[(before, after, kept, own, True)])
+        self.pending = dict(runtime=runtime, readings=[(before, after, kept, own, True)], discarded=0)
+
+    def discard_retry(self, own):
+        """A retry that was itself reset: it certifies nothing, but its own ledger writes are the job's, not another
+        writer's, so the stitch counts them once."""
+        self.reject(keep_pending=True)
+        if self.pending is not None:
+            self.pending['discarded'] += own
 
     def add_retry(self, before, after, scope, own):
-        """A retry of moved seats read them whole: its readings certify those seats' records."""
+        """A retry of moved seats read them whole: its readings certify those seats' records. A seat its read failed
+        for was not read whole: the retry certifies nothing of it, and its records go dirty at the stitch."""
         if self.pending is not None and before is not None and after is not None:
-            self.pending['readings'].append((before, after, set(scope), own, False))
+            self.pending['readings'].append((before, after, set(scope) & self.read, own, False))
 
-    def stitch(self, backstop):
+    def stitch(self, now, backstop):
         """The full job's continuation has emptied: every seat was read whole once, by the full job or by a retry.
         Each record is marked only where its readings in the job that read it are equal and settled; every other
         record goes dirty. The global barriers must hold across the whole span, with every job's own ledger changes
-        counted, or nothing is certified and the next job is full. The backstop runs from the full job's start."""
+        counted, or nothing is certified and the next job is full. The backstop runs from the stitch, as a completed
+        full job's runs from its end: a span longer than the backstop still gives a certificate that holds."""
         pending, self.pending = self.pending, None
+        self.refusal = []
         if pending is None:
             return False
         readings = pending['readings']
@@ -93,11 +124,11 @@ class Partitions:
         runtime = pending['runtime']
         own = seat_metadata(first, runtime, moved) | seat_metadata(last, runtime, moved)
         young = (set(first.young) | set(last.young)) - set(records(first)) - set(records(last)) - own
-        own_changes = sum(reading[3] for reading in readings)
-        if (young or globals_without(first, own) != globals_without(last, own)
-                or first.sql[:2] != last.sql[:2] or first.sql[3:] != last.sql[3:]
-                or last.sql[2] - first.sql[2] != own_changes):
+        own_changes = sum(reading[3] for reading in readings) + pending.get('discarded', 0)
+        refusal = barriers(first, last, own, young, own_changes)
+        if refusal:
             self.reject()
+            self.refusal = refusal
             return False
         for before, after, seats, _, full in readings:
             if full:
@@ -107,6 +138,7 @@ class Partitions:
             if any(stamps_before.get(path) != stamps_after.get(path) or path in before.young or path in after.young
                    for path in theirs):
                 self.reject()  # a retried seat's identity moved again within its own retry: nothing certified
+                self.refusal = ['retried-seat-moved']
                 return False
         marks = {}
         for before, after, seats, _, full in readings:
@@ -124,7 +156,7 @@ class Partitions:
         self.marks = marks
         self.dirty = {path for path in current if path not in marks}
         self.baseline = last
-        self.due = pending['start'] + backstop
+        self.due = now + backstop
         return True
 
     def configure(self, service, inventory, scope):
@@ -136,15 +168,17 @@ class Partitions:
             owners[str(Path(os.path.abspath(path)))].add(seat)
         expanded = {name: frozenset(names) for path, names in owners.items()
                     for name in (path, path + '-wal')}
+        self.read = {item['name'] for item in inventory}
         if scope is None:
             self.owners = expanded
             self.seats = {item['name'] for item in inventory}
             self.pending = None  # a new full job: an earlier one's stitch is no longer its to complete
         else:
-            # A scoped job read only the scoped seats' inventory: it replaces their own entries, and keeps every other
-            # seat's as it stands. An owner it did not read is never removed, so a record another seat also lists
-            # stays ambiguous, and a change to it still calls for the full job.
-            scoped = set(scope)
+            # A scoped job read only the inventory of the scoped seats it collected: it replaces their own entries, and
+            # keeps every other seat's as it stands, a scoped seat whose read failed included. An owner it did not read
+            # is never removed, so a record another seat also lists stays ambiguous, and a change to it still calls
+            # for the full job.
+            scoped = set(scope) & self.read
             merged = {path: names - scoped for path, names in self.owners.items()}
             for path, names in expanded.items():
                 merged[path] = merged.get(path, frozenset()) | names
@@ -189,6 +223,8 @@ class Partitions:
             self.reject()
             return
         old, current = records(before), records(after)
+        if scope is not None:
+            scope = set(scope) & self.read  # a scoped seat whose read failed is outside the job: nothing of it is marked
         if scope is None:
             self.marks.clear()
             self.dirty = set(current)

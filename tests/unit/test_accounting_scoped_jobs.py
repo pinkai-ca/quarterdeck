@@ -239,3 +239,29 @@ def test_a_scoped_job_never_drops_an_owner_it_did_not_read(world):
     e.finish()
     change(extra)
     assert e.gate.allowed(e.service) and e.gate.scope == {'ordinary-alpha'}, 'only alpha lists it: alpha alone'
+
+
+def test_a_scoped_seat_whose_read_failed_keeps_its_owners_and_stays_dirty(world):
+    """A scoped job reads only what it collected: a seat whose guarded read failed (its collect skipped it) keeps its
+    owners as they stood, and nothing of it is marked, so a record it shares still calls for the full job."""
+    e = world
+    alpha, beta = e.inventory
+    beta['sources'].append(alpha['sources'][0])  # beta lists alpha's record too, by its inventory alone
+    assert e.begin()
+    e.finish()
+    shared = str(Path(os.path.abspath(e.paths['ordinary-alpha'])))
+    own = str(Path(os.path.abspath(e.paths['ordinary-beta'])))
+    assert e.gate.partitions.owners[shared] == {'ordinary-alpha', 'ordinary-beta'}
+    change(e.paths['ordinary-beta'])  # beta's own record: a scoped job for beta alone
+    assert e.gate.allowed(e.service) and e.gate.scope == {'ordinary-beta'}
+    # beta's read fails: the job collects no seat, as accounting_slices.collect skips a guarded seat.
+    e.gate.configure(e.service, [], {'ordinary-beta'})
+    e.gate.begin(e.service, [])
+    assert e.gate.confirm(e.service, [])
+    e.finish({'ordinary-beta'})
+    assert e.gate.partitions.owners[shared] == {'ordinary-alpha', 'ordinary-beta'}, 'beta was not read: it stays'
+    stamp = dict(e.gate.partitions.baseline.inputs[0])[own]
+    assert e.gate.partitions.marks.get(own) != stamp and own in e.gate.partitions.dirty, 'an unread change is not marked'
+    assert e.gate.allowed(e.service) and e.gate.scope == {'ordinary-beta'}, 'beta is read again'
+    change(e.paths['ordinary-alpha'])
+    assert e.gate.allowed(e.service) and e.gate.scope is None, 'the shared record still calls for the full job'
