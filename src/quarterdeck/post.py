@@ -167,6 +167,7 @@ class Store:
         self._cache_at: int | None = None
         self._validated: dict[str, tuple[tuple[int, ...], object, Message, int | None]] = {}
         self._validated_context: tuple[object, ...] | None = None
+        self._validated_complete = False  # every listed message has a validated entry
         self._reference_messages: list[Message] | None = None
         self._references: dict[str, list[Message]] = {}
         self._short_messages: list[Message] | None = None
@@ -296,6 +297,7 @@ class Store:
         local = unrouted(runtime)  # in a reading pass, one listing answers for every message without an import
         previous = self._validated
         self._validated = {}  # a failed refresh cannot leave a partial certificate
+        self._validated_complete = False
         self._validated_context, old_context = context, self._validated_context
         identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_mode)
         inventory = []
@@ -320,7 +322,7 @@ class Store:
             inventory.append((path, info, key, record, cached))
         if previous.keys() - {path.name for path, *_ in inventory}:
             reread = True
-        messages, validated = [], {}
+        messages, validated, complete = [], {}, True
         for path, info, key, record, cached in inventory:
             if cached is not None and cached[3] is not None and cached[3] <= started and not reread:
                 message = cached[2]
@@ -351,8 +353,10 @@ class Store:
                     certified = (started if max(info.st_mtime_ns, info.st_ctime_ns)
                                  + POST_TIMESTAMP_TICK_NS < started <= checked else None)
                     validated[path.name] = (key, record, message, certified)
+                else:
+                    complete = False  # changed while read: never reused, and the listing stays untrusted
             messages.append(message)
-        self._validated = validated
+        self._validated, self._validated_complete = validated, complete
         return messages
 
     def _load_current(self) -> tuple[list[Message], dict[str, list[Message]]]:
@@ -467,7 +471,7 @@ class Store:
                 finished = time.time_ns()
                 # Certify only a listing begun after the entire timestamp bucket.
                 # An unsafe listing must be refreshed even when its stamp has aged.
-                if (all(entry[3] is not None for entry in self._validated.values())
+                if (self._validated_complete and all(entry[3] is not None for entry in self._validated.values())
                         and max(info.st_mtime_ns, info.st_ctime_ns) + POST_TIMESTAMP_TICK_NS
                         < started <= checked <= finished):
                     self._cache_at = started

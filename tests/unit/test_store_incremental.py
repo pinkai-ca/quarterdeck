@@ -145,3 +145,41 @@ def test_changed_identity_within_tick_cannot_certify_the_listing(tmp_path, monke
     reads.clear()
     assert newest in store.all()
     assert reads == []
+
+
+def test_a_file_replaced_while_read_keeps_the_listing_untrusted_until_read_again(tmp_path, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    store, messages, reads, _ = seed(tmp_path, monkeypatch)
+    added = replace(messages[-1], id='synthetic-answer', kind='answer',
+                    sender='worker', to='source', re=messages[0].id)
+    store._write(added)
+    path = store.dir / f'{added.id}.json'
+    original = Path.lstat
+    replaced = []
+
+    def after_read(p, *args, **kwargs):
+        info = original(p, *args, **kwargs)
+        if p == path and not replaced:
+            # The post-read identity differs from the listing's: the file was replaced while it was read.
+            replaced.append(p)
+            return SimpleNamespace(**{name: getattr(info, name) for name in (
+                'st_dev', 'st_size', 'st_mode', 'st_mtime_ns', 'st_ctime_ns')}, st_ino=info.st_ino + 1)
+        return info
+
+    monkeypatch.setattr(Path, 'lstat', after_read)
+    invalidate(store)
+    assert added in store.all()
+    assert replaced == [path] and reads == [path.name]
+    assert path.name not in store._validated
+    assert store._cache_at is None  # the listing holds an uncertified message: untrusted
+
+    reads.clear()
+    assert added in store.all()
+    assert reads == [path.name]  # read again, its earlier read never reused
+    assert store._validated[path.name][3] is not None and store._cache_at is not None
+
+    reads.clear()
+    assert added in store.all()
+    assert reads == []
