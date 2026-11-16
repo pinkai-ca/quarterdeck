@@ -19,6 +19,7 @@ that names no seat is no one's own edit, and every seat whose brief it changed i
 from __future__ import annotations
 
 import difflib
+import json
 import os
 from pathlib import Path
 import re
@@ -34,6 +35,9 @@ SHIP_HEAD = '.ship-head'  # the ship folder's commit the last attribution read u
 BOUND = 8192  # bytes of diff a head carries; past it, the sections and their line counts
 SECTION = re.compile(r'^<!-- (.+?) -->$')
 GIT_WAIT = PRIVATE_COMMAND_WAIT  # the service's bound on a command it waits for: tmux's, for a private server
+GIT_UNREAD = '.git-unread.json'  # beside SHIP_HEAD: the passes the ship folder's git has not answered, until it does
+UNREAD_ALERT = 3  # failing passes after which the status line names it (law: nothing-waits-silently)
+UNREAD_RETRY = 60.0  # seconds between asks while git does not answer: a hung git costs a pass GIT_WAIT at most
 
 
 
@@ -148,6 +152,40 @@ def _git(folder: Path, *args: str) -> str | None:
             process.communicate()
             raise Unread(f'git {args[0]} did not answer within {GIT_WAIT:g} s') from None
     return out if process.returncode == 0 else None
+
+
+def unread(runtime: Path) -> dict | None:
+    """The record of a git that has not answered: its failing passes, its last error and when it last asked."""
+    try:
+        data = json.loads((Path(runtime) / FOLDER / GIT_UNREAD).read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return dict(passes=UNREAD_ALERT, error='its record unreadable', at=0.0)
+    return data if isinstance(data, dict) else dict(passes=UNREAD_ALERT, error='its record unreadable', at=0.0)
+
+
+def note_unread(runtime: Path, error: str, at: float) -> int:
+    """One more pass that git did not answer; the count so far."""
+    passes = ((unread(runtime) or {}).get('passes') or 0) + 1
+    path = Path(runtime) / FOLDER / GIT_UNREAD
+    path.parent.mkdir(parents=True, exist_ok=True)
+    durable.replace_file(path, json.dumps(dict(passes=passes, error=error, at=at)) + '\n')
+    return passes
+
+
+def answered(runtime: Path) -> None:
+    """git answered: whatever it had not answered is cleared."""
+    (Path(runtime) / FOLDER / GIT_UNREAD).unlink(missing_ok=True)
+
+
+def status(runtime: Path) -> list[str]:
+    """The status line's words for a ship-folder git that has not answered past UNREAD_ALERT passes."""
+    data = unread(runtime)
+    if data is None or not isinstance(data.get('passes'), int) or data['passes'] < UNREAD_ALERT:
+        return []
+    return [f"ship folder's git has not answered for {data['passes']} passes ({data.get('error')}); "
+            "rule changes are told to every seat they change, its editor included"]
 
 
 def editor(folder: Path, runtime: Path) -> str | None:

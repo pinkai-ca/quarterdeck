@@ -96,22 +96,83 @@ def test_a_git_that_does_not_answer_leaves_the_editor_unknown_and_the_reading_wh
     assert brief_change.editor(folder, runtime) == 'editor-seat', 'the next pass reads the same change'
 
 
-def test_the_service_keeps_an_unread_change_for_its_next_pass(case, monkeypatch):  # noqa: F811
+def ship_repository(case, monkeypatch):
+    """The case's ship folder as a git repository whose reading starts at its first commit."""
+    folder, runtime = case.service.ship.folder, case.service.runtime
+    git(folder, 'init', '-q')
+    commit(folder, 'Synthetic orders\n', 'first')
+    brief_change.editor(folder, runtime)
+    return folder, runtime
+
+
+def edit_by_the_seat(case):
+    """The seat's own commit changes its brief: by trailer, it is that seat's own edit."""
+    folder = case.service.ship.folder
+    commit(folder, 'Synthetic orders, amended\n', f'qd set orders\n\nQd-Seat: {case.spec.name}')
+
+
+def test_an_answered_git_does_not_tell_the_editor_of_its_own_edit(case, monkeypatch):  # noqa: F811
+    ship_repository(case, monkeypatch)
+    edit_by_the_seat(case)
+    case.service.rebrief()
+    assert 'Synthetic orders, amended' in case.path.read_text()
+    assert brief_change.head(case.service.runtime, case.spec.name) is None
+
+
+def test_a_hung_git_still_tells_the_editor_with_its_next_message(case, hanging, monkeypatch):  # noqa: F811
     service = case.service
-    monkeypatch.setattr(type(service.ship), 'is_repository', property(lambda ship: True))
-    case.framework.joinpath('laws.md').write_text('Synthetic laws, amended\n')
-    stamp = service.brief_stamp
-
-    def unread(folder, runtime):
-        raise brief_change.Unread('git log did not answer within 0.5 s')
-
-    monkeypatch.setattr(brief_change, 'editor', unread)
+    folder, runtime = ship_repository(case, monkeypatch)
+    marker = runtime / brief_change.FOLDER / brief_change.SHIP_HEAD
+    reading = marker.read_text()
+    edit_by_the_seat(case)
+    hang_on, started = hanging
+    hang_on('log')
     service.rebrief()  # never raised out of the service
-    assert service.brief_stamp == stamp and case.writes == [], 'nothing published, nothing lost'
-    assert [kwargs for args, kwargs in case.logs if args == ('error',)] == [
-        dict(step='brief-change', error='git log did not answer within 0.5 s')]
+    assert 'Synthetic orders, amended' in case.path.read_text(), 'published, not held back'
+    composed = brief_change.head(runtime, case.spec.name)
+    assert composed is not None and '+Synthetic orders, amended' in composed[0], 'its next message carries the head'
+    assert marker.read_text() == reading, 'the next pass reads the same commits again'
+    assert [kwargs['step'] for args, kwargs in case.logs if args == ('error',)] == ['brief-change']
+    # Told once: the head marks the told brief, and a later reading of those commits adds no head.
+    brief_change.mark(runtime, case.spec.name, composed[1])
+    monkeypatch.delenv('SYNTHETIC_HANG_ON')
+    monkeypatch.setattr(brief_change, 'UNREAD_RETRY', 0.0)
     service.rebrief()
+    assert brief_change.head(runtime, case.spec.name) is None, 'a seat told is not told the same change twice'
+    assert marker.read_text() != reading and brief_change.unread(runtime) is None
+
+
+def test_the_status_line_names_a_git_unanswered_past_three_passes_and_clears_when_it_answers(
+        case, hanging, monkeypatch):  # noqa: F811
+    from quarterdeck import watch
+    service = case.service
+    folder, runtime = ship_repository(case, monkeypatch)
+    edit_by_the_seat(case)
+    hang_on, _ = hanging
+    hang_on('rev-parse')
+    monkeypatch.setattr(brief_change, 'UNREAD_RETRY', 0.0)
+    lines = []
+    for _ in range(3):
+        service.rebrief()
+        lines.append(brief_change.status(runtime))
+    assert lines[0] == lines[1] == [], 'not before the third failing pass'
+    [named] = lines[2]
+    assert named.startswith("ship folder's git has not answered for 3 passes (git rev-parse did not answer within")
+    facts = watch.Facts('up', 0, 0, 0, brief_git=brief_change.status(runtime))
+    assert named in facts.line()
     assert len([1 for args, _ in case.logs if args == ('error',)]) == 1, 'the same failure is logged once'
-    monkeypatch.setattr(brief_change, 'editor', lambda folder, runtime: None)
+    monkeypatch.delenv('SYNTHETIC_HANG_ON')
     service.rebrief()
-    assert 'Synthetic laws, amended' in case.path.read_text() and service.brief_stamp != stamp
+    assert brief_change.status(runtime) == [] and brief_change.unread(runtime) is None
+
+
+def test_a_git_still_unanswered_is_asked_at_most_once_a_minute(case, hanging, monkeypatch):  # noqa: F811
+    service = case.service
+    folder, runtime = ship_repository(case, monkeypatch)
+    edit_by_the_seat(case)
+    hang_on, _ = hanging
+    hang_on('rev-parse')
+    service.rebrief()
+    for _ in range(5):
+        service.rebrief()  # the brief is published: these passes only ask again, and not within the minute
+    assert brief_change.unread(runtime)['passes'] == 1

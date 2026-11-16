@@ -2435,21 +2435,19 @@ class Service:
                 self.receipt_refresh_error = None
         if self.framework_commit and (self.runtime / 'requests' / f'upgrade-rebrief-{self.framework_commit}.json').exists():
             return  # the durable upgrade publisher owns these edits until its request completes
+        from . import brief_change
         stamp = self._brief_stamp()
         if stamp == self.brief_stamp:
+            # Nothing new to publish; a git that has not answered is still asked, at most once a minute, so its
+            # alarm counts and clears (law: nothing-waits-silently).
+            if (waiting := brief_change.unread(self.runtime)) is not None and (
+                    time.time() - float(waiting.get('at') or 0) >= brief_change.UNREAD_RETRY):
+                self._brief_editor()
             return
-        from . import brief_change
         # A changed brief wakes no seat: nothing is posted. The change reaches each seat at the head of its next
-        # message (brief_change); the seat whose own commit made it is not told of it.
-        try:
-            own = brief_change.editor(self.ship.folder, self.runtime) if getattr(self.ship, 'is_repository', False) else None
-        except brief_change.Unread as error:
-            # Who made the change is unknown: it waits, unpublished, for the next pass, and is never lost.
-            if getattr(self, 'brief_change_error', None) != str(error):
-                self.brief_change_error = str(error)
-                self.log('error', step='brief-change', error=str(error))
-            return
-        self.brief_change_error = None
+        # message (brief_change); the seat whose own commit made it is not told of it. Where git does not answer,
+        # the change is no one's own: every seat it changed is told, its editor included.
+        own = self._brief_editor()
         selected = self.resolved_seats()
         for seat in selected:
             if (text := self.brief_texts.get(seat.name)) is None:
@@ -2463,6 +2461,24 @@ class Service:
         if len(selected) == len(self.brief_texts) == len(self.ship.seats):
             self.brief_stamp = stamp
         self.log("rebrief", seats=[seat.name for seat in selected])
+
+    def _brief_editor(self) -> str | None:
+        """The seat whose own commit made the ship folder's change, or None. A git that does not answer gives None,
+        leaves the ship-head reading where it was (brief_change.editor) and counts one failing pass."""
+        from . import brief_change
+        if not getattr(self.ship, 'is_repository', False):
+            return None
+        try:
+            own = brief_change.editor(self.ship.folder, self.runtime)
+        except brief_change.Unread as error:
+            brief_change.note_unread(self.runtime, str(error), time.time())
+            if getattr(self, 'brief_change_error', None) != str(error):
+                self.brief_change_error = str(error)
+                self.log('error', step='brief-change', error=str(error))
+            return None
+        if self.__dict__.pop('brief_change_error', None) is not None or brief_change.unread(self.runtime) is not None:
+            brief_change.answered(self.runtime)
+        return own
 
     def upgrade_rebrief(self, data: dict) -> str | None:
         """A durable baseline survives rendering and retries. A changed brief wakes no seat: nothing is posted, and

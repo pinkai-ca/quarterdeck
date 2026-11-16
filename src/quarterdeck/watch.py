@@ -546,6 +546,7 @@ class Facts:
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
     seat_holds: list[str] = field(default_factory=list)  # one seat held alone by a bad file or a refused record
     screening: list[str] = field(default_factory=list)  # a hand screening a pull request: its posts are held (pr_screen)
+    brief_git: list[str] = field(default_factory=list)  # the ship folder's git unanswered past its passes (brief_change)
     relaunches: list[str] = field(default_factory=list)  # a relaunch a stopped service left unfinished (relaunch_intent)
     write_bounds: list[str] = field(default_factory=list)  # a jailed seat stopped at its write bound (write_bound)
     jail_sweeps: list[str] = field(default_factory=list)  # a stray sandbox the sweep ended, within the day (jail_end)
@@ -578,6 +579,7 @@ class Facts:
         parts += self.unknown
         parts += self.seat_holds
         parts += self.screening
+        parts += self.brief_git
         parts += self.queue_unknown
         parts += [detail for detail in self.compactions
                   if not any(fallback.startswith(detail + ';') for fallback in self.manual_fresh)]
@@ -1123,7 +1125,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
     reading.suffix['pending'] = [f"request claimed: {path.name}; inspect requests/ before retrying"
                                  for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
-    from . import compaction_alert, jail_end, ledger_recovery, model_mismatch, pr_screen, stop_barrier, write_bound
+    from . import brief_change, compaction_alert, jail_end, ledger_recovery, model_mismatch, pr_screen, stop_barrier, write_bound
     from . import human_wake
     from .harness import record_file
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
@@ -1138,6 +1140,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         jail_sweeps=jail_end.status(ship),
         record_bounds=record_file.alarms(readable, owned=human_wake.owned_record),
         screening=pr_screen.status(ship.runtime),
+        brief_git=brief_change.status(ship.runtime),
         model_mismatches=model_mismatch.unrouted(ship, readable, pending_model=request_queue.pending_model),
         held=held,
         move_holds=move_reasons,

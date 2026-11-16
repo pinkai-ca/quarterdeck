@@ -35,6 +35,8 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += getattr(facts, 'ending', ())
     # A seat stopped at its write bound keeps its name and the word that lifts it.
     parts += getattr(facts, 'write_bounds', ())
+    # A ship-folder git that has not answered keeps its words: every rule change is told to its editor too.
+    parts += getattr(facts, 'brief_git', ())
     # A stray sandbox the sweep ended keeps its seat, its pid and its time for the day.
     parts += getattr(facts, 'jail_sweeps', ())
     # A check's seat that outlived its check keeps its name and its cure until it is gone.
