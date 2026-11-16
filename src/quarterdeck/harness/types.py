@@ -548,6 +548,53 @@ def _box_matches(text: str, shown: str, columns: int | None = None, slack: int =
     return False
 
 
+def held_box_matches(text: str, shown: str | None, columns: int | None, width: int | None) -> bool:
+    """A held box equals ``text`` once trailing spaces and soft wraps are taken out of it, and nothing else.
+
+    For qd submit and the door's second look only, after the adapter's own comparison has refused.
+    ``columns`` is the text area and ``width`` the pane's width, both as read with this screen. Row by
+    row, the box must show the message's exact characters. Between two rows, a newline the message
+    carries is the line break. Any other break is a soft wrap, and only where the screen row, its
+    painted spaces included, reaches the text area's edge: either a word broken at a full row of
+    text, or a wrap at the message's own spaces (hung at the row's end) before a word that would not
+    have fit on that row. A break with neither, the message's newline missing, or any other
+    character changed is refused.
+    """
+    if shown is None or type(columns) is not int or type(width) is not int or not 0 < columns <= width:
+        return False
+    wanted, rows = text.rstrip("\n"), shown.rstrip("\n").split("\n")
+    if any(line.endswith(" ") for line in wanted.split("\n")):
+        return False  # a message's own trailing spaces cannot be told from padding
+    pos = 0
+    for index, raw in enumerate(rows):
+        painted, row = _cells(raw), raw.rstrip(" ")
+        filled = _cells(row)
+        if painted is None or filled is None or painted > width or filled > columns:
+            return False
+        if not wanted.startswith(row, pos):
+            return False
+        pos += len(row)
+        if index == len(rows) - 1:
+            return pos == len(wanted)
+        if wanted[pos:pos + 1] == "\n":
+            pos += 1  # the message's own newline is this line break
+            continue
+        if painted < columns or pos == len(wanted):
+            return False  # a short screen row, or a row past the message's end, is no soft wrap
+        tail = wanted[pos:]
+        spaces = len(tail) - len(tail.lstrip(" "))
+        if not spaces:
+            if filled != columns:
+                return False  # a word breaks only at a full row of text
+            continue
+        word = re.match(r"[^\s]+", tail[spaces:])
+        following = _cells(word[0]) if word else None
+        if following is None or filled + 1 + following <= columns:
+            return False  # the next word would have fit: this break is not the program's wrap
+        pos += spaces  # the message's spaces hung at the row's end, taken out with its padding
+    return False
+
+
 def _wrapped_line(line: str, columns: int, slack: int, *, textwrap_ascii: bool,
                   pi_word_wrap: bool) -> list[str] | None:
     """Derive established first-fit rows, retaining input whitespace inside a row."""

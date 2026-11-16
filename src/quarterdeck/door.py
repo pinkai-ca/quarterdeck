@@ -690,6 +690,18 @@ class Door:
                     and screen.box is not None and 0 < len(screen.box.splitlines()) <= height
                     and scroll.matches(box, screen.box, columns, self.harness.wrap_slack))
 
+    def held_matches(self, box, screen: Screen) -> bool:
+        """qd submit and the second look: the adapter's comparison, or the box with its trailing spaces
+        and soft wraps at this pane's width, as read now, taken out (harness.types.held_box_matches)."""
+        if self.matches(box, screen):
+            return True
+        from .harness.types import held_box_matches
+        pane = self.seat.pane()
+        if pane is None or screen.box is None:
+            return False
+        columns = self.harness.box_columns_for_screen(pane.width, screen)
+        return held_box_matches(box.text, self.harness.box_comparison(screen, pane.width), columns, pane.width)
+
     def box_shows(self, box, seconds: float = BOX_SECONDS) -> Screen | None:
         """The screen once the box shows the paste as the program folds it, or the last screen seen."""
         deadline = time.monotonic() + seconds

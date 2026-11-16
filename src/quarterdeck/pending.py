@@ -1027,7 +1027,7 @@ def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Atte
         clear = screen is not None and not screen.unknown and not screen.interruption and not screen.starting
         pane = seat.pane()
         if (seen is None and clear and pane is not None and screen.box
-                and door.matches(seat.harness.box(data["payload"]), screen)):
+                and door.held_matches(seat.harness.box(data["payload"]), screen)):
             proof.save(look=dict(at=at, outcome="submitted", saw="its exact text in the box"),
                        phase="submitted", shown=screen.box)
             door.submit(pane.id)
@@ -1074,7 +1074,7 @@ def _submit_candidate(door: Door, screen: Screen | None, pane: Pane | None,
                   if p.data["phase"] not in TERMINAL and p.same_launch(seat)]
     except (RecordError, OSError, ValueError, KeyError):
         return None, f"refused: {seat.name}'s pending journal is unreadable"
-    matching = [p for p in proofs if door.matches(seat.harness.box(p.data["payload"]), screen)]
+    matching = [p for p in proofs if door.held_matches(seat.harness.box(p.data["payload"]), screen)]
     if len(matching) != 1:
         shown = (repr(screen.box) if len(screen.box) <= 80 else
                  f"{screen.box[:77]!r}… (shortened by qd, {len(screen.box)} chars)")
