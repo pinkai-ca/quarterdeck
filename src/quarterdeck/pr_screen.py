@@ -585,27 +585,16 @@ class LiveHands:
         so the order is done first, and the request waits for the next pass."""
         if post.Store(self.ship.runtime).open_for(name):
             return False
-        data = self._watched(name)
-        if data is None:
-            return False
-        if self._is_down(data):
-            return True  # down: the screen starts it fresh
-        row, state = data.get('seat') or {}, data.get('state') or {}
-        return row.get('activity', {}).get('state') == 'idle' and state.get('turn_open') is not True
-
-    def _watched(self, name: str) -> dict | None:
-        """The hand as qd's watch reads it, or None where the reading cannot be had."""
         result = self._qd('--json', 'watch', name, timeout=60)
         try:
             data = json.loads(result.stdout)
-        except (TypeError, ValueError):
-            return None
-        return data if isinstance(data, dict) else None
-
-    @staticmethod
-    def _is_down(data: dict) -> bool:
+        except ValueError:
+            return False
         row = data.get('seat') or {}
-        return isinstance(row, dict) and (row.get('activity') or {}).get('state') in ('off', 'down')
+        if row.get('activity', {}).get('state') in ('off', 'down'):
+            return True  # down: the screen starts it fresh
+        state = data.get('state') or {}
+        return row.get('activity', {}).get('state') == 'idle' and state.get('turn_open') is not True
 
     def fresh(self, name: str) -> None:
         result = self._qd('fresh', name)
@@ -613,17 +602,30 @@ class LiveHands:
             raise ScreenError(f'{name}: qd fresh failed: {result.stderr.strip()[:200]}')
 
     def down(self, name: str) -> None:
-        """The hand down, proved: qd's down must succeed, and a reading after it must show the hand off or down, by
-        the reading idle() takes. Otherwise this raises, and the screen's finish leaves the hold and its journal, so
-        that a hand still running with the outsider's text in its context is never released, and the next run's
-        recovery tries the finish again."""
+        """The hand down, proved: qd's down must succeed, and the hand must then read off with the detail 'down',
+        no pane and no launch, which qd's down leaves only once the program has ended and its jail tree is confirmed
+        gone. 'off · no pane' (a program outliving its closed pane while it ends) and 'off · exited N' (a dead pane)
+        prove nothing. Otherwise this raises, and the screen's finish leaves the hold and its journal, so that a hand
+        still running with the outsider's text in its context is never released, and the next run's recovery tries
+        the finish again."""
         result = self._qd('down', name)
         if result.returncode != 0:
             raise ScreenError(f'{name}: qd down failed ({result.returncode}): {(result.stderr or "").strip()[:200]}; '
                               'it stays held')
-        data = self._watched(name)
-        if data is None or not self._is_down(data):
-            raise ScreenError(f'{name}: qd down returned, but the hand is not read as off or down; it stays held')
+        try:
+            reading = self._activity(name)
+        except Exception as error:  # a reading that cannot be had proves nothing
+            raise ScreenError(f'{name}: qd down returned, but the hand cannot be read ({type(error).__name__}); '
+                              'it stays held') from None
+        if (reading.state, reading.detail) != ('off', 'down'):
+            raise ScreenError(f'{name}: qd down returned, but the hand reads {reading}, not down; it stays held')
+
+    def _activity(self, name: str):
+        """The hand's own activity, from its pane and its launch, as watch reads it. Not qd's watch row: while the
+        hold stands that row reads 'screening', whatever lies beneath."""
+        from . import seat as seatmod, watch
+        from .tmux import Tmux
+        return watch.activity(seatmod.read_seat(self.ship, self.ship.seat(name), Tmux.for_ship(self.ship)))
 
     def instruct(self, name: str, body: str) -> str:
         """The screen's instruction, from ship, as an answer: a non-obligation that wakes the hand and leaves

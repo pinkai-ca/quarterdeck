@@ -935,10 +935,10 @@ def test_a_hand_swept_during_its_piece_is_flagged(world):
 
 
 class QdHands(pr_screen.LiveHands):
-    """The live hands' own down, over a scripted qd: ``exits`` is what qd's down exits with, and ``reads`` the activity
-    state a watch reads after it. Everything else is the stand-in's."""
+    """The live hands' own down, over a scripted qd: ``exits`` is what qd's down exits with, and ``reads`` the hand's
+    activity after it, as (state, detail). Everything else is the stand-in's."""
 
-    def __init__(self, stand_in, exits=0, reads='down'):
+    def __init__(self, stand_in, exits=0, reads=('off', 'down')):
         runtime = stand_in.runtime
         super().__init__(SimpleNamespace(runtime=runtime, folder=runtime.parent), Path('qd'), stand_in.root)
         self.stand_in, self.exits, self.reads, self.qd_calls = stand_in, exits, reads, []
@@ -946,10 +946,12 @@ class QdHands(pr_screen.LiveHands):
     def _qd(self, *args, timeout=300):
         import subprocess
         self.qd_calls.append(args)
-        if args[:1] == ('down',):
-            return subprocess.CompletedProcess(args, self.exits, '', 'refused' if self.exits else '')
-        watched = dict(seat=dict(activity=dict(state=self.reads)))
-        return subprocess.CompletedProcess(args, 0, json.dumps(watched), '')
+        assert args[:1] == ('down',), 'the down is proved from the hand itself, not from a qd reading'
+        return subprocess.CompletedProcess(args, self.exits, '', 'refused' if self.exits else '')
+
+    def _activity(self, name):
+        from quarterdeck import watch
+        return watch.Activity(*self.reads)
 
     def folder(self, name):
         return self.stand_in.folder(name)
@@ -977,7 +979,9 @@ class QdHands(pr_screen.LiveHands):
 
 
 NOT_PROVED_DOWN = [pytest.param(dict(exits=1), id='down exits nonzero'),
-                   pytest.param(dict(exits=0, reads='idle'), id='down exits 0 and the hand is still up')]
+                   pytest.param(dict(exits=0, reads=('idle', '')), id='down exits 0 and the hand is still up'),
+                   pytest.param(dict(exits=0, reads=('off', 'no pane')), id='off with no pane: its launch remains'),
+                   pytest.param(dict(exits=0, reads=('off', 'exited 1')), id='off with a dead pane')]
 
 
 @pytest.mark.parametrize('down', NOT_PROVED_DOWN)
@@ -998,7 +1002,7 @@ def test_a_down_not_proved_leaves_the_hold_and_its_journal_until_a_later_recover
     with pytest.raises(pr_screen.ScreenError, match='hand-a: .*it stays held'):
         pr_screen.recover(runtime, hands, outcomes)
     assert pr_screen.held(runtime, 'hand-a') and journal.is_file(), 'tried again, and held again'
-    hands.exits, hands.reads = 0, 'off'
+    hands.exits, hands.reads = 0, ('off', 'down')
     finished = pr_screen.recover(runtime, hands, outcomes)
     assert [(f['number'], f['hand']) for f in finished] == [(7, 'hand-a')], 'the next recovery finishes it once'
     assert not pr_screen.held(runtime, 'hand-a') and not journal.exists() and not piece.exists()
@@ -1021,3 +1025,25 @@ def test_a_screen_whose_down_is_not_proved_keeps_its_hold_and_journal(world, dow
     assert pr_screen.held(runtime, 'hand-a'), 'a hand not proved down is never released'
     assert (runtime / 'pr-screen' / 'journal' / 'hand-a.json').is_file(), 'its journal stands for the next run'
     assert ('down', 'hand-a') in hands.qd_calls and ('fresh after', 'hand-a') not in stand_in.calls
+
+
+@pytest.mark.parametrize('launched, proved', [(None, True), (object(), False)], ids=['no launch', 'a launch remains'])
+def test_the_live_down_reads_the_hand_beneath_its_hold(world, monkeypatch, launched, proved):
+    """While the hold stands, qd's watch row reads 'screening'; the down reads the hand's own pane and launch."""
+    import subprocess
+    from quarterdeck import seat as seatmod
+    from quarterdeck.tmux import Tmux
+    runtime, hands_root = world
+    interrupted_hold(runtime, 'hand-a', journal=False)
+    monkeypatch.setattr(Tmux, 'for_ship', classmethod(lambda cls, ship: None))
+    monkeypatch.setattr(seatmod, 'read_seat', lambda ship, spec, tmux: SimpleNamespace(
+        name=spec.name, pane=lambda: None, launched=lambda: launched))
+    ship = SimpleNamespace(runtime=runtime, folder=runtime.parent, seat=lambda name: SimpleNamespace(name=name))
+    live = pr_screen.LiveHands(ship, Path('qd'), hands_root)
+    monkeypatch.setattr(live, '_qd', lambda *args, timeout=300: subprocess.CompletedProcess(args, 0, '', ''))
+    assert pr_screen.held(runtime, 'hand-a')
+    if proved:
+        live.down('hand-a')
+    else:
+        with pytest.raises(pr_screen.ScreenError, match='hand-a: qd down returned, but the hand reads off, no pane'):
+            live.down('hand-a')
