@@ -104,6 +104,22 @@ def test_service_refreshes_the_hand_file_as_open_work_closes(tmp_path, monkeypat
     assert w.opened.body not in text and w.incoming.body in text
 
 
+def test_hand_with_no_open_work_keeps_only_the_history_pointer(tmp_path, monkeypatch):
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
+    w = world(tmp_path / 'ship', 'hand')
+    w.store._write(post.Message(f'rep-20320102-1200-recipient-{9:06x}', 'report',
+                               'recipient', 'issuer', AT + timedelta(seconds=9),
+                               'Current task completed.', re=w.opened.id))
+    w.store._write(post.Message(f'ans-20320102-1200-recipient-{10:06x}', 'answer',
+                               'recipient', 'issuer', AT + timedelta(seconds=10),
+                               'Current question answered.', re=w.incoming.id))
+    text = post.inbox_text(w.store, w.seat.name)
+    assert text == ('# Inbox: recipient\n\n## Open (0)\n\n'
+                    'Other messages stay in the message store. `qd thread <id>` reads a thread; '
+                    '`qd inbox --all` prints the complete history.\n')
+    assert w.seat.carriage().rows == ()
+
+
 def test_hand_fresh_index_selects_only_open_threads_with_their_amendments(tmp_path, monkeypatch):
     monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
     w = world(tmp_path / 'ship', 'hand')

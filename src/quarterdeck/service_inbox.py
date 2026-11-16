@@ -143,10 +143,7 @@ def render_pass(service, store):
             except FileNotFoundError:
                 current = None
             if current != text:
-                if hand:
-                    post.render_inbox(service.runtime, store, name, open_only=True)
-                else:
-                    post.render_inbox(service.runtime, store, name)
+                post.render_inbox(service.runtime, store, name, open_only=hand)
         except ShipError as error:
             succeeded = False
             service.log('error', step='inbox', seat=name, error=str(error))
