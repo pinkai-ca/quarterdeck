@@ -52,6 +52,30 @@ def records(home: Path) -> list[Path]:
                    *record_location.records(home, "sessions/*.jsonl")})
 
 
+def launch_ended(record: Path) -> bool:
+    """Whether this record's launch has ended, judged only from qd's trusted launch record of the seat's current
+    launch: that launch found this record in its home before it began (``records_before``), and does not resume it
+    (its ``--session`` names another or none). A launch that has ended writes nothing more, so a turn it left open was
+    cut, not paused. A record the current launch writes or resumes, or a home with no readable launch record, makes
+    no claim of an ending; nothing the seat's jail writes in its home counts here."""
+    from .. import trusted_files
+    record = Path(record)
+    if record.parent.name != "sessions" or record.suffix != ".jsonl":
+        return False  # not a launch's own record in its home: no claim of an ending is made
+    try:
+        data = json.loads((trusted_files.of_home(record.parent.parent) / trusted_files.LAUNCH).read_text())
+    except (OSError, ValueError):
+        return False
+    before = data.get("records_before") if isinstance(data, dict) else None
+    argv = data.get("argv") if isinstance(data, dict) else None
+    if not isinstance(before, list) or not isinstance(argv, list) or str(record) not in before:
+        return False
+    resumed = [argv[at + 1] for at, word in enumerate(argv[:-1]) if word == "--session"]
+    if data.get("resume") is not None and not resumed:
+        return False  # a resumed launch that names no record: which it resumed is not known
+    return str(record) not in resumed
+
+
 def _session(record: Path) -> dict | None:
     return next((e for e in entries(record) if e.get("type") == "session"), None)
 
@@ -110,6 +134,11 @@ class _Reader(JsonLinesReader):
     @classmethod
     def read_snapshot(cls, record, snapshot):
         state, turns = super().read_snapshot(record, snapshot)
+        if state.turn_open and isinstance(record, Path) and launch_ended(record):
+            # A reader of its own, so that the cached reader keeps the record's own reading for a later one.
+            reader = cls(record, snapshot)
+            reader.cut()
+            state, turns = reader.state(), list(reader.turns)
         if (snapshot.rows and snapshot.rows[-1][0] > snapshot.complete_lines
                 and snapshot.rows[-1][1].get('type') == 'compaction'):
             state = replace(state, pending_tools=None)
@@ -207,6 +236,7 @@ class _Reader(JsonLinesReader):
             costs = usage.get("cost") if isinstance(usage, dict) else None
             cost = costs.get("total") if isinstance(costs, dict) else None
             self.open["costs"].append(CostStep(step_model, tokens, amount(cost)))
+            self.open["last_step"] = at
             for block in message.get("content") or []:
                 if block.get("type") in ("thinking", "toolCall") or block.get("type") == "text" and block.get("text"):
                     self.open["activity"] = True  # model output; pi records no proof of its absence
@@ -273,6 +303,24 @@ class _Reader(JsonLinesReader):
                                     self.model, turn["tokens"], tuple(turn["tools"]), cost_steps=tuple(turn["costs"]),
                                     failure=turn.get("failure"), inputs=tuple(turn["inputs"]),
                                     end_reason=turn.get("end_reason"))), at)
+
+    def cut(self) -> None:
+        """Its launch has ended with this turn open, so it was cut and will never be written again: it closes untimed
+        at its last step, with its measured steps, tokens and costs, each tool it left running noted as such, and
+        nothing pending. A turn with no step yet stays open, as OpenCode's does."""
+        if self.open is None or "last_step" not in self.open:
+            return
+        from .base import ToolCall
+        for name, _ in self.pending.values():
+            self.open["tools"].append(ToolCall(name, None, None))  # left running when its launch ended: its end unknown
+        self.live_tools.clear()
+        self.live_tool_starts.clear()
+        turn = self.close_turn()
+        at = turn["last_step"] or turn["started"]
+        self.record_turn(costed(Turn(len(self.turns), turn["started"] or at, at, turn["input"], turn["reply"], self.model,
+                                    turn["tokens"], tuple(turn["tools"]), cost_steps=tuple(turn["costs"]),
+                                    inputs=tuple(turn["inputs"]), timed=False)), None)
+
 
 state = _Reader.read_state
 turns = _Reader.read_turns
@@ -475,6 +523,10 @@ class PiHarness(EndpointHarness):
 
     inputs = staticmethod(inputs)
     retirement_process_names = ('pi', 'node', 'bun')
+
+    def stamp_extra(self, record: Path):
+        """What besides its bytes decides a record's reading: whether its launch has ended (ledger.record_stamp)."""
+        return ['later-launch', launch_ended(record)]
 
     def retirement_bundle(self, home: Path, record: Path, kept: Path):
         if record.parent != home / 'sessions' or record.suffix != '.jsonl' or record.is_symlink():

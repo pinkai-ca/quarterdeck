@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import hand_transcripts, pr_screen, record_location, record_owner, trusted_files
+from quarterdeck import hand_transcripts, ledger, pr_screen, record_location, record_owner, trusted_files
 from quarterdeck.harness import get, reader_stamp
 from quarterdeck.harness.base import record_fingerprint
 from quarterdeck.harness.opencode import OpenCodeHarness
@@ -515,6 +515,142 @@ def test_a_listed_cut_record_held_open_by_a_process_stays(tmp_path, monkeypatch)
         record = cut_mid_turn(w)
         monkeypatch.setattr(hand_transcripts, 'opened', lambda files, names=None: True)  # a process holds it
         assert hand_transcripts.run(w.svc, now=w.now, limit=0) == 0 and record.is_file()
+    finally:
+        w.svc.ledger.close()
+
+
+def pi_launch(w, *, before=(), resumes=None):
+    """The seat's current pi launch as qd's trusted launch record names it: the records its home held before it
+    began, and the record it resumes, if any (pi's --session)."""
+    argv = ['bwrap', '--', 'pi', '--session-dir', str(w.seat.home / 'sessions')]
+    if resumes is not None:
+        argv += ['--session', str(resumes)]
+    (w.seat.trusted / trusted_files.LAUNCH).write_text(json.dumps(dict(
+        pane='%1', pid=1, at=datetime.fromtimestamp(w.now, timezone.utc).isoformat(), pool='local',
+        resume=None if resumes is None else 'synthetic-session', argv=argv, version=None,
+        records_before=sorted(map(str, before)))))
+
+
+def pi_cut_mid_turn(w, *, name='cut', listed=False, ended=True, age=timedelta(minutes=2), earlier=False,
+                    task='Synthetic screening instruction'):
+    """A pi record cut mid-turn in pi's recorded shape: the assistant's step asks for a tool (stopReason toolUse, a
+    toolCall block, with its usage and cost) and no toolResult follows. ``earlier`` puts an ordinary closed turn
+    before it. ``ended``: the current launch began after this record was written, so qd's trusted launch record
+    lists it among the records before."""
+    at = datetime.fromtimestamp(w.now, timezone.utc) - age
+    stamp = lambda seconds: (at + timedelta(seconds=seconds)).isoformat()
+    rows = [dict(type='session', version=3, id=name, timestamp=stamp(0), cwd='/synthetic')]
+    if earlier:
+        rows += [dict(type='message', id='u0', parentId=None, timestamp=stamp(0),
+                      message=dict(role='user', content=[dict(type='text', text='Synthetic earlier task')])),
+                 dict(type='message', id='a0', parentId='u0', timestamp=stamp(1),
+                      message=dict(role='assistant', content=[dict(type='text', text='Synthetic answer')],
+                                   provider='synthetic', model='synthetic-model', stopReason='stop',
+                                   usage=dict(input=3, output=2, cacheRead=0, cacheWrite=0, totalTokens=5,
+                                              cost=dict(total=0.25))))]
+    rows += [dict(type='message', id='u', parentId=rows[-1]['id'], timestamp=stamp(2),
+                  message=dict(role='user', content=[dict(type='text', text=task)])),
+             dict(type='message', id='a', parentId='u', timestamp=stamp(3),
+                  message=dict(role='assistant', provider='synthetic', model='synthetic-model', stopReason='toolUse',
+                               content=[dict(type='thinking', thinking='Synthetic thought'),
+                                        dict(type='toolCall', id='call-1', name='bash', arguments=dict(command='true'))],
+                               usage=dict(input=30, output=7, cacheRead=0, cacheWrite=0, totalTokens=37,
+                                          cost=dict(total=0.5))))]
+    record = w.seat.home / 'sessions' / f'{name}.jsonl'
+    record.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    os.utime(record, (at.timestamp(), at.timestamp()))
+    with (w.seat.trusted / trusted_files.LAUNCHES).open('a') as stream:
+        stream.write(json.dumps(dict(record=str(record), at=(at - timedelta(seconds=2)).isoformat(), pool='local',
+                                     harness='pi')) + '\n')
+    record_owner.register(w.seat.trusted, record, 'pi')
+    pi_launch(w, before=[w.record, *([record] if ended else [])])
+    w.svc.account_records(process_table={})
+    if listed:
+        pr_screen.mark_screening(w.svc.runtime, 'hand', [str(record)])
+    return record
+
+
+def test_a_cut_pi_turn_with_a_tool_running_is_counted_once_its_launch_has_ended(tmp_path, monkeypatch):
+    """The current launch began after this record (qd's trusted launch record lists it before): its open turn closes
+    untimed at its last step, its tool noted as left running, nothing pending, and the ledger counts it with its
+    tokens and cost. An ordinary record, not a screening one."""
+    w = world(tmp_path, monkeypatch, 'pi')
+    try:
+        record = pi_cut_mid_turn(w, earlier=True)
+        state, turns = w.seat.harness.read(record)
+        assert state.turn_open is False and state.pending_tools == () and state.active_tools == ()
+        assert len(turns) == 2 and turns[0].timed, 'the earlier closed turn is read as before'
+        cut = turns[1]
+        assert not cut.timed and cut.ended == cut.started + timedelta(seconds=1), 'untimed, at its last step'
+        assert cut.tokens.written == 7 and cut.cost == 0.5
+        assert [(t.name, t.seconds, t.failed) for t in cut.tools] == [('bash', None, None)], 'left running'
+        assert cut not in state.completed_turns, 'its end is a fallback, not a completion the record states'
+        assert w.svc.ledger.ingested(record) == 2, 'counted, not dropped'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_pi_record_whose_launch_is_still_current_keeps_its_turn_open(tmp_path, monkeypatch):
+    """Written after the current launch began, or resumed by it: nothing is closed by guess."""
+    w = world(tmp_path, monkeypatch, 'pi')
+    try:
+        record = pi_cut_mid_turn(w, ended=False)
+        state, turns = w.seat.harness.read(record)
+        assert state.turn_open is True and state.pending_tools == ('bash',) and turns == []
+        assert w.svc.ledger.ingested(record) == 0
+        pi_launch(w, before=[w.record, record], resumes=record)  # a later launch that resumes it: still its launch
+        state, turns = w.seat.harness.read(record)
+        assert state.turn_open is True and state.pending_tools == ('bash',) and turns == []
+        w.svc.account_records(process_table={})
+        assert w.svc.ledger.ingested(record) == 0
+        (w.seat.trusted / trusted_files.LAUNCH).unlink()  # no trusted launch record: no claim of an ending
+        assert w.seat.harness.read(record)[0].turn_open is True
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_planted_session_file_leaves_the_current_pi_launchs_turn_open(tmp_path, monkeypatch):
+    """A later session file the hand wrote in its home counts for nothing: only qd's trusted launch record ends a
+    launch."""
+    w = world(tmp_path, monkeypatch, 'pi')
+    try:
+        record = pi_cut_mid_turn(w, ended=False)
+        transcript(w.seat.home, 'planted', 'pi', datetime.fromtimestamp(w.now, timezone.utc) + timedelta(minutes=1))
+        w.svc.account_records(process_table={})
+        assert w.seat.harness.read(record)[0].turn_open is True and w.svc.ledger.ingested(record) == 0
+    finally:
+        w.svc.ledger.close()
+
+
+def test_an_accounted_pi_record_is_read_again_when_a_later_launch_begins(tmp_path, monkeypatch):
+    """Accounted while its launch was current, it is read once more when the next launch starts, so its cut turn is
+    counted then: whether its launch has ended is part of a pi record's accounting stamp."""
+    w = world(tmp_path, monkeypatch, 'pi')
+    try:
+        record = pi_cut_mid_turn(w, ended=False, earlier=True)
+        assert w.svc.ledger.ingested(record) == 1, 'the earlier closed turn only'
+        before = ledger.record_stamp(next(o for o in record_owner.records(w.seat) if o.path == record))
+        pi_launch(w, before=[w.record, record])  # qd's trusted record now names a later, fresh launch
+        after = ledger.record_stamp(next(o for o in record_owner.records(w.seat) if o.path == record))
+        assert before[:2] == after[:2] and before[2:] == (['later-launch', False],) and after[2:] == (['later-launch', True],)
+        w.svc.account_records(process_table={})
+        assert w.svc.ledger.ingested(record) == 2
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_listed_pi_screening_record_cut_mid_turn_retires_once_its_cut_turn_is_counted(tmp_path, monkeypatch):
+    """A pi hand cut off by the screen mid-turn has its screening record retired once its accounting is in, the cut
+    turn counted first; nothing under its home then holds the case's text."""
+    strings = case_strings('note-elsewhere')
+    w = world(tmp_path, monkeypatch, 'pi')
+    try:
+        record = pi_cut_mid_turn(w, listed=True, task='\n'.join(strings))
+        assert holds(w.seat.home, strings), 'the screening launch read the case'
+        assert w.svc.ledger.ingested(record) == 1, 'the cut turn is in the ledger first'
+        assert retire(w, limit=0) == 1 and not record.exists(), f"declined: {retire.declined}"
+        assert holds(w.seat.home, strings) == [], "nothing under the hand's home holds the case's text"
+        assert w.svc.ledger.ingested(record) == 1, 'the ledger keeps its keys'
     finally:
         w.svc.ledger.close()
 
