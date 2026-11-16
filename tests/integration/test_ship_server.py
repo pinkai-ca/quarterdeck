@@ -7,6 +7,7 @@ Every cleanup names its socket with -S.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -82,6 +83,47 @@ def test_a_seat_runs_on_the_ships_own_server_and_cannot_reach_it_by_TMUX(ship, m
         assert again != first and again.parent == first.parent and not first.exists()
     finally:
         seatmod.bring_down(ship, server)
+
+
+def unit_listed(unit: str) -> bool:
+    shown = subprocess.run(["systemctl", "--user", "list-units", "--all", "--no-legend", "--plain", unit],
+                           capture_output=True, text=True, timeout=10)
+    return any(line.split()[:1] == [unit] for line in shown.stdout.splitlines())
+
+
+def test_the_ships_server_is_born_in_a_scope_of_its_own_and_its_scope_ends_with_it(ship):
+    # The throwaway ship is built as every test here builds it: a drydock copy whose Tmux.for_ship is the ship's
+    # OWN server (ship=True, not legacy) on its socket under the ship's runtime, in this session's private
+    # TMUX_TMPDIR root. That is the server the wrap is for; a named private server is never wrapped.
+    from types import SimpleNamespace
+    from quarterdeck import servicectl
+    from quarterdeck.jail_environment import unjailed_environment
+
+    words, why = servicectl.scoped(SimpleNamespace(name=ship.name), unjailed_environment(os.environ),
+                                   kind="tmux-server")
+    if why:
+        pytest.skip(f"the user's service manager cannot be reached here, so no scope can be made: {why}")
+    server = Tmux.for_ship(ship)
+    socket = ship_socket(ship)
+    assert server.ship and not server.legacy and not socket.exists()
+    captain = seatmod.Seat(ship, ship.seat("captain"), server)
+    try:
+        proof = captain.up(resume=False)
+        found = re.search(r"tmux server started in its own scope (qd-tmux-server-[A-Za-z0-9_.-]+\.scope)", proof)
+        assert found, proof
+        unit = found.group(1)
+        pid = int(subprocess.run(["tmux", "-S", str(socket), "display-message", "-p", "#{pid}"],
+                                 capture_output=True, text=True, timeout=10).stdout)
+        cgroup = Path(f"/proc/{pid}/cgroup").read_text()
+        assert f"/{unit}" in cgroup, cgroup
+        assert unit_listed(unit)
+    finally:
+        # Only through its own private socket: never the operator's server, never a bare kill-server.
+        subprocess.run(["tmux", "-S", str(socket), "kill-server"], capture_output=True, timeout=10)
+    deadline = time.monotonic() + 10
+    while unit_listed(unit) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not unit_listed(unit), f"{unit} outlived its server"
 
 
 def test_a_private_tmux_folder_open_to_others_refuses_the_launch(ship):
