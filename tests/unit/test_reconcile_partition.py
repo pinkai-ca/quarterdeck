@@ -1,5 +1,6 @@
 """One inventory supplies each seat's active planning rows; writers still reread."""
 
+from contextlib import nullcontext
 from dataclasses import replace
 import json
 from types import SimpleNamespace
@@ -80,6 +81,27 @@ def test_a_receipt_finished_after_planning_is_not_abandoned(tmp_path, monkeypatc
     assert old.path.read_bytes() == finished[0]
     assert json.loads(old.path.read_text())['result'] == 'delivered'
     assert not (runtime / 'log' / 'service.jsonl').exists()
+
+
+def test_abandonments_keep_the_original_recipient_traversal(tmp_path, monkeypatch):
+    # Dictionary-to-set construction can choose a different layout from repeated
+    # insertion. Logs keep the original order for the same process and inventory.
+    monkeypatch.setattr(pending, 'transient_lock', lambda *args: nullcontext(True))
+    for count in (8, 20, 40):
+        for salt in range(12):
+            runtime = tmp_path / ('sample-' + str(count) + '-' + str(salt)) / 'runtime'
+            runtime.mkdir(parents=True)
+            records = [attempt(runtime, 'former-' + str(salt) + '-' + str(index), index)
+                       for index in range(count)]
+            names = {row.seat for row in records}
+            expected = list(names - {}.keys())
+            seen = []
+            monkeypatch.setattr(pending, 'abandon', lambda runtime, name, reason, **kwargs: seen.append(name))
+            service = SimpleNamespace(runtime=runtime, attempts=SimpleNamespace(dir=runtime / 'post' / 'attempts'),
+                                      ship=SimpleNamespace(seats={}))
+            paths = pending._reconcile_inventory(service, records)
+            assert seen == expected
+            assert paths == {row.path for row in records}
 
 
 def test_abandonment_still_reads_a_planned_candidate_under_its_lock(tmp_path, monkeypatch):

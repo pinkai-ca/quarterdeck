@@ -715,12 +715,13 @@ def _reconcile_inventory(service, records):
     attempts = {a.path.name: a for a in records}
     latest = {a.message: a for a in records}
     by_seat, active_by_seat = {}, {}
+    names = set()
     active_folder = service.attempts.dir
     for attempt in attempts.values():
+        names.add(attempt.seat)  # retain the original set insertion sequence and abandonment log order
         by_seat.setdefault(attempt.seat, []).append(attempt)
         if attempt.path.parent == active_folder:
             active_by_seat.setdefault(attempt.seat, []).append(attempt)
-    names = set(by_seat)
     names.update(post_dir.directory_names(service.runtime / "post" / "pending"))
     for name in names - service.ship.seats.keys():
         with transient_lock(service.runtime, name) as unowned:
