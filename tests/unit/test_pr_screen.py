@@ -152,6 +152,10 @@ class Outcomes:
         self.told.append(('desk', number, 'an interrupted screen was finished'))
         return f'rep-desk-interrupted-{number}'
 
+    def unread(self, pr, repository, kind, runs):
+        self.told.append(('desk', pr.number, f'unread ({kind}) for {runs} runs'))
+        return f'rep-desk-unread-{pr.number}'
+
 
 @pytest.fixture
 def world(tmp_path):
@@ -1059,33 +1063,114 @@ def run_source(world, source):
     return results, outcomes
 
 
-@pytest.mark.parametrize('error, reason', [
-    (OSError('the network is down'), r'it could not be read \(OSError\)'),
-    (ValueError('not JSON'), r'it could not be read \(ValueError\)'),
-    (pr_screen.ScreenError('/pulls/7/files: a page is over 8388608 bytes'), 'a page is over 8388608 bytes'),
-])
-def test_one_request_that_cannot_be_read_is_flagged_alone_and_the_pass_goes_on(world, error, reason):
+def one_fails(error, cases=('clean-docs', 'clean-code'), fail_number=7):
+    """The fixture cases, with pull request 7 between them failing to be read by ``error`` (a list: one per run)."""
+    errors = list(error) if isinstance(error, list) else [error]
+
     class OneFails(pr_screen.FixtureSource):
+        reads = []
+
         def open(self):
             first, second = super().open()
-            return [first, pr_screen.PullRequest(7, '07' * 20), second]
+            return [first, pr_screen.PullRequest(fail_number, '07' * 20), second]
 
         def texts(self, pr):
-            if pr.number == 7:
-                raise error
+            if pr.number == fail_number:
+                OneFails.reads.append(pr.number)
+                failure = errors.pop(0) if errors else None
+                if failure is not None:
+                    raise failure
+                return super().texts(super().open()[0])  # readable now: the first case's clean change
             return super().texts(pr)
 
-    results, outcomes = run_source(world, OneFails(FIXTURES, ['clean-docs', 'clean-code']))
+    return OneFails(FIXTURES, list(cases))
+
+
+def http_error(code, **headers):
+    import email.message
+    import urllib.error
+    message = email.message.Message()
+    for name, value in headers.items():
+        message[name.replace('_', '-')] = value
+    return urllib.error.HTTPError('https://api.github.com/repos/owner/project/pulls/7', code, 'refused', message, None)
+
+
+@pytest.mark.parametrize('error, kind', [
+    (OSError('the network is down'), 'network'),
+    (TimeoutError('timed out'), 'network'),
+    ('url', 'network'),
+    ('rate-403', 'rate limit'),
+    ('rate-429', 'rate limit'),
+    ('http-502', 'HTTP 502'),
+    (ValueError('not JSON'), 'unexpected answer'),
+    (KeyError('head'), 'unexpected answer'),
+    (pr_screen.Unread('pull request 7 moved while it was read; the next pass starts it over', 'moved'), 'moved'),
+])
+def test_a_request_that_cannot_be_read_is_unread_not_flagged_and_tried_again(world, error, kind):
+    import urllib.error
+    error = {'url': urllib.error.URLError('no route'), 'rate-403': http_error(403, X_RateLimit_Remaining='0'),
+             'rate-429': http_error(429, Retry_After='60'), 'http-502': http_error(502)}.get(error, error)
+    source = one_fails([error])
+    results, outcomes = run_source(world, source)
     by_number = {result['number']: result for result in results}
-    assert len(by_number) == 3 and 7 in by_number, 'every request is reached'
+    assert len(by_number) == 3, 'every request is reached'
     failed = by_number[7]
-    assert failed['outcome'] == 'flagged' and re.search(reason, failed['findings'][0])
-    assert failed['findings'][0].startswith('not screened: ') and 'flagged unread' in failed['findings'][0]
-    assert [told for told in outcomes.told if told[1] == 7] == [('desk', 7, failed['findings'])], 'named to the desk'
+    assert (failed['outcome'], failed['kind'], failed['runs'], failed['told']) == ('unread', kind, 1, None)
+    assert not [told for told in outcomes.told if told[1] == 7], 'no seat is told, and the desk not yet'
+    state = json.loads((world[0] / 'pr-screen' / 'state.json').read_text())
+    assert state['7'] == dict(head='07' * 20, outcome='unread', kind=kind, runs=1, told=None, at=state['7']['at'])
     others = [result for number, result in by_number.items() if number != 7]
     assert [result['outcome'] for result in others] == ['clean', 'clean'], 'the others are screened all the same'
+    # The next run tries it again, at the same head, and now it reads: it is screened as any request.
+    results, outcomes = run_source(world, source)
+    assert source.reads == [7, 7]
+    again = {result['number']: result for result in results}
+    assert again[7]['outcome'] == 'clean'
+    assert json.loads((world[0] / 'pr-screen' / 'state.json').read_text())['7']['outcome'] == 'clean'
+
+
+def test_the_kind_of_an_unread_failure_names_no_word_of_the_answer():
+    assert pr_screen.unread_kind(http_error(403)) == 'HTTP 403', 'a refusal that is no rate limit says its code'
+    assert pr_screen.unread_kind(RuntimeError('the outsider wrote this')) == 'RuntimeError'
+    assert pr_screen.unread_kind(ValueError('the outsider wrote this')) == 'unexpected answer'
+
+
+def test_three_unread_runs_tell_the_desk_once_that_it_is_unread_never_flagged(world):
+    errors = [OSError('down')] * 5
+    source = one_fails(errors)
+    told_desk = []
+    for run_number in range(1, 6):
+        results, outcomes = run_source(world, source)
+        failed = {result['number']: result for result in results}[7]
+        assert (failed['outcome'], failed['runs']) == ('unread', run_number)
+        told_desk += [told for told in outcomes.told if told[1] == 7]
+    assert told_desk == [('desk', 7, 'unread (network) for 3 runs')], 'once, at the third, as unread'
+    state = json.loads((world[0] / 'pr-screen' / 'state.json').read_text())['7']
+    assert (state['outcome'], state['runs'], state['told']) == ('unread', 5, 'rep-desk-unread-7')
+    assert not [told for told in told_desk if told[2] and 'flagged' in str(told[2])]
+
+
+def test_a_new_push_starts_the_unread_count_over(world):
+    errors = [OSError('down')] * 3
+    source = one_fails(errors)
+    run_source(world, source)
+    run_source(world, source)
     state = json.loads((world[0] / 'pr-screen' / 'state.json').read_text())
-    assert state['7']['outcome'] == 'flagged' and state['7']['head'] == '07' * 20
+    state['7']['head'] = '70' * 20  # as if the request had been at another head before
+    (world[0] / 'pr-screen' / 'state.json').write_text(json.dumps(state))
+    results, outcomes = run_source(world, source)
+    failed = {result['number']: result for result in results}[7]
+    assert (failed['runs'], failed['told']) == (1, None)
+    assert not [told for told in outcomes.told if told[1] == 7], 'the count is per head: no report at its third run'
+
+
+def test_a_planted_line_is_still_flagged_while_another_request_is_unread(world):
+    results, outcomes = run_source(world, one_fails([OSError('down')], cases=('clean-docs', 'description-instruction')))
+    by_number = {result['number']: result for result in results}
+    flagged = [result for number, result in by_number.items() if number != 7 and result['outcome'] == 'flagged']
+    assert len(flagged) == 1 and flagged[0]['findings'], 'the planted instruction is a finding'
+    assert by_number[7]['outcome'] == 'unread'
+    assert [told[0] for told in outcomes.told if told[1] == flagged[0]['number']] == ['desk']
 
 
 class GitHub:
@@ -1129,4 +1214,5 @@ def test_a_request_github_answers_beyond_the_limits_is_flagged_alone(world, monk
     by_number = {result['number']: result for result in results}
     assert by_number[3]['outcome'] == 'clean', 'the other request is screened'
     assert by_number[4]['outcome'] == 'flagged' and by_number[4]['findings'][0].startswith('not screened: ')
+    assert by_number[4]['findings'][0].endswith('; flagged'), 'what the outsider made is a finding, not unread'
     assert ('over 4096 bytes' if limit == 'a page over its size' else 'more than 3 pages') in by_number[4]['findings'][0]

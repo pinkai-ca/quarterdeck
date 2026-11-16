@@ -27,7 +27,11 @@ change. So this program, not a seat:
    time from a private corpus under the runtime (runtime/pr-screen/planted.json), and without it the screen refuses;
 6. clean from both hands and nothing from the search: the reader the ship file names ([pr_screen] reader, the First
    Officer on a crew) is ordered to read the change and report to the desk. Flagged: no seat reads it, and the desk is told the number, the head and what flagged it (the
-   pattern's name or the hand, the file's number and kind, the line numbers), quoting nothing the outsider wrote;
+   pattern's name or the hand, the file's number and kind, the line numbers), quoting nothing the outsider wrote.
+   Unread is neither: a request the reading itself failed on (the network, GitHub's rate limit, an answer not in its
+   shape, a push while it was read) is read by no seat and tried again at the next run, and after UNREAD_REPORT_RUNS
+   runs in a row at one head the desk is told, once, that it is unread, never that it is flagged. What the outsider
+   made too big to read (a listing past its pages, a page past its size) is flagged;
 7. a new push to a pull request starts it over.
 
 THE RESIDUAL, in the design's own words: a pull request written to fool both local models and to miss the search
@@ -77,6 +81,38 @@ COMPILED = tuple((name, re.compile(expression, re.IGNORECASE)) for name, express
 
 class ScreenError(ShipError):
     """The screen cannot run as the orders require; nothing is ordered and no seat is told anything."""
+
+
+class Unread(ScreenError):
+    """A pull request the screen could not read this time, for a reason of the reading's own, never of what the
+    outsider wrote: it is unread, not flagged, read by no seat and tried again at the next run."""
+
+    def __init__(self, message: str, kind: str):
+        super().__init__(message)
+        self.kind = kind
+
+
+UNREAD_REPORT_RUNS = 3  # unread for this many runs in a row, at one head: the desk is told, once, that it is unread
+
+
+def unread_kind(error: BaseException) -> str:
+    """What kind of failure left a pull request unread, in the program's terms: the exception's kind and GitHub's
+    status code, never a word of the answer or the outsider's."""
+    import http.client
+    import urllib.error
+    if isinstance(error, Unread):
+        return error.kind
+    if isinstance(error, urllib.error.HTTPError):
+        headers = error.headers or {}
+        if error.code == 429 or (error.code == 403 and (headers.get('X-RateLimit-Remaining') == '0'
+                                                        or headers.get('Retry-After') is not None)):
+            return 'rate limit'
+        return f'HTTP {error.code}'
+    if isinstance(error, (urllib.error.URLError, http.client.HTTPException, OSError)):
+        return 'network'  # a timeout is an OSError too
+    if isinstance(error, (ValueError, KeyError, TypeError, IndexError)):
+        return 'unexpected answer'
+    return type(error).__name__
 
 
 # -- what the outsider wrote --------------------------------------------------------------------------------------
@@ -1093,7 +1129,7 @@ def findings(prepared: Prepared, hits, verdicts) -> list[str]:
 
 
 class LiveOutcomes:
-    """Tell the ship file's reader (clean) or its desk (flagged), from ship."""
+    """Tell the ship file's reader (clean) or its desk (flagged, or unread for UNREAD_REPORT_RUNS runs), from ship."""
 
     def __init__(self, ship):
         self.ship = ship
@@ -1112,6 +1148,14 @@ class LiveOutcomes:
             f'Pull request {pr.number} of {repository}, at head {pr.head}, was flagged by the screen and is read by '
             'no seat. What flagged it, in the screen\'s own terms:\n' + '\n'.join(f'- {line}' for line in found),
             subject=f'Pull request {pr.number} from outside was flagged').id
+
+    def unread(self, pr: PullRequest, repository: str, kind: str, runs: int) -> str:
+        return post.Store(self.ship.runtime).new(
+            'report', post.SHIP, self.ship.pr_screen_desk,
+            f'Pull request {pr.number} of {repository}, at head {pr.head}, could not be read by the screen for {runs} '
+            f'runs in a row ({kind}). It is unread, not flagged: nothing in it was found, no seat reads it, and the '
+            'screen tries it again at every run.',
+            subject=f'Pull request {pr.number} from outside could not be read').id
 
     def interrupted(self, number: str) -> str:
         return post.Store(self.ship.runtime).new(
@@ -1156,15 +1200,31 @@ def run(runtime: Path, source, hands, outcomes, *, repository: str, hand_names: 
         if isinstance(seen, dict) and seen.get('head') == pr.head and seen.get('outcome') in ('clean', 'flagged'):
             continue  # screened at this head; a new push starts it over
         key = f'{pr.number}-{pr.head[:12]}'
+        unread = None
         try:
             texts = source.texts(pr)
+        except Unread as error:
+            unread = error.kind
+        except ScreenError as error:
+            # The source refused what the outsider made: a listing past its pages, a page past its size. That is a
+            # finding about the request, so it is flagged, in the program's own words; the pass goes on.
+            prepared, found = None, [f'not screened: {error}; flagged']
         except Exception as error:
-            # One request's failure to be read is its own: it is flagged unread, by its number and the program's
-            # own words (never what the outsider wrote), and the pass goes on to the next request.
-            reason = str(error) if isinstance(error, ScreenError) else f'it could not be read ({type(error).__name__})'
-            prepared, found = None, [f'not screened: {reason}; flagged unread']
+            # A failure of the reading itself (the network, GitHub's rate limit, an answer not in its shape) is no
+            # finding: the request is unread, read by no seat, and tried again at the next run.
+            unread = unread_kind(error)
         else:
             prepared, found = prepare(texts), None
+        if unread is not None:
+            again = isinstance(seen, dict) and seen.get('head') == pr.head and seen.get('outcome') == 'unread'
+            runs = (seen['runs'] if again and type(seen.get('runs')) is int else 0) + 1
+            told = seen.get('told') if again else None
+            if told is None and runs >= UNREAD_REPORT_RUNS:
+                told = outcomes.unread(pr, repository, unread, runs)
+            state[str(pr.number)] = dict(head=pr.head, outcome='unread', kind=unread, runs=runs, told=told, at=_now())
+            durable.replace_file(runtime / ROOT / 'state.json', json.dumps(state, indent=2, sort_keys=True) + '\n')
+            results.append(dict(number=pr.number, head=pr.head, outcome='unread', kind=unread, runs=runs, told=told))
+            continue
         hits, verdicts = (), []
         if prepared is not None:
             hits = search(prepared, extra)
@@ -1276,7 +1336,7 @@ class GitHubSource:
     def texts(self, pr: PullRequest) -> list[Text]:
         item = self._get(f'/pulls/{pr.number}')
         if str(item['head']['sha']) != pr.head:
-            raise ScreenError(f'pull request {pr.number} moved while it was read; the next pass starts it over')
+            raise Unread(f'pull request {pr.number} moved while it was read; the next pass starts it over', 'moved')
         texts = [Text('title', 0, (item.get('title') or '').encode()),
                  Text('description', 0, (item.get('body') or '').encode())]
         comments = [*self._get(f'/issues/{pr.number}/comments'), *self._get(f'/pulls/{pr.number}/comments'),
