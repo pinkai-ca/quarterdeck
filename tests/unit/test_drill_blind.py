@@ -8,7 +8,13 @@ from quarterdeck import drill
 
 
 def exercise(tmp_path, monkeypatch, phase):
-    run = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), patience=.02)
+    clock = [0.0]
+    run = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), patience=.02,
+                      settlement_clock=lambda: clock[0])
+    def advance(seconds):
+        clock[0] += seconds
+    monkeypatch.setattr(drill.service_wait, 'Arrivals', lambda runtime: SimpleNamespace(
+        refresh=lambda *args, **kwargs: None, wait=advance, close=lambda: None))
     order = run.store.new('order', 'ship', 'worker', 'still open across fresh')
     seat = SimpleNamespace(name='worker', session=SimpleNamespace(human=False),
                            fresh=Mock(return_value='fresh proof'), launched=lambda: SimpleNamespace(at='new launch'))

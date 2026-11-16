@@ -12,7 +12,8 @@ from quarterdeck.ship import ShipError
 @pytest.fixture
 def waiting(tmp_path, monkeypatch):
     clock = [0.0]
-    exercise = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), patience=30)
+    exercise = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), patience=30,
+                           settlement_clock=lambda: clock[0])
     order = exercise.store.new('order', 'ship', 'worker', 'Ordinary synthetic pending work')
     seat = SimpleNamespace(name='worker', session=SimpleNamespace(human=False),
                            fresh=Mock(return_value='fresh proof'),
@@ -22,7 +23,6 @@ def waiting(tmp_path, monkeypatch):
     phases = ['submitted']
     monkeypatch.setattr(drill, 'journals', lambda seat: (
         [SimpleNamespace(data={'phase': phases[0]})], []))
-    monkeypatch.setattr(drill.time, 'monotonic', lambda: clock[0])
     def unexpected_sleep(seconds):
         pytest.fail('settlement used a clock sleep instead of its event wait')
     monkeypatch.setattr(drill.time, 'sleep', unexpected_sleep)
@@ -101,6 +101,31 @@ def test_a_started_fresh_failure_is_not_retried_and_closes_the_watcher(waiting):
         e.exercise.fresh_after_delivery(e.seat, e.order)
     e.seat.fresh.assert_called_once_with()
     assert e.events.closed == 1 and e.events.waits == []
+
+
+def test_settlement_clock_is_local_and_a_frozen_guard_waits_for_the_event(waiting, monkeypatch):
+    e = waiting
+    e.exercise.patience = .2
+    e.exercise.settlement_clock = lambda: 0.0
+    def unexpected_clock():
+        pytest.fail('an injected settlement guard read the real clock')
+    monkeypatch.setattr(drill, 'time', SimpleNamespace(monotonic=unexpected_clock))
+    e.events.on_wait = lambda: e.phases.__setitem__(0, 'delivered')
+    assert e.exercise.fresh_after_delivery(e.seat, e.order) == ('fresh proof', 'delivered first')
+    assert e.events.waits == [.8] and e.events.closed == 1
+    e.seat.fresh.assert_called_once_with()
+
+
+def test_default_settlement_guard_still_uses_monotonic_and_the_same_bound(waiting, monkeypatch):
+    e = waiting
+    e.exercise.patience = 1
+    e.exercise.settlement_clock = None
+    monkeypatch.setattr(drill.time, 'monotonic', lambda: e.clock[0])
+    proof, reason = e.exercise.fresh_after_delivery(e.seat, e.order)
+    assert proof is None
+    assert 'outer settlement guard expired after 4.0s (bound 4.0s)' in reason
+    assert e.clock[0] == 4 and e.events.closed == 1
+    e.seat.fresh.assert_not_called()
 
 
 def test_ordinary_drill_waits_retain_their_original_cadence(monkeypatch):

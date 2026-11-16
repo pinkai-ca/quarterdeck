@@ -51,17 +51,18 @@ class Check:
 
 
 def wait_for(predicate, seconds: float, step: float = 0.1):
-    deadline = time.monotonic() + seconds
+    clock = getattr(predicate, '__dict__', {}).get('_drill_clock', time.monotonic)
+    deadline = clock() + seconds
     # Only a predicate with an explicit event wait changes the ordinary cadence.
     pause = getattr(predicate, '__dict__', {}).get('_drill_wait')
-    while time.monotonic() < deadline:
+    while clock() < deadline:
         value = predicate()
         if value:
             return value
         if pause is None:
             time.sleep(step)
         else:
-            pause(max(0.0, deadline - time.monotonic()))
+            pause(max(0.0, deadline - clock()))
     return None
 
 
@@ -83,8 +84,9 @@ def acceptances(inputs: list[Input], text: str, since: datetime) -> int:
 
 
 class Drill:
-    def __init__(self, ship: shipmod.Ship, tmux: Tmux, patience: float = 30.0):
+    def __init__(self, ship: shipmod.Ship, tmux: Tmux, patience: float = 30.0, *, settlement_clock=None):
         self.ship, self.tmux, self.patience = ship, tmux, patience
+        self.settlement_clock = settlement_clock
         self.store, self.attempts = Store(ship.runtime), Attempts(ship.runtime)
         self.checks: list[Check] = []
 
@@ -321,14 +323,16 @@ class Drill:
             return proof, mode
 
         ready._drill_wait = lambda remaining: notifications.wait(min(SETTLEMENT_FALLBACK, remaining))
+        clock = getattr(self, 'settlement_clock', None) or time.monotonic
+        ready._drill_clock = clock  # tests advance only this guard, not real service/lifecycle clocks
         guard = self.patience * SETTLEMENT_WINDOWS
-        began = time.monotonic()
+        began = clock()
         try:
             result = wait_for(ready, guard)
         finally:
             notifications.close()
         return result if result is not None else (None,
-            f'outer settlement guard expired after {time.monotonic() - began:.1f}s '
+            f'outer settlement guard expired after {clock() - began:.1f}s '
             f'(bound {guard:.1f}s): {reason}')
 
     def fresh_all(self) -> None:

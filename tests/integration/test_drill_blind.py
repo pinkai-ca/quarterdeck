@@ -35,11 +35,16 @@ def after_blind(self, seat, order):
         observation.update(result=attempt.result, phase=proof.data['phase'],
                            lifecycle_free=True, confirmed=proof.confirmed(seat), seeded=True)
     patience = self.patience
+    clock = self.settlement_clock
     self.patience = .2  # The finished state is already observed; no latency is being tested.
+    # Wait for settled evidence; scheduling/IO time cannot consume this test's guard.
+    # The parent command timeout still catches a genuinely stuck drill.
+    self.settlement_clock = lambda: 0.0
     try:
         return original_one(self, seat, order)
     finally:
         self.patience = patience
+        self.settlement_clock = clock
 drill.Drill.fresh_all = stopped_all
 drill.Drill.fresh_after_delivery = after_blind
 passed, lines = drill.run(None)

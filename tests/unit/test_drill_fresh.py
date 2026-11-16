@@ -10,7 +10,8 @@ from quarterdeck import drill, lifecycle
 
 @pytest.mark.parametrize('previous', [None, 'withheld', 'cancelled'])
 def test_fresh_carries_an_open_order_without_prior_acceptance(tmp_path, monkeypatch, previous):
-    exercise = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), patience=.02)
+    exercise = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), patience=.02,
+                           settlement_clock=lambda: 0.0)
     order = exercise.store.new('order', 'ship', 'worker', 'still open across fresh')
     seat = SimpleNamespace(name='worker', session=SimpleNamespace(human=False), fresh=Mock(return_value='fresh proof'),
                            launched=lambda: SimpleNamespace(at='new launch'))
