@@ -904,3 +904,31 @@ def test_a_screen_takes_its_hold_with_its_own_pid_and_start_and_leaves_no_journa
     assert pid == os.getpid() and start == pr_screen_start(os.getpid())
     assert fields == ['before', 'folder', 'home_before', 'index', 'key', 'records_before'], 'all its finally needs'
     assert not (runtime / 'pr-screen' / 'journal' / 'hand-a.json').exists(), 'finished: no journal is left'
+
+
+
+# -- a sweep before the screen, and a sweep during it -------------------------------------------------------------
+
+def sweep_record(runtime, hand, at):
+    from quarterdeck import jail_end
+    jail_end._record(runtime, hand, dict(seat=hand, pid=4242, start='123', ran_seconds=95, program_running=True,
+                                         killed=[4242], confirmed=True, left=[], at=at.isoformat()))
+
+
+def test_a_hand_swept_before_the_screen_screens_today(world):
+    """A stray sandbox of the hand swept hours before this screen proves nothing about it: the piece goes in."""
+    from datetime import datetime, timedelta, timezone
+    sweep_record(world[0], 'hand-a', datetime.now(timezone.utc) - timedelta(hours=10))
+    verdict, hands, runtime = one_piece(world, honest)
+    assert 'not proved ended' not in verdict.reason, verdict.reason
+    assert ('instruct', 'hand-a') in hands.calls, 'the piece went to the hand'
+
+
+def test_a_hand_swept_during_its_piece_is_flagged(world):
+    from datetime import datetime, timezone
+
+    def swept_while_screening(hands, name, message_id, folder):
+        sweep_record(hands.runtime, name, datetime.now(timezone.utc))
+        honest(hands, name, message_id, folder)
+    verdict, hands, runtime = one_piece(world, swept_while_screening)
+    assert not verdict.clean and 'not proved ended after the piece' in verdict.reason, verdict.reason

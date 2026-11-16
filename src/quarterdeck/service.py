@@ -2005,11 +2005,14 @@ class Service:
         """A seat whose credential link became a file has refreshed the token: reseed the pool and relink.
 
         A seat whose program outlived its closed pane at down is not reseeded while that program lives;
-        once it has ended, its retirement is finished here: reseeded, and its launch removed.
+        once it has ended, its retirement is finished here: reseeded, and its launch removed. A seat whose sandbox
+        was held at its stop is taken here too, retiring or not: each pass ends its held processes again, and the
+        hold lifts once none of them runs (never by age; an unreadable hold still holds).
         """
+        from . import jail_end
         ready = []
         for seat in self.resolved_seats():
-            if seat.retiring() is None:
+            if seat.retiring() is None and jail_end.held(seat.trusted) is None:
                 ready.append(seat)
                 continue
             try:

@@ -982,7 +982,9 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
     record.mkdir(parents=True, exist_ok=True, mode=0o700)
     from . import jail_end
     started = datetime.now(timezone.utc)
-    if (unended := jail_end.unproved(runtime, hand)) is not None:
+    # Only a standing hold refuses the piece here: a stray sandbox swept before this screen proves nothing about it.
+    # A sweep during the piece is caught by the closing check, which reads every sweep since ``started``.
+    if (unended := jail_end.unproved(runtime, hand, started)) is not None:
         # A hand whose old sandbox is held never screens: the piece goes to it not at all, and counts as FLAGGED.
         verdict = Verdict(hand, False, f'{hand}: its sandbox is not proved ended, so it screened nothing')
         durable.replace_file(record / f'piece-{index}-{hand}.verdict.json', json.dumps(dict(

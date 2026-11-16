@@ -592,3 +592,36 @@ def test_a_server_whose_socket_file_was_unlinked_keeps_its_panes_jails(ship, tmp
             os.kill(pid_of_server, signal.SIGTERM)  # the test's own server, by the pid it read; its panes end with it
             wait_for(lambda: not write_bound._processes().get(pid_of_server), 10)
         cleanup(ship)
+
+
+def test_the_tick_lifts_a_held_seats_hold_once_its_processes_are_gone_though_nothing_is_retiring(seat_world,
+                                                                                                    monkeypatch):
+    """A seat whose program ended at its stop but whose sandbox was held has no retiring record. The service's
+    tick still takes it: it ends the held processes again each pass, keeps the hold while one runs or while the
+    hold cannot be read, and lifts it once none runs, finishing the retirement (launch removed)."""
+    w = seat_world
+    w.seat.up(resume=False)
+    process, pids = sleeper()
+    try:
+        monkeypatch.setattr(jail_end, 'end', lambda seat, tree: dict(pids))  # what the kill could not end
+        w.seat.down()
+        assert w.seat.retiring() is None, 'the program ended: nothing is retiring'
+        assert jail_end.held(w.seat.trusted) is not None and w.seat.launched() is not None
+        svc = service.Service(w.ship, w.seat.tmux)
+        monkeypatch.setattr(write_bound, 'kill', lambda pids, rounds=10: [])  # one still runs
+        svc.credentials()
+        assert jail_end.held(w.seat.trusted) is not None, 'held while one of its processes runs'
+        held = w.seat.trusted / trusted_files.JAIL_HELD
+        kept = held.read_text()
+        held.write_text('{not json')
+        svc.credentials()
+        assert held.read_text() == '{not json', 'an unreadable hold still holds, never lifted on a guess'
+        held.write_text(kept)
+        monkeypatch.undo()
+        monkeypatch.setattr(credential, 'reseed', lambda ship, seats, **bounds: [])
+        svc.credentials()
+        assert jail_end.held(w.seat.trusted) is None, 'lifted by the tick once none of its processes runs'
+        assert write_bound.alive(pids) == {} and w.seat.launched() is None
+    finally:
+        process.kill()
+        process.wait()
