@@ -197,7 +197,7 @@ def records(seat: Seat, *, publish=True) -> list[Owned]:
     """Known owned files, including missing/unknown ones, with their original adapters."""
     try:
         found = bindings(seat) if publish else bindings(seat, publish=False)
-    except OSError as error:
+    except (OSError, seat_files.LinkRefused) as error:  # a link in the home on the way: unknown, read again
         return [Owned(registry(seat.trusted), None, None, f"{error}; inspect ownership for {seat.name} with qd watch {seat.name}",
                       transient=True)]
     known = {name for names in found.values() for name in names if name in harnesses.NAMES}

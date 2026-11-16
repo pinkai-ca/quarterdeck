@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from quarterdeck import acts, credential
+from quarterdeck import acts, credential, record_owner, seat_files
 from .test_systems_acts import DIALOG, ship  # noqa: F401
 
 DECOY = "a file outside the seat the service must never write through\n"
@@ -87,3 +87,15 @@ def test_a_bring_up_through_a_planted_folder_link_is_retained_and_named(tmp_path
     assert 'link' in said
     assert sorted(p.name for p in outside.iterdir()) == ['.credentials.json'] and (outside / '.credentials.json').read_text() == DECOY
 
+
+def test_an_ownership_list_behind_a_planted_home_link_is_a_transient_unknown(ship, tmp_path):  # noqa: F811
+    svc, seat, live = ship
+    outside = tmp_path / 'outside-home'
+    outside.mkdir()
+    (outside / 'conversations.owned').write_text(str(outside / 'decoy.jsonl') + '\n')
+    if seat.home.exists():
+        seat.home.rmdir()
+    seat.home.symlink_to(outside, target_is_directory=True)
+    [owned] = record_owner.records(seat)
+    assert owned.transient and owned.reader is None and 'link' in owned.reason
+    assert f'inspect ownership for {seat.name} with qd watch {seat.name}' in owned.reason
