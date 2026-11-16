@@ -28,6 +28,8 @@ Each group journal is processed independently. A malformed/unreadable journal or
 
 `[cascade]` declares three ordered `seats`, a separate `orchestrator`, `efforts` (default low, medium, high), `notes = "ring"` and `note_chars` (default 800, at most 4000). Seats retain their conversations across laps. The real ring starts on three providers; drydock may use one synthetic provider. The orchestrator or operator explicitly starts an open question addressed to the orchestrator with `qd cascade --re QUESTION [--efforts low,high]`. Its canonical post identity starts at most one run. Only the orchestrator's ordinary answer closes the question.
 
+A start requires readable, consistent journals before it can prove that another question is not running. An unreadable, malformed or mismatched journal refuses the start with its ring's `state.json` path and the cause, retaining the evidence. The same diagnostic identifies a damaged journal when resuming its own question.
+
 The service sends child orders as `ship` in that thread. Reports return to ship and close only their child orders. Each has `## Cascade note`, a bounded note, then `## Answer` and the full answer. The next seat receives the whole report. Only the service appends seat/lap notes and requested/observed effort to `runtime/ring/<question>/responses.md`, independently of the workspace.
 
 The journal saves immutable post intents and offset/hash append intents before writing. Recovery publishes missing posts or finishes the missing append suffix. A changed prefix holds the append and produces an early final notice; it is never rewritten. Notes are accessed through one checked regular-file descriptor without following links, under a lock with identity rechecks. Uncertain evidence remains held.

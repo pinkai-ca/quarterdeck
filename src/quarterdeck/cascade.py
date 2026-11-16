@@ -138,6 +138,22 @@ def load(path: Path) -> dict:
     return data
 
 
+def _load_for_start(path: Path) -> dict:
+    """A start cannot skip unknown evidence; name the file that keeps it held."""
+    try:
+        return load(path)
+    except (ShipError, OSError, ValueError, TypeError, KeyError, IndexError, RecursionError) as error:
+        if isinstance(error, json.JSONDecodeError):
+            reason = f"invalid JSON: {error.msg} (line {error.lineno}, column {error.colno})"
+        elif isinstance(error, UnicodeError):
+            reason = f"invalid text encoding ({type(error).__name__})"
+        elif isinstance(error, ShipError):
+            reason = str(error).removeprefix('cascade: ').removesuffix('; retained')
+        else:
+            reason = f"{type(error).__name__}: {error}"
+        raise ShipError(f"cascade: {path / 'state.json'}: {reason}; retained") from None
+
+
 def start(service, reference: str, caller: str, efforts: list[str] | None = None) -> str:
     ship, store = service.ship, service.store
     ring = ship.cascade
@@ -151,7 +167,7 @@ def start(service, reference: str, caller: str, efforts: list[str] | None = None
     levels = laps(efforts if efforts is not None else ring.efforts, ring.efforts)
     path = folder(ship.runtime, question.id)
     if (path / "state.json").exists():
-        data = load(path)
+        data = _load_for_start(path)
         Runner(ship, store, None, None).verify(data)
         if levels != data["efforts"]:
             raise ShipError("cascade: this question already started with different laps")
@@ -159,7 +175,7 @@ def start(service, reference: str, caller: str, efforts: list[str] | None = None
     if not store.is_open(question):
         raise ShipError("cascade: the question is already answered")
     for existing in (ship.runtime / "ring").glob("*/state.json"):
-        if load(existing.parent)["status"] == "running":
+        if _load_for_start(existing.parent)["status"] == "running":
             raise ShipError("cascade: another question is running; wait for its final notice")
     path.mkdir(parents=True, exist_ok=True)
     data = dict(format=1, question=question.id, declaration=asdict(ring), efforts=levels,
