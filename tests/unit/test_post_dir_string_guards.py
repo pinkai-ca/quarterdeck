@@ -83,3 +83,25 @@ def test_an_imported_message_with_an_at_address_reads_its_import_record_once(fle
     record = fleet_post.import_path(agora.runtime, root.id)
     assert record.is_file()
     assert tried.count(record) == 1, f'the import record read {tried.count(record)} times'
+
+
+def test_the_parties_of_an_imported_message_read_its_import_record_once(fleet_pair, monkeypatch):
+    """The parties index reads an imported '@' message's sender and addressee with its import record read once:
+    the record provenance read is passed on to the view, never read again there."""
+    from quarterdeck import post_view
+    pair = fleet_pair
+    root = imported(pair, monkeypatch)
+    assert '@' in root.id and root.sender == 'desk@office'
+    agora = pair[1]
+    record = fleet_post.import_path(agora.runtime, root.id)
+    assert record.is_file()
+    tried = []
+    real = fleet_post.stable_bytes
+
+    def counted(path):
+        tried.append(Path(path))
+        return real(path)
+    monkeypatch.setattr(fleet_post, 'stable_bytes', counted)
+    parties = post_view._parties_of(agora.runtime, agora.runtime / 'post' / 'store' / f'{root.id}.json')
+    assert parties is not None and parties[0] == root.sender
+    assert tried.count(record) == 1, f'the import record read {tried.count(record)} times'

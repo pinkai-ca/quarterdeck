@@ -233,11 +233,12 @@ def _parties_of(runtime: Path, path: Path) -> tuple[str, str] | None:
     """A message's sender and addressee, read as the store reads them; None for one that cannot be read now."""
     from .fleet_post import local_view, provenance, stable_bytes
     try:
-        if provenance(runtime, path.stem) is None:
-            message = local_view(runtime, post.Message.from_json(post_dir.read_text(path)))
+        imported = provenance(runtime, path.stem)  # read once, and passed on: never read again by the view
+        if imported is None:
+            message = local_view(runtime, post.Message.from_json(post_dir.read_text(path)), imported=None)
         else:
             data = stable_bytes(path)
-            message = local_view(runtime, post.Message.from_json(data.decode("utf-8")), data=data)
+            message = local_view(runtime, post.Message.from_json(data.decode("utf-8")), data=data, imported=imported)
     except (OSError, ValueError, TypeError, KeyError, ShipError):
         return None
     return message.sender, message.to
