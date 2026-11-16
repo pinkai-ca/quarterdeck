@@ -1001,7 +1001,17 @@ class Service:
             screen = door.screen()
             self.attempts.close(attempt, delivery.result, detail)
             if changed and delivery.result != "withheld":
-                brief_change.mark(self.runtime, seat.name, changed[1])  # typed: the seat has been told
+                told_errors = self.__dict__.setdefault('brief_told_errors', {})  # the last failure per seat, logged once
+                try:
+                    brief_change.mark(self.runtime, seat.name, changed[1])  # typed: the seat has been told
+                except OSError as error:
+                    # As the watch and the launch: left untold, the next message carries the head once more, and
+                    # the delivery below is still logged. Never lost, never raised out of a delivery.
+                    if told_errors.get(seat.name) != str(error):
+                        told_errors[seat.name] = str(error)
+                        self.log('error', step='brief-told', seat=seat.name, error=str(error))
+                else:
+                    told_errors.pop(seat.name, None)
             if delivery.result == "withheld":
                 self.withheld[(attempt.message, seat.name)] = screen.text if screen else ""
             self.log("delivery", seat=seat.name, messages=[message.id], speed=speed, result=delivery.result, detail=detail)

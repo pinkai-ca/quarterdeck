@@ -235,3 +235,34 @@ def test_the_one_looks_retype_carries_the_head_the_first_typing_held_and_is_conf
     assert svc.attempts.latest()[order.id] == 'delivered', "the record confirms the retype, head and all"
     item = Input(second.data['payload'], later + timedelta(seconds=1), 'accepted')
     assert thread_context.consumed_ids(svc.store, seat.name, 'worker', [item]) == {order.id}
+
+
+def test_a_told_brief_that_cannot_be_written_is_told_once_more_and_the_delivery_logged(setup, monkeypatch):  # noqa: F811
+    svc, seat, live, record = setup
+    publish(svc.runtime, seat.name, OLD)
+    brief_change.seed(svc.runtime, seat.name, OLD)
+    publish(svc.runtime, seat.name, NEW)
+    events, original_log = [], svc.log
+    monkeypatch.setattr(svc, 'log', lambda event, **fields: (events.append((event, fields)), original_log(event, **fields)))
+    original_mark = brief_change.mark
+
+    def failing(runtime, name, text):
+        raise OSError('synthetic: the told brief cannot be written')
+
+    monkeypatch.setattr(brief_change, 'mark', failing)
+    first = svc.store.new('order', 'desk', seat.name, 'An invented first order.')
+    svc.deliver(seat, [first])  # never raised out of a delivery
+    assert live['box'].startswith(input_receipt.BRIEF_HEAD)
+    assert [fields['messages'] for event, fields in events if event == 'delivery'] == [[first.id]], 'logged'
+    assert [fields.get('step') for event, fields in events if event == 'error'] == ['brief-told']
+    assert brief_change.told(svc.runtime, seat.name) == OLD, 'left untold'
+    taken(svc, seat, record, live)
+    monkeypatch.setattr(brief_change, 'mark', original_mark)
+    second = svc.store.new('order', 'desk', seat.name, 'An invented second order.')
+    svc.deliver(seat, [second])
+    assert live['box'].count(input_receipt.BRIEF_HEAD) == 1 and '+Order two, amended.' in live['box'], 'once more'
+    assert brief_change.told(svc.runtime, seat.name) == NEW
+    taken(svc, seat, record, live)
+    third = svc.store.new('order', 'desk', seat.name, 'An invented third order.')
+    svc.deliver(seat, [third])
+    assert input_receipt.BRIEF_HEAD not in live['box'], 'and only once more'
