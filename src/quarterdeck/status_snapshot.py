@@ -51,8 +51,9 @@ def _fresh(data, bound):
 def request(ship):
     """A JSON caller asks for five minutes of headless periodic readings.
 
-    Inside a jail this trusted folder is unavailable. That call keeps the cold
-    reader, without a failed write becoming a failed status command.
+    A jail's trusted folder is its own private, empty, writable tmpfs: its
+    stamp reaches nothing outside, and its served reading is absent, so the
+    command reads cold. An unwritable destination also keeps the cold reader.
     """
     try:
         _write(ship.runtime, DEMAND, dict(wall=time.time_ns(), monotonic=time.monotonic_ns()))

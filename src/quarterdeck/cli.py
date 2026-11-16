@@ -759,8 +759,8 @@ def cmd_status(args: argparse.Namespace) -> Reading:
     if getattr(args, 'json', False):
         from . import status_snapshot
         import time
-        # An unavailable trusted demand stamp (including a jailed call) keeps
-        # the ordinary independent reader, even if another publication exists.
+        # A jail writes only into its private tmpfs; no served reading is there.
+        # An unwritable demand destination also keeps the independent reader.
         if status_snapshot.request(ship) and (served := status_snapshot.served(ship)) is not None:
             return Reading(served, watch.render_table)
         wall = time.time_ns()
