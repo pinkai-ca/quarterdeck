@@ -209,3 +209,44 @@ def test_a_worker_with_nothing_open_has_no_idle_line(tmp_path, monkeypatch):
     _with_history(monkeypatch, w.seat)
     opening, _ = w.seat.first_message()
     assert opening and carriage.HAND_IDLE not in opening
+
+
+def _forced_opening(w, tmp_path):
+    """The opening the launch makes when its words do not fit and it carries the index in files (force_files)."""
+    from quarterdeck import carriage as carriagemod, carriage_plan
+    carried = w.seat.carriage()
+    return carriage_plan.build(carried.rows, handoff=carried.text or '', header=carried.header,
+                               directory=tmp_path / 'generation', limit=100000,
+                               inline_limit=carriagemod.INLINE_BYTES, force_files=True,
+                               history=carried.history, idle=w.seat._idle_line())
+
+
+def test_a_hand_with_nothing_open_under_force_files_ends_with_the_same_line(tmp_path, monkeypatch):
+    from quarterdeck import carriage
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
+    w = world(tmp_path / 'ship', 'hand')
+    _nothing_open(w)
+    _with_history(monkeypatch, w.seat)
+    planned = _forced_opening(w, tmp_path)
+    assert planned.index_path is not None, 'the index is carried in files'
+    assert planned.opening.endswith(carriage.HAND_IDLE + '\n'), planned.opening
+    assert planned.opening.count(carriage.HAND_IDLE) == 1
+
+
+def test_a_hand_with_an_order_open_under_force_files_has_no_idle_line(tmp_path, monkeypatch):
+    from quarterdeck import carriage
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
+    w = world(tmp_path / 'ship', 'hand')
+    _with_history(monkeypatch, w.seat)
+    planned = _forced_opening(w, tmp_path)
+    assert planned.index_path is not None and carriage.HAND_IDLE not in planned.opening
+
+
+def test_a_worker_with_nothing_open_under_force_files_has_no_idle_line(tmp_path, monkeypatch):
+    from quarterdeck import carriage
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
+    w = world(tmp_path / 'ship', 'worker')
+    _nothing_open(w)
+    _with_history(monkeypatch, w.seat)
+    planned = _forced_opening(w, tmp_path)
+    assert planned.index_path is not None and planned.opening and carriage.HAND_IDLE not in planned.opening

@@ -127,9 +127,8 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
                     'Sent, awaiting threads hold no duty. Every message stays a file.\n')
     inline_handoff = f'qd > your handoff, in full; read it first\n{handoff}\n' if handoff else ''
     prefix = header + '\n' + (history + '\n' if history else '')
-    inline = prefix + inline_handoff + instructions + ''.join(line for _, line in lines)
-    if idle and not rows:
-        inline += idle + '\n'  # nothing open: the opening ends by saying so, plainly (a hand's)
+    ending = idle + '\n' if idle and not rows else ''  # nothing open: the opening ends by saying so, plainly (a hand's)
+    inline = prefix + inline_handoff + instructions + ''.join(line for _, line in lines) + ending
     if not force_files and not files and size(inline) <= budget:
         return Plan(inline, {}, directory, limit)
 
@@ -143,6 +142,7 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
                    if size(handoff) > limit else '')
         opening = (prefix + f'qd > read {directory / "handoff.txt"} whole first, before acting; it is your handoff\n'
                    + warning + index_account)
+    opening += ending  # the same last line whether the index is inline or in files
     if size(opening) > budget:
         raise ImpossibleBudget('carry_bytes cannot hold the minimal thread-index account')
     return Plan(opening, files, directory, limit)
