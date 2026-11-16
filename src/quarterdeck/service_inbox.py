@@ -127,12 +127,12 @@ def render(service):
 
 def render_pass(service, store):
     succeeded, deadline = True, None
+    context = post.InboxContext(store)  # the ship and each seat's refusal journal, read once for the whole pass
     for name in service.ship.seats:
         path = service.runtime / 'post' / 'inbox' / f'{name}.md'
         try:
             hand = getattr(service.ship.seats[name], 'role', None) == 'hand'
-            data = (post.inbox_reading(store, name, recent=True, open_only=True) if hand
-                    else post.inbox_reading(store, name, recent=True))
+            data = post.inbox_reading(store, name, recent=True, open_only=hand, context=context)
             text = post.render_inbox_reading(data)
             for message in data['received']:
                 # The cutoff excludes strictly older entries, not equal ones.
@@ -143,7 +143,7 @@ def render_pass(service, store):
             except FileNotFoundError:
                 current = None
             if current != text:
-                post.render_inbox(service.runtime, store, name, open_only=hand)
+                post.render_inbox(service.runtime, store, name, open_only=hand, context=context)
         except ShipError as error:
             succeeded = False
             service.log('error', step='inbox', seat=name, error=str(error))

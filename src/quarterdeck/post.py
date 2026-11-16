@@ -1243,10 +1243,44 @@ INBOX_TAIL_MESSAGES = 200
 INBOX_TAIL_BYTES = 256 * 1024
 
 
-def inbox_reading(store: Store, seat: str, *, recent: bool = False, open_only: bool = False) -> dict:
-    told, sender_seat = _told(store, seat), _sender_seat(store)
-    messages = [_shown(m, withheld, told, sender_seat) for withheld in [_withheld(store, seat)]
-                for m in store.for_seat(seat)]
+class InboxContext:
+    """What inbox readings need from beyond the store, loaded once for a pass over many seats: each seat's refusal
+    journal, read once for what it withholds and whom it told, and the ship, read only when a refused message without
+    a notice needs to say whether its sender is a seat, each sender's answer kept."""
+
+    def __init__(self, store: Store):
+        self._runtime = store.dir.parent.parent
+        self._store = store
+        self._journals: dict[str, tuple[frozenset[str] | None, frozenset[str]]] = {}
+        self._test = None
+        self._senders: dict[str, bool | None] = {}
+
+    def refused(self, seat: str) -> tuple[frozenset[str] | None, frozenset[str]]:
+        """What the seat's journal withholds (None where it cannot be read) and which of those its sender was told."""
+        if seat not in self._journals:
+            from . import refusal
+            try:
+                events = refusal.load(self._runtime, seat)
+            except refusal.JournalError:
+                self._journals[seat] = (None, frozenset())
+            else:
+                self._journals[seat] = (frozenset(q['message'] for event in events for q in event['quarantined']),
+                                        frozenset(n['message'] for event in events for n in event['notices']))
+        return self._journals[seat]
+
+    def sender_seat(self, sender: str) -> bool | None:
+        if sender not in self._senders:
+            if self._test is None:
+                self._test = _sender_seat(self._store)
+            self._senders[sender] = self._test(sender)
+        return self._senders[sender]
+
+
+def inbox_reading(store: Store, seat: str, *, recent: bool = False, open_only: bool = False,
+                  context: InboxContext | None = None) -> dict:
+    context = InboxContext(store) if context is None else context
+    withheld, told = context.refused(seat)
+    messages = [_shown(m, withheld, told, context.sender_seat) for m in store.for_seat(seat)]
     if open_only:
         return dict(seat=seat, open=[m for m in messages if store.is_open(m)],
                     received=[], closed_by={}, open_only=True)
@@ -1333,7 +1367,7 @@ def _shown(message: Message, withheld: frozenset[str] | None, told: frozenset[st
     return replace(message, subject=None, body=words)
 
 
-def inbox_text(store: Store, seat: str, *, open_only: bool | None = None) -> str:
+def inbox_text(store: Store, seat: str, *, open_only: bool | None = None, context: InboxContext | None = None) -> str:
     if open_only is None:
         from . import ship as shipmod
         try:
@@ -1341,7 +1375,7 @@ def inbox_text(store: Store, seat: str, *, open_only: bool | None = None) -> str
             open_only = spec is not None and spec.role == 'hand'
         except (ShipError, OSError, ValueError):
             open_only = False
-    return render_inbox_reading(inbox_reading(store, seat, recent=True, open_only=open_only))
+    return render_inbox_reading(inbox_reading(store, seat, recent=True, open_only=open_only, context=context))
 
 
 def render_inbox_reading(data: dict) -> str:
@@ -1375,11 +1409,12 @@ def _entry(message: Message, closed: str | None, settled: str | None = None) -> 
     return [head, *([" · ".join(details)] if details else []), "", message.body.rstrip(), ""]
 
 
-def render_inbox(runtime: Path, store: Store, seat: str, *, open_only: bool | None = None) -> Path:
+def render_inbox(runtime: Path, store: Store, seat: str, *, open_only: bool | None = None,
+                 context: InboxContext | None = None) -> Path:
     folder = runtime / "post" / "inbox"
     post_dir.ensure_directory(folder)
     path = folder / f"{seat}.md"
-    text = inbox_text(store, seat, open_only=open_only)
+    text = inbox_text(store, seat, open_only=open_only, context=context)
     try:
         current = post_dir.read_text(path)
     except FileNotFoundError:

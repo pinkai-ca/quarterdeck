@@ -371,14 +371,43 @@ def test_a_seats_refused_message_with_no_notice_held_says_plainly_it_was_not_tol
     assert words(False, False) == refusal.NOT_TOLD and words(True, False) == refusal.WITHHELD
 
 
-def test_the_unsettled_count_counts_only_messages_still_open(world):
-    from quarterdeck import watch
+def test_the_unsettled_count_counts_every_kind_until_it_reaches_its_addressee(world):
+    """As the waiting count reads it: an unsettled message counts until it has reached its addressee, whatever its
+    kind; an order since reported on drops out; one that cannot be read stays counted."""
+    from quarterdeck import post_reads, watch
+    unsettled = sorted(post.UNSETTLED)[0]
     world.launch('worker')
+    report = world.svc.store.new('report', 'tester', 'worker', 'An invented report whose delivery was unsettled.')
+    attempt = world.svc.attempts.open(report, 'worker', '%1', 1, None)
+    world.svc.attempts.close(attempt, unsettled, 'synthetic unsettled')
+    assert watch._unsettled(world.svc.store, {report.id: unsettled}) == 1, 'a report not yet delivered counts'
+    post_reads.record(world.svc.runtime, 'worker', [report.id])  # the seat read it whole: it has reached the seat
+    assert watch._unsettled(post.Store(world.svc.runtime), {report.id: unsettled}) == 0
+    assert watch._unsettled(world.svc.store, {report.id: 'delivered'}) == 0, 'a later delivery settles it'
     order = world.order('worker', 'An invented order whose delivery was left unsettled.')
-    attempt = world.svc.attempts.open(order, 'worker', '%1', 1, None)
-    world.svc.attempts.close(attempt, sorted(post.UNSETTLED)[0], 'synthetic unsettled')
-    latest = {order.id: sorted(post.UNSETTLED)[0]}
-    assert watch._unsettled(world.svc.store, latest) == 1
+    latest = {order.id: unsettled}
+    assert watch._unsettled(post.Store(world.svc.runtime), latest) == 1
     world.svc.store.new('report', 'worker', 'tester', 'Invented report.', re=order.id)
     assert watch._unsettled(post.Store(world.svc.runtime), latest) == 0, 'reported on: no longer counted'
-    assert watch._unsettled(world.svc.store, {'ord-missing-zzzz': sorted(post.UNSETTLED)[0]}) == 1, 'unreadable stays'
+    assert watch._unsettled(world.svc.store, {'ord-missing-zzzz': unsettled}) == 1, 'unreadable stays'
+
+
+def test_an_inbox_render_pass_reads_each_journal_once_and_the_ship_at_most_once(world, monkeypatch):
+    from quarterdeck import service_inbox, ship as shipmod
+    world.launch('worker')
+    refused = world.order('worker', 'An invented order the provider refused, with no notice held.')
+    refusal.save(world.svc.runtime, 'worker', [{'stage': 'held', 'launch': {}, 'turn': None, 'notices': [],
+                                                 'quarantined': [{'message': refused.id}]}])
+    for name in world.svc.ship.seats:
+        world.svc.store.new('report', 'ship', name, f'An invented report to {name}, so its inbox changes.')
+    journals, ships = [], []
+    load, load_ship = refusal.load, shipmod.load
+    monkeypatch.setattr(refusal, 'load', lambda runtime, seat: journals.append(seat) or load(runtime, seat))
+    monkeypatch.setattr(shipmod, 'load', lambda folder: ships.append(folder) or load_ship(folder))
+    store = post.Store(world.svc.runtime)
+    succeeded, _ = service_inbox.render_pass(world.svc, store)
+    assert succeeded
+    assert sorted(journals) == sorted(world.svc.ship.seats), 'each seat journal read once in the pass'
+    assert len(ships) <= 1, 'the ship read at most once in the pass'
+    text = (world.svc.runtime / 'post' / 'inbox' / 'worker.md').read_text()
+    assert refusal.UNTOLD in text and refused.body not in text, 'the stub is the same as without the pass context'

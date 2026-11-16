@@ -1044,10 +1044,22 @@ def _post_fields(ship, store, attempts, post_held, records, latest, waiting, rea
 
 
 def _unsettled(store, latest) -> int:
-    """Messages whose latest attempt left them unsettled after an error, while still open for their addressee, read
-    as the waiting count reads them: an order since reported on, or a question since answered, no longer counts. One
-    that cannot be read stays counted, never hidden."""
-    count = 0
+    """Messages whose latest attempt left them unsettled after an error and which have not reached their addressee,
+    read for every kind as the waiting count (Attempts.undelivered) reads that: not read whole by the seat, not a
+    screen's spent instruction, not a settled notice. An order since reported on, or a question since answered, no
+    longer counts; an acknowledgment is never delivered, so never counts. One that cannot be read stays counted."""
+    from .pr_screen import spent_instructions
+    count, reached = 0, {}
+
+    def reached_by(seat):
+        if seat not in reached:
+            try:
+                reached[seat] = (store.read_ids(seat) | spent_instructions(store.dir.parent.parent, seat, store)
+                                 | frozenset(store.settled_notices(seat)))
+            except (ShipError, OSError, ValueError):
+                reached[seat] = frozenset()  # what cannot be read proves nothing reached it: still counted
+        return reached[seat]
+
     for identifier, result in latest.items():
         if result not in post.UNSETTLED:
             continue
@@ -1056,7 +1068,9 @@ def _unsettled(store, latest) -> int:
         except ShipError:
             count += 1
             continue
-        count += store.is_open(message)
+        if message.kind == 'ack' or message.obligation and not store.is_open(message):
+            continue
+        count += message.id not in reached_by(message.to)
     return count
 
 
