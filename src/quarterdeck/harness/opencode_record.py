@@ -77,7 +77,14 @@ def _current_data(home: Path) -> int | None:
         data = json.loads((trusted_files.of_home(home) / trusted_files.LAUNCH).read_text())
     except (OSError, ValueError):
         return None
-    argv = data.get('argv') if isinstance(data, dict) else None
+    given = launched_data(home, data)
+    return None if given is None else int(given.name[len(DATA_PREFIX):])
+
+
+def launched_data(home: Path, launch) -> Path | None:
+    """The data folder of this home that a trusted launch record (as qd wrote it) gave its launch, from its
+    XDG_DATA_HOME word; None where it names none."""
+    argv = launch.get('argv') if isinstance(launch, dict) else None
     if not isinstance(argv, list):
         return None
     named = None
@@ -91,7 +98,7 @@ def _current_data(home: Path) -> int | None:
     given = Path(named)
     if given.parent != home or not given.name.startswith(DATA_PREFIX) or not given.name[len(DATA_PREFIX):].isdigit():
         return None
-    return int(given.name[len(DATA_PREFIX):])
+    return given
 
 
 def data_dir_of(record: Path) -> Path:

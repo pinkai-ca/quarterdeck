@@ -686,3 +686,131 @@ def test_a_leader_that_exits_while_a_thread_holds_the_record_still_holds_the_mov
         process.kill()
         process.wait()
         w.svc.ledger.close()
+
+
+LAUNCH_PROGRAM = r'''
+import json, os, sqlite3, sys, time
+from pathlib import Path
+folder, record, go, at = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4])
+while not go.exists():
+    time.sleep(0.02)
+text = '\n'.join(path.read_text() for piece in sorted(folder.glob('screen-*')) for path in sorted(piece.glob('f*.txt')))
+record.parent.mkdir(parents=True, exist_ok=True)
+with sqlite3.connect(record) as db:
+    db.executescript("""CREATE TABLE session (id TEXT, time_created INTEGER, time_updated INTEGER, parent_id TEXT);
+        CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+        CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER,
+                           data TEXT);""")
+    db.execute('INSERT INTO session VALUES (?,?,?,NULL)', ('screen', at, at))
+    db.execute('INSERT INTO message VALUES (?,?,?,?,?)', ('u', 'screen', at, at,
+        json.dumps(dict(role='user', time=dict(created=at), model=dict(modelID='synthetic-model')))))
+    db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('text', 'u', 'screen', at, at,
+        json.dumps(dict(type='text', text=text))))
+    db.execute('INSERT INTO message VALUES (?,?,?,?,?)', ('a', 'screen', at + 1000, at + 1000,
+        json.dumps(dict(role='assistant', parentID='u', modelID='synthetic-model', time=dict(created=at + 1000),
+                        tokens=dict(input=30, output=7, reasoning=0, total=37, cache=dict(read=0, write=0)), cost=0))))
+    db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('call', 'a', 'screen', at + 1000, at + 1000,
+        json.dumps(dict(type='tool', tool='read', state=dict(status='running', time=dict(start=at + 1000))))))
+db.close()
+(go.parent / 'written').touch()
+time.sleep(600)
+'''
+
+
+def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_walk_retires_it(tmp_path, monkeypatch):
+    """Security's gate for the listing written before a piece goes in, on a throwaway hand. The screen program is
+    killed (SIGKILL) the moment the piece is written; the hand's launch, which outlives it, writes its record holding
+    the piece's text only after that. The record is listed all the same, the hand's next launch starts fresh, the
+    service's walk retires it with no hand on it once a later launch exists, and then nothing under the home holds
+    the case's text."""
+    import multiprocessing
+    import signal
+    import subprocess
+    import sys
+    w = world(tmp_path, monkeypatch, 'opencode')
+    runtime, home = w.svc.runtime, w.seat.home
+    hands_root, signals = tmp_path / 'hands', tmp_path / 'signals'
+    signals.mkdir()
+    named = home / 'data-003' / 'opencode' / 'opencode.db'
+    at_ms = int((w.now - 120) * 1000)
+
+    class Throwaway(pr_screen.LiveHands):
+        def __init__(self):
+            super().__init__(SimpleNamespace(runtime=runtime, seat=lambda name: SimpleNamespace(name='hand')), Path('qd'),
+                             hands_root)
+            self.launch = None
+
+        def home(self, name):
+            return home
+
+        def records(self, name):
+            return get('opencode').records(home)
+
+        def fresh(self, name):  # as qd's fresh start: a launch, and its trusted launch record naming its data folder
+            self.folder(name).mkdir(parents=True, exist_ok=True)
+            self.launch = subprocess.Popen([sys.executable, '-I', '-c', LAUNCH_PROGRAM, str(self.folder(name)),
+                                            str(named), str(signals / 'go'), str(at_ms)], start_new_session=True)
+            start = Path(f'/proc/{self.launch.pid}/stat').read_text().rpartition(')')[2].split()[19]
+            (w.seat.trusted / trusted_files.LAUNCH).write_text(json.dumps(dict(
+                pane='%1', pid=self.launch.pid, start=start, harness='opencode', pool='local', resume=None,
+                at=datetime.fromtimestamp(w.now, timezone.utc).isoformat(), version=None,
+                argv=['bwrap', '--setenv', 'XDG_DATA_HOME', str(home / 'data-003'), '--', 'opencode'])))
+            (signals / 'launch').write_text(json.dumps([self.launch.pid, start]))
+
+        def down(self, name):
+            raise AssertionError('the screen is killed before it reaches its down')
+
+    case = 'note-elsewhere'
+    source = pr_screen.FixtureSource(FIXTURES, [case])
+    [pr] = source.open()
+    prepared = pr_screen.prepare(source.texts(pr))
+    numbers = next(iter(pr_screen.pieces(prepared)))
+    corpus = pr_screen.load_corpus(FIXTURES / 'planted-test-corpus.json')
+
+    def screen():  # the screen program, in a process of its own, killed the moment its piece is written
+        real = pr_screen._write_piece
+
+        def then_killed(*args):
+            written = real(*args)
+            os.kill(os.getpid(), signal.SIGKILL)
+            return written
+        pr_screen._write_piece = then_killed
+        pr_screen.screen_piece(runtime, Throwaway(), 'hand', 'gate', 0, prepared, numbers, corpus=corpus,
+                               answer_seconds=30, poll=0.05)
+    child = multiprocessing.get_context('fork').Process(target=screen)
+    child.start()
+    child.join(120)
+    launch = json.loads((signals / 'launch').read_text())
+    try:
+        assert child.exitcode == -signal.SIGKILL, 'killed by SIGKILL just after the piece was written'
+        assert list(hands_root.glob('hand/screen-*/f*.txt')), 'the piece was written before the kill'
+        assert not named.exists(), 'the launch has not written its record yet'
+        assert pr_screen.screening_records(runtime, 'hand') == [str(named)], 'listed though it does not exist yet'
+        (signals / 'go').touch()  # the hand's launch, outliving the screen, now writes its record with the piece
+        deadline = datetime.now().timestamp() + 60
+        while not (signals / 'written').exists() and datetime.now().timestamp() < deadline:
+            __import__('time').sleep(0.02)
+        strings = case_strings(case)
+        assert holds(home, strings), 'the record written after the kill holds the case\'s text'
+        assert pr_screen.screening_left(runtime, 'hand'), 'so the hand\'s next launch starts fresh, never resumed'
+    finally:
+        os.killpg(launch[0], signal.SIGKILL)  # the next fresh start ends the old launch
+        try:
+            os.waitpid(launch[0], 0)
+        except ChildProcessError:
+            pass
+    try:
+        # qd joins the record to its launch, and the next fresh launch is named in the trusted record: data-004.
+        with (w.seat.trusted / trusted_files.LAUNCHES).open('a') as stream:
+            stream.write(json.dumps(dict(record=str(named), at=datetime.fromtimestamp(at_ms / 1000 - 2, timezone.utc)
+                                         .isoformat(), pool='local', harness='opencode')) + '\n')
+        record_owner.register(w.seat.trusted, named, 'opencode')
+        trusted_launch(w, 4)
+        w.svc.account_records(process_table={})
+        assert w.svc.ledger.ingested(named) == 1, 'its cut turn is accounted'
+        assert hand_transcripts.run(w.svc, now=w.now, limit=0) == 1 and not named.exists(), 'retired by the walk'
+        assert holds(home, strings) == [], 'nothing under the hand\'s home holds the case\'s text'
+        assert record_location.resolve(named).is_relative_to(runtime / 'retired' / 'hand-transcripts')
+        assert not pr_screen.screening_left(runtime, 'hand')
+    finally:
+        w.svc.ledger.close()

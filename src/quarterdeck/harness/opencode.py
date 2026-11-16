@@ -316,6 +316,13 @@ class OpenCodeHarness(EndpointHarness):
     inputs = staticmethod(inputs)
     retirement_process_names = ('opencode', 'bun', 'node')
 
+    def launch_record(self, home: Path, launch) -> Path | None:
+        """The record the launch writes: its data folder's database, named by the trusted launch record before the
+        program has made it."""
+        from .opencode_record import launched_data
+        data = launched_data(home, launch)
+        return None if data is None else data / RECORD
+
     def stamp_extra(self, record: Path):
         """What besides its bytes decides a record's reading: whether a later launch of its home exists (ledger)."""
         from .opencode_record import later_launch

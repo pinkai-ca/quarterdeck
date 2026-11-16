@@ -66,11 +66,22 @@ class Hands:
 
     def fresh(self, name):
         # Started for a piece under the hold; started again after it, once the hold is released and the piece gone.
-        self.calls.append(('fresh', name) if pr_screen.held(self.runtime, name) else ('fresh after', name))
+        held = pr_screen.held(self.runtime, name)
+        self.calls.append(('fresh', name) if held else ('fresh after', name))
+        if held:  # the screening launch: a process of its own, ended by the hand's down as qd's down ends it
+            self.launched = getattr(self, 'launched', {})
+            self.launched[name] = launch_process()
+
+    def launch_record(self, name):
+        """The record this launch writes, named before it exists, with the launch's pid and start."""
+        process = self.launched[name]
+        return dict(record=str(self.home(name) / 'screening.jsonl'),
+                    launch=[process.pid, pr_screen_start(process.pid)])
 
     def down(self, name):
         assert pr_screen.held(self.runtime, name), 'the hand goes down before the hold is released'
         self.calls.append(('down', name))
+        end_launch(getattr(self, 'launched', {}).pop(name, None))
 
     def instruct(self, name, body):
         message_id = f'ans-screen-{len(self.orders) + 1:03d}'
@@ -84,6 +95,22 @@ class Hands:
         folder = post.drop_dir(self.runtime, name)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"{message['id']}.json").write_text(json.dumps(message))
+
+
+def pr_screen_start(pid):
+    return Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[19]
+
+
+def launch_process():
+    """A stand-in hand launch: a short-lived process of the test's own."""
+    import subprocess
+    return subprocess.Popen(['sleep', '120'])
+
+
+def end_launch(process):
+    if process is not None:
+        process.kill()
+        process.wait()
 
 
 def report(hands, name, message_id, text='done'):
@@ -687,3 +714,111 @@ def test_the_code_keeps_the_mechanism_and_no_corpus():
     text, lines = pr_screen.planted(CORPUS)
     [line] = lines
     assert any(text.splitlines()[line - 1].startswith(p.split('{word}')[0]) for p in CORPUS.phrasings)
+
+
+# -- the listing written before a piece goes in ---------------------------------------------------------------------
+
+@pytest.mark.parametrize('why', ['unreadable', 'not running', 'existed before'])
+def test_a_launch_record_that_names_no_new_running_launch_writes_no_piece(world, why):
+    """No piece goes in unless the record its launch writes is listed first: a launch record that cannot be read, one
+    naming a launch that is not running, or one naming a record that was already there, stops the screening."""
+    runtime, hands_root = world
+
+    class Unnamed(Hands):
+        def launch_record(self, name):
+            if why == 'unreadable':
+                return None
+            named = super().launch_record(name)
+            if why == 'not running':
+                end_launch(self.launched[name])
+            else:
+                Path(named['record']).write_text('a record from before this launch\n')
+            return named
+    hands = Unnamed(runtime, hands_root, honest)
+    if why == 'existed before':
+        hands.home('hand-a')
+        hands.records = lambda name: [hands.home(name) / 'screening.jsonl']
+    prepared = pr_screen.prepare(texts('post-elsewhere'))
+    with pytest.raises(pr_screen.ScreenError, match='no piece went in'):
+        pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files), corpus=CORPUS,
+                               answer_seconds=30, poll=1.0, clock=Clock(), sleep=Clock().sleep)
+    assert [call[0] for call in hands.calls] == ['fresh', 'down'], 'no instruction: the hand is downed at once'
+    assert list(hands.folder('hand-a').glob('screen-*')) == [], 'no piece was written'
+    assert not pr_screen.held(runtime, 'hand-a'), 'its finally ran whole'
+
+
+def test_the_record_is_listed_before_the_piece_is_written(world, monkeypatch):
+    """At the moment the piece is written, the record the screening launch will write is already listed, though it
+    does not exist yet: a kill there leaves it listed."""
+    seen = []
+    real = pr_screen._write_piece
+
+    def writing(folder, name, files):
+        runtime = world[0]
+        seen.append((pr_screen.screening_records(runtime, 'hand-a'), Path(folder).parent.name))
+        return real(folder, name, files)
+    monkeypatch.setattr(pr_screen, '_write_piece', writing)
+    verdict, hands, runtime = one_piece(world, honest)
+    home = hands.home('hand-a')
+    [(listed, _)] = seen
+    assert listed == [str(home / 'screening.jsonl')] and not (home / 'screening.jsonl').exists()
+
+
+def started(process):
+    return [process.pid, pr_screen_start(process.pid)]
+
+
+def test_a_record_named_before_it_exists_stays_listed_while_its_launch_runs_and_is_spent_after(tmp_path):
+    runtime, record = tmp_path / 'runtime', tmp_path / 'home' / 'data-003' / 'opencode' / 'opencode.db'
+    launch = launch_process()
+    try:
+        pr_screen.mark_screening(runtime, 'hand', [dict(record=str(record), launch=started(launch))])
+        assert pr_screen.screening_records(runtime, 'hand') == [str(record)] and pr_screen.screening_left(runtime, 'hand')
+        assert not pr_screen.drop_spent(runtime, 'hand'), 'the launch may still write it: the list stays'
+        pr_screen.mark_screening(runtime, 'hand', [str(record)])  # the finally lists it again, by path
+        [entry] = json.loads((runtime / 'pr-screen' / 'records' / 'hand.json').read_text())
+        assert entry['record'] == str(record) and entry['launch'] == started(launch), 'it keeps its launch'
+    finally:
+        end_launch(launch)
+    assert pr_screen.screening_records(runtime, 'hand') == [], 'never written, and its launch has ended: spent'
+    assert pr_screen.drop_spent(runtime, 'hand')
+
+
+def test_a_record_named_before_it_exists_and_then_written_stays_listed_after_its_launch(tmp_path):
+    runtime, record = tmp_path / 'runtime', tmp_path / 'home' / 'data-003' / 'opencode' / 'opencode.db'
+    launch = launch_process()
+    pr_screen.mark_screening(runtime, 'hand', [dict(record=str(record), launch=started(launch))])
+    record.parent.mkdir(parents=True)
+    record.write_bytes(b'written by the launch')
+    end_launch(launch)
+    assert pr_screen.screening_records(runtime, 'hand') == [str(record)], 'in the home: listed until retired'
+    record.unlink()
+    assert pr_screen.screening_records(runtime, 'hand') == []
+
+
+def test_a_list_entry_of_no_known_shape_makes_the_list_unreadable(tmp_path):
+    runtime = tmp_path / 'runtime'
+    (runtime / 'pr-screen' / 'records').mkdir(parents=True)
+    (runtime / 'pr-screen' / 'records' / 'hand.json').write_text(json.dumps([dict(record='/x', launch=['1', 2])]))
+    with pytest.raises(ValueError):
+        pr_screen.screening_records(runtime, 'hand')
+    assert pr_screen.screening_left(runtime, 'hand'), 'unreadable: the hand never resumes until a person looks'
+
+
+def test_the_live_hands_name_an_opencode_launchs_record_from_the_trusted_launch_record_alone(tmp_path):
+    from quarterdeck import trusted_files
+    runtime = tmp_path / 'runtime'
+    home = runtime / 'seats' / 'hand' / 'home'
+    (home / 'data-999').mkdir(parents=True)  # a folder the hand made counts for nothing
+    ship = SimpleNamespace(runtime=runtime, seat=lambda name: SimpleNamespace(name=name))
+    hands = pr_screen.LiveHands(ship, Path('qd'), tmp_path / 'hands')
+    assert hands.launch_record('hand') is None, 'no launch record: none named'
+    launch = trusted_files.make(runtime, 'hand') / trusted_files.LAUNCH
+    launch.write_text('{not json')
+    assert hands.launch_record('hand') is None, 'unreadable: none named'
+    launch.write_text(json.dumps(dict(pid=4242, start='123', harness='opencode', argv=[
+        'bwrap', '--setenv', 'XDG_DATA_HOME', str(home / 'data-007'), '--', 'opencode'])))
+    assert hands.launch_record('hand') == dict(record=str(home / 'data-007' / 'opencode' / 'opencode.db'),
+                                                launch=[4242, '123'])
+    launch.write_text(json.dumps(dict(pid=4242, start='123', harness='pi', argv=['pi'])))
+    assert hands.launch_record('hand') is None, 'a program whose record is not named in advance: none'

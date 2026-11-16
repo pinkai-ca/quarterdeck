@@ -514,6 +514,24 @@ class LiveHands:
                 pass
         return [str(path.relative_to(home)) for path in kept if path.is_relative_to(home)]
 
+    def launch_record(self, name: str) -> dict | None:
+        """The record the hand's current launch writes, named from qd's trusted launch record before the program has
+        made it, with that launch's pid and start; None where the launch record cannot be read or names none."""
+        from . import harness as harnesses, trusted_files
+        try:
+            launch = json.loads((trusted_files.folder(self.ship.runtime, self.ship.seat(name).name)
+                                 / trusted_files.LAUNCH).read_text())
+            pid, start = launch['pid'], launch['start']
+            # A program whose record can be named in advance says so (its adapter's launch_record); any other names
+            # none, and its hand takes no piece.
+            namer = getattr(harnesses.get(launch['harness']), 'launch_record', None)
+            record = namer(self.home(name), launch) if namer is not None else None
+        except (OSError, ValueError, KeyError, TypeError, ShipError):
+            return None
+        if not isinstance(pid, int) or start is None or record is None:
+            return None
+        return dict(record=str(record), launch=[pid, str(start)])
+
     def records(self, name: str) -> list[Path]:
         """Every record in the hand's home, by each program its declared pools run."""
         from . import harness as harnesses
@@ -548,15 +566,48 @@ def record_listing(paths) -> dict[str, tuple[int, int] | None]:
     return listing
 
 
-def screening_records(runtime: Path, hand: str) -> list[str]:
-    """The screening launches' records still in the hand's home. A list that cannot be read raises: its reader holds."""
+def _entries(runtime: Path, hand: str) -> list:
+    """A hand's list as written: each entry a record's path, or a record named before it exists, with the launch that
+    will write it ({'record': path, 'launch': [pid, start]}). A list that cannot be read raises: its reader holds."""
     try:
         listed = json.loads(_records_file(runtime, hand).read_text())
     except FileNotFoundError:
         return []
-    if not isinstance(listed, list) or not all(isinstance(path, str) for path in listed):
+    if not isinstance(listed, list) or not all(isinstance(entry, str) or _named(entry) for entry in listed):
         raise ValueError(f'{_records_file(runtime, hand)}: not a list of records')
-    return [path for path in listed if os.path.lexists(path)]
+    return listed
+
+
+def _named(entry) -> bool:
+    launch = entry.get('launch') if isinstance(entry, dict) else None
+    return (isinstance(entry.get('record') if isinstance(entry, dict) else None, str) and isinstance(launch, list)
+            and len(launch) == 2 and isinstance(launch[0], int) and isinstance(launch[1], str))
+
+
+def _path(entry) -> str:
+    return entry if isinstance(entry, str) else entry['record']
+
+
+def launch_runs(launch) -> bool:
+    """Whether the launch [pid, start] still runs: the same process, by its start, and not exited."""
+    from .procstat import EXITED
+    pid, start = launch
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()
+    except OSError:
+        return False
+    return len(fields) > 19 and fields[19] == start and fields[0] not in EXITED
+
+
+def _live(entry) -> bool:
+    """A listed record counts while it is in the home; one named before it existed counts too while the launch that
+    would write it runs, since nothing else writes it. Once that launch has ended without it, it is spent."""
+    return os.path.lexists(_path(entry)) or (isinstance(entry, dict) and launch_runs(entry['launch']))
+
+
+def screening_records(runtime: Path, hand: str) -> list[str]:
+    """The screening launches' records still in the hand's home, or still to be written by a launch that runs."""
+    return [_path(entry) for entry in _entries(runtime, hand) if _live(entry)]
 
 
 def screening_left(runtime: Path, hand: str) -> bool:
@@ -580,13 +631,18 @@ def _lists_locked(runtime: Path):
         os.close(fd)
 
 
-def mark_screening(runtime: Path, hand: str, records: list[str]) -> None:
+def mark_screening(runtime: Path, hand: str, records: list) -> None:
+    """Add records to the hand's list: paths, or records named before they exist with their launch."""
     with _lists_locked(runtime):
         try:
-            left = screening_records(runtime, hand)
+            left = [entry for entry in _entries(runtime, hand) if _live(entry)]
         except ValueError:
             left = []  # an unreadable list is replaced; what it named, if still there, is named again below if new
-        named = sorted({*left, *records})
+        kept = {}
+        for entry in [*left, *records]:
+            if isinstance(entry, dict) or _path(entry) not in kept:
+                kept[_path(entry)] = entry  # one named with its launch keeps its launch: it may not exist yet
+        named = [kept[path] for path in sorted(kept)]
         if named:
             durable.replace_file(_records_file(runtime, hand), json.dumps(named) + '\n')
         else:
@@ -757,6 +813,16 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
     records_before = record_listing(hands.records(hand))  # the home's records before the screening launch
     try:
         hands.fresh(hand)
+        # The record this launch writes is listed before any outsider's word is in reach, named from qd's trusted
+        # launch record even before the program has made it: however the screen ends after this, by a kill, a reboot
+        # or a step of the finally below that fails, that record is listed, so no launch resumes while it is in the
+        # home and the retirement moves it out. A launch record that cannot be read, or names no new running launch,
+        # stops this pull request's screening here: no piece goes in.
+        named = hands.launch_record(hand)
+        if named is None or not launch_runs(named['launch']) or named['record'] in records_before:
+            raise ScreenError(f'{hand}: the record of its fresh launch cannot be named from its launch record, so no '
+                              f'piece went in; the screening of this pull request stops')
+        mark_screening(runtime, hand, [named])
         # The fresh start has rewritten what qd writes into the home at each launch. The home and the hand's folder
         # are listed now, before any outsider's word is in reach: the piece goes in after.
         home_before = folder_listing(hands.home(hand))

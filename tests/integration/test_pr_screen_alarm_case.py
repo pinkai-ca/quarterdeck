@@ -6,6 +6,7 @@ could. Then the service's own steps run, and nothing reached any seat.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -52,9 +53,20 @@ class Obedient:
 
     def fresh(self, name):
         self.calls.append('fresh')
+        if pr_screen.held(self.ship.runtime, name):  # the screening launch, ended by the down
+            self.launched = subprocess.Popen(['sleep', '120'])
+
+    def launch_record(self, name):
+        pid = self.launched.pid
+        start = Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[19]
+        return dict(record=str(self.home(name) / 'launch.jsonl'), launch=[pid, start])
 
     def down(self, name):
         self.calls.append('down')
+        if getattr(self, 'launched', None) is not None:
+            self.launched.kill()
+            self.launched.wait()
+            self.launched = None
 
     def instruct(self, name, body):
         own = self.ship.runtime / 'seats' / name
