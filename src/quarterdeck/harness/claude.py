@@ -22,7 +22,7 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import record_file
@@ -402,6 +402,34 @@ def usage_tokens(usage: dict) -> Tokens:
     return Tokens.from_usage(usage, ("cache_read_input_tokens", "input_tokens", "cache_creation_input_tokens", "output_tokens"))
 
 
+QUEUE_COMPLETION_VERSIONS = frozenset({'2.1.317'})  # crew enqueue/receipt/turn_duration measurements
+
+
+@dataclass(frozen=True)
+class _QueueSlot:
+    text: str
+    phase: str
+    at: datetime | None
+    session: str | None
+    known: bool
+
+
+def queued_notice(entry: dict) -> str | None:
+    """The measured queued_command notice receipt; no execution or input receipt is inferred."""
+    attachment = entry.get('attachment')
+    if (entry.get('version') not in QUEUE_COMPLETION_VERSIONS or entry.get('isSidechain')
+            or not isinstance(attachment, dict) or attachment.get('type') != 'queued_command'
+            or attachment.get('commandMode') != 'task-notification'
+            or attachment.get('origin') != {'kind': 'task-notification', 'producer': 'session-task'}
+            or not all(isinstance(attachment.get(key), str) and attachment[key]
+                       for key in ('runId', 'source_uuid', 'delivery_id'))
+            or when(attachment.get('timestamp')) is None):
+        return None
+    text = attachment.get('prompt')
+    fields = background_notification(text)
+    return text if fields is not None and fields[2] in ('completed', 'failed', 'killed', 'stopped') else None
+
+
 
 class _Reader(JsonLinesReader):
     kinds = ('assistant', 'queue-operation', 'system', 'user')
@@ -412,7 +440,8 @@ class _Reader(JsonLinesReader):
         self.sidechain_ends = set()
         self.subagent_turns = 0
         self.textless_dequeue = _TextlessDequeue()
-        self.queue_slots = []  # text/phase FIFO, including returned drafts and consumed echo identities
+        self.queue_slots = []  # FIFO, including returned drafts and consumed echo identities
+        self.queue_version = None
         self.background = BackgroundBash(record)
         self.walls = []
         self.notice_input = None  # accounting candidate only: a notice cannot open a turn
@@ -425,6 +454,8 @@ class _Reader(JsonLinesReader):
     def take(self, entry: dict) -> None:
         entry = self.textless_dequeue.take(entry)
         kind = entry.get("type")
+        if not entry.get('isSidechain') and 'version' in entry:
+            self.queue_version = entry['version']
         if kind == 'ai-title' and not ai_title(entry):
             self.tools_known = False
             return
@@ -447,12 +478,16 @@ class _Reader(JsonLinesReader):
                 self.subagent_turns += 1
         elif kind == "user":
             self.user(entry)
+        elif kind == 'attachment':
+            if (text := queued_notice(entry)) is not None:
+                self.consume_queued(text)
         elif kind == "assistant":
             self.assistant(entry)
         elif kind == "system" and entry.get("subtype") == "turn_duration":
             self.notice_input = None
             if self.open is not None:
                 self.end(when(entry.get("timestamp")), native_end=True)  # the one entry that says the turn is over
+                self.complete_queue(entry)
         elif kind not in ('system', *INPUT_IGNORED):
             self.tools_known = False
 
@@ -462,30 +497,57 @@ class _Reader(JsonLinesReader):
             return
         if entry.get('operation') == 'popAll':
             text = draft_return_text(entry)
-            matching = draft_return_slot(self.queue_slots, text)
+            matching = draft_return_slot(((slot.text, slot.phase) for slot in self.queue_slots), text)
             if matching is None:
                 self.queue_error = 'popAll identity unresolved'
             else:
-                item, _ = self.queue_slots[matching]
-                self.queue_slots[matching] = item, 'draft'
-                self.queued.remove(item)  # return one selected item to draft, never to consumed
+                slot = self.queue_slots[matching]
+                self.queue_slots[matching] = replace(slot, phase='draft')
+                self.queued.remove(slot.text)  # return one selected item to draft, never to consumed
             return
         text = unwrap(entry.get("content") or "")
         if entry.get("operation") == "enqueue":
             self.queued.append(text)
-            self.queue_slots.append((text, 'queued'))
+            at, session = when(entry.get('timestamp')), entry.get('sessionId')
+            known = (self.queue_version in QUEUE_COMPLETION_VERSIONS
+                     and set(entry) == {'type', 'operation', 'sessionId', 'timestamp', 'content'}
+                     and isinstance(session, str) and bool(session) and bool(text.strip())
+                     and at is not None and at.tzinfo is not None
+                     and (not _notice_text(text) or background_notification(text) is not None))
+            self.queue_slots.append(_QueueSlot(text, 'queued', at, session, known))
         elif entry.get("operation") in ("remove", "dequeue") and text in self.queued:
             self.queued.remove(text)
             self.consumed.append(text)
-            matching = next((i for i, (item, phase) in enumerate(self.queue_slots)
-                             if phase not in ('echo', 'draft') and item == text), None)
+            matching = next((i for i, slot in enumerate(self.queue_slots)
+                             if slot.phase not in ('echo', 'draft') and slot.text == text), None)
             if matching is not None:
-                self.queue_slots[matching] = text, 'echo'
+                self.queue_slots[matching] = replace(self.queue_slots[matching], phase='echo')
         elif entry.get('operation') == 'dequeue' and 'content' not in entry:
-            self.queue_slots = [(item, 'pending' if phase == 'queued' else phase) for item, phase in self.queue_slots]
+            self.queue_slots = [replace(slot, phase='pending') if slot.phase == 'queued' else slot
+                                for slot in self.queue_slots]
         elif entry.get('operation') not in ('enqueue', 'remove', 'dequeue'):
-            self.queue_slots = [(item, 'pending' if item.strip() == text.strip() and phase not in ('echo', 'draft') else phase)
-                                for item, phase in self.queue_slots]
+            self.queue_slots = [replace(slot, phase='pending')
+                                if slot.text.strip() == text.strip() and slot.phase not in ('echo', 'draft') else slot
+                                for slot in self.queue_slots]
+
+    def complete_queue(self, entry: dict) -> None:
+        """A native completed turn bounds the pending queue, never delivery or tool evidence."""
+        at, session = when(entry.get('timestamp')), entry.get('sessionId')
+        if (entry.get('version') not in QUEUE_COMPLETION_VERSIONS or not self.completed_turns
+                or not self.completed_turns[-1].timed or at is None or at.tzinfo is None
+                or not isinstance(session, str) or not session):
+            return
+        started = self.completed_turns[-1].started
+        if started is None or started.tzinfo is None or started > at:
+            return
+        kept = []
+        for slot in self.queue_slots:
+            if (slot.phase in ('queued', 'pending') and slot.known and slot.session == session
+                    and slot.at <= at):
+                self.queued.remove(slot.text)
+            else:
+                kept.append(slot)
+        self.queue_slots = kept
 
     def content_known(self, content, role: str) -> bool:
         """Classify native blocks for execution proof, independently of accounting."""
@@ -533,11 +595,11 @@ class _Reader(JsonLinesReader):
         return True
 
     def consume_queued(self, text: str) -> None:
-        matching = next((i for i, (item, _) in enumerate(self.queue_slots) if item.strip() == text.strip()), None)
+        matching = next((i for i, slot in enumerate(self.queue_slots) if slot.text.strip() == text.strip()), None)
         if matching is not None:
-            item, phase = self.queue_slots.pop(matching)
-            if phase not in ('echo', 'draft') and item in self.queued:
-                self.queued.remove(item)
+            slot = self.queue_slots.pop(matching)
+            if slot.phase not in ('echo', 'draft') and slot.text in self.queued:
+                self.queued.remove(slot.text)
 
     def user(self, entry: dict) -> None:
         message = entry.get('message', {})
