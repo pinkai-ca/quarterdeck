@@ -75,11 +75,12 @@ def _seat_of(runtime: Path, argv: list[str]) -> str | None:
     return None
 
 
-def live_roots(runtime: Path, tmux) -> set[int] | None:
+def live_roots(runtime: Path, tmux, ship=None) -> set[int] | None:
     """The processes no orphan descends from: every seat's live launched program, the ship's own tmux server, and
     every pane of it. Every pane, and so every jail starting in one, descends from the server; a real orphan never
-    does, since it goes to a subreaper or to the user's manager. None when the server or its panes cannot be read:
-    then nothing is an orphan on this reading."""
+    does, since it goes to a subreaper or to the user's manager. Where the server is running but cannot be read, None:
+    nothing is an orphan on this reading. Where no server runs at all (its socket gone, or refusing), nothing can
+    descend from it, and that is when orphans are likeliest: the seats' launched programs alone are the roots."""
     roots: set[int] = set()
     base = trusted_files.root(runtime)
     for folder in sorted(base.iterdir()) if base.is_dir() else []:
@@ -94,13 +95,64 @@ def live_roots(runtime: Path, tmux) -> set[int] | None:
                 roots.add(pid)  # a launch with no recorded start is taken as live while its pid runs: never killed
     try:
         server = tmux.server_pid()
-        roots.update(pane.pid for pane in tmux.panes())
-    except Exception:  # the ship's server unreadable: no reading of ancestry is safe
-        return None
-    if not isinstance(server, int) or server <= 1:
-        return None  # a server whose pid cannot be read proves no pane's ancestry
-    roots.add(server)
-    return roots
+        panes = [pane.pid for pane in tmux.panes()]
+    except Exception:  # the ship's server unreadable: no reading of ancestry is safe, unless there is no server
+        server, panes = None, []
+    if isinstance(server, int) and server > 1:
+        return roots | set(panes) | {server}
+    if server_state(tmux) == GONE and not _sessions_elsewhere(tmux, ship):
+        return roots  # no server: no pane, so no jail can descend from one; the launches alone are roots
+    return None  # running but unreadable, or unknown: a server whose pid cannot be read proves no pane's ancestry
+
+
+GONE, LIVE, UNKNOWN = 'gone', 'live', 'unknown'
+
+
+def _socket_path(tmux) -> Path | None:
+    """Where the ship's own server listens: the absolute socket path it was given. None for anything else (the
+    default server, a named one, a reading with no socket): no claim about a server is made from a guessed path."""
+    socket = getattr(tmux, 'socket', None)
+    return Path(socket) if isinstance(socket, str) and os.path.isabs(socket) else None
+
+
+def _sessions_elsewhere(tmux, ship) -> bool:
+    """Whether the ship's sessions may run on a server other than the one read: tmux's default server, where a ship
+    not yet moved still runs. Read without starting it; anything that cannot be read counts as yes."""
+    if ship is None:
+        return True
+    try:
+        from .tmux import Tmux, ship_sessions
+        return any(ship_sessions(old, ship) for old in Tmux.defaults(Path(tmux.socket)))
+    except Exception:
+        return True
+
+
+def server_state(tmux) -> str:
+    """GONE where no server runs: its socket absent, or refusing a connection. LIVE where one accepts. UNKNOWN for
+    anything else (a timeout, no permission, not a socket): never read as gone."""
+    import socket as sockets
+    import stat
+    path = _socket_path(tmux)
+    if path is None:
+        return UNKNOWN
+    try:
+        if not stat.S_ISSOCK(os.lstat(path).st_mode):
+            return UNKNOWN
+    except FileNotFoundError:
+        return GONE
+    except OSError:
+        return UNKNOWN
+    probe = sockets.socket(sockets.AF_UNIX, sockets.SOCK_STREAM)
+    probe.settimeout(1.0)
+    try:
+        probe.connect(str(path))
+        return LIVE
+    except (ConnectionRefusedError, FileNotFoundError):
+        return GONE
+    except OSError:
+        return UNKNOWN
+    finally:
+        probe.close()
 
 
 def _ticks(start) -> str | None:
@@ -203,7 +255,7 @@ def end(seat, tree: dict[int, str]) -> dict[int, str]:
     """End the seat's old sandbox: the tree read before the window kill, and every orphan of the seat, each with its
     tree. Returns what still runs after the write bound's kill, by pid and start; empty when all is gone."""
     pids = dict(tree)
-    roots = live_roots(seat.ship.runtime, seat.tmux)
+    roots = live_roots(seat.ship.runtime, seat.tmux, seat.ship)
     if roots is not None:
         found, _ = orphans(seat.ship.runtime, roots, seat=seat.name)
         for _, pid, start in found:
@@ -292,7 +344,7 @@ def sweep(service, *, budget: float = SWEEP_BUDGET, clock=time.monotonic) -> lis
     # A seat launched after its roots are read has a pane those roots miss: its jail would read as rooted nowhere.
     # So what started at or after this moment (one second's margin before it) is never a target on this sweep.
     read_at = ticks_now()
-    roots = live_roots(runtime, service.tmux)
+    roots = live_roots(runtime, service.tmux, service.ship)
     if roots is None:
         service.log('jail-sweep', outcome='unknown', reason="the ship's server or its panes could not be read; nothing swept")
         return []
@@ -318,7 +370,7 @@ def sweep(service, *, budget: float = SWEEP_BUDGET, clock=time.monotonic) -> lis
             continue  # the hold owns it, and the status line already names it
         if not write_bound.alive({pid: start}):
             continue  # read again just before the kill: ended, or the pid is another process's now
-        again = live_roots(runtime, service.tmux)
+        again = live_roots(runtime, service.tmux, service.ship)
         if again is None or rooted(pid, again):
             continue  # the roots read again just before the kill: rooted now, or unreadable, it is left
         pids = write_bound.tree(pid, start)

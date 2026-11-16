@@ -393,8 +393,8 @@ def test_a_pane_opened_between_the_roots_reading_and_the_scan_keeps_its_jail(shi
     real = jail_end.live_roots
     opened = []
 
-    def then_a_pane(runtime, server):
-        roots = real(runtime, server)
+    def then_a_pane(runtime, server, ship=None):
+        roots = real(runtime, server, ship)
         if not opened:  # the first reading only: the scan follows it
             workspace = tmp_path / 'work'
             script = tmp_path / 'launch.sh'
@@ -443,3 +443,99 @@ def test_a_jail_descending_from_the_server_is_never_an_orphan_though_no_pane_rea
         server.kill()
         server.wait()
         cleanup(ship)
+
+
+# -- a lost server, told from an unreadable one ------------------------------------------------------------------------
+
+class NoAnswer:
+    """A server reading that gives no pid and no panes, at the socket named."""
+
+    def __init__(self, socket):
+        self.socket = str(socket)
+
+    def server_pid(self):
+        return None
+
+    def panes(self):
+        raise OSError('synthetic: tmux gave no answer')
+
+
+def refusing_socket(folder: Path) -> Path:
+    """A socket file no server listens on: what a lost server leaves behind."""
+    import socket as sockets
+    path = folder / 's'
+    bound = sockets.socket(sockets.AF_UNIX, sockets.SOCK_STREAM)
+    bound.bind(str(path))
+    bound.close()
+    return path
+
+
+def test_the_server_state_is_read_from_its_socket(short):
+    import socket as sockets
+    assert jail_end.server_state(NoAnswer(short / 'absent')) == jail_end.GONE
+    assert jail_end.server_state(NoAnswer(refusing_socket(short))) == jail_end.GONE
+    listening = sockets.socket(sockets.AF_UNIX, sockets.SOCK_STREAM)
+    listening.bind(str(short / 'live'))
+    listening.listen(1)
+    try:
+        assert jail_end.server_state(NoAnswer(short / 'live')) == jail_end.LIVE
+    finally:
+        listening.close()
+    (short / 'plain').write_text('not a socket')
+    assert jail_end.server_state(NoAnswer(short / 'plain')) == jail_end.UNKNOWN
+
+
+@jailed
+@pytest.mark.parametrize('lost', ['absent', 'refusing'])
+def test_with_no_server_the_sweep_takes_the_launches_alone_as_roots(ship, tmp_path, short, lost):
+    """After a lost server nothing can descend from it: the sweep goes on, and a seat's live launch still holds."""
+    socket = short / 'absent' if lost == 'absent' else refusing_socket(short)
+    live = subprocess.Popen(argv_of(ship, tmp_path / 'live'))
+    try:
+        assert wait_for(lambda: jail_end.orphans(ship.runtime, set(), seat='worker-1')[0], 60)
+        trusted = trusted_files.make(ship.runtime, 'worker-1')
+        (trusted / trusted_files.LAUNCH).write_text(json.dumps(dict(
+            pid=live.pid, start=write_bound._processes()[live.pid][1])))  # worker-1's live launch
+        other = orphaned_jail_of(ship, tmp_path / 'other', 'worker-2')
+        logs = []
+        svc = SimpleNamespace(ship=ship, tmux=NoAnswer(socket), log=lambda event, **data: logs.append((event, data)))
+        ended = jail_end.sweep(svc)
+        assert [(record['seat'], record['pid']) for record in ended] == [('worker-2', other[0])]
+        assert live.poll() is None, "a seat's live launch is a root without any server"
+    finally:
+        live.kill()
+        live.wait()
+        cleanup(ship)
+
+
+@jailed
+def test_a_server_running_but_unreadable_makes_no_orphan(ship, tmp_path, short):
+    import socket as sockets
+    listening = sockets.socket(sockets.AF_UNIX, sockets.SOCK_STREAM)
+    listening.bind(str(short / 'live'))
+    listening.listen(1)
+    try:
+        pid, start = orphaned_jail(ship, tmp_path / 'work')
+        logs = []
+        svc = SimpleNamespace(ship=ship, tmux=NoAnswer(short / 'live'),
+                              log=lambda event, **data: logs.append((event, data)))
+        assert jail_end.sweep(svc) == [] and logs[-1][1]['outcome'] == 'unknown'
+        assert write_bound.alive({pid: start}), 'it stands down: nothing is swept'
+    finally:
+        listening.close()
+        cleanup(ship)
+
+
+def orphaned_jail_of(ship, workspace: Path, seat: str) -> tuple[int, str]:
+    """A throwaway orphan of another seat of the drydock's, aged past the sweep's margin."""
+    workspace.mkdir(exist_ok=True)
+    own = ship.runtime / 'seats' / seat
+    (own / 'home').mkdir(parents=True, exist_ok=True)
+    jail = sandbox.plan(ship, seat, own, own / 'home', workspace, '/usr/bin/python3', '/usr/bin', home=Path.home())
+    words = sandbox.command(jail, ['/usr/bin/python3', '-c', READY, str(workspace)])
+    subprocess.run([sys.executable, '-c', 'import os, sys\nif os.fork() == 0:\n    os.setsid()\n'
+                    '    os.execvp(sys.argv[1], sys.argv[1:])\nos._exit(0)', *words], check=True)
+    assert wait_for(lambda: (workspace / 'ready').exists(), 60)
+    [(_, pid, start)] = jail_end.orphans(ship.runtime, set(), seat=seat)[0]
+    aged(start)
+    return pid, start

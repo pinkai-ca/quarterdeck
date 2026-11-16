@@ -214,3 +214,51 @@ def test_a_hand_swept_while_it_screened_is_flagged_and_not_started_again(tmp_pat
     assert ('fresh after', 'hand-a') not in hands.calls, 'the hand stays down'
     record = json.loads(next((runtime / pr_screen.ROOT / 'screens' / 'key').glob('*.verdict.json')).read_text())
     assert record['clean'] is False and 'a stray sandbox was ended' in record['sandbox']
+
+
+# -- a lost server, told from an unreadable one ------------------------------------------------------------------------
+
+class Gone:
+    """The ship's own server, read as tmux reads it when none runs: no pid, no panes."""
+
+    def __init__(self, socket):
+        self.socket = str(socket)
+
+    def server_pid(self):
+        raise OSError('synthetic: no server')
+
+    def panes(self):
+        raise OSError('synthetic: no server')
+
+
+def launch(runtime, seat, pid):
+    folder = trusted_files.make(runtime, seat)
+    (folder / trusted_files.LAUNCH).write_text(json.dumps(dict(pid=pid, start=jail_end._stat(pid)[1])))
+
+
+def test_with_no_server_the_launches_alone_are_the_roots(tmp_path, monkeypatch):
+    launch(tmp_path, 'worker-1', os.getpid())
+    monkeypatch.setattr(jail_end, '_sessions_elsewhere', lambda tmux, ship: False)
+    assert jail_end.live_roots(tmp_path, Gone(tmp_path / 'no-socket'), object()) == {os.getpid()}
+
+
+def test_a_server_that_is_not_known_gone_gives_no_roots(tmp_path, monkeypatch):
+    launch(tmp_path, 'worker-1', os.getpid())
+    monkeypatch.setattr(jail_end, '_sessions_elsewhere', lambda tmux, ship: False)
+    monkeypatch.setattr(jail_end, 'server_state', lambda tmux: jail_end.UNKNOWN)
+    assert jail_end.live_roots(tmp_path, Gone(tmp_path / 'no-socket'), object()) is None
+    monkeypatch.setattr(jail_end, 'server_state', lambda tmux: jail_end.LIVE)
+    assert jail_end.live_roots(tmp_path, Gone(tmp_path / 'no-socket'), object()) is None
+
+
+def test_a_gone_server_while_the_ships_sessions_may_run_elsewhere_gives_no_roots(tmp_path, monkeypatch):
+    """A ship not yet moved runs on tmux's default server: its own socket's absence proves nothing of its panes."""
+    launch(tmp_path, 'worker-1', os.getpid())
+    monkeypatch.setattr(jail_end, '_sessions_elsewhere', lambda tmux, ship: True)
+    assert jail_end.live_roots(tmp_path, Gone(tmp_path / 'no-socket'), object()) is None
+    assert jail_end._sessions_elsewhere(Gone(tmp_path / 'no-socket'), None), 'no ship to read: counted as yes'
+
+
+def test_a_server_with_no_absolute_socket_is_never_read_as_gone(tmp_path):
+    for socket in (None, 'named'):
+        assert jail_end.server_state(SimpleNamespace(socket=socket)) == jail_end.UNKNOWN
