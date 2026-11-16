@@ -45,6 +45,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `service_processes.py` | re-read a service's private process scope after its owner has released the lock |
 | `ship_locks.py` | the ship's lock files, all under runtime/locks where every jail hides them, and the one bounded wait for each |
 | `tmux.py` | the only module that runs tmux |
+| `trusted_cache.py` | what the service derives from a seat's trusted files, kept while those files stand as they were read: a seat's launch, and its record's owner |
 | `trusted_files.py` | where the files the service writes for a seat and trusts are kept: `runtime/trusted/<seat>`, which no jail can see, and their names |
 | `turn_failure.py` | a turn that ended in a recorded error: the door's hold, its alarm, the receipts it unsettles and a human seat's operational metadata |
 | `output_limit.py` | a seat whose last turn stopped at its output limit with an order open: its status line and its one alarm to the systems seats, cleared when a new turn starts or the order closes |

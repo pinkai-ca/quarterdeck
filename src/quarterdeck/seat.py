@@ -7,6 +7,9 @@ persona and the window name are display (law: identity).
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import io
 import json
 import os
 import re
@@ -29,8 +32,8 @@ from . import carriage as carriagemod
 from .harness.base import Harness, Join, Launch, _version_in_runtime
 from .harness.capabilities import validate_selection
 from .provenance import remember_launch, retained_launch
-from .pricing import save_price, saved_price
-from . import trusted_files
+from .pricing import save_price
+from . import trusted_cache, trusted_files
 from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Pane, Tmux, check_private_folder
 
@@ -230,6 +233,26 @@ _LAUNCH_FIELDS = {
     'start': (str, type(None)),
 }
 _LAUNCH_REQUIRED = ('pane', 'pid', 'at', 'pool', 'resume', 'argv', 'version')
+
+
+_LAUNCHES = trusted_cache.Kept()  # launch.json path -> its Launched, by its stamp and its price file's
+_LOOKUPS = trusted_cache.Kept()  # a seat's trusted folder -> its last read-only record reader answer
+
+
+def _binding(info: os.stat_result, raw: bytes) -> list:
+    """pricing.binding's exact form (inode, size, mtime_ns, ctime_ns and the sha256 of the bytes), taken from one read
+    of the file and its stat. pricing.py is in reader stamps and stays as it is; a test pins the two forms equal."""
+    return [info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, hashlib.sha256(raw).hexdigest()]
+
+
+def _saved_price(price_path: Path, info: os.stat_result, raw: bytes) -> dict | None:
+    """pricing.saved_price, with the launch's binding taken from the one read of it, never a second read."""
+    binding = _binding(info, raw)
+    try:
+        extra = json.loads(price_path.read_text())
+        return extra['price'] if extra['binding'] == binding else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def parse_launch(text: str, name: str) -> dict:
@@ -504,9 +527,26 @@ class Seat:
             raise LaunchUnreadable(f"{self.trusted.name}: its live window could not be joined to its old launch record when "
                                    f"its files moved ({hold.get('reason', 'unknown')}); this seat is held, no other; "
                                    f"qd down {self.trusted.name} closes that window")
+        # launch.json is read once, its price binding taken over those same bytes, and the result kept while it and
+        # launch-price.json stand as they were read (trusted_cache). Each caller gets its own copy.
+        price_path = path.with_name(path.stem + '-price.json')
+        key, started = str(path), trusted_cache.now()
         try:
-            text = path.read_text()
+            before = (trusted_cache.stamp(path), trusted_cache.stamp(price_path))
+        except OSError:
+            before = None  # read afresh below, which says why
+        if before is not None and before[0] is None:
+            _LAUNCHES.drop(key)
+            return None
+        if before is not None and (kept := _LAUNCHES.get(key, before)) is not None:
+            return copy.deepcopy(kept)
+        try:
+            with open(path, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                raw = stream.read()
+            text = io.TextIOWrapper(io.BytesIO(raw)).read()  # decoded as Path.read_text decodes
         except FileNotFoundError:
+            _LAUNCHES.drop(key)
             return None
         except (OSError, UnicodeError) as error:
             raise LaunchUnreadable(f"{self.folder.name}: launch record unreadable ({type(error).__name__}); "
@@ -519,7 +559,16 @@ class Seat:
             except ValueError as error:
                 raise LaunchUnreadable(f"{self.folder.name}: launch record refused ({error}); "
                                        "this seat is held, no other") from None
-        return Launched(**data, price=saved_price(path))
+        result = Launched(**data, price=_saved_price(price_path, info, raw))
+        if before is None:
+            return result
+        try:
+            after = (trusted_cache.stamp(path), trusted_cache.stamp(price_path))
+        except OSError:
+            return result
+        if trusted_cache.stamp_of(info) == before[0] and _LAUNCHES.keep(key, before, after, started, result):
+            return copy.deepcopy(result)
+        return result
 
     def pane(self) -> Pane | None:
         """The live pane of this seat's launch, by pane id and process id, or None."""
@@ -609,6 +658,36 @@ class Seat:
             return None  # law: identity
         return frame
 
+    def _lookup_reader(self, record: Path) -> str | None:
+        """record_owner.lookup_reader, read-only (bindings with publish=False), kept per seat while every file it reads
+        stands as it was read (trusted_cache): the reader registry, the launches journal, the record pin, the launch
+        and its unconfirmed-move hold, and the home's conversations.owned, that one stamped with and without following
+        a link, since it is read without following one. The record, the home and the program's home variable are part
+        of what it answered for. A refusal is never kept; publishing never comes through here."""
+        from . import seat_migration
+        trusted = self.trusted
+        owned = self.home / 'conversations.owned'
+        context = (str(record), str(self.home), getattr(self.harness, 'home_variable', ''))
+        key, started = str(trusted), trusted_cache.now()
+        files = (record_owner.registry(trusted), trusted / trusted_files.LAUNCHES, trusted / trusted_files.RECORD,
+                 trusted / trusted_files.LAUNCH, trusted / seat_migration.UNCONFIRMED)
+        try:
+            before = (*(trusted_cache.stamp(path) for path in files), trusted_cache.stamp(owned),
+                      trusted_cache.link_stamp(owned))
+        except OSError:
+            return record_owner.lookup_reader(self, record)
+        kept = _LOOKUPS.get(key, before)
+        if kept is not None and kept[0] == context:
+            return kept[1]
+        owner = record_owner.lookup_reader(self, record)
+        try:
+            after = (*(trusted_cache.stamp(path) for path in files), trusted_cache.stamp(owned),
+                     trusted_cache.link_stamp(owned))
+        except OSError:
+            return owner
+        _LOOKUPS.keep(key, before, after, started, (context, owner))
+        return owner
+
     def _pinned_join(self, *, publish: bool) -> Join | None:
         """Validate a pin; None alone means that no join has been pinned yet."""
         pinned = self.trusted / trusted_files.RECORD
@@ -626,7 +705,7 @@ class Seat:
                 return Join(None, f"record outside the home: {record.name} is not this seat's own; inspect with qd watch {self.name}")  # law: one-record
             try:
                 owner = (record_owner.pinned_reader(self, record) if publish else
-                         record_owner.lookup_reader(self, record))
+                         self._lookup_reader(record))
             except OSError as error:
                 return Join(None, f"record reader unknown: {error}; inspect with qd watch {self.name}")
             if owner != self.spec.harness:
