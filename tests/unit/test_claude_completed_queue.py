@@ -76,16 +76,17 @@ def test_own_notice_taken_in_is_not_queued(tmp_path, carrier):
     assert after.queued == ()
 
 
-@pytest.mark.parametrize('text', [NOTICE, 'Synthetic ordinary queued input'])
+@pytest.mark.parametrize('text', [NOTICE, 'Synthetic ordinary queued input'], ids=['notice', 'prompt'])
 def test_completed_turn_leaves_only_the_still_pending_queue(tmp_path, text):
     record = tmp_path / 'synthetic.jsonl'
-    state = write(record, initial() + [enqueue(text=text), prompt(5, 'Synthetic later turn'), end(7)])
+    prefix = initial() if text == NOTICE else [prompt(), end(3)]
+    state = write(record, prefix + [enqueue(text=text), prompt(5, 'Synthetic later turn'), end(7)])
     assert state.queued == ()
     assert state.queue_error is None
     assert idle.check(state) is None
     assert text not in state.consumed  # completion expires queue state; it fabricates no receipt
     inputs = claude.inputs(record)
-    assert any(item.text == text and item.source == 'queued' for item in inputs)
+    assert any(item.text == text and item.kind == 'queued' for item in inputs)
     pending = 'Synthetic input after the last completion'
     state = write(record, [enqueue(8, pending)], append=True)
     assert state.queued == (pending,)
@@ -102,6 +103,34 @@ def test_incremental_queue_expiry_matches_a_cold_read_and_keeps_equal_new_input(
     assert incremental.queued == full.queued == ('Synthetic repeated input',)
     assert incremental.completed_turns == full.completed_turns
     assert write(record, [prompt(9, 'Synthetic repeated input')], append=True).queued == ()
+
+
+def test_killed_task_notice_followed_by_a_completed_turn_no_longer_holds_idle(tmp_path):
+    killed = NOTICE.replace('<status>completed</status>', '<status>killed</status>')
+    state = write(tmp_path / 'synthetic.jsonl', initial() + [enqueue(text=killed), prompt(5), end(7)])
+    assert state.queued == () and state.pending_tools == ()
+    assert idle.check(state) is None
+
+
+@pytest.mark.parametrize('change', ['future-version', 'extra-field', 'other-origin', 'other-session', 'earlier-time'])
+def test_an_unmeasured_attachment_is_not_a_queue_receipt(tmp_path, change):
+    receipt = row('attachment', 5, attachment=dict(type='queued_command',
+        commandMode='task-notification', origin=dict(kind='task-notification', producer='session-task'),
+        prompt=NOTICE, runId='synthetic-run', source_uuid='synthetic-source',
+        delivery_id='synthetic-delivery', timestamp=(AT + timedelta(seconds=5)).isoformat()))
+    if change == 'future-version':
+        receipt['version'] = 'synthetic-unmeasured'
+    elif change == 'extra-field':
+        receipt['attachment']['futureField'] = True
+    elif change == 'other-origin':
+        receipt['attachment']['origin'] = {'kind': 'synthetic-other'}
+    elif change == 'other-session':
+        receipt['sessionId'] = 'synthetic-other-conversation'
+    else:
+        receipt['attachment']['timestamp'] = (AT + timedelta(seconds=1)).isoformat()
+    state = write(tmp_path / 'synthetic.jsonl', initial() + [enqueue(), receipt])
+    assert state.queued == (NOTICE,)
+    assert idle.check(state) is not None
 
 
 @pytest.mark.parametrize('change', ['missing-time', 'future-time', 'missing-session', 'other-session',
@@ -138,6 +167,19 @@ def test_assistant_stop_or_new_prompt_does_not_expire_the_queue(tmp_path):
     assert write(record, [end(10)], append=True).queued == ()
 
 
+def test_completing_a_turn_cannot_end_a_background_tool_or_resolve_an_unknown_queue_operation(tmp_path):
+    record = tmp_path / 'synthetic.jsonl'
+    pending = 'Synthetic queued input'
+    state = write(record, initial() + [enqueue(text=pending), prompt(5), end(7)])
+    assert state.queued == ()
+    assert state.pending_tools == ('Bash',)
+    assert idle.check(state).dimension == 'tools-pending'
+    state = write(record, [enqueue(8, pending), row('queue-operation', 9,
+                  operation='synthetic-unmeasured', content=pending), prompt(10), end(12)], append=True)
+    assert state.queued == (pending,)
+    assert state.queue_error == 'unknown queue operation'
+
+
 def test_completed_notice_releases_idle_and_positive_human_wake_eligibility(tmp_path, monkeypatch):
     record = tmp_path / 'synthetic.jsonl'
     before = write(record, initial() + [enqueue(), prompt(5)])
@@ -147,7 +189,7 @@ def test_completed_notice_releases_idle_and_positive_human_wake_eligibility(tmp_
                            join=lambda: Join(record), harness=SimpleNamespace(state=claude.state))
     # Isolate the record consumer: the existing metadata and delivery gates are unchanged.
     monkeypatch.setattr(human_wake, 'candidate_hold', lambda *args: None)
-    screen = Screen(box='', working=False)
+    screen = Screen(text='Synthetic empty composer', box='', working=False)
     assert human_wake.eligible(seat, screen) == 'human wake waiting for recorded work to end'
     state = write(record, [end(7)], append=True)
     assert idle.check(state) is None

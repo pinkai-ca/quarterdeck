@@ -417,13 +417,17 @@ class _QueueSlot:
 def queued_notice(entry: dict) -> str | None:
     """The measured queued_command notice receipt; no execution or input receipt is inferred."""
     attachment = entry.get('attachment')
-    if (entry.get('version') not in QUEUE_COMPLETION_VERSIONS or entry.get('isSidechain')
+    at = when(attachment.get('timestamp')) if isinstance(attachment, dict) else None
+    if (entry.get('type') != 'attachment' or entry.get('version') not in QUEUE_COMPLETION_VERSIONS
+            or entry.get('isSidechain') is not False
             or not isinstance(attachment, dict) or attachment.get('type') != 'queued_command'
+            or set(attachment) != {'type', 'commandMode', 'origin', 'prompt', 'runId',
+                                   'source_uuid', 'delivery_id', 'timestamp'}
             or attachment.get('commandMode') != 'task-notification'
             or attachment.get('origin') != {'kind': 'task-notification', 'producer': 'session-task'}
             or not all(isinstance(attachment.get(key), str) and attachment[key]
                        for key in ('runId', 'source_uuid', 'delivery_id'))
-            or when(attachment.get('timestamp')) is None):
+            or at is None or at.tzinfo is None):
         return None
     text = attachment.get('prompt')
     fields = background_notification(text)
@@ -480,7 +484,7 @@ class _Reader(JsonLinesReader):
             self.user(entry)
         elif kind == 'attachment':
             if (text := queued_notice(entry)) is not None:
-                self.consume_queued(text)
+                self.consume_queued(text, receipt=entry)
         elif kind == "assistant":
             self.assistant(entry)
         elif kind == "system" and entry.get("subtype") == "turn_duration":
@@ -526,7 +530,8 @@ class _Reader(JsonLinesReader):
             self.queue_slots = [replace(slot, phase='pending') if slot.phase == 'queued' else slot
                                 for slot in self.queue_slots]
         elif entry.get('operation') not in ('enqueue', 'remove', 'dequeue'):
-            self.queue_slots = [replace(slot, phase='pending')
+            self.queue_error = 'unknown queue operation'
+            self.queue_slots = [replace(slot, phase='pending', known=False)
                                 if slot.text.strip() == text.strip() and slot.phase not in ('echo', 'draft') else slot
                                 for slot in self.queue_slots]
 
@@ -594,8 +599,11 @@ class _Reader(JsonLinesReader):
                 return False
         return True
 
-    def consume_queued(self, text: str) -> None:
-        matching = next((i for i, slot in enumerate(self.queue_slots) if slot.text.strip() == text.strip()), None)
+    def consume_queued(self, text: str, *, receipt=None) -> None:
+        at = when(receipt['attachment']['timestamp']) if receipt is not None else None
+        matching = next((i for i, slot in enumerate(self.queue_slots)
+                         if slot.text.strip() == text.strip() and (receipt is None or
+                            slot.known and slot.session == receipt.get('sessionId') and slot.at <= at)), None)
         if matching is not None:
             slot = self.queue_slots.pop(matching)
             if slot.phase not in ('echo', 'draft') and slot.text in self.queued:
