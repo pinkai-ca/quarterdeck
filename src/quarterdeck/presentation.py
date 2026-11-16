@@ -49,6 +49,9 @@ def cached_line(folder):
     """A fast presentation may never hide death, a busy owner or unverified freshness."""
     folder = Path(folder).expanduser().resolve()
     runtime = folder / 'runtime'
+    from . import stop_barrier
+    if stop_barrier.status(runtime):
+        return None
     selected = copy_state.select(folder)
     if selected.warning or (selected.qd is not None
                             and Path(sys.executable).parent.resolve() != selected.qd.parent.resolve()):
@@ -97,6 +100,9 @@ def published_reading(folder, *, status_refresh=None):
     Stale alerts remain visible, but their old service heading never claims liveness.
     """
     folder = Path(folder).expanduser().resolve()
+    from . import stop_barrier
+    if stop_barrier.status(folder / 'runtime'):
+        return None, None
     line = cached_line(folder)
     if line is not None:
         return line, None

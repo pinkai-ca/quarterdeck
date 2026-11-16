@@ -28,7 +28,7 @@ def process_start(pid: int) -> str | None:
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
         return fields[19] if fields[0] not in EXITED else None
-    except (OSError, IndexError):
+    except (OSError, IndexError, UnicodeError):
         return None
 
 
@@ -39,7 +39,7 @@ def process_gone(expected: dict) -> bool:
         return fields[0] in EXITED or (expected["start"] is not None and fields[19] != expected["start"])
     except FileNotFoundError:
         return True
-    except (OSError, IndexError):
+    except (OSError, IndexError, UnicodeError):
         return False
 
 

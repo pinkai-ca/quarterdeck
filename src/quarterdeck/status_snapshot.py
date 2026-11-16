@@ -112,7 +112,9 @@ def labelled(reading, mode, wall):
 
 
 def served(ship):
-    from . import presentation
+    from . import presentation, stop_barrier
+    if stop_barrier.status(ship.runtime):
+        return None
     try:
         data = _read(ship.runtime, NAME)
         if (not isinstance(data, dict) or type(data.get('format')) is not int or data['format'] != 1

@@ -1076,7 +1076,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
     reading.suffix['pending'] = [f"request claimed: {path.name}; inspect requests/ before retrying"
                                  for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
-    from . import compaction_alert, jail_end, ledger_recovery, model_mismatch, pr_screen, write_bound
+    from . import compaction_alert, jail_end, ledger_recovery, model_mismatch, pr_screen, stop_barrier, write_bound
     from .harness import record_file
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
     from . import usage_forecast
@@ -1085,7 +1085,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
     reading.slow = dict(
         pool_forecasts=[forecast.describe() for forecast in usage_forecast.readings(ship, now) if forecast.warning],
         manual_fresh=compaction_alert.unrouted(ship, readable),
-        server_recovery=server_recovery.status(ship.runtime),
+        server_recovery=server_recovery.status(ship.runtime) + stop_barrier.status(ship.runtime),
         write_bounds=write_bound.status(ship),
         jail_sweeps=jail_end.status(ship),
         record_bounds=record_file.alarms(readable),

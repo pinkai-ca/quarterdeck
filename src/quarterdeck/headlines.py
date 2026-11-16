@@ -13,6 +13,7 @@ def status_line(facts, alerts: list[str]) -> str:
     if retirement := getattr(facts, 'retirement', None):
         parts.append(retirement)
     parts += getattr(facts, 'ledger_recovery', ())  # preserve the evidence path on overflow
+    parts += [line for line in getattr(facts, 'server_recovery', ()) if line.startswith('service stop barrier')]
     if accounting := getattr(facts, 'accounting', None):
         parts.append(accounting)  # keep its time and safe cause even when other alerts overflow
     counts = [(facts.waiting, "waiting"), (facts.queued, "queued"), (facts.blind, "blind"),

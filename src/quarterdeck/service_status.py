@@ -40,6 +40,7 @@ def inputs(ship):
         'post/cascade-holds', 'post/structure-waits', 'requests', 'request-state',
         'hwa', 'pool-usage', 'proven/check-outcomes', 'server-recovery.json',
         'retirement-status.json', 'pool-forecast-alerts.json', 'seat-holds.json', 'pr-screen/screening', 'post/relaunch',
+        'locks/service-stop.json',
     )]
     from . import trusted_files
     for name in sorted(ship.seats):

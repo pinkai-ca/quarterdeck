@@ -391,6 +391,8 @@ def _cleanup(ship: Ship, data: dict) -> None:
 
 
 def _restart_old(ship: Ship, data: dict, *, bootstrap: bool) -> list[str]:
+    from . import stop_barrier
+    stop_barrier.require_clear(ship.runtime)
     pending = data['pending']
     if not pending['was_running']:
         return []

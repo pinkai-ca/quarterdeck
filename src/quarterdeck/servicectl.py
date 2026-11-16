@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import durable, lock_holders
+from . import durable, lock_holders, stop_barrier
 from .ship import Ship, ShipError
 from .procstat import EXITED
 
@@ -348,6 +348,7 @@ def append_log(runtime: Path, event: str, **data) -> None:
                                  "event": event, **data}) + "\n")
 
 
+@stop_barrier.guard_start
 def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
           startup_token: str | None = None) -> str:
     """Start the service detached, logging under the runtime; a proof line. It runs the ``qd`` given, else this one."""
@@ -461,6 +462,21 @@ def scoped(ship: Ship, environment: dict[str, str]) -> tuple[list[str], str | No
 
 def stop(runtime: Path) -> str:
     """Signal the lock's owner; confirm its exit, ending its tree if it outlives the grace."""
+    from . import shutdown, write_bound
+
+    def end_tree(known):
+        def observe(found):
+            known.update(found)
+            stop_barrier.retain(runtime, known)
+        write_bound.kill(known, observe=observe)
+
+    previous = stop_barrier.read(runtime)
+    if previous is not None:
+        if stop_barrier.remaining(previous):
+            end_tree(previous)
+            stop_barrier.require_clear(runtime)
+            return f"service killed · earlier stop's tree confirmed ended: {stop_barrier.names(previous)}"
+        stop_barrier.require_clear(runtime)
     if not alive(runtime):
         remove_heartbeat(runtime)
         return "service was not running"
@@ -471,7 +487,6 @@ def stop(runtime: Path) -> str:
             return "service was not running"
         raise ShipError(f"a service holds {lock_path(runtime)} but its holder cannot be read"
                         f" (lock table: {_lock_rows(lock_path(runtime))}); fuser {lock_path(runtime)} names it")
-    from . import shutdown, write_bound
     start = shutdown.process_start(pid)
     identity = dict(pid=pid, start=start)
     if start is None and not shutdown.process_gone(identity):
@@ -484,6 +499,7 @@ def stop(runtime: Path) -> str:
         known.update(write_bound.tree(pid, start))
     except OSError as error:
         raise ShipError(f"service {pid} tree cannot be read ({type(error).__name__}); exit cannot be confirmed") from None
+    stop_barrier.retain(runtime, known)
     from . import relaunch_intent
     term_started = time.monotonic()
     extended = shutdown.inflight(runtime, owner) is not None
@@ -491,7 +507,7 @@ def stop(runtime: Path) -> str:
     for sig, patience, how in ((signal.SIGTERM, shutdown.ORDINARY_GRACE, "stopped"), (signal.SIGKILL, 2.0, "killed")):
         try:
             if sig == signal.SIGKILL:
-                write_bound.kill(known, observed=known)
+                end_tree(known)
             elif not shutdown.process_gone(identity):
                 os.kill(pid, sig)
         except ProcessLookupError:
@@ -522,7 +538,7 @@ def stop(runtime: Path) -> str:
                             for child, began in known.items())
             if remaining or released_alive:
                 try:
-                    write_bound.kill(known, observed=known)
+                    end_tree(known)
                 except OSError as error:
                     raise ShipError(f"service {pid} tree could not be ended ({type(error).__name__}); exit cannot be confirmed") from None
             unconfirmed = [child for child, began in known.items()
@@ -530,6 +546,7 @@ def stop(runtime: Path) -> str:
             if unconfirmed or not shutdown.process_gone(identity):
                 names = ', '.join(map(str, sorted(set(unconfirmed) | {pid})))
                 raise ShipError(f"service {pid} exit cannot be confirmed after ending its tree; processes {names}")
+            stop_barrier.require_clear(runtime)
             extended = extended or shutdown.inflight(runtime, owner) is not None
             detail = shutdown.annotate(runtime, owner, forced=how == "killed" or remaining or released_alive)
             stopped_beat = read_heartbeat(runtime)

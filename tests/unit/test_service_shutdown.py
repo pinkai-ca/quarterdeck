@@ -105,7 +105,13 @@ def test_stop_keeps_a_heartbeat_that_now_names_another_pid(tmp_path, monkeypatch
     monkeypatch.setattr(servicectl, "alive", lambda _: True)
     monkeypatch.setattr(servicectl, "holder", lambda _: stopped_pid)  # the service is the lock's holder
     monkeypatch.setattr(servicectl, "locked", lambda _: False)
-    monkeypatch.setattr(servicectl.os, "kill", lambda *_: heartbeat.write_text(f"{next_pid} {stamp}\n"))
+    ended = []
+    def ending(*_):
+        ended.append(True)
+        heartbeat.write_text(f"{next_pid} {stamp}\n")
+    monkeypatch.setattr(shutdown, "process_start", lambda _: "synthetic-start-zzzz")
+    monkeypatch.setattr(shutdown, "process_gone", lambda _: bool(ended))
+    monkeypatch.setattr(servicectl.os, "kill", ending)
     assert "service stopped" in servicectl.stop(tmp_path)
     assert servicectl.read_heartbeat(tmp_path)[0] == next_pid
 
@@ -127,10 +133,16 @@ def test_stop_waits_for_the_process_to_be_gone_after_its_lock_frees(tmp_path, mo
     monkeypatch.setattr(shutdown, "owner", lambda runtime, found=None: expected)
     monkeypatch.setattr(shutdown, "process_start", lambda found: expected["start"])
     monkeypatch.setattr(shutdown, "inflight", lambda runtime, owner: None)
-    monkeypatch.setattr(shutdown, "process_gone", lambda owner: (seen.append("look") or next(gone, True)))
+    def look(owner):
+        result = next(gone, True)
+        seen.append("gone" if result else "alive")
+        return result
+    monkeypatch.setattr(shutdown, "process_gone", look)
     monkeypatch.setattr(shutdown, "annotate", lambda runtime, owner, forced: seen.append("annotate") or "synthetic annotation")
     assert "synthetic annotation" in servicectl.stop(tmp_path)
-    assert seen == ["look", "look", "look", "annotate"], "annotated only once the process reads gone"
+    assert seen[:3] == ["alive", "alive", "gone"]
+    assert seen[-1] == "annotate" and seen.count("annotate") == 1
+    assert "alive" not in seen[seen.index("gone"):], "annotated only once the process reads gone"
 
 
 @pytest.mark.parametrize('prior', [False, True])

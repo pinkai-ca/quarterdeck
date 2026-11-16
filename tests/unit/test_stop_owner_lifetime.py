@@ -205,7 +205,7 @@ def test_a_normal_exit_after_release_is_not_killed(tmp_path, monkeypatch):
 
 
 def test_an_unconfirmed_exit_refuses_by_process_name(tmp_path, monkeypatch):
-    from quarterdeck import write_bound
+    from quarterdeck import install, stop_barrier, write_bound
 
     with stand_in(tmp_path, response="release") as (runtime, child):
         stopping_clock(monkeypatch, child, response="release")
@@ -213,3 +213,73 @@ def test_an_unconfirmed_exit_refuses_by_process_name(tmp_path, monkeypatch):
         with pytest.raises(ShipError, match=f"service {child.pid} exit cannot be confirmed"):
             servicectl.stop(runtime)
         assert child.poll() is None and not servicectl.locked(runtime)
+        assert stop_barrier.read(runtime)[child.pid] == shutdown.process_start(child.pid)
+        with pytest.raises(ShipError, match=f"pid {child.pid} start"):
+            install._restart_old(SimpleNamespace(runtime=runtime),
+                                 {'pending': {'was_running': True}}, bootstrap=False)
+        assert child.poll() is None
+
+
+def test_a_live_child_barrier_holds_start_until_the_child_ends(tmp_path, monkeypatch):
+    from quarterdeck import stop_barrier
+
+    with stand_in(tmp_path) as (runtime, child):
+        identity = {child.pid: shutdown.process_start(child.pid)}
+        stop_barrier.retain(runtime, identity)
+        ship = SimpleNamespace(runtime=runtime)
+        with pytest.raises(ShipError, match=f"pid {child.pid} start {identity[child.pid]}"):
+            servicectl.start(ship)
+        child.kill()
+        child.wait(timeout=20)
+        # No service is raised: after the automatic clear, the ordinary already-up path supplies the proof.
+        monkeypatch.setattr(servicectl, 'alive', lambda _: True)
+        assert servicectl.start(ship).startswith('service alive')
+        assert not stop_barrier.path(runtime).exists()
+
+
+def test_recovery_clears_a_barrier_whose_process_has_ended(tmp_path):
+    from quarterdeck import install, stop_barrier
+
+    with stand_in(tmp_path) as (runtime, child):
+        stop_barrier.retain(runtime, {child.pid: shutdown.process_start(child.pid)})
+        child.kill()
+        child.wait(timeout=20)
+        assert install._restart_old(SimpleNamespace(runtime=runtime),
+                                    {'pending': {'was_running': False}}, bootstrap=False) == []
+        assert not stop_barrier.path(runtime).exists()
+
+
+def test_an_unreadable_barrier_holds_start_and_recovery_and_stays_visible(tmp_path):
+    from quarterdeck import install, presentation, status_snapshot, stop_barrier, watch
+
+    runtime = tmp_path / 'runtime'
+    target = stop_barrier.path(runtime)
+    target.parent.mkdir(parents=True)
+    target.write_text('{')
+    ship = SimpleNamespace(runtime=runtime)
+    for action in (lambda: servicectl.start(ship),
+                   lambda: install._restart_old(ship, {'pending': {'was_running': True}}, bootstrap=False)):
+        with pytest.raises(ShipError, match='service stop barrier') as error:
+            action()
+        assert str(target) in str(error.value)
+        assert target.read_text() == '{'
+    lines = stop_barrier.status(runtime)
+    assert len(lines) == 1 and str(target) in lines[0] and 'unreadable' in lines[0]
+    facts = watch.Facts(service='down', waiting=0, oldest=0, blind=0, server_recovery=lines,
+                        pending=['synthetic long detail ' * 30])
+    assert lines[0] in facts.line(), 'the named barrier survives status overflow'
+    assert presentation.cached_line(tmp_path) is None
+    assert presentation.published_reading(tmp_path) == (None, None)
+    assert status_snapshot.served(ship) is None
+
+
+def test_collection_reads_the_standing_barrier(drydock, tmux):
+    from quarterdeck import ship as shipmod, stop_barrier, watch
+
+    ship = shipmod.load(drydock)
+    target = stop_barrier.path(ship.runtime)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('{')
+    facts = watch.facts(ship, tmux)
+    assert any(str(target) in line for line in facts.server_recovery)
+    assert 'service stop barrier' in facts.line()

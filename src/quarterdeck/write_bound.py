@@ -473,24 +473,22 @@ def place(runtime, reading: Reading, who: str = 'the write-bound alarm', floor: 
     return data
 
 
-def kill(pids: dict[int, str], rounds: int = 10, *, observed: dict[int, str] | None = None) -> list[int]:
+def kill(pids: dict[int, str], rounds: int = 10, *, observe=None) -> list[int]:
     """SIGSTOP the tree so nothing in it forks on, then SIGKILL every process of it; the pids signalled.
 
     A process is known by its pid and its start, so a pid the system gave to another process since is never
     signalled; a child is taken into the tree only while its parent is still the known process.
-    ``observed``, when supplied, receives every identity seen, for the caller's exit confirmation.
+    ``observe``, when supplied, records every identity seen before that round's signals.
     """
     known = dict(pids)
-    if observed is not None:
-        observed.update(known)
     signalled: list[int] = []
     for _ in range(rounds):
         processes = _processes()
         live = [pid for pid, start in known.items() if pid in processes and processes[pid][1] == start]
         for child in _descendants(processes, live):
             known.setdefault(child, processes[child][1])
-        if observed is not None:
-            observed.update(known)
+        if observe is not None:
+            observe(dict(known))
         live = [pid for pid, start in known.items() if pid in processes and processes[pid][1] == start
                 and _state(pid) not in ('Z', 'X')]
         if not live:
