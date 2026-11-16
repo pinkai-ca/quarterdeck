@@ -70,7 +70,7 @@ def test_a_service_of_another_folder_is_never_touched(tmp_path):
     process, start = sleeper(elsewhere)
     try:
         stopped = services.stop(tmp_path / 'records', tmp_path / 'scratch')
-        assert stopped == {'outcome': 'none', 'entries': []} and process.poll() is None
+        assert stopped == {'outcome': 'none', 'entries': [], 'servers': []} and process.poll() is None
     finally:
         process.kill()
         process.wait()

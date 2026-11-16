@@ -104,7 +104,9 @@ def _retire_run(root: Root, runs_fd: int, run: str, state: dict, *, releasing=Fa
     stopped = services.stop(root.path / RESULTS / run / 'services', storage.path(root, run))
     if stopped['outcome'] == 'held':
         return {'outcome': 'held', 'scratch': str(storage.path(root, run)), 'services': stopped,
-                'reason': 'a ship service the run started still runs; nothing removed'}
+                'reason': ('a ship service or tmux server the run started still runs; nothing removed'
+                           if stopped.get('servers') and any(s['outcome'] == 'held' for s in stopped['servers'])
+                           else 'a ship service the run started still runs; nothing removed')}
     budget = owned.Budget()
     parent = None
     try:
