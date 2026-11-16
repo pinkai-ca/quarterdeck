@@ -106,7 +106,7 @@ def test_dead_child_retries_without_counting_partial_work_twice(tmp_path, monkey
 
 
 def test_deliveries_and_spent_pool_move_do_not_wait_for_backlog(tmp_path, monkeypatch):
-    svc, seat, _, _ = world(tmp_path, monkeypatch, 300)
+    svc, seat, record, _ = world(tmp_path, monkeypatch, 300)
     steps = ('server_recovery', 'reconcile', 'groups', 'cascades', 'inboxes', 'recoveries', 'refusals',
              'answers', 'looks', 'refresh_usage', 'follow', 'requests', 'compactions', 'person_quiet',
              'fresh_after_order', 'rebrief', 'push_reminders', 'credentials', 'authentications', 'model_differences')
@@ -114,7 +114,12 @@ def test_deliveries_and_spent_pool_move_do_not_wait_for_backlog(tmp_path, monkey
         monkeypatch.setattr(svc, name, lambda: None)
     svc.status_due = lambda: None
     moved, delivered = [], []
-    svc.deliveries = lambda: delivered.append(time.monotonic())
+    delivery_seen, move_seen, released = (threading.Event() for _ in range(3))
+    def delivery():
+        assert not released.is_set() and svc.ledger.catching_up()
+        delivered.append(True)
+        delivery_seen.set()
+    svc.deliveries = delivery
     svc.not_idle = lambda seat: None
     operational = []
     svc.push_reminders = lambda: operational.append('push')
@@ -128,24 +133,55 @@ def test_deliveries_and_spent_pool_move_do_not_wait_for_backlog(tmp_path, monkey
                            for name in ('spent', 'available')})
     seat.ship, seat.pool, seat.is_up = svc.ship, svc.ship.pools['spent'], True
     seat.spec = SimpleNamespace(pools=('spent', 'available'))
-    seat.failover_to = lambda target: moved.append((target, time.monotonic(), svc.ledger.catching_up()))
+    def failover(target):
+        assert delivery_seen.is_set() and not released.is_set()
+        moved.append((target, svc.ledger.catching_up()))
+        move_seen.set()
+    seat.failover_to = failover
     monkeypatch.setattr(service.recovery, 'held', lambda seat: None)
     monkeypatch.setattr(quota, 'current_walled', lambda seat, book: True)
     monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
     svc._accounting_tick = True
-    start = time.monotonic()
+    start, blocked = Driver.start, []
+    def stop_before_request(driver, service):
+        result = start(driver, service)
+        if not blocked:
+            # start() has queued the request but pump() has not sent it yet.
+            # The stop event therefore precedes any possible finished plan.
+            pid = driver.process.pid
+            os.kill(pid, signal.SIGSTOP)
+            assert os.WIFSTOPPED(os.waitpid(pid, os.WUNTRACED)[1])
+            blocked.append(pid)
+        return result
+    monkeypatch.setattr(Driver, 'start', stop_before_request)
     try:
+        while not blocked:
+            native_account()
+            if not blocked:
+                time.sleep(0.005)
+        assert svc.account_driver.active
+        assert svc.ledger.ingested(record) == 0
         svc._tick_steps()
         assert len(delivered) == len(moved) == 1
-        target, at, backlog = moved[0]
-        assert delivered[0] - start < 0.1
+        target, backlog = moved[0]
+        assert delivery_seen.is_set() and move_seen.is_set()
+        assert not released.is_set()
         assert target == 'available' and backlog
         assert operational == ['push', 'signin', 'account']
-        assert at - delivered[0] < 0.5
         assert svc.ledger.catching_up()
         assert str(watch.tokens_today(seat)) == 'unknown'
         assert not svc.ledger.db.in_transaction
+        released.set()
+        os.kill(blocked[0], signal.SIGCONT)
+        finish(svc.account_driver, svc, timeout=None)
+        assert svc.ledger.ingested(record) == 300
+        assert not svc.ledger.catching_up()
     finally:
+        if blocked and not released.is_set():
+            try:
+                os.kill(blocked[0], signal.SIGCONT)
+            except ProcessLookupError:
+                pass
         svc.account_driver.close()
         svc.ledger.close()
 
