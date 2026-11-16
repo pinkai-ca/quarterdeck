@@ -268,7 +268,7 @@ def context_only(runtime, identifier):
     imported = provenance(runtime, identifier)
     if not imported or not imported['context']:
         from .forward_post import recorded
-        route = recorded(runtime, identifier)
+        route = recorded(runtime, identifier, imported=imported)
         if route is None or address(route['to'], owner(runtime))[1] != owner(runtime):
             return False
         imported = dict(sha256=route['sha256'])
@@ -399,7 +399,7 @@ def _ownership(source, identifier, origin, message, data, *, root):
             # A declared forward is the sole exception to the imported-root hold.
             # It keeps the author's origin and requires this ship's own exact pin.
             from .forward_post import recorded, receive
-            saved = recorded(source.runtime, identifier)
+            saved = recorded(source.runtime, identifier, imported=imported)
             if not saved or address(saved['from'], origin)[1] != source.folder.name:
                 raise ShipError('only the declaring ship forwards an imported root')
             receive(source.runtime, dict(origin=origin, forward=saved), message, data)
@@ -474,7 +474,7 @@ class _LocalReports:
             if ('@' in message.sender or '@' in message.to
                     or message.sender in self.forwards or message.to in self.forwards
                     or provenance(self.ship.runtime, current) is not None
-                    or recorded(self.ship.runtime, current) is not None
+                    or recorded(self.ship.runtime, current, imported=None) is not None  # read just above: none
                     or post_dir.exists(self.ship.runtime / 'post' / 'addressed' / (current + '.json'))):
                 result = False
                 break
@@ -694,12 +694,13 @@ def fetch(ship, source, path):
                     raise ShipError('post transport conflicts with an existing local message')
             else:
                 publish(import_path(ship.runtime, raw.id), encoded(metadata))
+                imported = metadata  # as just published: the view below takes it as read
             with post.admission(ship.runtime, recipient if is_direct else '@fleet-context'):
                 if is_direct and context_only(ship.runtime, raw.id):
                     # Import uses the same recipient-admission hooks as local
                     # publication before making new work eligible for the seat.
                     from . import compaction
-                    viewed = local_view(ship.runtime, raw, data=data)
+                    viewed = local_view(ship.runtime, raw, data=data, imported=imported)
                     compaction.protect_closure(ship.runtime, viewed)
                     compaction.admitting(ship.runtime, viewed)
                 publish(local, data)  # law: post-is-files -- same bytes and id in the receiving ship
@@ -720,14 +721,15 @@ def fetched(source, destination, value):
             _, data = _source(destination, entry['id'])
             if len(data) != entry['size'] or digest(data) != entry['sha256']:
                 return False
+            read = {}
             if entry['origin'] != destination.folder.name:
-                metadata = provenance(destination.runtime, entry['id'])
+                metadata = read['imported'] = provenance(destination.runtime, entry['id'])
                 expected = dict(format=1, origin=entry['origin'], sha256=entry['sha256'], context=True)
                 if metadata != expected:
                     return False
             if 'forward' in entry:
                 from .forward_post import recorded
-                if recorded(destination.runtime, entry['id']) != entry['forward']:
+                if recorded(destination.runtime, entry['id'], **read) != entry['forward']:
                     return False
         _, last = _source(destination, value['message'])
         from . import post

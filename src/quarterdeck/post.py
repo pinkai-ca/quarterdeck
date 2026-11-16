@@ -153,6 +153,11 @@ def admission(runtime: Path, seat: str, *, wait: float | None = None):
         yield
 
 
+def as_read(imports: dict, identifier: str) -> dict:
+    """The import record a load read for a message, as projected's argument; nothing where it read none."""
+    return {'imported': imports[identifier]} if identifier in imports else {}
+
+
 class Store:
     """Every message of a ship, one immutable file each."""
 
@@ -166,6 +171,7 @@ class Store:
         self._references: dict[str, list[Message]] = {}
         self._short_messages: list[Message] | None = None
         self._short_set: frozenset[str] = frozenset()
+        self._imports: dict[str, object] = {}
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
         fixed = _FIXED_REPORT.get()
@@ -177,10 +183,12 @@ class Store:
             return message
         message = self.prepare(kind, sender, to, body, **fields)
         self.write(message)
-        from .fleet_post import local_view
+        from .fleet_post import local_view, provenance
         from .forward_post import projected
-        return projected(self.dir.parent.parent, local_view(self.dir.parent.parent, message),
-                         open_obligation=message.kind in ("order", "question"))
+        runtime = self.dir.parent.parent
+        imported = provenance(runtime, message.id)  # read once: the view and its route lookup take it as read
+        return projected(runtime, local_view(runtime, message, imported=imported),
+                         open_obligation=message.kind in ("order", "question"), imported=imported)
 
     def prepare(self, kind: str, sender: str, to: str, body: str, *, taken: set[str] | None = None,
                 **fields) -> Message:
@@ -291,6 +299,7 @@ class Store:
         self._validated_context, old_context = context, self._validated_context
         identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_mode)
         inventory = []
+        self._imports = imports = {}  # each message's import record as read here, for the route lookup after
         reread = context != old_context
         for name, info in sorted(children):
             if not name.endswith('.json'):
@@ -303,6 +312,7 @@ class Store:
             if not stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode):
                 continue
             record = None if local is not None and local(path.stem) else provenance(runtime, path.stem)
+            imports[path.stem] = record
             key = identity(info)
             cached = previous.get(path.name)
             if cached is not None and (cached[0] != key or cached[1] != record):
@@ -366,11 +376,16 @@ class Store:
                     paths = [self.dir / entry.name for entry in entries if entry.name.endswith('.json')]
                 from .fleet_post import local_view, provenance, stable_bytes
 
+                imports = {}
+
                 def read(path):
-                    if provenance(self.dir.parent.parent, path.stem) is None:
-                        return local_view(self.dir.parent.parent, Message.from_json(path.read_text()))
+                    # The import record is read once, and passed on to the view and, below, the route lookup.
+                    imported = imports[path.stem] = provenance(self.dir.parent.parent, path.stem)
+                    if imported is None:
+                        return local_view(self.dir.parent.parent, Message.from_json(path.read_text()), imported=None)
                     data = stable_bytes(path)
-                    return local_view(self.dir.parent.parent, Message.from_json(data.decode('utf-8')), data=data)
+                    return local_view(self.dir.parent.parent, Message.from_json(data.decode('utf-8')), data=data,
+                                      imported=imported)
 
                 messages = []
                 for path in paths:
@@ -393,7 +408,8 @@ class Store:
                         m.kind in ("order", "question") and not any(
                             r.kind == ("report" if m.kind == "order" else "answer")
                             and (m.kind != "order" or r.sender == m.to)
-                            for r in replies.get(m.id, ())))) if m.to in routes else m for m in messages]
+                            for r in replies.get(m.id, ()))), **as_read(imports, m.id))
+                        if m.to in routes else m for m in messages]
                     replies = {}
                     for message in messages:
                         if message.re:
@@ -426,6 +442,7 @@ class Store:
                 except FileNotFoundError:
                     children = []
                 messages = self._refresh_messages(children, (stamp[0], stamp[1], stamp[4]), started)
+                imports = self._imports
                 messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}
                 for message in messages:
@@ -440,7 +457,8 @@ class Store:
                         m.kind in ("order", "question") and not any(
                             r.kind == ("report" if m.kind == "order" else "answer")
                             and (m.kind != "order" or r.sender == m.to)
-                            for r in replies.get(m.id, ())))) if m.to in routes else m for m in messages]
+                            for r in replies.get(m.id, ()))), **as_read(imports, m.id))
+                        if m.to in routes else m for m in messages]
                     replies = {}
                     for message in messages:
                         if message.re:
