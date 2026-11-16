@@ -378,8 +378,10 @@ def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None
     worktrees and the captain's queue, which unjailed seats read and run. The office's own seats may also work at
     ``office/work/<name>`` or below, as its jailed desk does, when the office is a real folder of the checkout. A seat at the ship's common workspace, which
     declares no cwd, and qd check's temporary seats, which no ship file declares, are not bound, nor counted as another
-    seat. Nor is a declared cwd that is the common workspace or holds it, as a seat at a folder above the project has:
-    lying inside it is lying inside the common workspace, which the checkout rule already rules.
+    seat. Nor is a declared cwd that is the common workspace or holds it, as a seat at a folder above the project has,
+    for a jailed cwd inside the common workspace, by real path: lying inside it there is lying inside the common
+    workspace, which the checkout rule already rules. A jailed cwd under such a seat's folder but outside the common
+    workspace lies inside that seat's own folder, and is refused, naming both.
     """
     spec = ship.seats.get(seat_name)
     if spec is None or spec.cwd is None or spec.temporary:
@@ -415,7 +417,11 @@ def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None
             raise ShipError(f"{seat_name}: sandboxed with its working directory at {real}, which {what} seat "
                             f"{other}'s working directory ({theirs}); a jailed seat works in a folder of its own. "
                             f"Give {seat_name} a cwd that no other seat uses and that holds no other seat's")
-        if theirs_spec.cwd is not None and real.is_relative_to(theirs) and not common.is_relative_to(theirs):
+        # A seat declared at the common workspace, or at a folder holding it (a seat's ~/dev above the project), is
+        # passed over only for a cwd inside the common workspace, which the checkout rule rules; anywhere else under
+        # its folder is inside another seat's own folder, and refused.
+        if theirs_spec.cwd is not None and real.is_relative_to(theirs) and not (
+                common.is_relative_to(theirs) and real.is_relative_to(common)):
             raise ShipError(f"{seat_name}: sandboxed with its working directory at {real}, inside seat {other}'s "
                             f"declared working directory ({theirs}); a jailed seat works in a folder of its own. "
                             f"Give {seat_name} a cwd outside every other seat's")

@@ -697,21 +697,122 @@ def test_a_jailed_hand_below_its_own_folder_and_through_a_link_to_it_plans(tmp_p
     assert plan_seat(ship, 'hand-a', tmp_path / 'operator-home').workspace == (hands / 'hand-a').resolve()
 
 
-def test_the_ships_own_layout_plans_its_hands_where_the_common_workspace_and_wider_cwds_hold_them(tmp_path, monkeypatch):
-    """As the ship has it: the common workspace is the checkout, and six seats declare the folder holding it. Neither
-    counts as another seat's own folder, so the hands at work/hands/<name> still plan, and a jailed cwd inside the
-    common workspace outside the checkout plans too."""
+WIDE = ('wide-a', 'wide-b', 'wide-c', 'wide-d', 'wide-e', 'wide-f')
+
+
+def wide_ship(tmp_path: Path, **hands):
+    """The stand-in checkout as the common workspace (tmp_path/project), with six seats declared at the folder holding
+    it (tmp_path), as six seats of a ship may declare ~/dev above the project."""
     from dataclasses import replace
-    ship, hands = own_cwd_ship(tmp_path)
-    wide = {name: shipmod.SeatSpec(name, 'crew', name, 'fake', ('fake',), cwd=tmp_path)
-            for name in ('desk', 'counsel', 'steward', 'uhura', 'spock', 'laan')}
-    ship = replace(ship, workspace=tmp_path / 'project', seats={**ship.seats, **wide})
+    ship, folder = own_cwd_ship(tmp_path, **hands)
+    wide = {name: shipmod.SeatSpec(name, 'crew', 'synthetic', 'fake', ('fake',), cwd=tmp_path) for name in WIDE}
+    return replace(ship, workspace=tmp_path / 'project', seats={**ship.seats, **wide}), folder
+
+
+def test_a_jailed_cwd_under_a_seats_folder_above_the_common_workspace_but_outside_it_is_refused_naming_both(
+        tmp_path, monkeypatch):
+    """A seat declared at a folder holding the common workspace is passed over only for a cwd inside the common
+    workspace; tmp_path/crew/sub lies inside its folder and outside the common workspace, so it is refused."""
+    (tmp_path / 'crew' / 'sub').mkdir(parents=True)
+    ship, _ = wide_ship(tmp_path, hand_a_cwd=tmp_path / 'crew' / 'sub')
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    with pytest.raises(ShipError) as caught:
+        plan_seat(ship, 'hand-a', tmp_path / 'operator-home')
+    real, theirs = (tmp_path / 'crew' / 'sub').resolve(), tmp_path.resolve()
+    assert str(caught.value).startswith(
+        f"hand-a: sandboxed with its working directory at {real}, inside seat wide-a's declared working directory "
+        f"({theirs})"), caught.value
+    assert not (ship.runtime / 'post').exists(), 'refused before anything of the launch is made'
+
+
+def test_a_hand_inside_the_common_workspace_still_plans_under_a_seat_declared_above_it(tmp_path, monkeypatch):
+    """Inside the common workspace, the checkout rule rules: a hand at work/hands/<name> plans though seats are
+    declared at the folder holding the project."""
+    ship, hands = wide_ship(tmp_path)
     monkeypatch.setattr(sandbox, 'available', lambda: True)
     for name in ('hand-a', 'hand-b'):
         assert plan_seat(ship, name, tmp_path / 'operator-home').workspace == (hands / name).resolve()
-    (tmp_path / 'crew' / 'sub').mkdir()
-    ship, _ = own_cwd_ship(tmp_path, hand_a_cwd=tmp_path / 'crew' / 'sub')
-    assert plan_seat(ship, 'hand-a', tmp_path / 'operator-home').workspace == (tmp_path / 'crew' / 'sub').resolve()
+
+
+# The ship's own declaration shape: its seats' cwds and jails as they stand in its ship file, rebased from the
+# operator's home to tmp_path/home, with every seat renamed synthetic. Six seats at ~/dev, above the project; two at
+# folders of their own; four jailed hands on local endpoints at the project's work/hands/<name>; the rest at the common
+# workspace, the project. No pool carries anything but its kind.
+SHIP_SHAPE = """
+[ship]
+name = "synthetic"
+workspace = "{home}/dev/quarterdeck"
+
+[pools.subscription]
+provider = "anthropic"
+config_dir = "{home}/.claude"
+
+[pools.local-a]
+provider = "local"
+endpoint = "http://127.0.0.1:8000/v1"
+
+[pools.local-b]
+provider = "local"
+endpoint = "http://127.0.0.1:8001/v1"
+
+[sessions.crew]
+title = "Crew"
+
+[sessions.office]
+title = "Office"
+human = true
+{seats}"""
+
+SHAPE_SEATS = (
+    [(f'above-{n}', 'office' if n < 3 else 'crew', 'claude', 'subscription', '{home}/dev', {1: False, 5: False}.get(n))
+     for n in range(6)]
+    + [('own-a', 'office', 'claude', 'subscription', '{home}/career', None),
+       ('own-b', 'office', 'claude', 'subscription', '{home}/dev/vision', None)]
+    + [(f'hand-{n}', 'crew', harness, pool, '{home}/dev/quarterdeck/work/hands/hand-' + str(n), None)
+       for n, (harness, pool) in enumerate([('pi', 'local-a'), ('opencode', 'local-a'), ('opencode', 'local-b'),
+                                            ('pi', 'local-b')])]
+    + [(f'common-{n}', 'crew', 'claude', 'subscription', None, None) for n in range(15)])
+
+
+def shape_ship(tmp_path: Path) -> shipmod.Ship:
+    home = tmp_path / 'home'
+    project = home / 'dev' / 'quarterdeck'
+    (project / '.git').mkdir(parents=True)
+    (project / 'pyproject.toml').write_text('')
+    (project / 'src' / 'quarterdeck').mkdir(parents=True)
+    (project / 'src' / 'quarterdeck' / 'sandbox.py').write_text('')
+    seats = []
+    for name, session, harness, pool, cwd, jail in SHAPE_SEATS:
+        lines = [f'[seats.{name}]', f'session = "{session}"', f'role = "{"hand" if harness != "claude" else "synthetic"}"',
+                 f'harness = "{harness}"', f'pool = "{pool}"', 'model = "synthetic-model"']
+        if cwd is not None:
+            folder = Path(cwd.format(home=home))
+            folder.mkdir(parents=True, exist_ok=True)
+            lines.append(f'cwd = "{folder}"')
+        if jail is not None:
+            lines.append(f'sandbox = {"true" if jail else "false"}')
+        seats.append('\n'.join(lines))
+    text = SHIP_SHAPE.format(home=home, seats='\n\n' + '\n\n'.join(seats) + '\n')
+    (project / 'ships' / 'synthetic').mkdir(parents=True)
+    return shipmod._from_text(text, project / 'ships' / 'synthetic')
+
+
+def test_the_ships_own_declaration_shape_plans_every_hand_and_refuses_one_moved_outside_the_project(
+        tmp_path, monkeypatch):
+    ship = shape_ship(tmp_path)
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    hands = [name for name, spec in ship.seats.items() if ship.jailed(spec)]
+    assert hands == ['hand-0', 'hand-1', 'hand-2', 'hand-3'], 'only the hands are jailed, as on the ship'
+    work = tmp_path / 'home' / 'dev' / 'quarterdeck' / 'work' / 'hands'
+    for name in hands:
+        assert plan_seat(ship, name, tmp_path / 'operator-home').workspace == (work / name).resolve()
+    from dataclasses import replace
+    moved = tmp_path / 'home' / 'dev' / 'other'
+    moved.mkdir()
+    ship = replace(ship, seats={**ship.seats, 'hand-0': replace(ship.seat('hand-0'), cwd=moved)})
+    with pytest.raises(ShipError, match=f"hand-0: sandboxed with its working directory at {moved.resolve()}, inside "
+                                        f"seat above-0's declared working directory"):
+        plan_seat(ship, 'hand-0', tmp_path / 'operator-home')
 
 
 def office_with_desk(tmp_path: Path, desk_cwd=None):
