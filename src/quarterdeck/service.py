@@ -1246,6 +1246,7 @@ class Service:
                     ownership.close()
                     try:
                         self.request_wait = None
+                        self.request_own = False  # set only by relaunch_request, from the recorded proof
                         self.request_metadata = meta
                         self.request_path = path
                         answer = self.answer(data)
@@ -1450,7 +1451,8 @@ class Service:
                 or not isinstance(wait, tuple) or wait[0] not in ('tools-unknown', 'tools-pending')
                 or not isinstance(data.get('seat'), str)):
             return
-        seat, own = data['seat'], meta.get('caller') == data['seat']
+        # The seat's own only by the proof relaunch_request read for this request, never by the caller it names.
+        seat, own = data['seat'], getattr(self, 'request_own', False) is True
         if answer is not None and not (own and answer.startswith('refused:')):
             return  # applied, or refused to another asker, who has the answer
         if answer is None:
@@ -1493,6 +1495,10 @@ class Service:
         data = {**{key: value for key, value in data.items() if key not in ('caller', 'own')}, **meta}
         seat = self.seat(data['seat'])
         origin = request_queue.launch_binding(seat)
+        # Whether the request is the seat's own is decided here, once, by the proof enqueue recorded, for the launch
+        # the seat still runs; never by the caller it names. Every branch below, and the report of a held request
+        # (tell_held), reads this: a request without the proof is another caller's.
+        own = self.request_own = request_queue.proved_own(data['seat'], data, origin)  # the name the seat was found by
         if data.get('origin') is not None and data['origin'] != origin:
             return f'refused: {seat.name} launch changed; request retired without applying'
         released = self.released_at(seat, data, origin)
@@ -1512,12 +1518,11 @@ class Service:
             if asked.tzinfo is None or not 0 <= (post.now() - asked).total_seconds() <= ANSWER_SECONDS:
                 return f'refused: {seat.name} no-record request expired; no deferred restart'
             return self.relaunch(seat, bool(data['resume']), reading=proved)
-        own = request_queue.proved_own(seat.name, data, origin)
         if own and not data['resume'] and asked.tzinfo is not None:
             handed = self.handoff_fresh(seat, asked, proved, released=released)
             if handed is not OWN_TURN_RULE:
                 return handed
-        if data.get('caller') == seat.name and asked.tzinfo is not None and asked <= post.now():
+        if own and asked.tzinfo is not None and asked <= post.now():
             person = self.relaunch_person_input(seat)
             if person is not None and person['at'] is not None:
                 if datetime.fromisoformat(person['at']) > asked:

@@ -20,7 +20,8 @@ def held(store, monkeypatch, *, resume=True, own=True, refused=False):
     meta = dict(caller='reader' if own else 'operator', waiting=dict(
         dimension='tools-unknown', reason='tool state unknown', since=AT.isoformat()))
     monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=120))
-    service = SimpleNamespace(runtime=runtime, store=store, request_path=path,
+    # request_own: what relaunch_request read from the proof enqueue recorded, never from the caller's name.
+    service = SimpleNamespace(runtime=runtime, store=store, request_path=path, request_own=own,
                               request_wait=('tools-unknown', 'tool state unknown'), log=lambda *a, **kw: None)
     Service.tell_held(service, dict(kind='relaunch', seat='reader', resume=resume), meta,
                       'refused: synthetic ended turn held' if refused else None)
