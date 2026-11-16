@@ -34,7 +34,8 @@ ROOT_FILES = ('accounting-health.json', 'pool-forecast-alerts.json', 'status-lin
               'retirement-status.json', 'seat-holds.json', 'server-recovery.json')
 
 
-def tree_copy(source, destination, counts, family):
+def tree_copy(source, destination, counts, family, skip=None):
+    """``skip(relative)``: a file the copy leaves out, counted under 'left-out' (tests/runtime_copy.py)."""
     if not source.is_dir() or source.is_symlink():
         return
     for parent, dirs, files in os.walk(source, followlinks=False):
@@ -42,6 +43,9 @@ def tree_copy(source, destination, counts, family):
         for name in files:
             old = Path(parent) / name
             if old.is_symlink() or name.endswith(('.lock', '.tmp', '.sh')):
+                continue
+            if skip is not None and skip(old.relative_to(source)):
+                counts['left-out'][family] = counts['left-out'].get(family, 0) + 1
                 continue
             new = destination / old.relative_to(source)
             for attempt in range(5):
@@ -72,8 +76,15 @@ def freeze(source, destination):
     if (source / 'orders.md').is_file():
         copy_file(source / 'orders.md', destination / 'orders.md')
     runtime = destination / 'runtime'
+    # The people's seat-named files in every family (trusted/<seat>/, brief/<seat>.md, post/inbox/<seat>.md, ...),
+    # and every file of an office-internal message, read for its sender and recipient alone, are left out.
+    internal = runtime_copy.office_internal(original.runtime / 'post' / 'store', source, private)
+    counts['left-out'] = {}
+    counts['office-internal-messages'] = dict(files=len(internal), bytes=0)
+    def theirs(relative):
+        return runtime_copy.seat_named(relative, private) or runtime_copy.of_message(relative.name, internal)
     for family in FAMILIES:
-        tree_copy(original.runtime / family, runtime / family, counts, family)
+        tree_copy(original.runtime / family, runtime / family, counts, family, skip=theirs)
     for name in ('roles',):
         tree_copy(source.parent.parent / name, destination.parent.parent / name, counts, 'standing-inputs')
     for name in ROOT_FILES:
@@ -83,6 +94,8 @@ def freeze(source, destination):
             counts['root-control']['files'] += 1
             counts['root-control']['bytes'] += size
     for spec in original.seats.values():
+        if spec.name in private:
+            continue  # the people's own seat files stay out of the copy
         for name in ('watch', 'watch-proof.json', 'watch-generation', 'thread-reads.json'):
             old = original.runtime / 'seats' / spec.name / name
             if old.is_file() and not old.is_symlink():

@@ -101,14 +101,18 @@ def copied_runtime(source, destination, *, compact_sqlite=False):
                     row['record'] = translated.get(row['record'], row['record'])
                     rows.append(json.dumps(row))
             target.write_text('\n'.join(rows) + '\n')
-    # Preserve the actual store's local projections/import provenance too.
+    # Preserve the actual store's local projections/import provenance too, less the people's: every file of an
+    # office-internal message, read for its sender and recipient alone (tests/runtime_copy.py).
+    internal = runtime_copy.office_internal(source / 'post' / 'store', Path(source).parent, people)
+    left_post = 0
     for name in ('store', 'imports', 'forwarded', 'addressed'):
         old = source / 'post' / name
         if old.exists():
-            shutil.copytree(old, destination / 'post' / name)
+            left_post += runtime_copy.copy_post(old, destination / 'post' / name, people, internal)
     shutil.copy2(source.parent / 'ship.toml', destination.parent / 'ship.toml')
     return dict(ledger_records=len(records) - len(dropped), copied_files=copied, copied_bytes=size,
-                left_out_seats=sorted(people), left_out_records=len(dropped))
+                left_out_seats=sorted(people), left_out_records=len(dropped),
+                left_out_messages=len(internal), left_out_post_files=left_post)
 
 
 def copied_selection_metadata(source, runtime):
