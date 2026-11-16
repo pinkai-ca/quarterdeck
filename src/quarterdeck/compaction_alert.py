@@ -158,6 +158,12 @@ def step(service, seat):
                   accepts=accepts if active else None)
 
 
+def _kind(error: BaseException) -> str:
+    """An error's kind, never its words: the cause's type, or that the file is not in the framework's form."""
+    cause = error.__cause__ if isinstance(error, ShipError) else error
+    return type(cause).__name__ if cause is not None else 'not in its form'
+
+
 def unrouted(ship, selected):
     """Named fallback alarms from journals, without probing native records or screens."""
     up_systems = {seat.name for seat in selected
@@ -166,13 +172,23 @@ def unrouted(ship, selected):
     for seat in selected:
         if up_systems - {seat.name}:
             continue
+        # An unreadable journal says so, by its seat and the kind of its error, never its content: the cause is
+        # the journal, not the routing. 'No systems seat up' stays for a readable alert with nobody to take it.
         try:
             key = load(ship.runtime, seat.name)['key']
+        except (OSError, ShipError) as error:
+            lines.append(f'{seat.name}: manual fresh alert journal could not be read ({_kind(error)})')
+            continue
+        try:
             data = compaction.load(ship.runtime, seat.name)
+        except (OSError, ShipError) as error:
+            lines.append(f'{seat.name}: compaction journal could not be read ({_kind(error)})')
+            continue
+        try:
             if (key and data and seat.spec.fresh_after_compactions
                     and key['generation'] == data['generation'] and key['source'] == data['source']
                     and key['reading'] == compaction.status(seat, alerts_only=True)):
                 lines.append(f'{seat.name}: {key["reading"]}; no systems seat up')
-        except (OSError, ShipError):
-            lines.append(f'{seat.name}: manual fresh alert unknown; no systems seat up')
+        except (OSError, ShipError) as error:
+            lines.append(f'{seat.name}: manual fresh alert unknown ({_kind(error)}); no systems seat up')
     return lines

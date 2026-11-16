@@ -377,3 +377,39 @@ def test_a_pending_intent_is_not_published_from_the_file_once_its_reading_cleare
     step(env)
     assert intent and reports(env) == []
     assert compaction_alert.load(env.ship.runtime, SUBJECT)['key'] is None
+
+
+@pytest.mark.parametrize('journal, words', [
+    ('compaction', 'compaction journal could not be read (JSONDecodeError)'),
+    ('alert', 'manual fresh alert journal could not be read (JSONDecodeError)'),
+])
+def test_an_unreadable_journal_says_so_by_its_seat_and_kind_never_its_content(env, journal, words):
+    env.seats[SYSTEMS].is_up = False
+    target = (compaction.path(env.ship.runtime, SUBJECT) if journal == 'compaction'
+              else compaction_alert.path(env.ship.runtime, SUBJECT))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('{"synthetic": "secret-looking words never shown"')  # not JSON: cut short
+    lines = compaction_alert.unrouted(env.ship, list(env.seats.values()))
+    assert lines == [f'{SUBJECT}: {words}']
+    assert 'no systems seat up' not in lines[0], 'the cause is the journal, not the routing'
+    assert 'secret-looking' not in lines[0]
+
+
+def test_a_journal_not_in_its_form_says_so(env):
+    env.seats[SYSTEMS].is_up = False
+    compaction.path(env.ship.runtime, SUBJECT).write_text('{"version": 99, "generation": "x"}')
+    assert compaction_alert.unrouted(env.ship, list(env.seats.values())) == [
+        f'{SUBJECT}: compaction journal could not be read (not in its form)']
+
+
+def test_a_readable_alert_with_nobody_to_route_it_keeps_its_line(env):
+    env.seats[SYSTEMS].is_up = False
+    step(env)
+    [line] = compaction_alert.unrouted(env.ship, list(env.seats.values()))
+    assert line == f'{SUBJECT}: compactions 2/2: {MANUAL}; no systems seat up'
+
+
+def test_a_readable_journal_with_no_alert_gives_no_line(env):
+    env.seats[SYSTEMS].is_up = False
+    # The subject's journal is readable and no alert was raised for it; the other seats have none at all.
+    assert compaction_alert.unrouted(env.ship, list(env.seats.values())) == []
