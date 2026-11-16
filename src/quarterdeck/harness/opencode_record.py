@@ -16,7 +16,7 @@ from pathlib import Path
 from ..pricing import amount
 from .costs import CostStep, costed, model_name
 from .base import Input, RecordError, State, Tokens, ToolCall, Turn
-from .sqlite_snapshot import snapshot
+from .sqlite_snapshot import cached
 from .json_record import RecordReader, ended_at_limit
 from .types import CappedGeneration
 
@@ -111,35 +111,55 @@ def data_dir_of(record: Path) -> Path:
     return record.parents[1]
 
 
+def _queried(record: Path, merged_bytes: bytes, resume_metadata: bool) -> tuple:
+    """The rows a reading needs, as SQLite returned them: tuples of text and numbers, nothing a caller can change."""
+    try:
+        con = sqlite3.connect(":memory:")
+        try:
+            con.deserialize(merged_bytes)
+            tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"session", "message", "part"} <= tables:
+                raise RecordError(f"{record.name}: not an OpenCode database")
+            sessions = tuple(con.execute("SELECT id, time_created, time_updated, parent_id FROM session ORDER BY time_created, id"))
+            permissions = directories = ()
+            if resume_metadata:
+                columns = {row[1] for row in con.execute('PRAGMA table_info(session)')}
+                if 'permission' in columns:
+                    permissions = tuple(con.execute('SELECT id, permission FROM session'))
+                if 'directory' in columns:
+                    directories = tuple(con.execute('SELECT id, directory FROM session'))
+            messages = tuple(con.execute(
+                "SELECT id, session_id, time_created, time_updated, data FROM message ORDER BY time_created, id"))
+            parts = tuple(con.execute(
+                "SELECT id, message_id, session_id, time_created, time_updated, data FROM part ORDER BY time_created, id"))
+        finally:
+            con.close()
+    except sqlite3.Error as error:
+        raise RecordError(f"{record.name}: {error}") from error
+    return sessions, permissions, directories, messages, parts
+
+
 class _Rows:
-    """The three tables a reading needs, from one snapshot of the database."""
+    """The three tables a reading needs, from one snapshot of the database.
+
+    The snapshot is taken once per change of the database and its -wal (sqlite_snapshot.cached), and the rows
+    queried from it are kept beside it as SQLite returned them. Each reading parses its own copy of the JSON, so
+    nothing one reader changes reaches the next."""
 
     def __init__(self, record: Path, *, resume_metadata: bool = False):
-        _, merged_bytes = snapshot(record)
-        try:
-            con = sqlite3.connect(":memory:")
-            try:
-                con.deserialize(merged_bytes)
-                tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                if not {"session", "message", "part"} <= tables:
-                    raise RecordError(f"{record.name}: not an OpenCode database")
-                self.sessions = con.execute("SELECT id, time_created, time_updated, parent_id FROM session ORDER BY time_created, id").fetchall()
-                self.permissions = {}
-                self.directories = {}
-                if resume_metadata:
-                    columns = {row[1] for row in con.execute('PRAGMA table_info(session)')}
-                    if 'permission' in columns:
-                        self.permissions = dict(con.execute('SELECT id, permission FROM session'))
-                    if 'directory' in columns:
-                        self.directories = dict(con.execute('SELECT id, directory FROM session'))
-                self.messages = [(mid, sid, created, updated, _json(data)) for mid, sid, created, updated, data in con.execute(
-                    "SELECT id, session_id, time_created, time_updated, data FROM message ORDER BY time_created, id")]
-                self.parts = [(pid, mid, sid, created, updated, _json(data)) for pid, mid, sid, created, updated, data in con.execute(
-                    "SELECT id, message_id, session_id, time_created, time_updated, data FROM part ORDER BY time_created, id")]
-            finally:
-                con.close()
-        except sqlite3.Error as error:
-            raise RecordError(f"{record.name}: {error}") from error
+        _, merged_bytes, derived = cached(record)
+        key = ('opencode-rows', resume_metadata)
+        queried = derived.get(key) if derived is not None else None
+        if queried is None:
+            queried = _queried(record, merged_bytes, resume_metadata)
+            if derived is not None:
+                derived[key] = queried
+        sessions, permissions, directories, messages, parts = queried
+        self.sessions = list(sessions)
+        self.permissions = dict(permissions)
+        self.directories = dict(directories)
+        self.messages = [(mid, sid, created, updated, _json(data)) for mid, sid, created, updated, data in messages]
+        self.parts = [(pid, mid, sid, created, updated, _json(data)) for pid, mid, sid, created, updated, data in parts]
 
 
 def _object(value) -> dict:

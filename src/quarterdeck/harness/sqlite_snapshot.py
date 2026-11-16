@@ -10,8 +10,10 @@ times at most, so that a half-written frame is never taken for the truth.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import os
 import struct
+import threading
 import time
 from pathlib import Path
 
@@ -108,3 +110,67 @@ def snapshot(record: Path, bound: int | None = record_file.DATABASE_BOUND) -> tu
     else:
         raise RecordError(f"{record.name}: record changed concurrently during snapshot")
     return after, _apply_wal(record.name, db_bytes, wal_bytes)
+
+
+# -- one snapshot per change ------------------------------------------------------------------------------------------
+
+# The post store's filesystem tick (post.POST_TIMESTAMP_TICK_NS, docs/design/post.md), repeated here: a record reader
+# does not import the post. A file whose stamp is not older than this at the moment a read began may still change
+# without a new stamp, so such a read is never kept.
+TICK_NS = 2_000_000_000
+CACHE_BYTES = 256 * 1024 * 1024  # all kept snapshots together; the least recently used goes first
+CACHE_ENTRIES = 64
+_now = time.time_ns  # the clock a read is certified by; tests inject their own
+_entries: OrderedDict[str, "_Entry"] = OrderedDict()
+_lock = threading.Lock()
+
+
+class _Entry:
+    """One database path's kept snapshot: its stamp, its bytes, and what readers derived from those bytes."""
+
+    __slots__ = ('stamp', 'bound', 'merged', 'derived')
+
+    def __init__(self, stamp: tuple, bound: int | None, merged: bytes):
+        self.stamp, self.bound, self.merged = stamp, bound, merged
+        self.derived: dict = {}  # immutable values only, keyed by the reader that made them
+
+
+def _certified(stamp: tuple, started: int) -> bool:
+    """Every file the stamp names, the database and its -wal where present, is older than the tick when the read
+    began: the post store's rule for certifying a listing."""
+    return all(not present or max(mtime, ctime) + TICK_NS < started
+               for present, _inode, _size, mtime, _device, ctime in stamp)
+
+
+def cached(record: Path, bound: int | None = record_file.DATABASE_BOUND) -> tuple[tuple, bytes, dict | None]:
+    """``snapshot``, taken once per change of the database and its -wal. The stamp (record_fingerprint: presence,
+    device, inode, size, mtime_ns and ctime_ns of each) is read first; a kept snapshot with the same stamp and bound
+    is returned as it was. Otherwise a fresh snapshot is taken, and kept only where its stamp did not move during the
+    read and was certified when the read began. A path that is gone drops its entry. The third value is the entry's
+    store for derived readings, None where nothing was kept: what a reader puts there must be immutable."""
+    record = resolve(record)
+    key = str(record)
+    started = _now()
+    stamp = record_fingerprint(record)
+    with _lock:
+        entry = _entries.pop(key, None)
+        if entry is not None and stamp[0][0] and entry.stamp == stamp and entry.bound == bound:
+            _entries[key] = entry  # most recently used, last
+            return entry.stamp, entry.merged, entry.derived
+    after, merged = snapshot(record, bound)  # a gone path raises here, its entry already dropped
+    if after != stamp or not _certified(after, started) or len(merged) > CACHE_BYTES:
+        return after, merged, None
+    entry = _Entry(after, bound, merged)
+    with _lock:
+        _entries[key] = entry
+        held = sum(len(kept.merged) for kept in _entries.values())
+        while len(_entries) > CACHE_ENTRIES or held > CACHE_BYTES:
+            _, evicted = _entries.popitem(last=False)
+            held -= len(evicted.merged)
+    return after, merged, entry.derived
+
+
+def forget() -> None:
+    """Drop every kept snapshot (a test's fresh start)."""
+    with _lock:
+        _entries.clear()

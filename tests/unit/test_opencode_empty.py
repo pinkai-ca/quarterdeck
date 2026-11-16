@@ -101,12 +101,12 @@ def test_bad_and_incomplete_records_keep_reader_and_accounting_uncertainty(setup
     if bad == 'missing':
         fresh.unlink()
     elif bad == 'unreadable':
-        original = opencode_record.snapshot
-        def unreadable(path):
+        original = opencode_record.cached  # every OpenCode read takes its snapshot through the cache
+        def unreadable(path, *args, **kwargs):
             if path == fresh:
                 raise OSError('synthetic unreadable snapshot')
-            return original(path)
-        monkeypatch.setattr(opencode_record, 'snapshot', unreadable)
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(opencode_record, 'cached', unreadable)
         svc.read_marks.pop(fresh)  # model a service restart/retry without touching real permissions
     elif bad == 'corrupt':
         fresh.write_bytes(b'synthetic invalid SQLite')
