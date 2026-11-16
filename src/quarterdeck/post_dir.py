@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import functools
 import locale
 from itertools import islice
 import os
@@ -48,18 +49,36 @@ def _link_held(folder):
     raise ShipError(f'{_LINK_HELD}{folder}')
 
 
+def _parts(path) -> tuple[str, ...]:
+    """``Path(path).parts``, worked out on the string: the names, with '' and '.' dropped, after '/' when absolute.
+    A leading '//' (which POSIX keeps as its own root) and a path that is not text keep pathlib's own parsing."""
+    text = os.fspath(path)
+    if not isinstance(text, str) or text.startswith('//') and not text.startswith('///'):
+        return Path(path).parts
+    names = tuple(name for name in text.split('/') if name and name != '.')
+    return ('/',) + names if text.startswith('/') else names
+
+
+@functools.lru_cache(maxsize=64)
+def _root(parts: tuple[str, ...]) -> Path:
+    """The runtime/post folder's Path: the same few folders every time, built once each."""
+    return Path(*parts)
+
+
 def _split_under_post(path):
     """The runtime/post directory and the parts below it, when path lies there."""
-    parts = Path(path).parts
+    parts = _parts(path)
     for index in range(len(parts) - 1, 0, -1):
         if parts[index] == 'post' and parts[index - 1] == 'runtime':
-            return Path(*parts[:index + 1]), parts[index + 1:]
+            return _root(parts[:index + 1]), parts[index + 1:]
     return None, ()
 
 
 def under_post(path) -> bool:
-    root, relative = _split_under_post(path)
-    return root is not None and (Path(path) == root or bool(relative))
+    """Whether path is runtime/post or lies below it. With the parts normalized as Path's, a path whose parts end at
+    runtime/post is that folder itself, so the folder being found answers."""
+    parts = _parts(path)
+    return any(parts[index] == 'post' and parts[index - 1] == 'runtime' for index in range(len(parts) - 1, 0, -1))
 
 
 def _ensure_real_ancestors(path):
@@ -87,7 +106,7 @@ def _directory_at(parent_fd, parent, name, *, create):
     """Open one real directory. A symlink is a hold and is left where it is."""
     if not _plain_name(name):
         raise ShipError(f'invalid post path component {name!r}')
-    located = Path(parent) / name
+    located = lambda: Path(parent) / name  # the path a refusal names, built only when one is made
     try:
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -99,9 +118,9 @@ def _directory_at(parent_fd, parent, name, *, create):
             pass
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if stat.S_ISLNK(info.st_mode):
-        _link_held(located)
+        _link_held(located())
     if not stat.S_ISDIR(info.st_mode):
-        raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(located))
+        raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(located()))
     try:
         return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                        dir_fd=parent_fd)
@@ -112,7 +131,7 @@ def _directory_at(parent_fd, parent, name, *, create):
             except OSError:
                 raise error
             if stat.S_ISLNK(raced.st_mode):
-                _link_held(located)
+                _link_held(located())
         raise
 
 
@@ -128,13 +147,13 @@ def _open_post(root, *, create):
 
 def _descend(root, parts, *, create):
     descriptor = _open_post(root, create=create)
-    walked = root
+    walked = str(root)  # a refusal's path, kept as text: the names are plain, so it reads as the Path would
     try:
         for name in parts:
             child = _directory_at(descriptor, walked, name, create=create)
             os.close(descriptor)
             descriptor = child
-            walked = walked / name
+            walked = f'{walked}/{name}'
         return descriptor
     except BaseException:
         os.close(descriptor)

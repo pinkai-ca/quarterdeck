@@ -221,18 +221,23 @@ def provenance(runtime, identifier):
     return post.reading_value('import', (runtime.absolute(), identifier), read)
 
 
-def local_view(runtime, message, *, data=None):
-    """Present local parties as bare names without changing one stored byte."""
+UNREAD = object()  # a message's import record not yet read: read it here
+
+
+def local_view(runtime, message, *, data=None, imported=UNREAD):
+    """Present local parties as bare names without changing one stored byte. ``imported`` is the message's import
+    record when the caller has read it already (None: it has none), so it is read once per message."""
     here = owner(runtime)
     if here is None:
         return message
-    imported = provenance(runtime, message.id)
+    if imported is UNREAD:
+        imported = provenance(runtime, message.id)
     if imported and data is not None and imported['sha256'] != digest(data):
         raise ShipError('imported post differs from its immutable source; retained')
     origin = imported['origin'] if imported else here
     if imported is None and '@' not in message.sender and '@' not in message.to:
         from .forward_post import projected
-        return projected(runtime, message)
+        return projected(runtime, message, imported=None)
 
     def view(value):
         seat, ship = address(value, origin)

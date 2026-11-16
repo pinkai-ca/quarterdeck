@@ -317,11 +317,14 @@ class Store:
                 validated[path.name] = cached
             else:
                 try:
+                    # The import record was read above (or known absent from the listing): local_view and its
+                    # route lookup take it as read, so each message's files are read once.
                     if record is None:
-                        message = local_view(runtime, Message.from_json(post_dir.read_text(path)))
+                        message = local_view(runtime, Message.from_json(post_dir.read_text(path)), imported=None)
                     else:
                         data = stable_bytes(path)
-                        message = local_view(runtime, Message.from_json(data.decode('utf-8')), data=data)
+                        message = local_view(runtime, Message.from_json(data.decode('utf-8')), data=data,
+                                             imported=record)
                 except post_dir.NotRegular:
                     continue
                 except FileNotFoundError:

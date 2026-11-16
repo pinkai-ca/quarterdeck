@@ -29,12 +29,17 @@ def path(runtime, identifier):
     return runtime / 'post' / 'forwarded' / (identifier + '.json')
 
 
-def recorded(runtime, identifier):
+_UNREAD = object()  # the message's import record, not read by the caller: read it here
+
+
+def recorded(runtime, identifier, *, imported=_UNREAD):
+    """The message's saved route, or None. ``imported``: its import record when the caller has read it already
+    (None: it has none), so it is not read again."""
     from . import fleet_post as transport, post
     def read():
-        imported = transport.provenance(runtime, identifier)
-        if imported and imported.get('forward'):
-            return imported['forward']
+        record = transport.provenance(runtime, identifier) if imported is _UNREAD else imported
+        if record and record.get('forward'):
+            return record['forward']
         if post.reading_missing(runtime / 'post' / 'forwarded', identifier + '.json'):
             return None
         try:
@@ -65,13 +70,14 @@ def resolve(ship, value):
     raise ShipError('forward route has a loop; message retained')
 
 
-def projected(runtime, message, *, open_obligation=False):
-    """Only a saved route changes historical party identity; a declaration hides old dispatch now."""
+def projected(runtime, message, *, open_obligation=False, imported=_UNREAD):
+    """Only a saved route changes historical party identity; a declaration hides old dispatch now. ``imported`` as
+    for ``recorded``."""
     from .fleet_post import address, owner
     here = owner(runtime)
     if here is None:
         return message
-    saved = recorded(runtime, message.id)
+    saved = recorded(runtime, message.id, imported=imported)
     if saved:
         seat, name = address(message.to, here)
         if f'{seat}@{name}' == saved['from']:
