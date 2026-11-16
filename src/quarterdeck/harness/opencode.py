@@ -17,6 +17,7 @@ from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
 import copy
 import json
+import os
 import re
 import stat
 from collections.abc import Callable
@@ -337,11 +338,22 @@ class OpenCodeHarness(EndpointHarness):
                 or not relative.parts[0][len(DATA_PREFIX):].isdigit()):
             return None
         allowed = {record.name + suffix for suffix in ('', '-wal', '-shm')}
-        ancillary = {'log', 'repos', 'snapshot'}  # native per-launch data, never shared credentials
+        # Native per-launch data, never shared credentials. Each lies inside this launch's own data folder (the bundle
+        # is that folder's opencode directory, moved whole); a link anywhere in it, or a folder it cannot read, refuses
+        # the bundle, and the walk holds the record with everything in place.
+        ancillary = {'log', 'repos', 'snapshot', 'tool-output'}
         children = list(record.parent.iterdir())
         if any(path.name not in allowed | ancillary for path in children):
             return None
-        paths = [*children, *record.parent.rglob('*')]
+        paths = list(children)
+
+        def unreadable(error):
+            raise error
+        try:
+            for root, folders, names in os.walk(record.parent, onerror=unreadable, followlinks=False):
+                paths += [Path(root) / name for name in (*folders, *names)]
+        except OSError:
+            return None
         if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in paths):
             return None
         files = list({path for path in paths if path.is_file()})

@@ -692,6 +692,7 @@ LAUNCH_PROGRAM = r'''
 import json, os, sqlite3, sys, time
 from pathlib import Path
 folder, record, go, at = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4])
+tool_output = sys.argv[5] == 'yes'
 while not go.exists():
     time.sleep(0.02)
 text = '\n'.join(path.read_text() for piece in sorted(folder.glob('screen-*')) for path in sorted(piece.glob('f*.txt')))
@@ -712,12 +713,17 @@ with sqlite3.connect(record) as db:
     db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('call', 'a', 'screen', at + 1000, at + 1000,
         json.dumps(dict(type='tool', tool='read', state=dict(status='running', time=dict(start=at + 1000))))))
 db.close()
+if tool_output:  # OpenCode keeps a large tool result in its launch's own tool-output folder
+    (record.parent / 'tool-output').mkdir()
+    (record.parent / 'tool-output' / 'tool_synthetic').write_text(text)
 (go.parent / 'written').touch()
 time.sleep(600)
 '''
 
 
-def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_walk_retires_it(tmp_path, monkeypatch):
+@pytest.mark.parametrize('tool_output', ['no', 'yes'])
+def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_walk_retires_it(tmp_path, monkeypatch,
+                                                                                               tool_output):
     """Security's gate for the listing written before a piece goes in, on a throwaway hand. The screen program is
     killed (SIGKILL) the moment the piece is written; the hand's launch, which outlives it, writes its record holding
     the piece's text only after that. The record is listed all the same, the hand's next launch starts fresh, the
@@ -749,7 +755,8 @@ def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_w
         def fresh(self, name):  # as qd's fresh start: a launch, and its trusted launch record naming its data folder
             self.folder(name).mkdir(parents=True, exist_ok=True)
             self.launch = subprocess.Popen([sys.executable, '-I', '-c', LAUNCH_PROGRAM, str(self.folder(name)),
-                                            str(named), str(signals / 'go'), str(at_ms)], start_new_session=True)
+                                            str(named), str(signals / 'go'), str(at_ms), tool_output],
+                                           start_new_session=True)
             start = Path(f'/proc/{self.launch.pid}/stat').read_text().rpartition(')')[2].split()[19]
             (w.seat.trusted / trusted_files.LAUNCH).write_text(json.dumps(dict(
                 pane='%1', pid=self.launch.pid, start=start, harness='opencode', pool='local', resume=None,
@@ -792,6 +799,9 @@ def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_w
             __import__('time').sleep(0.02)
         strings = case_strings(case)
         assert holds(home, strings), 'the record written after the kill holds the case\'s text'
+        if tool_output == 'yes':
+            assert any('tool-output' in path for path in holds(home, strings)), 'and so does its tool output'
+            assert w.seat.harness.retirement_bundle(home, named, record_location.destination(named)), 'whole'
         assert pr_screen.screening_left(runtime, 'hand'), 'so the hand\'s next launch starts fresh, never resumed'
     finally:
         os.killpg(launch[0], signal.SIGKILL)  # the next fresh start ends the old launch
@@ -812,5 +822,100 @@ def test_a_screen_killed_just_after_its_piece_leaves_the_record_listed_and_the_w
         assert holds(home, strings) == [], 'nothing under the hand\'s home holds the case\'s text'
         assert record_location.resolve(named).is_relative_to(runtime / 'retired' / 'hand-transcripts')
         assert not pr_screen.screening_left(runtime, 'hand')
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_launchs_tool_output_folder_moves_with_its_record(tmp_path, monkeypatch):
+    """OpenCode keeps a large tool result in the launch's own tool-output folder: per-launch data of that record, so
+    the retirement moves it with the record, and its text leaves the home with it."""
+    w = world(tmp_path, monkeypatch, 'opencode')
+    try:
+        output = w.record.parent / 'tool-output' / 'tool_synthetic'
+        output.parent.mkdir()
+        output.write_text('a large tool result of the old launch')
+        os.utime(output, (w.now - 9 * 86400, w.now - 9 * 86400))
+        os.utime(output.parent, (w.now - 9 * 86400, w.now - 9 * 86400))
+        assert w.seat.harness.retirement_bundle(w.seat.home, w.record, record_location.destination(w.record))
+        assert retire(w) == 1, f"declined: {retire.declined}"
+        kept = record_location.resolve(w.record)
+        assert (kept.parent / 'tool-output' / 'tool_synthetic').read_text() == 'a large tool result of the old launch'
+        assert not output.exists()
+    finally:
+        w.svc.ledger.close()
+
+
+def tool_output_world(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch, 'opencode')
+    return w, w.record.parent / 'tool-output'
+
+
+def bundle_of(w):
+    return w.seat.harness.retirement_bundle(w.seat.home, w.record, record_location.destination(w.record))
+
+
+def test_a_tool_output_folder_reached_through_a_link_refuses_the_bundle_and_stays(tmp_path, monkeypatch):
+    """A tool-output that is a link (to a folder shared across launches, or anywhere else) is never taken: the
+    bundle is refused, the walk holds the record, and the link and what it names stay where they are."""
+    w, output = tool_output_world(tmp_path, monkeypatch)
+    try:
+        shared = w.seat.home / 'shared-tool-output'
+        shared.mkdir()
+        (shared / 'tool_shared').write_text('a result of another launch')
+        output.symlink_to(shared)
+        assert bundle_of(w) is None
+        assert retire(w) == 0 and w.record.is_file() and output.is_symlink()
+        assert (shared / 'tool_shared').read_text() == 'a result of another launch'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_link_inside_the_tool_output_folder_refuses_the_bundle(tmp_path, monkeypatch):
+    w, output = tool_output_world(tmp_path, monkeypatch)
+    try:
+        output.mkdir()
+        outside = w.seat.home / 'elsewhere.txt'
+        outside.write_text('not this launch\'s')
+        (output / 'tool_link').symlink_to(outside)
+        assert bundle_of(w) is None
+        assert retire(w) == 0 and w.record.is_file() and (output / 'tool_link').is_symlink() and outside.is_file()
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_tool_output_folder_outside_the_launchs_own_data_folder_is_never_taken(tmp_path, monkeypatch):
+    """The bundle is this launch's own opencode directory, moved whole: a tool-output anywhere else in the home (one
+    shared across launches) is not part of it, and stays where it is when the record moves."""
+    w, output = tool_output_world(tmp_path, monkeypatch)
+    try:
+        output.mkdir()
+        (output / 'tool_own').write_text('this launch\'s own result')
+        shared = w.seat.home / '.local' / 'share' / 'opencode' / 'tool-output'
+        shared.mkdir(parents=True)
+        (shared / 'tool_shared').write_text('a result kept across launches')
+        for path in (output / 'tool_own', output):
+            os.utime(path, (w.now - 9 * 86400, w.now - 9 * 86400))  # as old as the record it belongs to
+        folder, _, files = bundle_of(w)
+        assert folder == w.record.parent and all(Path(f).is_relative_to(w.record.parent) for f in files)
+        assert retire(w) == 1, f"declined: {retire.declined}"
+        assert (shared / 'tool_shared').read_text() == 'a result kept across launches'
+        assert (record_location.resolve(w.record).parent / 'tool-output' / 'tool_own').is_file()
+    finally:
+        w.svc.ledger.close()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason='a folder its owner cannot read needs a user that is not root')
+def test_a_tool_output_folder_it_cannot_read_holds_the_record_and_is_never_dropped(tmp_path, monkeypatch):
+    w, output = tool_output_world(tmp_path, monkeypatch)
+    try:
+        output.mkdir()
+        (output / 'tool_unread').write_text('a result the walk cannot read')
+        output.chmod(0)
+        try:
+            assert bundle_of(w) is None
+            assert retire(w) == 0 and w.record.is_file()
+        finally:
+            output.chmod(0o700)
+        assert (output / 'tool_unread').read_text() == 'a result the walk cannot read', 'never dropped'
     finally:
         w.svc.ledger.close()
