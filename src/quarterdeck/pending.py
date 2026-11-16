@@ -714,27 +714,33 @@ def _reconcile_inventory(service, records):
     paths = set()
     attempts = {a.path.name: a for a in records}
     latest = {a.message: a for a in records}
-    names = {a.seat for a in attempts.values()}
+    by_seat, active_by_seat = {}, {}
+    active_folder = service.attempts.dir
+    for attempt in attempts.values():
+        by_seat.setdefault(attempt.seat, []).append(attempt)
+        if attempt.path.parent == active_folder:
+            active_by_seat.setdefault(attempt.seat, []).append(attempt)
+    names = set(by_seat)
     names.update(post_dir.directory_names(service.runtime / "post" / "pending"))
     for name in names - service.ship.seats.keys():
         with transient_lock(service.runtime, name) as unowned:
             if unowned:
                 abandon(service.runtime, name, "seat no longer declared; submission unconfirmed and never resent",
-                        attempts=service.attempts, inventory=records)
-        paths.update(a.path for a in attempts.values() if a.seat == name)
+                        attempts=service.attempts, inventory=active_by_seat.get(name, ()))
+        paths.update(a.path for a in by_seat.get(name, ()))
     for name in service.ship.seats:
         try:
             seat = service.seat(name)
         except SelectionError as error:
             service.hold_selection(error)
-            paths.update(a.path for a in attempts.values() if a.seat == name)
+            paths.update(a.path for a in by_seat.get(name, ()))
             continue  # neither uncertainty nor receipt evidence is changed under a guessed selection
         from . import lifecycle
         try:
             with lifecycle.claim(service.runtime, name):
                 paths.update(_reconcile_claimed(service, seat, attempts, latest=latest))
         except lifecycle.Busy:
-            paths.update(a.path for a in attempts.values() if a.seat == name)
+            paths.update(a.path for a in by_seat.get(name, ()))
     return paths
 
 
