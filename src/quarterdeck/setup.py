@@ -184,11 +184,15 @@ JAILED_DESK_WORK = "work/desk"
 
 
 def jailed_work_folders(office: Ship) -> list[Path]:
-    """The office's jailed seats' own working folders under its work/, as the declaration writes them, never through
-    a link: loading a ship resolves a seat's cwd, so a link planted at work/desk would otherwise read as its target."""
+    """The folders under the office's own work/ that its jailed seats work in, as the declaration writes them, never
+    through a link: loading a ship resolves a seat's cwd, so a link planted at work/desk would otherwise read as its
+    target. A seat's own folder below work/ is one (sandbox.own_work_folder); so is work/ itself, or a folder below it,
+    where a jailed seat works there in common (sandbox.shared_work), as a seat whose cwd is work/ does. A seat there
+    works alone in it: the plan refuses a jailed seat whose folder holds another seat's (refuse_shared_workspace). Each
+    is the folder qd init makes (make_jailed_work), and any of them has the office's repository ignore work/."""
     from . import sandbox
-    return [folder for spec in office.seats.values()
-            if office.jailed(spec) and (folder := sandbox.own_work_folder(office, spec)) is not None]
+    return [folder for spec in office.seats.values() if office.jailed(spec)
+            and (folder := sandbox.own_work_folder(office, spec) or sandbox.shared_work(office, spec)) is not None]
 
 
 def make_jailed_work(office: Ship) -> None:

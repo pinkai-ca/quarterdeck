@@ -252,3 +252,90 @@ def test_a_desk_folder_that_is_not_the_operators_own_real_folder_is_refused(tmp_
     with pytest.raises(shipmod.ShipError, match='is a link|not this user\'s own folder'):
         setup.make_jailed_work(office)
     assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o755 and not any(elsewhere.iterdir()), 'nothing changed there'
+
+
+def tree(folder: Path) -> dict[str, tuple]:
+    """Every entry under ``folder`` as it stands, by kind, mode and content, but each ship's runtime/ and .git/: the
+    runtime is the service's, never a declaration, and git refreshes its own index when it is read."""
+    found = {}
+    for path in sorted(folder.rglob('*')):
+        parts = path.relative_to(folder).parts
+        if any(part == '.git' for part in parts) or any(
+                part == 'runtime' and (folder.joinpath(*parts[:i]) / 'ship.toml').is_file()
+                for i, part in enumerate(parts)):
+            continue
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            found[str(path.relative_to(folder))] = ('link', os.readlink(path))
+        elif stat.S_ISDIR(info.st_mode):
+            found[str(path.relative_to(folder))] = ('folder', stat.S_IMODE(info.st_mode))
+        else:
+            found[str(path.relative_to(folder))] = ('file', stat.S_IMODE(info.st_mode), path.read_bytes())
+    return found
+
+
+def heads(project: Path) -> dict[str, str]:
+    return {str(folder): shipmod._git(folder, 'rev-parse', 'HEAD')
+            for folder in (project / 'office', *(project / 'ships').iterdir()) if (folder / 'ship.toml').is_file()}
+
+
+def launches(project: Path, tmux: Tmux) -> dict[str, tuple | None]:
+    found = {}
+    for folder in (project / 'office', *(project / 'ships').iterdir()):
+        if (folder / 'ship.toml').is_file():
+            current = shipmod.load(folder)
+            for name, spec in current.seats.items():
+                launched = Seat(current, spec, tmux).launched()
+                found[f'{current.name}/{name}'] = None if launched is None else (launched.pane, launched.pid)
+    return found
+
+
+@pytest.mark.parametrize('first', ['refused at the desk', 'complete'])
+def test_setup_run_a_second_time_settles_as_the_first_run_left_things(newcomer, capsys, monkeypatch, first):
+    """Setup run twice on one project, with the same answers. What the second run may change: each ship's runtime/
+    (the service's, ignored by git); and, where the first stopped at the desk's refused start before any crew, the crew
+    ship it then creates and the default ship's mark. Nothing else moves: the office's files, its work/desk with what
+    the desk left there and its mode as left, every ship's commits, and every seat already up, kept in its own pane."""
+    real_up_desk = setup.Operations.up_desk
+    if first == 'refused at the desk':
+        monkeypatch.setattr(setup.Operations, 'up_desk', lambda self, current: (_ for _ in ()).throw(
+            shipmod.ShipError('installed up refused: desk: synthetic refusal')))
+    path = answers(newcomer, 'pi')
+    code = cli.main(['setup', '--answers', str(path)])
+    out = capsys.readouterr()
+    assert code == (2 if first == 'refused at the desk' else 0), out.err[-3000:] + out.out[-3000:]
+    monkeypatch.setattr(setup.Operations, 'up_desk', real_up_desk)
+    work = newcomer.project / 'office' / 'work' / 'desk'
+    (work / 'left-by-the-desk.txt').write_text('synthetic')
+    work.chmod(0o750)  # as the operator left it: only a launch makes it private again, not setup
+    crew_before = [f for f in (newcomer.project / 'ships').iterdir() if (f / 'ship.toml').is_file()]
+    assert len(crew_before) == (0 if first == 'refused at the desk' else 1)
+    office_before, heads_before = tree(newcomer.project / 'office'), heads(newcomer.project)
+    project_before, launched_before = tree(newcomer.project), launches(newcomer.project, newcomer.tmux)
+    assert launched_before['office/desk'] is None if first == 'refused at the desk' else launched_before['office/desk']
+
+    code = cli.main(['setup', '--answers', str(path)])
+    out = capsys.readouterr()
+    assert code == 0, out.err[-3000:] + out.out[-3000:]
+
+    assert tree(newcomer.project / 'office') == office_before, 'nothing of the office moves'
+    assert stat.S_IMODE(work.lstat().st_mode) == 0o750 and (work / 'left-by-the-desk.txt').read_text() == 'synthetic'
+    assert shipmod._git(newcomer.project / 'office', 'status', '--porcelain') == ''
+    after = heads(newcomer.project)
+    assert {folder: head for folder, head in after.items() if folder in heads_before} == heads_before
+    launched = launches(newcomer.project, newcomer.tmux)
+    assert {seat: at for seat, at in launched.items() if seat in launched_before} == launched_before, \
+        'a seat already up stays in its own pane; a desk the first run did not start is left for qd init'
+    crew = [f for f in (newcomer.project / 'ships').iterdir() if (f / 'ship.toml').is_file()]
+    assert len(crew) == 1
+    project_after = tree(newcomer.project)
+    moved = (project_after.keys() ^ project_before.keys()) | {
+        name for name in project_before.keys() & project_after.keys() if project_before[name] != project_after[name]}
+    if first == 'complete':
+        assert moved == set(), sorted(moved)
+        assert crew == crew_before
+    else:
+        allowed = {'ships/.default', f'ships/{crew[0].name}'}
+        assert moved and all(name in allowed or name.startswith(f'ships/{crew[0].name}/') for name in moved), sorted(moved)
+        assert all(launched[f'{shipmod.load(crew[0]).name}/{name}'] for name in shipmod.load(crew[0]).seats), \
+            'the crew the first run never reached is created and brought up'
