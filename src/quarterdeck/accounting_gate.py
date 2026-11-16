@@ -26,6 +26,7 @@ class Reading:
     checked_at: int = field(compare=False)
     classes: tuple = field(default=(), compare=False, repr=False)
     young: tuple = field(default=(), compare=False, repr=False)
+    began: int = field(default=0, compare=False, repr=False)
 
 
 def capture(service, records, *, issues=None, retain=False):
@@ -112,11 +113,31 @@ def capture(service, records, *, issues=None, retain=False):
         ended = time.time_ns()
         if started > ended:
             note('unreadable', 'settings')
-        return (Reading(inputs, sql, ended, tuple(file_classes), tuple(young))
+        return (Reading(inputs, sql, ended, tuple(file_classes), tuple(young), started)
                 if (valid or retain) and started <= ended else None)
     except (OSError, ValueError, TypeError, AttributeError, sqlite3.Error):
         note('unreadable', current_class)
         return None  # the ordinary job owns failures; blindness never certifies idle
+
+
+def admit(service, before, records):
+    """Give 'before' the paths first watched after it, when every one predates it by a tick.
+
+    A path whose stamp is older than the reading was unchanged when it was taken;
+    one created or touched since leaves 'before' as it was, so it differs at finish.
+    """
+    fresh = capture(service, records, retain=True)
+    if before is None or fresh is None:
+        return before
+    known = dict(before.inputs[0])
+    added = [(path, stamp) for path, stamp in fresh.inputs[0] if path not in known]
+    if not added or any(stamp is not None and max(stamp[4], stamp[5]) + post.POST_TIMESTAMP_TICK_NS >= before.began
+                        for path, stamp in added):
+        return before
+    names = {path for path, _ in added}
+    files = tuple(sorted((*before.inputs[0], *added), key=lambda item: Path(item[0])))  # capture's own order
+    classes = (*before.classes, *(item for item in fresh.classes if item[0] in names))
+    return Reading((files, *before.inputs[1:]), before.sql, before.checked_at, classes, before.young, before.began)
 
 
 def differences(before, after):
@@ -237,21 +258,32 @@ class Gate:
             self.decision['previous-job'] = self.previous
         return allowed
 
-    def begin(self, service, sources):
+    def begin(self, service, sources=()):
+        """The certificate's 'before', read before the job collects its inventory.
+
+        A change made while collecting is then newer than the certificate and
+        starts the next job. A record first found while collecting joins it in
+        confirm() only if it predates this reading.
+        """
         self.begin_issues = {}
         self.records.update(sources)
         try:
             self.records.update(row[0] for row in service.ledger.db.execute('SELECT DISTINCT record FROM turns'))
-            if self.partitions is None:
-                self.started = capture(service, self.records, issues=self.begin_issues)
-            else:
-                self.started = capture(service, self.records, issues=self.begin_issues, retain=True)
+            self.started = capture(service, self.records, issues=self.begin_issues, retain=True)
         except (AttributeError, sqlite3.Error):
             self.started = None
             self.begin_issues = {'unreadable': {'sql-revision': 1}}
         self.own_changes = 0
         # A partial job cannot leave an older certificate usable.
         self.completed = None
+        return True
+
+    def confirm(self, service, sources):
+        """After collection and configure(): watch what it found; a raced scope is refused."""
+        known = len(self.records)
+        self.records.update(sources)
+        if len(self.records) != known:
+            self.started = admit(service, self.started, self.records)
         if self.partitions is not None and self.job_scope is not None and not self.job_retry:
             if self.partitions.choose(self.started, time.monotonic(),
                                       catching_up=self.catching_up(service)) != self.job_scope:

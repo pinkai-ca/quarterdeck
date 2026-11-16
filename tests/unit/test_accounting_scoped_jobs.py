@@ -48,8 +48,10 @@ def world(tmp_path, monkeypatch):
     gate = Gate()
     def begin(scope=None):
         chosen = [item for item in inventory if scope is None or item['name'] in scope]
+        sources = [path for item in chosen for path, *_ in item['sources']]
         gate.configure(service, chosen, scope)
-        return gate.begin(service, [path for item in chosen for path, *_ in item['sources']])
+        gate.begin(service, sources)
+        return gate.confirm(service, sources)
     def finish(scope=None, *, committed=True):
         gate.finish(service, db.total_changes, full=scope is None, committed=committed)
     assert begin()

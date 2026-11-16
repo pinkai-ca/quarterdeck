@@ -357,7 +357,7 @@ class Driver:
 
     def start(self, service):
         self.gate.configure(service, self.seats, self.scope)
-        if self.gate.begin(service, (path for item in self.seats for path, *_ in item['sources'])) is False:
+        if self.gate.confirm(service, (path for item in self.seats for path, *_ in item['sources'])) is False:
             self.active = False
             return False  # inventory raced a barrier/outside seat; the next duty starts full
         if self.scope is None:
@@ -571,6 +571,8 @@ class Driver:
                 self.completed_records = self.reported_records = 0
                 self.context = (None, [])
                 self.seats, self.screens = [], []
+                # The certificate's 'before' precedes collection, so a change made while collecting starts the next job.
+                self.gate.begin(service)
                 self.inventory = iter(self.collect(service))
             if self.inventory is not None:
                 while time.monotonic() < deadline:

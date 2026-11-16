@@ -251,7 +251,7 @@ def test_driver_starts_only_for_changed_inputs_or_backstop(example, monkeypatch)
     def finish_one(service):
         driver.started = e.clock.monotonic
         driver.job += 1
-        driver.gate.begin(service, [str(e.record)])
+        driver.gate.confirm(service, [str(e.record)])
         driver.ready.append(('done',))
     monkeypatch.setattr(driver, 'start', finish_one)
     for elapsed in (0.0, 1.0, BACKSTOP - 1):
@@ -270,6 +270,65 @@ def test_driver_starts_only_for_changed_inputs_or_backstop(example, monkeypatch)
     e.clock.monotonic += 1
     driver.step(e.service)
     assert driver.job == 2
+
+
+@pytest.mark.parametrize('change,jobs', [('launch.json', 2), ('record-launches.jsonl', 2), ('native', 2),
+                                         ('new-record', 2), ('found-unchanged', 1)])
+def test_a_change_made_while_collecting_starts_the_next_job(example, monkeypatch, change, jobs):
+    """The certificate's 'before' precedes collection: what changes during it is newer than the certificate.
+
+    A record found while collecting that predates the reading changes nothing and starts no job.
+    """
+    import os
+    import tempfile
+    from quarterdeck import post
+    e = example
+    found = e.folder / 'home' / 'ordinary-found-record'
+    if change == 'found-unchanged':
+        found.write_text('Ordinary record the gate has not yet watched.\n')
+    e.complete()
+    e.service.ledger.record_pass = lambda: nullcontext(e.service.ledger)
+    e.service.ledger.catching_up = lambda: False
+    e.service.accounting_health = Health()
+    e.service.publish_accounting_health = lambda **kwargs: None
+    e.service.accounting_shown_changed = lambda previous: None
+    e.service.log = lambda *args, **kwargs: None
+    driver = Driver()
+    driver.gate = e.gate
+    driver.process = SimpleNamespace(poll=lambda: None)  # the child is idle; no process is launched
+    collections = []
+    def collect(service):
+        sources = [e.record] + ([found] if change in ('new-record', 'found-unchanged') else [])
+        if not collections:  # once, between the gate's reading and the end of collection
+            if change == 'native':
+                e.record.write_text('Ordinary input changed while collecting.\n')
+            elif change == 'new-record':
+                found.write_text('Ordinary record that appeared while collecting.\n')
+                os.utime(found, ns=(e.clock.wall, e.clock.wall))  # written after the gate's reading
+                e.clock.wall += 3 * post.POST_TIMESTAMP_TICK_NS
+            elif change == 'found-unchanged':
+                pass
+            else:
+                (e.trusted / change).write_text('Ordinary metadata changed while collecting.\n')
+        collections.append(change)
+        driver.seats.append(dict(name=e.seat.name, sources=[(str(path), 'fake', None, False) for path in sources]))
+        yield
+    def pump():
+        if driver.active and not driver.events and not driver.ready:
+            driver.ready.append(('done',))
+        return False
+    monkeypatch.setattr(driver, 'collect', collect)
+    monkeypatch.setattr(driver, 'pump', pump)
+    e.clock.monotonic = BACKSTOP
+    with tempfile.TemporaryFile() as driver.plan:
+        driver.step(e.service)
+        assert driver.job == 1 and not driver.active and len(collections) == 1
+        e.clock.monotonic += 1
+        driver.step(e.service)  # the next tick, long before the backstop
+        assert driver.job == jobs
+        e.clock.monotonic += 1
+        driver.step(e.service)  # nothing changed during the last job: it certified and the ship waits
+        assert driver.job == jobs
 
 
 def reason_start(e):
