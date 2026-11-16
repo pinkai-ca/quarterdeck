@@ -120,7 +120,9 @@ def test_the_index_lists_only_the_seats_own_messages_and_no_foreign_subject(tmp_
     [row] = post_threads.index_rows(store, (messages[0],), (), frozenset(), seat='builder')
     assert row.amendments == ('report-from-builder',) and row.subject == 'Synthetic subject for order-root'
     [peer] = post_threads.index_rows(store, (), (messages[1],), frozenset(), seat='peer')
-    assert peer.id == 'order-root' and peer.amendments == ('copy-for-peer', 'report-from-peer')
+    # copy-for-peer is the peer's open message (active), not an amendment of itself; its report amends it.
+    assert peer.id == 'order-root' and peer.amendments == ('report-from-peer',)
+    assert peer.active == ('copy-for-peer',)
     assert peer.subject is None, 'a root the seat neither sent nor received gives no subject'
     [unscoped] = post_threads.index_rows(store, (messages[0],), (), frozenset())
     assert len(unscoped.amendments) == 3, 'without a seat the old reading is unchanged'
@@ -145,3 +147,44 @@ def test_a_delivered_recovery_continuation_is_labelled_and_an_unread_one_is_not(
     assert lines[lines.index(post_threads.CONTINUATION_LABEL) + 1].startswith('qd > report from ship')
     other = post_threads.render(post_threads.whole(store, 'order-root', 'lead'))
     assert post_threads.CONTINUATION_LABEL not in other, 'only for the seat it was delivered to'
+
+
+def grading_thread(closed=300):
+    """The shape of a long thread a hand grades in: a root the hand never had open, many grading orders to the hand
+    each re the root and each closed by its report, and one open order with an ack and a correction below it."""
+    messages = [message('order-root', sender='issuer', to='lead')]
+    for n in range(closed):
+        messages += [message(f'grade-{n:04d}', parent='order-root', moment=2 * n + 1, sender='lead', to='hand'),
+                     message(f'report-{n:04d}', parent=f'grade-{n:04d}', moment=2 * n + 2, sender='hand', to='lead',
+                             kind='report')]
+    late = 2 * closed + 1
+    messages += [message('grade-open', parent='order-root', moment=late, sender='lead', to='hand'),
+                 message('ack-open', parent='grade-open', moment=late + 1, sender='hand', to='lead', kind='ack'),
+                 message('correction-open', parent='grade-open', moment=late + 2, sender='lead', to='hand'),
+                 message('answer-to-correction', parent='correction-open', moment=late + 3, sender='hand', to='lead',
+                         kind='answer')]
+    return messages
+
+
+def test_a_line_names_only_what_amends_its_open_messages_not_the_rest_of_the_thread(tmp_path):
+    messages = grading_thread()
+    store = store_posts(tmp_path, messages)
+    by_name = {item.id: item for item in messages}
+    open_ = (by_name['grade-open'], by_name['correction-open'])
+    [row] = post_threads.index_rows(store, open_, (), frozenset(), seat='hand')
+    assert row.id == 'order-root' and set(row.active) == {'grade-open', 'correction-open'}
+    # What descends from an open message, at any depth: its ack, the correction and its answer. No closed grading
+    # order or report, though each is the hand's and each is re the root; qd thread prints those.
+    assert row.amendments == ('ack-open', 'correction-open', 'answer-to-correction')
+
+
+def test_a_reply_to_the_root_counts_only_where_the_root_is_itself_open(tmp_path):
+    messages = [message('order-root', sender='lead', to='builder'),
+                message('reply-to-root', parent='order-root', moment=1, sender='builder', to='lead', kind='report')]
+    store = store_posts(tmp_path, messages)
+    [row] = post_threads.index_rows(store, (messages[0],), (), frozenset(), seat='builder')
+    assert row.amendments == ('reply-to-root',), 'the root is open: what answers it amends it'
+    later = message('later-order', parent='order-root', moment=2, sender='lead', to='builder')
+    store.write(later)
+    [row] = post_threads.index_rows(store, (later,), (), frozenset(), seat='builder')
+    assert row.amendments == (), 'the root is not open here: a reply to it is the thread history, not an amendment'

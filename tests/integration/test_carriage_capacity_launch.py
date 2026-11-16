@@ -134,7 +134,8 @@ def test_unread_answer_has_one_thread_line_with_its_answered_question(tmp_path, 
     answer = publish(seat, 'unread-answer', 'Invented answer.', parent=question.id, kind='answer')
     seat._up(resume=False)
     row, = entries(first(opened))
-    assert row['id'] == question.id and row['amendments'] == [answer.id]
+    # The unread answer is the line's open message itself (active); nothing amends it yet.
+    assert row['id'] == question.id and row['active'] == [answer.id] and row['amendments'] == []
     assert row['awaiting'] == []
     assert answer.body not in first(opened)
 

@@ -65,13 +65,27 @@ class IndexRow:
     settled: tuple[str, ...] = ()
 
 
+def _descends(message: post.Message, anchors: set[str], by_id: dict[str, post.Message]) -> bool:
+    """Whether one of ``anchors`` is among the message's ancestors, by re at any depth (never the message itself)."""
+    seen, current = set(), message
+    while current.re and current.re not in seen:
+        if current.re in anchors:
+            return True
+        seen.add(current.re)
+        current = by_id.get(current.re)
+        if current is None:
+            return False
+    return False
+
+
 def index_rows(store: post.Store, roots: tuple[post.Message, ...],
                incoming: tuple[post.Message, ...], withheld: frozenset[str],
                sent: tuple[post.Message, ...] = (), seat: str | None = None) -> tuple[IndexRow, ...]:
     """Metadata only. Callers supply their existing open/unread inventory and exclusions.
 
-    With ``seat``, each row's amendments, active, waiting and withheld lists hold only messages that seat
-    sent or received, and a root it neither sent nor received gives no subject."""
+    A row's amendments are the messages that amend its open messages: those descending, by re at any depth, from one
+    of its active or awaiting messages. With ``seat``, each row's amendments, active, waiting and withheld lists hold
+    only messages that seat sent or received, and a root it neither sent nor received gives no subject."""
     by_id = {message.id: message for message in store.all()}
     settled = store.settled_notices(seat) if seat is not None else {}
     # Whose sender was told, as each refused message's own addressee's refusal journal holds it.
@@ -112,7 +126,12 @@ def index_rows(store: post.Store, roots: tuple[post.Message, ...],
         members = grouped[root.id] if seat is None else [m for m in grouped[root.id] if party(m, seat)]
         shown = post._shown(root, withheld, told, sender_seat)
         subject = shown.subject if seat is None or party(root, seat) else None
-        amendments = tuple(message.id for message in members if message.id != root.id)
+        open_here = {message.id for message in members if message.id in active_ids}
+        open_here |= {message.id for message in sent if root_for[message.id] == root.id}
+        # What amends the line's open messages: the seat's messages that descend, at any depth, from one of them. A
+        # reply to the root counts only where the root is itself open; the rest of the thread is qd thread's to print.
+        amendments = tuple(message.id for message in members
+                           if message.id != root.id and _descends(message, open_here, by_id))
         waiting = tuple(f'{message.id}: sent, awaiting {message.to}' for message in sent
                         if root_for[message.id] == root.id)
         hidden = tuple(message.id for message in members if message.id in withheld)

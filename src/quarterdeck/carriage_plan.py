@@ -17,6 +17,9 @@ from . import durable
 from .post_threads import IndexRow
 
 
+
+AMENDMENTS_SHOWN = 10  # an index line names a thread's ten newest amendments, then how many more
+
 def size(text: str | None) -> int:
     return len(text.encode('utf-8')) if text else 0
 
@@ -102,6 +105,17 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
         if not data.get('settled'):
             data.pop('settled', None)  # keep ordinary index rows unchanged
         data['thread'] = f'qd thread {row.id}'
+        amendments = data.get('amendments') or ()
+        if len(amendments) > AMENDMENTS_SHOWN:
+            # The line names the newest few and how many more; the thread itself prints them all (law: context-is-cache).
+            shown = {}
+            for key, value in data.items():
+                shown[key] = value
+                if key == 'amendments':
+                    shown[key] = list(amendments[-AMENDMENTS_SHOWN:])
+                    shown['more_amendments'] = (f'and {len(amendments) - AMENDMENTS_SHOWN} more: '
+                                                f'qd thread {row.id} lists them')
+            data = shown
         if row.subject and size(json.dumps(row.subject)) > 200:
             prefix = row.subject[:200]
             while size(json.dumps(prefix + '...')) > 200:

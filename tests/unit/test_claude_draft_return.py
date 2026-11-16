@@ -101,7 +101,7 @@ def test_popped_nonopen_post_is_unread_and_carried_until_actual_submission(setup
         assert all(message in messages for _, _, messages in carried)
         for _, first, _ in carried:
             rows = {row['id']: row for row in (json.loads(line) for line in first.splitlines() if line.startswith('{'))}
-            assert message.id in rows[parent.id]['amendments']
+            assert message.id in rows[parent.id]['active']  # the unread reply is the line's open message itself
             assert text not in first
         printed = post_threads.render(post_threads.whole(svc.store, message.id, seat.name))
         assert message.body in printed

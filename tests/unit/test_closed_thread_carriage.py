@@ -84,8 +84,13 @@ def test_settled_answer_is_only_history_when_other_work_keeps_the_index_row(setu
     new = svc.store.new('order', 'issuer', seat.name, 'Synthetic new task', re=old.id)
     carriage = seat.carriage()
     assert carriage.carried == [new] and active(carriage) == [new.id]
-    assert answer.id in carriage.rows[0].amendments, 'immutable thread history remains readable'
+    # The settled answer amends the closed old order, not the open new one: the line no longer names it, and the
+    # thread, printed whole by qd thread, still holds it.
+    assert answer.id not in carriage.rows[0].amendments, 'only what amends the open messages is named'
     assert answer.id not in carriage.rows[0].active and not carriage.rows[0].awaiting
+    from quarterdeck import post_threads
+    assert answer.id in {m.id for m in post_threads.whole(svc.store, new.id, seat.name).messages}, \
+        'immutable thread history remains readable'
 
 
 @pytest.mark.parametrize('broken', ['missing', 'cycle'])

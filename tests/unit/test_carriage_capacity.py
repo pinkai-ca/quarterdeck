@@ -100,11 +100,11 @@ def test_kernel_file_fallback_moves_even_a_small_handoff_out_of_argv():
     assert 'over carry_bytes' not in result.opening
 
 
-def test_amendment_ids_too_large_for_one_line_have_complete_bounded_id_pages():
-    ids = tuple(f'answer-item-{n:04}' for n in range(300))
-    result = plan([row(amendments=ids)])
+def test_active_ids_too_large_for_one_line_have_complete_bounded_id_pages():
+    ids = tuple(f'order-item-{n:04}' for n in range(300))
+    result = plan([row(active=ids)])
     entry, = index_rows(result)
-    link = entry['amendments']
+    link = entry['active']
     assert link['count'] == len(ids)
     values = []
     def visit(name):
@@ -117,6 +117,25 @@ def test_amendment_ids_too_large_for_one_line_have_complete_bounded_id_pages():
     visit(Path(link['index']).name)
     assert values == list(ids)
     assert all(cp.size(text) <= result.limit for text in result.files.values())
+
+
+def test_a_thread_of_thousands_of_amendments_names_the_ten_newest_and_how_many_more():
+    ids = tuple(f'rep-20261116-{n:04}-hand-{n:06x}' for n in range(2900))  # oldest first, as the thread holds them
+    result = plan([row(amendments=ids)], limit=100_000)
+    entry, = index_rows(result)
+    assert entry['amendments'] == list(ids[-10:]), 'the ten newest, by id'
+    assert entry['more_amendments'] == 'and 2890 more: qd thread order-root lists them'
+    assert list(entry).index('more_amendments') == list(entry).index('amendments') + 1
+    line = next(line for line in result.opening.splitlines() if line.startswith('{'))
+    assert cp.size(line) < 1_000, 'a fixed size, whatever the thread holds'
+    assert entry['thread'] == 'qd thread order-root', 'one command prints the thread whole'
+
+
+@pytest.mark.parametrize('count', [0, 1, 3, 10])
+def test_a_line_with_ten_amendments_or_fewer_is_unchanged(count):
+    ids = tuple(f'answer-item-{n:04}' for n in range(count))
+    entry, = index_rows(plan([row(amendments=ids)]))
+    assert entry['amendments'] == list(ids) and 'more_amendments' not in entry
 
 
 def test_subject_summary_is_visible_and_json_escaped_on_one_line():
