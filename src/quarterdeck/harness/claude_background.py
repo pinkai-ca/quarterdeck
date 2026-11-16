@@ -183,6 +183,7 @@ class Task:
     running_seen: bool = False
     kind: str = 'Bash'
     evidence_errors: tuple[str, ...] = ()
+    undated_evidence: bool = False  # a row about it the reader could not date: it may be from after any launch
 
 
 class BackgroundBash:
@@ -290,9 +291,16 @@ class BackgroundBash:
         if reason not in task.evidence_errors:
             task.evidence_errors += (reason,)
 
-    def end(self, task, status, at):
-        if at is not None:
+    @staticmethod
+    def seen(task, at):
+        """Evidence about a task: a dated row is read at its time; an undated one may be from after any launch."""
+        if at is None:
+            task.undated_evidence = True
+        else:
             task.other_evidence_at = max(at, task.other_evidence_at)
+
+    def end(self, task, status, at):
+        self.seen(task, at)
         before_ack = (at is not None and task.phase == 'pending' and status in TERMINAL
                       and not task.running_seen and task.latest == task.acknowledged_at
                       and task.called_at is not None and at >= task.called_at)
@@ -338,7 +346,7 @@ class BackgroundBash:
             return
         fields = notification(text)
         if fields is None:
-            self.unparsed(text, version)
+            self.unparsed(text, version, at)
             return
         call, identity, status, note = fields
         task = self.tasks.get(call)
@@ -349,13 +357,14 @@ class BackgroundBash:
             return
         self.notice(task, identity, status, note, at, version, carrier)
 
-    def unparsed(self, text, version):
+    def unparsed(self, text, version, at=None):
         """A notice the Bash reading cannot parse holds only itself, never the record's tool state.
 
         The Monitor tool's measured event notice, bound to a Monitor call by its tool-use-id or its task id, is that
         tool's own and no Bash evidence. Any other, an Agent's, a SendMessage's, a Workflow's or one not measured,
         ends nothing: a tracked Bash task it names by either identity becomes unknown, and one it does not name is
-        unchanged, so an unread notice can never end a Bash task, only leave it pending or unknown.
+        unchanged, so an unread notice can never end a Bash task, only leave it pending or unknown. The row is still
+        evidence at its time, and a row with none may be from after a launch: either holds the task past a relaunch.
         """
         event = monitor_event(text) if version in MONITOR_VERSIONS else None
         if event is not None:
@@ -366,6 +375,7 @@ class BackgroundBash:
         for identity in identities(text):
             target = identity if identity in self.tasks else self.task_calls.get(identity)
             if target is not None:
+                self.seen(self.tasks[target], at)
                 self.invalidate(self.tasks[target], 'unparsed-task-notification')
 
     def notice(self, task, identity, status, note, at, version, carrier):
@@ -379,8 +389,8 @@ class BackgroundBash:
             # A later native carrier can retain a timestamp earlier than the enqueue's.
             # Once its measured identity, status and start bound agree, it is only a copy.
             return
-        if at is not None and not resumed:
-            task.other_evidence_at = max(at, task.other_evidence_at)
+        if at is None or not resumed:
+            self.seen(task, at)
         if not supported:
             self.invalidate(task, 'unmeasured-or-conflicting-task-notification')
         elif terminal:
@@ -401,8 +411,7 @@ class BackgroundBash:
             return
         task = self.tasks[target]
         task.running_seen = True
-        if at is not None:
-            task.other_evidence_at = max(at, task.other_evidence_at)
+        self.seen(task, at)
         if (version not in STATUS_VERSIONS or attachment.get('status') != 'running' or at is None
                 or at < task.latest or task.phase == 'ended' or task.invalid):
             self.invalidate(task, 'unmeasured-or-conflicting-task-status')
@@ -414,6 +423,7 @@ class BackgroundBash:
         for task in self.tasks.values():
             if (launched_at is not None and task.kind == 'Bash' and task.version in EXIT_VERSIONS
                     and task.invalid and task.called_at is not None and task.called_at < launched_at
+                    and not task.undated_evidence
                     and task.other_evidence_at is not None and task.other_evidence_at < launched_at):
                 yield replace(task, phase='ended-by-relaunch-after-unreadable-evidence', terminal=None)
                 continue
@@ -424,6 +434,7 @@ class BackgroundBash:
                     and task.started < launched_at
                     and (task.latest < launched_at or task.resume_stopped_at is not None
                          and launched_at <= task.resume_stopped_at)
+                    and not task.undated_evidence
                     and task.other_evidence_at is not None and task.other_evidence_at < launched_at):
                 yield replace(task, phase='ended-by-relaunch', terminal=None)
             else:

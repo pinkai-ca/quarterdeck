@@ -191,3 +191,60 @@ def test_old_invalid_bash_with_running_evidence_after_relaunch_stays_held(tmp_pa
     assert projected.called_at < launch < projected.other_evidence_at
     assert projected.invalid and projected.phase == 'unknown'
     assert reader.state(launched_at=launch).pending_tools is None
+
+
+UNPARSED = ('<task-notification><task-id>' + TASK + '</task-id>'
+            '<summary>synthetic unparsed notice</summary></task-notification>')
+
+
+def unparsed(carrier, second):
+    if carrier in ('enqueue', 'remove'):
+        return row('queue-operation', second, operation=carrier, content=UNPARSED)
+    if carrier == 'user':
+        return row('user', second, origin=dict(kind='task-notification'), message=dict(role='user', content=UNPARSED))
+    return row('attachment', second, attachment=dict(type='queued_command', commandMode='task-notification',
+                                                     origin=dict(kind='task-notification'), prompt=UNPARSED))
+
+
+def held_at(tmp_path, rows, launch):
+    record, _ = read(tmp_path, rows)
+    reader = claude._Reader(record)
+    [projected] = list(reader.background.task_states(launch))
+    return projected, reader.state(launched_at=launch)
+
+
+# The ruling: anything seen after the relaunch holds the task. A dated row is read at its time; a row the reader
+# cannot date may be from after the launch, so it holds the task too.
+@pytest.mark.parametrize('carrier', ['user', 'enqueue', 'attachment'])
+def test_an_unparsed_notice_after_the_relaunch_holds_the_task(tmp_path, carrier):
+    launch = AT + timedelta(seconds=10)
+    projected, state = held_at(tmp_path, initial() + [unparsed(carrier, 11)], launch)
+    assert projected.phase == 'unknown' and projected.invalid
+    assert projected.called_at < launch < projected.other_evidence_at, 'a dated row is read at its own time'
+    assert state.pending_tools is None
+
+
+@pytest.mark.parametrize('carrier', ['user', 'enqueue', 'attachment'])
+def test_an_unparsed_notice_the_reader_cannot_date_holds_the_task(tmp_path, carrier):
+    late = unparsed(carrier, 11)
+    del late['timestamp']
+    projected, state = held_at(tmp_path, initial() + [late], AT + timedelta(seconds=10))
+    assert projected.phase == 'unknown' and projected.invalid
+    assert state.pending_tools is None
+
+
+@pytest.mark.parametrize('carrier', ['user', 'enqueue', 'attachment'])
+@pytest.mark.parametrize('status', ['completed', 'running'])
+def test_a_parsed_notice_the_reader_cannot_date_holds_the_task(tmp_path, carrier, status):
+    timeless = notice(carrier, 11, status=status)
+    del timeless['timestamp']
+    projected, state = held_at(tmp_path, initial() + [timeless], AT + timedelta(seconds=10))
+    assert projected.phase == 'unknown' and projected.invalid
+    assert state.pending_tools is None
+
+
+def test_an_unparsed_notice_dated_before_the_relaunch_still_lets_the_old_task_end_by_it(tmp_path):
+    launch = AT + timedelta(seconds=10)
+    projected, state = held_at(tmp_path, initial() + [unparsed('user', 4)], launch)
+    assert projected.phase == 'ended-by-relaunch-after-unreadable-evidence'
+    assert projected.other_evidence_at == AT + timedelta(seconds=4) and state.pending_tools == ()
