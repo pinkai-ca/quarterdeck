@@ -32,7 +32,19 @@ def window_reading(row: Reading, now: datetime) -> dict:
 
 def uncertainty(book: Ledger) -> dict:
     return {"unknown_pool_turns": book.db.execute("SELECT COUNT(*) FROM turns WHERE pool = ?", (UNKNOWN,)).fetchone()[0],
-            "incomplete_records": [dict(zip(("record", "seat", "pool", "error"), row)) for row in book.incomplete_records()]}
+            "incomplete_records": [dict(zip(("record", "seat", "pool", "error"), row)) for row in book.incomplete_records()],
+            "unread_spans": book.unread_spans()}
+
+
+def _mib(count: int) -> str:
+    return f'{count / (1024 * 1024):.1f} MiB'
+
+
+def span_note(span: dict) -> str:
+    """One unread span, in words: never a figure for the turns it holds (law: every-turn-accounted)."""
+    return (f"unread span: {Path(span['record']).name} ({span['seat']}, {span['pool']}) · {_mib(span['size'])} past its "
+            f"read bound of {_mib(span['bound'])}, first seen {span['passed_at']}; {span['counted']} turns counted "
+            f"before it, its turns since unknown")
 
 
 def notes(data: dict) -> list[str]:
@@ -40,7 +52,7 @@ def notes(data: dict) -> list[str]:
     found = ([f"{unknown} turns with unknown pool attribution: missing/ambiguous launch history or turn times, or a turn crossing pools"]
              if unknown else [])
     return found + [f"unread record: {Path(r['record']).name} ({r['seat']}, {r['pool']}) · {r['error']}"
-                    for r in data["incomplete_records"]]
+                    for r in data["incomplete_records"]] + [span_note(span) for span in data.get("unread_spans", [])]
 
 
 def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, tools: bool = False) -> dict:
@@ -67,6 +79,8 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
             item.update(budget=budget, spent=spent, unpriced=unpriced, since=since, wall=f"{pool.name} budget" in walls)
         elif pool.kind == "endpoint":
             item.update(endpoint=pool.endpoint)
+        if unread := sum(1 for span in data["unread_spans"] if span["pool"] == pool.name):
+            item["unread_spans"] = unread  # only where there is one: a pool's ordinary reading is unchanged
         pools.append(item)
     windows = []
     for row in book.usage.rows():
@@ -143,6 +157,8 @@ def render_tools(data: dict) -> list[str]:
 
 def render_pools(data: dict) -> list[str]:
     lines = [f"pool {p['name']} · provider {p['provider_name']} · {p['kind']} · native harness {p['native_harness'] or 'none'}"
+             + (f" · {p['unread_spans']} unread span{'s' if p['unread_spans'] != 1 else ''}: turns unknown"
+                if p.get('unread_spans') else "")
              for p in data["pools"]]
     lines.append("pool window · used · freshness · reset · reading time (age)")
     for window in data["windows"]:

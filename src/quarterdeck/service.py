@@ -2123,6 +2123,7 @@ class Service:
         table = machine.processes() if process_table is None else process_table
         observations, notices, human_readings = [], [], []
         marks, errors = dict(self.read_marks), dict(self.account_errors)
+        spans = {}  # record -> (size, bound): read refused past its bound this pass
         meters = deepcopy(self.meters)
         checkpoints = {}
         reader_keys = reader_stamp.readers() if source_reader_keys is None else source_reader_keys
@@ -2194,6 +2195,8 @@ class Service:
                         checkpoints[record] = checkpoint
                 except OSError as error:
                     message = str(error)
+                    if getattr(error, 'size', None) is not None and getattr(error, 'bound', None) is not None:
+                        spans[record] = error.size, error.bound  # past its read bound: a span the ledger keeps
                     prior = errors.get(record)
                     if prior is None or prior[:2] != (evidence, message):
                         notices.append(("error", dict(step="account", seat=seat.name, record=record.name, error=message)))
@@ -2215,8 +2218,12 @@ class Service:
                     if error is not None:
                         book.mark_accounted(record, None)
                         book.mark_record(record, seat.name, pool, error, commit=False, evidence=settlement)
+                        if record in spans:  # law: every-turn-accounted: what was never read is shown, not guessed
+                            book.mark_unread_span(record, seat.name, pool, *spans[record], post.now().isoformat(),
+                                                  commit=False)
                         marks.pop(record, None)
                         continue
+                    book.clear_unread_span(record, commit=False)  # read whole: no span of it is unread
                     if state is None:  # an empty record of unknown reader: settled, with nothing to account
                         book.mark_record(record, seat.name, pool, None, commit=False)
                         continue

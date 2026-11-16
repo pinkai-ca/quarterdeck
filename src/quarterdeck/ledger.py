@@ -89,6 +89,10 @@ CREATE TABLE IF NOT EXISTS records (
 CREATE TABLE IF NOT EXISTS record_accounting (
     record TEXT PRIMARY KEY, evidence TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS unread_spans (
+    record TEXT PRIMARY KEY, seat TEXT NOT NULL, pool TEXT NOT NULL, size INTEGER NOT NULL, bound INTEGER NOT NULL,
+    passed_at TEXT NOT NULL, seen_at TEXT NOT NULL, counted INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS accounting_progress (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL, pending INTEGER NOT NULL
 );
@@ -353,6 +357,43 @@ class Ledger:
         row = self.db.execute("SELECT error, evidence FROM records WHERE record=? AND evidence IS NOT NULL",
                               (str(record),)).fetchone()
         return tuple(row) if row else None
+
+    def mark_unread_span(self, record: Path, seat: str, pool: str, size: int, bound: int, at: str, *,
+                         commit: bool = True) -> None:
+        """Keep the span of a record that was never read because it passed its read bound (law: every-turn-accounted):
+        the seat, the pool, its size and the bound, when it was first seen past the bound, when last, and how many of
+        its turns were counted before. Its turns since are unknown: no figure is made for them."""
+        old = self.db.execute("SELECT seat,pool,size,bound FROM unread_spans WHERE record=?", (str(record),)).fetchone()
+        if old is None:
+            self.db.execute("INSERT INTO unread_spans (record,seat,pool,size,bound,passed_at,seen_at,counted) "
+                            "VALUES (?,?,?,?,?,?,?,?)", (str(record), seat, pool, size, bound, at, at, self.ingested(record)))
+        elif tuple(old) != (seat, pool, size, bound):
+            self.db.execute("UPDATE unread_spans SET seat=?,pool=?,size=?,bound=?,seen_at=? WHERE record=?",
+                            (seat, pool, size, bound, at, str(record)))
+        else:
+            return  # the same span, as last seen: nothing to write
+        if commit and self.db.in_transaction:
+            self.db.commit()
+
+    def clear_unread_span(self, record: Path, *, commit: bool = True) -> None:
+        """A record read whole again (a bound raised, a record replaced): its span is no longer unread."""
+        if self.db.execute("SELECT 1 FROM unread_spans WHERE record=?", (str(record),)).fetchone() is None:
+            return
+        self.db.execute("DELETE FROM unread_spans WHERE record=?", (str(record),))
+        if commit and self.db.in_transaction:
+            self.db.commit()
+
+    def unread_spans(self) -> list[dict]:
+        """Every unread span, oldest first. A ledger an earlier copy wrote has none."""
+        try:
+            rows = self.db.execute("SELECT record,seat,pool,size,bound,passed_at,seen_at,counted FROM unread_spans "
+                                   "ORDER BY passed_at, record").fetchall()
+        except sqlite3.OperationalError:
+            return []  # no such table: written before spans were kept
+        return [dict(record=record, seat=owner, pool=charged, size=size, bound=bound, passed_at=passed, seen_at=seen,
+                     counted=counted, turns_since=None)
+                for record, seat, pool, size, bound, passed, seen, counted in rows
+                for owner, charged in self.provenance.owners(record, seat, pool)]  # as the unread records resolve
 
     def incomplete_records(self) -> list[tuple[str, str, str, str]]:
         errors = self.db.execute("SELECT record, seat, pool, error FROM records ORDER BY record").fetchall()

@@ -44,7 +44,10 @@ class Refused(RecordError):
 
 
 class PastBound(RecordError):
-    """A record larger than one read may take: not read."""
+    """A record larger than one read may take: not read. ``size`` and ``bound`` carry the figures."""
+
+    size: int | None = None
+    bound: int | None = None
 
 
 def _size(count: int) -> str:
@@ -112,7 +115,9 @@ def restat(descriptor: int) -> os.stat_result:
 
 
 def past_bound(path: Path, size: int, bound: int) -> PastBound:
-    return PastBound(f'{Path(path).name}: record past the read bound ({_size(size)}, bound {_size(bound)}); not read')
+    error = PastBound(f'{Path(path).name}: record past the read bound ({_size(size)}, bound {_size(bound)}); not read')
+    error.size, error.bound = size, bound  # as figures, for the ledger's unread span
+    return error
 
 
 def read_from(descriptor: int, opened: os.stat_result, path: Path, bound: int | None, offset: int = 0) -> bytes:
