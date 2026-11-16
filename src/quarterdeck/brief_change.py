@@ -19,17 +19,22 @@ that names no seat is no one's own edit, and every seat whose brief it changed i
 from __future__ import annotations
 
 import difflib
+import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 
 from . import durable
 from .input_receipt import BRIEF_HEAD, BRIEF_HEAD_END
+from .tmux import PRIVATE_COMMAND_WAIT
 
 FOLDER = 'brief-told'
 SHIP_HEAD = '.ship-head'  # the ship folder's commit the last attribution read up to
 BOUND = 8192  # bytes of diff a head carries; past it, the sections and their line counts
 SECTION = re.compile(r'^<!-- (.+?) -->$')
+GIT_WAIT = PRIVATE_COMMAND_WAIT  # the service's bound on a command it waits for: tmux's, for a private server
+
 
 
 def _path(runtime: Path, name: str) -> Path:
@@ -119,26 +124,48 @@ def compose(name: str, before: str, after: str) -> str:
 
 # -- the editor is not told of its own edit ----------------------------------------------------------------------
 
+class Unread(Exception):
+    """The ship folder's git did not answer within its bound, or could not be run: who made the pending change is
+    unknown, and the change waits for the next pass."""
+
+
 def _git(folder: Path, *args: str) -> str | None:
-    done = subprocess.run(['git', '-C', str(folder), *args], capture_output=True, text=True)
-    return done.stdout if done.returncode == 0 else None
+    """git's output, None when it answers with an error; Unread when it does not answer within GIT_WAIT. It runs in
+    a process group of its own, so a hung git and anything it started (a helper holding its output) end together."""
+    try:
+        process = subprocess.Popen(['git', '-C', str(folder), *args], stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
+    except OSError as error:
+        raise Unread(f'git {args[0]} could not be run ({type(error).__name__})') from None
+    with process:
+        try:
+            out, _ = process.communicate(timeout=GIT_WAIT)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise Unread(f'git {args[0]} did not answer within {GIT_WAIT:g} s') from None
+    return out if process.returncode == 0 else None
 
 
 def editor(folder: Path, runtime: Path) -> str | None:
     """The one seat that made every commit of the ship folder since the last reading, where every one names it;
-    else None. The reading advances to the folder's current commit either way."""
+    else None. The reading advances to the folder's current commit once that is read; a git that does not answer
+    raises Unread and leaves the reading where it was, so the next pass reads the same change."""
     marker = Path(runtime) / FOLDER / SHIP_HEAD
     now = (_git(folder, 'rev-parse', 'HEAD') or '').strip()
     try:
         last = marker.read_text().strip()
     except FileNotFoundError:
         last = ''
+    log = _git(folder, 'log', '--format=%x00%B', f'{last}..{now}') if now and last and last != now else None
     if now:
         marker.parent.mkdir(parents=True, exist_ok=True)
         durable.replace_file(marker, now + '\n')
     if not now or not last or last == now:
         return None
-    log = _git(folder, 'log', '--format=%x00%B', f'{last}..{now}')
     if not log:
         return None
     from .harness import remote_session

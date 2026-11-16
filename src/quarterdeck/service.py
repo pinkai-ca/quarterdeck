@@ -2441,7 +2441,15 @@ class Service:
         from . import brief_change
         # A changed brief wakes no seat: nothing is posted. The change reaches each seat at the head of its next
         # message (brief_change); the seat whose own commit made it is not told of it.
-        own = brief_change.editor(self.ship.folder, self.runtime) if getattr(self.ship, 'is_repository', False) else None
+        try:
+            own = brief_change.editor(self.ship.folder, self.runtime) if getattr(self.ship, 'is_repository', False) else None
+        except brief_change.Unread as error:
+            # Who made the change is unknown: it waits, unpublished, for the next pass, and is never lost.
+            if getattr(self, 'brief_change_error', None) != str(error):
+                self.brief_change_error = str(error)
+                self.log('error', step='brief-change', error=str(error))
+            return
+        self.brief_change_error = None
         selected = self.resolved_seats()
         for seat in selected:
             if (text := self.brief_texts.get(seat.name)) is None:
