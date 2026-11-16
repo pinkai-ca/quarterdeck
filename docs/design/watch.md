@@ -87,9 +87,22 @@ the barrier records the live service's own owner (an earlier stop interrupted, o
 one running beside it) gives that owner SIGTERM and its grace as a first stop does;
 only what the earlier stop recorded outside the owner's tree and scope is ended at
 once, and the line names it. An unreadable barrier holds a stop as it holds a start,
-and its refusal names the file, why, and what settles it: once no process an
-earlier stop recorded runs, the file is moved aside unchanged. No jail
-is shown this folder. Cached status cannot hide a standing barrier.
+and its refusal names the file, why, and what settles it: `qd service
+--settle-barrier`, run by a systems seat or the operator, is the way. It reads, under
+the stop guard's lock: (a) the service's lock is free; (b) no live process of the user
+sits in a scope named for this ship's service (`qd-service-<ship>-*.scope`), a tmux
+server there and everything under one left out as a stop leaves them; (c) no live
+process of the user outside the ship's own tmux server's tree, and outside the act's
+own process and its ancestors, carries `QD_SHIP` naming this ship. Another process's
+environment is read only for that test, and no value is printed, logged or kept. When
+all three hold the file is moved, unchanged and never followed, into
+`runtime/evidence/stop-barrier/`, and the move is logged; otherwise it refuses, naming
+the condition, the pids, their process names and their cgroups. A barrier that reads
+cleanly is not its to move. Its limit: a child that cleared its own environment, or
+made itself unreadable, and left the scope escapes (b) and (c). A process whose
+environment the user cannot read is skipped by (c) and named by pid and process name
+in the logged line and the output, unless it sits in any service's scope
+(`qd-service-*`), where it refuses. No jail is shown this folder. Cached status cannot hide a standing barrier.
 
 The service atomically publishes `runtime/status-line.json` for text status-line jobs, dating collection start (`wall`/`monotonic`) and the publication write (`written`) separately. The optional collection-age cache retains its three-second wall/monotonic bounds and owner/declaration/framework checks. Outside that cache, a publication from the current service with an ok lead reads plain through `ship.status_refresh + STALE_SECONDS` after its write: forty seconds at the default thirty-second refresh, including a ten-second collection allowance. Its collection-start timestamp remains unchanged. Older or unverified publications, and a busy service, retain their operational alerts under an explicit `status stale` marker and write age through three times the refresh interval (ninety seconds by default). Beyond that bound the command collects current facts itself and adds `publication <age>s old, collected here` to the lead. A down service is independently named `SERVICE DOWN` and also takes the collector. Missing, corrupt or undated publications, or an unknowable write age, take the collector too, so reuse can never be unbounded. The collector keeps its existing error/unknown handling. Slow collections still publish; failed collection discards old rendering. Receipt, lifecycle, usage and JSON readings still collect their own facts and never consume this file.
 

@@ -77,8 +77,9 @@ def test_an_unreadable_barrier_names_its_file_and_what_settles_it(tmp_path):
     with pytest.raises(ShipError) as refused:
         servicectl.stop(runtime)
     words = str(refused.value)
-    assert words == (f'service stop barrier {target} unreadable (JSONDecodeError); stop and start held: once no '
-                     'process an earlier stop recorded runs, move it aside unchanged and stop or start again')
+    assert words == (f'service stop barrier {target} unreadable (JSONDecodeError); stop and start held: '
+                     'qd service --settle-barrier moves it aside unchanged once no process an earlier stop '
+                     'recorded can be running, then stop or start again')
     assert target.read_text() == '{', 'never edited'
     target.write_text('{"version": 1, "processes": []}')
     with pytest.raises(ShipError, match=r'unreadable \(unknown identities\)'):

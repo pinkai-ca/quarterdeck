@@ -32,8 +32,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     argv = list(argv if argv is not None else sys.argv[1:])
     argv = choose_default(args, argv)
-    if (args.run not in (cmd_upgrade, cmd_service, cmd_setup, cmd_init, cmd_raise)
-            and not (args.run is cmd_controls and getattr(args, "harness", None))):
+    runs_itself = (args.run in (cmd_upgrade, cmd_service, cmd_setup, cmd_init, cmd_raise)
+                   and not (args.run is cmd_service and getattr(args, 'settle_barrier', False)))  # an act, not the service
+    if not runs_itself and not (args.run is cmd_controls and getattr(args, "harness", None)):
         handoff(args, argv)
     try:
         result = args.run(args)
@@ -226,7 +227,11 @@ def build_parser() -> argparse.ArgumentParser:
     recovery = p.add_mutually_exclusive_group()
     recovery.add_argument('--recover', action='store_true', help='check the ledger and preserve/rebuild it if malformed; service must be stopped')
     recovery.add_argument('--clear-recovery', action='store_true', help='acknowledge ledger recovery alarms; keep all evidence')
-    verb("service", cmd_service, "run the ship's service in the foreground (qd up starts it detached)")
+    p = verb("service", cmd_service, "run the ship's service in the foreground (qd up starts it detached)")
+    p.add_argument('--settle-barrier', action='store_true',
+                   help="move an unreadable service stop barrier aside unchanged, once no service runs, nothing is "
+                        "in this ship's service scope and nothing outside its tmux server carries its QD_SHIP; "
+                        "a systems seat or the operator")
     p = verb("drill", cmd_drill, "the all-hands drill: on the drydock's simulator, or on --ship with real programs")
     p.add_argument("--keep", action="store_true", help="keep the temporary ship and its tmux server for a look")
     p = verb("check", cmd_check, "prove the installed version of a program live, on a throwaway seat (spends tokens)")
@@ -994,8 +999,11 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     return None
 
 
-def cmd_service(args: argparse.Namespace) -> None:
+def cmd_service(args: argparse.Namespace) -> str | None:
     ship = load_ship(args)
+    if getattr(args, 'settle_barrier', False):
+        from . import barrier_settle
+        return barrier_settle.settle(ship, Tmux.for_ship(ship), os.environ.get('QD_SEAT') or None)
     # Recovery/exec precedes construction (and therefore the ledger and service lock).
     install.bootstrap_service(ship, ['--ship', str(ship.folder), 'service'])
     service.Service(ship, Tmux.for_ship(ship)).run()

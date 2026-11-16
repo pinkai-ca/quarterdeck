@@ -20,8 +20,9 @@ def path(runtime):
 
 def unreadable(target, why):
     """The refusal for a barrier no reader can trust: it names the file, why, and what settles it."""
-    return ShipError(f'service stop barrier {target} unreadable ({why}); stop and start held: once no process '
-                     'an earlier stop recorded runs, move it aside unchanged and stop or start again')
+    return ShipError(f'service stop barrier {target} unreadable ({why}); stop and start held: '
+                     'qd service --settle-barrier moves it aside unchanged once no process an earlier stop '
+                     'recorded can be running, then stop or start again')
 
 
 def read(runtime):
