@@ -31,8 +31,12 @@ Nothing bounds those but this alarm. It needs no daemon and no root:
   that went unmeasured there this look or whose bytes there grew since their last whole measure. A seat measured
   whole there and not grown stays up; its first measure is its baseline. The hold says why, the status line names
   it, and the service tells the desk (``floor_reason``).
-- Over a bound, the hold is placed first, then the jail's whole process tree is stopped with SIGSTOP and killed with
-  SIGKILL, an endpoint seat's relay included. The hold (``runtime/post/write-bound/<seat>.json``, which no jail is
+- Over a bound, the jail's whole process tree is stopped with SIGSTOP and killed with SIGKILL first, an endpoint
+  seat's relay included, and the hold is recorded after: a jail is never left running because a file could not be
+  written. A hold that cannot be written (a full disk) is kept in the service's memory (``unrecorded``): the status
+  line names the jail as stopped with its hold unrecorded, every launch the service makes refuses as for a hold, and
+  each later look writes it, never killing anything from it, until it is written or a person's word has launched
+  the seat again. The seat's relaunch intent is cleared only once the hold is written. The hold (``runtime/post/write-bound/<seat>.json``, which no jail is
   shown) registers in ``relaunch_intent.HOLDS`` and clears the seat's relaunch intent where it is placed, so no
   service brings the seat back. Every launch refuses while it stands (``require_clear``), and the status line names
   it (``status``). Only a person's word for that seat lifts it: ``qd up``, ``qd fresh`` or ``qd restart`` with the
@@ -461,17 +465,44 @@ def size(count: int) -> str:
     return f'{count / GiB:.2f} GiB' if count >= GiB else f'{count / MiB:.1f} MiB'
 
 
-def place(runtime, reading: Reading, who: str = 'the write-bound alarm', floor: bool = False) -> dict:
-    """Write the hold, then clear the seat's relaunch intent: from here nothing brings the seat back by itself."""
+def hold_data(reading: Reading, who: str = 'the write-bound alarm', floor: bool = False) -> dict:
     label, held, bound, why = reading.over
     data = dict(version=1, seat=reading.seat, at=datetime.now(timezone.utc).isoformat(), group=label,
                 held=held, bound=bound, why=why, by=who)
     if floor:
         data['floor'] = True  # held, bound: the device's free space and its floor
-    post_dir.ensure_directory(folder(runtime))
-    post_dir.replace_bytes(path(runtime, reading.seat), (json.dumps(data) + '\n').encode())
-    relaunch_intent.clear(runtime, reading.seat, f'its write-bound hold, placed by {who}')
     return data
+
+
+def record(runtime, data: dict) -> None:
+    """Write the hold, then clear the seat's relaunch intent: from here nothing brings the seat back by itself. A
+    write that fails raises, and leaves the intent where it was."""
+    post_dir.ensure_directory(folder(runtime))
+    post_dir.replace_bytes(path(runtime, data['seat']), (json.dumps(data) + '\n').encode())
+    relaunch_intent.clear(runtime, data['seat'], f"its write-bound hold, placed by {data['by']}")
+
+
+def place(runtime, reading: Reading, who: str = 'the write-bound alarm', floor: bool = False) -> dict:
+    """Record the hold for a reading (record)."""
+    data = hold_data(reading, who, floor)
+    record(runtime, data)
+    return data
+
+
+# A hold whose write failed, by seat: the stop's hold data, the jail it stopped (pid -> start, evidence only: nothing
+# is ever killed from it) and why it could not be written. The service's own memory, kept when no file can be.
+_UNRECORDED: dict[str, dict] = {}
+_UNRECORDED_LOCK = threading.Lock()
+
+
+def unrecorded() -> dict[str, dict]:
+    with _UNRECORDED_LOCK:
+        return {seat: dict(entry) for seat, entry in _UNRECORDED.items()}
+
+
+def _failure(error: BaseException) -> str:
+    words = getattr(error, 'strerror', None)
+    return f'{type(error).__name__}: {words}' if words else type(error).__name__
 
 
 def kill(pids: dict[int, str], rounds: int = 10, *, observe=None, spare=None) -> list[int]:
@@ -533,11 +564,62 @@ def _state(pid: int) -> str:
 
 
 def stop(ship, reading: Reading, log, who: str = 'the write-bound alarm', floor: bool = False) -> dict:
-    data = place(ship.runtime, reading, who, floor)
+    """Kill the jail first, then record its hold. A hold that cannot be written never leaves the jail running: the
+    kill stands, the failure is logged, and the hold is kept unrecorded for the next look to write."""
+    data = hold_data(reading, who, floor)
     killed = kill(reading.pids)
+    extra = {'floor': True} if floor else {}
+    try:
+        record(ship.runtime, data)
+    except (OSError, ShipError) as error:
+        with _UNRECORDED_LOCK:
+            _UNRECORDED[reading.seat] = dict(data=data, jail=dict(reading.pids), error=_failure(error))
+        log('error', step='write-bound', seat=reading.seat, error=f'hold unrecorded: {_failure(error)}')
+        log('write-bound', seat=reading.seat, group=data['group'], held=data['held'], bound=data['bound'],
+            why=data['why'], killed=len(killed), recorded=False, **extra)
+        return data
+    with _UNRECORDED_LOCK:
+        _UNRECORDED.pop(reading.seat, None)
     log('write-bound', seat=reading.seat, group=data['group'], held=data['held'], bound=data['bound'],
-        why=data['why'], killed=len(killed), **({'floor': True} if floor else {}))
+        why=data['why'], killed=len(killed), **extra)
     return data
+
+
+def _launched_since(runtime, seat: str, at: str) -> bool:
+    """The seat was launched after its stop: a person's word brought it back (qd up lifts a hold)."""
+    from . import trusted_files
+    try:
+        launch = json.loads(trusted_files.path(runtime, seat, trusted_files.LAUNCH).read_text())
+        return datetime.fromisoformat(launch['at']) > datetime.fromisoformat(at)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def finish_unrecorded(ship, log) -> list[str]:
+    """Each look first writes the holds a stop could not: the seats recorded. It kills nothing: the jail was ended at
+    its stop, and a new jail of the same seat has other processes (a pid is known by its start too). A seat a person
+    has launched since its stop is left as that word made it, and its unrecorded hold is dropped."""
+    recorded = []
+    for seat, entry in unrecorded().items():
+        data = entry['data']
+        if _launched_since(ship.runtime, seat, data['at']):
+            with _UNRECORDED_LOCK:
+                _UNRECORDED.pop(seat, None)
+            log('write-bound', seat=seat, outcome='unrecorded hold dropped: the seat was launched since its stop')
+            continue
+        try:
+            record(ship.runtime, data)
+        except (OSError, ShipError) as error:
+            with _UNRECORDED_LOCK:
+                if seat in _UNRECORDED:
+                    _UNRECORDED[seat]['error'] = _failure(error)
+            continue
+        with _UNRECORDED_LOCK:
+            _UNRECORDED.pop(seat, None)
+        log('write-bound', seat=seat, outcome='hold recorded after its stop', group=data['group'],
+            held=data['held'], bound=data['bound'], why=data['why'])
+        recorded.append(seat)
+    return recorded
 
 
 def read(runtime, seat: str) -> dict | None:
@@ -569,16 +651,26 @@ def reason(runtime, seat: str) -> str | None:
     except ShipError as error:
         return f'{error}; held: qd up {seat} lifts it'
     if data is None:
-        return None
+        entry = unrecorded().get(seat)
+        if entry is None:
+            return None
+        # law: nothing-waits-silently: stopped, with its hold only in the service's memory
+        return (f"jail stopped at its write bound ({_detail(entry['data'])}), its hold unrecorded "
+                f"({entry['error']}); written at the next look, the seat kept down meanwhile")
     if data.get('floor') is True and isinstance(data.get('why'), str):
         return f"stopped by its disk's free-space floor ({data['why']}); held: qd up {seat} lifts it"
+    return f'stopped at its write bound ({_detail(data)}); held: qd up {seat} lifts it'
+
+
+def _detail(data: dict) -> str:
+    if data.get('floor') is True and isinstance(data.get('why'), str):
+        return f"its disk's free-space floor, {data['why']}"
     try:
         what = f"{data['group']} {size(int(data['held']))} of {size(int(data['bound']))}"
     except (KeyError, TypeError, ValueError):
         what = 'its write bound'
     why = data.get('why') if isinstance(data.get('why'), str) else ''
-    detail = f'{what}' if why in ('', 'over its bound') else f'{what}, {why}'
-    return f'stopped at its write bound ({detail}); held: qd up {seat} lifts it'
+    return f'{what}' if why in ('', 'over its bound') else f'{what}, {why}'
 
 
 def floor_reason(runtime, seat: str) -> str | None:
@@ -615,12 +707,16 @@ def lift(runtime, seat: str, who: str) -> bool:
 
 def status(ship) -> list[str]:
     """One line for each seat held at its write bound, and for each left unmeasured: law: nothing-waits-silently."""
+    pending = sorted(unrecorded())
     try:
         names = sorted(name[:-5] for name in os.listdir(folder(ship.runtime)) if name.endswith('.json'))
     except FileNotFoundError:
-        return floor_unread_status(ship.runtime)  # no hold was ever placed and no seat left unmeasured
+        # no hold was ever written and no seat left unmeasured; a hold unrecorded is still named
+        return [f'{name}: {reason(ship.runtime, name)}' for name in pending] + floor_unread_status(ship.runtime)
     except OSError as error:
-        return [f'write-bound holds unreadable ({type(error).__name__}); qd status reads them']
+        return [f'write-bound holds unreadable ({type(error).__name__}); qd status reads them',
+                *(f'{name}: {reason(ship.runtime, name)}' for name in pending)]
+    names = sorted(set(names) | set(pending))
     lines = []
     for name in names:
         if words := reason(ship.runtime, name):
@@ -733,6 +829,10 @@ def look(ship, log, *, bounds=None, budget: Budget | None = None, state: State |
     """
     state = State() if state is None else state
     seconds = LOOK if seconds is None else seconds
+    try:
+        finish_unrecorded(ship, log)  # first, the holds a stop could not write: never a kill
+    except Exception as error:  # never keeps the alarm from its look
+        log('error', step='write-bound', error=repr(error))
     began = time.monotonic()
     stopped, readings, unreached = [], {}, []
     running = jails(ship)
