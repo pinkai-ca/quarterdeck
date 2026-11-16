@@ -937,6 +937,11 @@ class Service:
         """The caller owns the same seat claim as every lifecycle transition."""
         if message.id in self.store.settled_notices(seat.name):
             return f'{message.short} to {seat.name} · settled notice; not delivered'
+        from . import pr_screen
+        if not pr_screen.admits(self.runtime, seat.name, message.id):
+            # A hand's conversation holds an outsider's text while its screen's hold stands: nothing but the screen's
+            # own instruction is typed there. The message waits, unread and with no attempt, until the release.
+            return f'{message.short} to {seat.name} · waits: {pr_screen.SCREENING}'
         door = Door(seat)
         speed = message.speed
         reading = door.reading()
@@ -951,6 +956,8 @@ class Service:
                 reserved, transitioning = compaction.withheld(self.runtime, seat.name)
                 if transitioning or message.id in reserved:
                     return f"{seat.name}: compaction handoff/transition reserved; held for successor"
+                if not pr_screen.admits(self.runtime, seat.name, message.id):  # a hold set since the first look
+                    return f'{message.short} to {seat.name} · waits: {pr_screen.SCREENING}'
                 bound = pending_delivery.current_identity(seat)
                 if bound is None:
                     return f'{seat.name}: current pane/process/launch unproved; message waits unread'

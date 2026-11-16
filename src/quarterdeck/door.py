@@ -455,10 +455,18 @@ class Door:
         return screen
 
     def deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None, verify=None, *, human_wake: bool = False) -> Delivery:
-        from . import post_view, shutdown
+        from . import post_view, pr_screen, shutdown
+        runtime = getattr(getattr(self.seat, 'ship', None), 'runtime', None)
+        if runtime is not None:
+            # Every path that types meets this: while a hand's screen hold stands, its conversation holds an outsider's
+            # text, and only the screen's own instruction, named in the hold, is typed there; never a control or text
+            # with no message.
+            data = getattr(proof, 'data', None)
+            message = data.get('message') if isinstance(data, dict) else None
+            if not pr_screen.admits(runtime, self.seat.name, message):
+                return Delivery('withheld', pr_screen.SCREENING)
         # A jailed seat reads the post only through its view: bring it up to date before anything is typed, so the
         # message is there when the seat opens it. The message itself is typed whole either way.
-        runtime = getattr(getattr(self.seat, 'ship', None), 'runtime', None)
         if runtime is not None and post_view.folder(runtime, self.seat.name).is_dir():
             try:
                 post_view.refresh(runtime, self.seat.name)

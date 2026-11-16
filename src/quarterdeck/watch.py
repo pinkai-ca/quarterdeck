@@ -188,6 +188,12 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
                            order, tokens_today(seat), 'unknown', None, 'unknown',
                            wake='human wake unknown: seat selection unresolved' if seat.ship.session_of(seat.spec).human else None)
     door = Door(seat).reading() if act.state not in ("off",) else Reading(False, act.detail or "off", "qd up")
+    from . import pr_screen
+    if pr_screen.held(seat.ship.runtime, seat.name):
+        # A hand screening a pull request takes no work: nothing is typed to it until its hold is released, and its
+        # row says so first, whatever its record reads (an unreadable hold holds the same).
+        act = Activity('screening', f"a pull request · {act}")
+        door = Reading(False, pr_screen.SCREENING, "the screen's release")
     observed = running_settings(seat) if act.state != "off" else {}
     running = observed.get("model")
     launched = seat.launched()

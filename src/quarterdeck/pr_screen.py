@@ -416,6 +416,54 @@ def recover(runtime: Path, hands, outcomes=None) -> list[dict]:
     return finished
 
 
+HOLD_BYTES = 4096  # a hold marker is one short line; a longer one is not read, and admits nothing
+SCREENING = 'screening a pull request; nothing is typed to it until its hold is released'
+
+
+def _marker(runtime: Path, seat: str):
+    """The hold marker's fields, or None where there is no hold; raises OSError or ValueError where it cannot be
+    read as one: never through a link, never past its bound."""
+    path = _screening_dir(runtime) / f'{seat}.json'
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('a hold marker that is not a file')
+        data = os.read(fd, HOLD_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > HOLD_BYTES:
+        raise ValueError('a hold marker past its bound')
+    fields = json.loads(data)
+    if not isinstance(fields, dict):
+        raise ValueError('a hold marker that is not one')
+    return fields
+
+
+def admit(runtime: Path, seat: str, message_id: str) -> None:
+    """Name in the hold the one message the door may type to the screening hand: the screen's own instruction."""
+    fields = _marker(runtime, seat)
+    if fields is None:
+        raise ShipError(f'{seat}: no screen hold to admit its instruction to')
+    durable.replace_file(_screening_dir(runtime) / f'{seat}.json',
+                         json.dumps({**fields, 'instruction': message_id}) + '\n')
+
+
+def admits(runtime: Path, seat: str, message_id: str | None) -> bool:
+    """Whether the door may type ``message_id`` to ``seat``: always where no hold stands; while one stands, only the
+    instruction the screen named in it. A hold that cannot be read admits nothing, and nor does a message with no id."""
+    if not held(runtime, seat):
+        return True
+    try:
+        fields = _marker(runtime, seat)
+    except (OSError, ValueError):
+        return False
+    return (fields is not None and isinstance(message_id, str) and bool(message_id)
+            and fields.get('instruction') == message_id)
+
+
 def release(runtime: Path, seat: str) -> None:
     (_screening_dir(runtime) / f'{seat}.json').unlink(missing_ok=True)
 
@@ -484,7 +532,8 @@ def status(runtime: Path) -> list[str]:
             since = json.loads((_screening_dir(runtime) / f'{name}.json').read_text()).get('since', '?')
         except (OSError, ValueError, AttributeError):
             since = '?'
-        lines.append(f"{name}: screening a pull request since {str(since)[11:16]}; its posts are held")
+        lines.append(f"{name}: screening a pull request since {str(since)[11:16]}; "
+                     "its posts are held, and nothing is typed to it")
     return lines
 
 
@@ -966,6 +1015,7 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
         _journal(runtime, hand, home_before=home_before, before=before)
         piece = _write_piece(hands.folder(hand), folder, dict(sorted(files.items())))
         instruction = hands.instruct(hand, INSTRUCTION.format(files=', '.join(sorted(files)), folder=folder))
+        admit(runtime, hand, instruction)  # the one message the door types to the hand while the hold stands
         deadline = clock() + answer_seconds
         answer = _read_answer(piece)
         while answer is None and clock() < deadline:
