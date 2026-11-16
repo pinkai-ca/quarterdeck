@@ -50,8 +50,9 @@ def block(text: str) -> str:
 
 
 SUMMARY_LINES = 40
-NEVER_COLLECTED_SETUP = ('Collection never finished: pytest\'s evidence recorder never started, so the run stopped in '
-                         'setup, before pytest ran. What it would have run is unknown.')
+NEVER_COLLECTED_SETUP = ('Collection never finished: the run stopped before pytest\'s evidence recorder started, in the '
+                         'tool\'s setup or as pytest began (a target conftest that fails to import ends it there). '
+                         'What it would have run is unknown.')
 NEVER_COLLECTED_DURING = ('Collection never finished: pytest started and the run stopped during its collection. What it '
                           'would have run is unknown.')
 COLLECTION_INTERRUPTED = ('Collection was interrupted: pytest recorded only part of it, so what it would have run is '

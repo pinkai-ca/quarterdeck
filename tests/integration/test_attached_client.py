@@ -2,6 +2,7 @@
 attaches, and its file is gone on every exit, so plain pytest leaves nothing in the system's temporary folder."""
 
 import os
+import shutil
 import tempfile
 
 import pytest
@@ -9,6 +10,8 @@ import pytest
 from .waiting import attached_client
 
 MARK = 'synthetic client output'
+# As the other attach tests: a client is attached through the pty helper; without it there is nothing to attach.
+needs_script = pytest.mark.skipif(shutil.which('script') is None, reason='no pty helper to attach a client')
 
 
 @pytest.fixture
@@ -22,6 +25,7 @@ def logs(folder):
     return sorted(folder.glob('tmux-client-*.log'))
 
 
+@needs_script
 def test_a_ready_client_keeps_its_output_while_attached_and_leaves_no_file(own_tmp):
     term = os.environ.get('TERM')
     with attached_client('sleep 30', lambda: True) as client:
@@ -30,6 +34,7 @@ def test_a_ready_client_keeps_its_output_while_attached_and_leaves_no_file(own_t
     assert os.environ.get('TERM') == term, 'only the client is given its terminal type'
 
 
+@needs_script
 def test_a_client_that_never_attaches_fails_with_its_whole_output_and_leaves_no_file(own_tmp):
     def attached():
         if any(MARK in path.read_text(errors='replace') for path in logs(own_tmp)):
@@ -45,6 +50,7 @@ def test_a_client_that_never_attaches_fails_with_its_whole_output_and_leaves_no_
     assert logs(own_tmp) == []
 
 
+@needs_script
 def test_a_failure_inside_an_attached_client_is_raised_untouched_and_leaves_no_file(own_tmp):
     with pytest.raises(AssertionError) as failure:
         with attached_client('sleep 30', lambda: True):
