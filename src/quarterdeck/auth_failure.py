@@ -283,6 +283,7 @@ def run(service):
             step = 'the relaunch'
             service.request_wait = None
             proof = service.relaunch(seat, True)
+            step = 'the relaunch log'  # the relaunch has returned: what fails from here is not the relaunch
             service.log('authentication', seat=seat.name,
                         proof=(f'{seat.name}: renewed pool sign-in; relaunch with resume ({len(attempts)}/{MAX_ATTEMPTS}) · {proof}'
                                if proof is not None else f'{seat.name}: sign-in resume held by {held_by(service)}'))
@@ -298,7 +299,7 @@ def run(service):
                 try:
                     _fail_latest(seat, attempts, f'raised {type(error).__name__}')
                 except (OSError, ValueError, TypeError):
-                    pass  # unrecorded, the alarm below still goes; the attempt stays consumed
+                    pass  # unrecorded, the status still reads waiting and no alarm goes, as before; the attempt stays consumed
             service.needs_human(seat)
 
 

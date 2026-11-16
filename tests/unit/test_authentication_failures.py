@@ -463,3 +463,25 @@ def test_a_started_relaunch_still_waits_for_the_renewed_pass(tmp_path, monkeypat
     assert auth_failure.waiting(auth_failure.status(seat))
     alarm.needs_human(seat)  # a reading in the window: no alarm while the started relaunch waits
     alarm.store.new.assert_not_called()
+
+
+def test_a_started_relaunch_whose_log_write_fails_is_not_a_failed_relaunch(tmp_path, monkeypatch):
+    """The relaunch has returned a proof: a failure of the log line after it is that, never a failed relaunch."""
+    now, _, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    alarm = real_alarm(monkeypatch, state)
+    service.needs_human = alarm.needs_human
+    written = []
+
+    def log(kind, **fields):
+        if not written:
+            written.append(fields)
+            raise OSError('synthetic log failure')
+        written.append(fields)
+    service.log = Mock(side_effect=log)
+    auth_failure.run(service)
+    service.relaunch.assert_called_once_with(seat, True)
+    assert auth_failure.failed(auth_failure._attempt(seat)) is None, 'the relaunch started: no failure recorded'
+    assert 'held by the relaunch log (OSError)' in written[-1]['proof'], 'its own step, not the relaunch'
+    assert auth_failure.waiting(auth_failure.status(seat)), 'it still waits for the renewed pass'
+    alarm.store.new.assert_not_called()
