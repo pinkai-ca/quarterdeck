@@ -18,6 +18,7 @@ END_REASON selects the measured stop or length terminal label (default stop).
 from __future__ import annotations
 
 import argparse
+import codecs
 import os
 import re
 import select
@@ -38,6 +39,19 @@ DIALOGS = {
     "daybreak": ("Daybreak", "What is new in this build", "Press Esc to dismiss", "\x1b"),
     "unknown": ("Something else", "A notice nobody has seen before", "Press 1 to continue", "1"),
 }
+
+
+def whole(data: bytes) -> tuple[bytes, bytes]:
+    """``data`` cut where its input stops being whole, and the rest, held for the next read: from an
+    unfinished paste's start marker, or from a paste start marker cut short at the end."""
+    start, end = PASTE_START.encode(), PASTE_END.encode()
+    opened = data.rfind(start)
+    if opened >= 0 and data.find(end, opened) < 0:
+        return data[:opened], data[opened:]
+    for size in range(len(start) - 1, 1, -1):  # "\x1b[" up to "\x1b[200": a lone ESC is a key
+        if data.endswith(start[:size]):
+            return data[:-size], data[-size:]
+    return data, b""
 
 
 def now() -> str:
@@ -62,6 +76,9 @@ class Program:
                 raise ValueError('fake pi end_reason must be stop or length')
             self.record.end_reason = reason
         self.box = ""
+        self.unread = b""  # input held back until it is whole: an unfinished paste, a cut paste marker
+        self.spent_escape = False  # the last read ended in a lone ESC, taken as the key
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")  # a character cut between reads stays whole
         self.queue: list[str] = []
         self.enqueued: list[str] = []
         self.take_now = False
@@ -113,16 +130,28 @@ class Program:
     # -- input -------------------------------------------------------------------------
 
     def read(self, timeout: float) -> str:
+        """What has arrived and is whole. A paste is acted on only once its end marker has come, however
+        long the rest of it takes: a terminal program reads a bracketed paste as one, whatever the reads."""
         ready, _, _ = select.select([sys.stdin], [], [], timeout)
         if not ready:
             return ""
-        data = os.read(sys.stdin.fileno(), 65536)
-        while data.endswith(b"\x1b") or (b"\x1b[200~" in data and b"\x1b[201~" not in data):
+        data = self.unread + os.read(sys.stdin.fileno(), 65536)
+        # A paste's start marker cut right after its ESC: that ESC was taken as the key (below); the rest of
+        # the marker still opens the paste, so the message is taken whole and once, however late it came.
+        rest = PASTE_START[1:].encode()
+        if self.spent_escape and (data.startswith(rest) or rest.startswith(data)):
+            data = PASTE_START[:1].encode() + data
+        # A lone ESC is a key (the door's interrupt, which nothing follows) or the first byte of a sequence.
+        # No byte tells them apart: like a terminal program, the simulator decides by a short wait. A key
+        # has no end to wait for, so this one wait stays; what it can misread is mended just above.
+        while data.endswith(b"\x1b"):
             more, _, _ = select.select([sys.stdin], [], [], 0.05)
             if not more:
                 break
             data += os.read(sys.stdin.fileno(), 65536)
-        return data.decode("utf-8", "replace")
+        data, self.unread = whole(data)
+        self.spent_escape = data.endswith(b"\x1b")
+        return self.decoder.decode(data)
 
     @staticmethod
     def tokens(data: str):
