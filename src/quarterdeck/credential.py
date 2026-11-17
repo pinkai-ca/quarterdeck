@@ -42,7 +42,7 @@ from urllib.parse import quote
 
 from . import harness as harnesses, seat_files
 from .seat import Seat
-from .ship import Pool, Ship, ShipError
+from .ship import Pool, Ship, ShipError, valid_name
 
 WARN_AHEAD = timedelta(hours=48)
 WATCH_SECONDS = 0.5  # how often the service's watch looks at the linked credential names
@@ -294,7 +294,8 @@ def _held(ship: Ship) -> list[tuple[Path, str | None, str | None]]:
         try:
             data = json.loads(record.read_text())
             name, pool = data["seat"], data["pool"]
-            valid = (isinstance(name, str) and name == record.stem and "/" not in name and name not in ship.seats
+            # The name is an rmtree's folder under runtime/seats: a seat folder's own rule, never a hidden or path name.
+            valid = (isinstance(name, str) and name == record.stem and valid_name(name) and name not in ship.seats
                      and pool in ship.pools)
         except (OSError, ValueError, KeyError, TypeError):
             valid = False

@@ -330,3 +330,22 @@ def test_a_failing_watch_logs_each_cause_once_and_its_clearing_once(crew, monkey
     cleared = [e for e in events if e["event"] == "credential-watch-cleared"]
     assert len(cleared) == 1 and cleared[0]["causes"] == ["PermissionError EACCES", "ValueError"], cleared
     assert SENTINEL not in log and "synthetic" not in log, "no token value nor its path in any log line"
+
+
+@pytest.mark.parametrize("name", [".x", "a\\b"])
+def test_a_held_record_naming_a_hidden_or_path_like_seat_is_unreadable_named_and_never_acted_on(crew, name):
+    """The record's name is an rmtree's folder under runtime/seats: it must pass a seat folder's own name rule."""
+    from quarterdeck import seat as seatmod
+    service, source = crew
+    folder = service.ship.runtime / "seats" / name
+    (folder / "home").mkdir(parents=True)
+    renew_by_replacement(folder / "home" / source.name, fake(RENEWED, 8 * 3600))
+    held = service.ship.runtime / credential.HELD
+    held.mkdir(parents=True)
+    record = held / f"{name}.json"
+    record.write_text(json.dumps({"seat": name, "pool": "fake"}) + "\n")
+    service.credentials()  # the pass that would settle a readable record
+    assert folder.is_dir() and read_token(folder / "home" / source.name) == RENEWED, "nothing of it removed"
+    assert record.is_file() and read_token(source) == "fake-old", "never acted on"
+    words = seatmod.leftover_checks(service.ship)
+    assert words == [f"{name}: a held renewal's record is unreadable; inspect runtime/{credential.HELD}"], words
