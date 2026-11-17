@@ -538,7 +538,7 @@ def test_malformed_extension_is_a_visible_hold_not_an_absent_reservation(world, 
     assert world.native.calls == calls
 
 
-def measured_hand_turn(record, *, capped_reasoning=8192, capped_written=0, tool=False):
+def measured_hand_turn(record, *, capped_reasoning=8192, capped_written=0, tool=False, text=False):
     """The structure of a hand's capped grading turn as measured on 16 November 2026, with synthetic content:
     one accepted order, two completed tool steps with brief reasoning, then a step whose whole 8,192-token output
     went to reasoning, finished 'length' with no text part."""
@@ -580,6 +580,8 @@ def measured_hand_turn(record, *, capped_reasoning=8192, capped_written=0, tool=
     if tool:  # a call made within the capped step: work, not thinking alone
         part(con, 'capped-tool', 'capped', 'root', at + 40, {'type': 'tool', 'tool': 'read', 'callID': 'capped-call',
              'state': {'status': 'completed', 'time': {'start': MS + at + 40, 'end': MS + at + 45}}})
+    if text:  # a text part beside the thinking: an answer the cap cut, not thinking alone
+        part(con, 'capped-text', 'capped', 'root', at + 45, {'type': 'text', 'text': 'Synthetic cut answer'})
     part(con, 'capped-end', 'capped', 'root', at + 50, {'type': 'step-finish', 'reason': 'length',
                                                         'tokens': tokens, 'cost': 0})
     con.commit()
@@ -619,6 +621,38 @@ def test_a_capped_turn_with_a_tool_call_gets_no_continuation(world):
     measured_hand_turn(world.record, capped_reasoning=8189, capped_written=3, tool=True)
     world.native.folder = 'hands/synthetic'
     assert world.seat.harness.state(world.record).capped is None, 'a call is work: never a thinking-only cap'
+    recovery.run(world.service)
+    proofs, errors = pending.journals(world.seat)
+    assert not errors and proofs == [] and world.native.inputs == []
+
+
+def test_a_hand_whose_cap_counts_54_written_tokens_gets_its_one_continuation(world):
+    """Measured on a hand on 17 November 2026: step-start, one reasoning part and step-finish, output 54 and
+    reasoning 8,138 at the 8,192 cap, finish 'length', no text part. A fixed bound of 32 written refused it."""
+    measured_hand_turn(world.record, capped_reasoning=8138, capped_written=54)
+    world.native.folder = 'hands/synthetic'
+    state = world.seat.harness.state(world.record)
+    assert (state.capped.reasoning, state.capped.written) == (8138, 54) and state.turn_open is False
+    recovery.run(world.service)
+    proof = journal(world)
+    assert proof.data['phase'] == 'delivered' and proof.data['recovery']['mode'] == 'done'
+    assert len(world.native.inputs) == 1
+
+
+def test_the_same_turn_with_a_text_part_beside_it_gets_no_continuation(world):
+    measured_hand_turn(world.record, capped_reasoning=8138, capped_written=54, text=True)
+    world.native.folder = 'hands/synthetic'
+    assert world.seat.harness.state(world.record).capped is None, 'a text part is an answer the cap cut'
+    recovery.run(world.service)
+    proofs, errors = pending.journals(world.seat)
+    assert not errors and proofs == [] and world.native.inputs == []
+
+
+def test_written_above_reasoning_at_the_cap_gets_no_continuation(world):
+    measured_hand_turn(world.record, capped_reasoning=4000, capped_written=4192)
+    world.native.folder = 'hands/synthetic'
+    state = world.seat.harness.state(world.record)
+    assert (state.capped.reasoning, state.capped.written) == (4000, 4192), 'the reader binds it: no text part'
     recovery.run(world.service)
     proofs, errors = pending.journals(world.seat)
     assert not errors and proofs == [] and world.native.inputs == []
