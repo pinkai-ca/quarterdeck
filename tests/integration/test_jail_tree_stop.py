@@ -28,6 +28,7 @@ from quarterdeck import credential, jail_end, sandbox, seat as seatmod, service,
 
 from .test_write_bound import jail_for, jailed
 from .waiting import wait_for
+from tests.own_tmux_servers import OwnServers
 
 SRC = Path(jail_end.__file__).resolve().parent.parent
 READY = "import sys, time; open(sys.argv[1] + '/ready', 'w').close(); time.sleep(600)"
@@ -158,6 +159,8 @@ def test_a_relay_ended_by_its_panes_hangup_ends_and_reaps_what_it_adopted(short)
     script = short / 'launch.sh'
     script.write_text(f'#!/bin/sh\nexec {shlex.join(relay_words(short, pidfile, 600))}\n')
     assert tmux('new-session', '-d', '-s', 'relay', f'sh {shlex.quote(str(script))}').returncode == 0
+    servers = OwnServers()  # the test's own server, ended by the pid it ran as (tests/own_tmux_servers.py)
+    servers.keep(socket, env=env)
     try:
         assert wait_for(pidfile.exists, 30)
         orphan = orphan_of(pidfile)
@@ -167,7 +170,7 @@ def test_a_relay_ended_by_its_panes_hangup_ends_and_reaps_what_it_adopted(short)
         assert wait_for(lambda: not write_bound.alive(relay), 30), 'the relay ended at its hangup'
         assert write_bound.alive(orphan) == {}, 'and it ended what it adopted before it did'
     finally:
-        tmux('kill-server')
+        servers.close()
         if pidfile.exists():
             pid = int(pidfile.read_text())
             if (left := write_bound._processes().get(pid)) is not None:
@@ -573,7 +576,8 @@ def test_a_server_whose_socket_file_was_unlinked_keeps_its_panes_jails(ship, tmp
     script.write_text(f'#!/bin/sh\nexec {shlex.join(argv_of(ship, workspace))}\n')
     server = OwnServer(short)
     assert server('new-session', '-d', '-s', 'sweep', f'sh {shlex.quote(str(script))}').returncode == 0
-    pid_of_server = server.server_pid()
+    servers = OwnServers()  # kept before its socket file goes: ended by its pid (tests/own_tmux_servers.py)
+    servers.keep(server.socket)
     try:
         assert wait_for(lambda: (workspace / 'ready').exists(), 60)
         [(_, pid, start)] = jail_end.orphans(ship.runtime, set(), seat='worker-1')[0]
@@ -588,9 +592,7 @@ def test_a_server_whose_socket_file_was_unlinked_keeps_its_panes_jails(ship, tmp
         evidence = ship.runtime / 'evidence' / 'jail-sweep'
         assert not evidence.exists() or not any(evidence.iterdir()), 'no evidence'
     finally:
-        if pid_of_server:
-            os.kill(pid_of_server, signal.SIGTERM)  # the test's own server, by the pid it read; its panes end with it
-            wait_for(lambda: not write_bound._processes().get(pid_of_server), 10)
+        servers.close()  # the test's own server, by the pid it ran as; its panes end with it
         cleanup(ship)
 
 

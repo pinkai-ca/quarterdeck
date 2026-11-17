@@ -183,7 +183,9 @@ def test_a_running_servers_environment_is_cleaned_at_the_service_start(ship, mon
     socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     old = dict(os.environ, **DESKTOP, QD_DECOY_OPENAI_API_KEY='decoy', DECOY_CLIENT_SECRET='decoy', QD_SEAT='signer',
                SUDO_ASKPASS='/usr/bin/ssh-askpass')
-    subprocess.run(['tmux', '-S', str(socket), 'new-session', '-d', '-s', 'Old', 'sleep 600'], env=old, check=True)
+    from tests.own_tmux_servers import OwnServers
+    servers = OwnServers()  # the test's own server, ended in the end by the pid it ran as (tests/own_tmux_servers.py)
+    servers.start(socket, '-s', 'Old', 'sleep 600', env=old)
     subprocess.run(['tmux', '-S', str(socket), 'set-environment', '-g', 'DECOY_JMAP_TOKEN', 'decoy'], check=True)
     for name, value in DESKTOP.items():
         subprocess.run(['tmux', '-S', str(socket), 'set-environment', '-g', name, value], check=True)
@@ -224,6 +226,7 @@ def test_a_running_servers_environment_is_cleaned_at_the_service_start(ship, mon
     finally:
         servicectl.stop(ship.runtime)
         seatmod.bring_down(ship, server)
+        servers.close()  # its 'Old' session is no seat's: bring_down leaves it, and so its server
 
 
 def test_a_server_or_session_that_holds_askpass_still_gives_it_to_no_seat(ship, monkeypatch):  # noqa: F811

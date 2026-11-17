@@ -33,9 +33,10 @@ def test_pytest_cannot_query_inherited_parent_server(tmp_path, runner_prepared, 
     clean["QD_TMUX_SOCKET"] = str(anchor / "unused-qd.sock")
     started = False
     socket_identity = None
+    from tests.own_tmux_servers import OwnServers
+    servers = OwnServers()  # the test's own server, ended by the pid it ran as (tests/own_tmux_servers.py)
     try:
-        tmux(["-S", str(socket), "-f", "/dev/null", "new-session", "-d", "-s", "synthetic-parent",
-              "sleep 120"], clean)
+        servers.start(socket, "-s", "synthetic-parent", "sleep 120", env=clean)
         started = True
         socket_identity = socket.lstat()
         parent = tmux(["-S", str(socket), "display-message", "-p", "#{socket_path}"], clean).stdout.strip()
@@ -97,7 +98,7 @@ def test_default_query_is_isolated():
             "runner_prepared": runner_prepared, "child": observed, "parent_alive": True}))
     finally:
         if started:
-            tmux(["-S", str(socket), "kill-server"], clean)
+            servers.close()
             # tmux leaves its socket pathname: remove only this exact, proven-closed endpoint.
             assert tmux(["-S", str(socket), "display-message", "-p", "#{pid}"], clean,
                         check=False).returncode != 0

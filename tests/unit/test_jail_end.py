@@ -272,14 +272,12 @@ def test_a_server_with_no_absolute_socket_is_never_read_as_gone(tmp_path):
 
 
 def test_every_tmux_server_of_this_user_is_found_by_its_process_name(tmp_path):
+    from tests.own_tmux_servers import OwnServers
     folder = Path(tempfile.mkdtemp(prefix='qdts-', dir='/tmp'))
-    socket = str(folder / 's')
-    env = {key: value for key, value in os.environ.items() if key not in ('TMUX', 'TMUX_PANE')}
-    subprocess.run(['tmux', '-S', socket, '-f', '/dev/null', 'new-session', '-d', 'sleep 60'], env=env, check=True)
-    pid = int(subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '#{pid}'], env=env, capture_output=True,
-                             text=True).stdout)
+    servers = OwnServers()  # this test's own server, ended by the pid it ran as (tests/own_tmux_servers.py)
     try:
+        pid = servers.start(folder / 's', 'sleep 60')['pid']
         assert pid in jail_end.tmux_servers() and os.getpid() not in jail_end.tmux_servers()
     finally:
-        os.kill(pid, signal.SIGTERM)  # this test's own server, by its pid
+        servers.close()
         shutil.rmtree(folder, ignore_errors=True)

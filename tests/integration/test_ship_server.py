@@ -21,6 +21,7 @@ from quarterdeck.ship import ShipError
 from quarterdeck.tmux import Tmux, ship_socket
 
 from ..conftest import ROOT, TEST_TICK
+from tests.own_tmux_servers import OwnServers
 
 
 @pytest.fixture
@@ -193,12 +194,12 @@ def plain_default(ship):
     """A stand-in for tmux's default server that is no private namespace: a plain socket in a short folder."""
     folder = Path(tempfile.mkdtemp(prefix="p", dir=os.environ["TMUX_TMPDIR"]))
     socket = folder / "default"
+    servers = OwnServers()  # ended by the pid it ran as, never through its socket (tests/own_tmux_servers.py)
     try:
-        subprocess.run(["tmux", "-S", str(socket), "-f", "/dev/null", "new-session", "-d", "-s", "Bridge",
-                        "-e", f"QD_SHIP={ship.folder}", "sleep 600"], check=True, capture_output=True, timeout=10)
+        servers.start(socket, "-s", "Bridge", "-e", f"QD_SHIP={ship.folder}", "sleep 600")
         yield socket
     finally:
-        subprocess.run(["tmux", "-S", str(socket), "kill-server"], capture_output=True, timeout=10)
+        servers.close()
         shutil.rmtree(folder)
 
 

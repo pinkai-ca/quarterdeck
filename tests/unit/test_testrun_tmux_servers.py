@@ -13,13 +13,12 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import subprocess
 import tempfile
-import time
 
 import pytest
 
-from tests.testrunner import procs, services
+from tests.own_tmux_servers import OwnServers, gone
+from tests.testrunner import services
 
 pytestmark = pytest.mark.skipif(shutil.which('tmux') is None, reason='no tmux')
 
@@ -30,59 +29,26 @@ def clean_env(tmpdir: Path) -> dict:
     return env
 
 
-SAFETY = 30.0  # seconds a server has to end after SIGTERM before SIGKILL: far above any stall of a busy machine
-
-
-class Servers:
-    """Private servers this test starts, each ended in the end by the pid it kept (close)."""
+class Servers(OwnServers):
+    """Private servers this test starts, in a short folder of its own, each ended in the end by the pid it kept (close,
+    the shared helper's: tests/own_tmux_servers.py)."""
 
     def __init__(self):
-        self.started = []
+        super().__init__()
         self.folder = Path(tempfile.mkdtemp(prefix='qdts-', dir='/tmp'))  # a socket path must stay short
 
+    @property
+    def started(self) -> list[dict]:
+        return self.kept
+
     def start(self, name: str, tmpdir: Path, socket: Path | None = None) -> dict:
-        socket = socket or self.folder / name
-        subprocess.run(['tmux', '-S', str(socket), '-f', '/dev/null', 'new-session', '-d', '-s', name, 'sleep 300'],
-                       env=clean_env(tmpdir), check=True, timeout=10)
-        pid = int(subprocess.run(['tmux', '-S', str(socket), 'display-message', '-p', '#{pid}'],
-                                 env=clean_env(tmpdir), capture_output=True, text=True, check=True,
-                                 timeout=10).stdout)
-        server = {'pid': pid, 'start': procs.start_time(pid), 'socket': str(socket)}
-        self.started.append(server)
-        return server
+        return super().start(socket or self.folder / name, '-s', name, 'sleep 300', env=clean_env(tmpdir))
 
     def close(self) -> list[str]:
-        """End each server this test started by the pid it kept, never through its socket, which a busy machine may not
-        have made again in time. A pid is signalled only while it is still that server: the same pid with the same
-        start time (procs.alive, which also reads a zombie as ended), read again just before each signal, so a reused
-        pid is never touched, and no other server is. SIGCONT (a stopped one wakes), SIGTERM, a wait on its exit; past
-        SAFETY, SIGKILL. Returns what it did, one line a server, and fails loudly if any is still alive."""
-        done = []
-        for server in self.started:
-            pid, identity = server['pid'], {server['pid']: server['start']}
-            if not procs.alive(identity):
-                done.append(f'{pid}: already gone')
-                continue
-            for sig in (signal.SIGCONT, signal.SIGTERM):
-                if procs.alive(identity):
-                    os.kill(pid, sig)
-            deadline = time.monotonic() + SAFETY
-            while procs.alive(identity) and time.monotonic() < deadline:
-                time.sleep(0.02)
-            if not procs.alive(identity):
-                done.append(f'{pid}: ended by SIGTERM')
-                continue
-            os.kill(pid, signal.SIGKILL)
-            for _ in range(250):  # a fixed count, not the clock: SIGKILL cannot be refused, only take a moment
-                if not procs.alive(identity):
-                    break
-                time.sleep(0.02)
-            done.append(f'{pid}: killed past {SAFETY:g}s')
-        shutil.rmtree(self.folder, ignore_errors=True)
-        left = [server['pid'] for server in self.started if procs.alive({server['pid']: server['start']})]
-        if left:
-            raise AssertionError(f'test tmux servers still alive after SIGKILL: {left}')
-        return done
+        try:
+            return super().close()
+        finally:
+            shutil.rmtree(self.folder, ignore_errors=True)
 
 
 @pytest.fixture
@@ -92,10 +58,6 @@ def servers():
         yield owned
     finally:
         owned.close()
-
-
-def gone(server) -> bool:
-    return not procs.alive({server['pid']: server['start']})
 
 
 def test_an_interrupted_runs_servers_legacy_and_never_recorded_are_ended(tmp_path, servers):
@@ -231,7 +193,7 @@ def test_close_kills_at_the_safety_bound_a_server_that_does_not_answer(tmp_path,
     """A server that never answers SIGTERM (here the SIGTERM is dropped) is killed once the safety bound passes; the
     stalled clock passes it at once, so there is no real waiting."""
     from tests.stalled_clock import stall
-    import tests.unit.test_testrun_tmux_servers as module
+    import tests.own_tmux_servers as module  # close() is the shared helper's: its own os and clock
     owned = Servers()
     server = owned.start('deaf', tmp_path)
     real = os.kill
@@ -254,7 +216,7 @@ def test_close_never_signals_a_pid_that_is_now_another_process(monkeypatch):
     owned = Servers()
     owned.started.append({'pid': os.getpid(), 'start': 'not-this-start', 'socket': str(owned.folder / 'x')})
     sent = []
-    import tests.unit.test_testrun_tmux_servers as module
+    import tests.own_tmux_servers as module
     monkeypatch.setattr(module.os, 'kill', lambda pid, sig: sent.append((pid, sig)))
     assert owned.close() == [f'{os.getpid()}: already gone']
     assert sent == []
