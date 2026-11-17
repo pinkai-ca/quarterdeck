@@ -493,6 +493,8 @@ def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None,
             continue
         if ignored is not None and proof.path == ignored.path and proof.data["phase"] == "prepared":
             continue  # only this delivery's pre-paste check may ignore its own reservation
+        if str(proof.path) in _RETYPING:
+            continue  # the one look retyping it, in this process: its journal stands until the retype has typed
         if not proof.same_launch(seat) and screen and screen.box == "" and not screen.unknown and not screen.interruption:
             continue  # another empty launch is usable; the old uncertainty remains a global notice
         if reading := proof.reading(seat, screen):
@@ -886,8 +888,8 @@ def explicit_resend(service: Service, seat: Seat, messages: list[post.Message], 
                 and any(attempts[name].message in requested for name in proof.data['attempts'])):
             raise RecordError('closed receipt refresh settlement pending; original input never resent')
     for proof in proofs:
-        if proof.data['phase'] in TERMINAL:
-            continue
+        if proof.data['phase'] in TERMINAL or str(proof.path) in _RETYPING:
+            continue  # the one look's retype settles its own journal once its second typing is proved
         carried = [attempts[name] for name in proof.data["attempts"]]
         if {a.message for a in carried} <= requested:
             proof.save(phase="cancelled", resolution="explicit resend requested with empty box")
@@ -910,24 +912,46 @@ def detached(seat: Seat) -> list[str]:
 # in the box (submit); the box is empty, the seat idle by the one idle proof and the record lacks it (typed
 # once more, same id, under the second-delivery line). Anything else stays held. The look is journalled, and
 # the door never types that message again by itself.
+#
+# Typed once more is proved by the second delivery's own journal, never by what the delivery returned: the
+# door saves its phase "pasting" just before it sends the paste, and "cancelled" only for a delivery that never
+# pasted. So a second journal past "prepared", and not "cancelled", was typed (or may have been: a stop between
+# that save and the paste counts as typed, never as owed). Only then is the old journal cancelled and its attempts
+# closed. A retype that did not type leaves the old journal as it was, its look saying "retype not typed" and why,
+# and a later pass may still type it once more. The look first marks the old journal "retyping", with the
+# journals its message had then, so a service that dies between the second typing and the cancel leaves the next
+# pass to settle it from those journals before anything else: never a third typing.
 
 RETYPED = "retyped by the door's one look"
+RETYPING, NOT_TYPED = "retyping", "retype not typed"
 # The latest results of a delivery the door could not confirm: unfinished, typed and waiting for the record,
 # blind, or queued and not yet read. Every other result is settled, and its journal is never opened by the look.
 UNCONFIRMED = (None, "pending", "typed", "blind", "queued")
+RESEND_DETAIL = " · resend"  # the end of a second delivery's attempt detail (service._deliver_current)
+# The old journals this process is retyping now: the door's hold and an explicit resend pass them, and only them,
+# for that one delivery. A process that dies takes the set with it, so its journals hold the door again.
+_RETYPING: set[str] = set()
 
 
 def candidates(attempts: Sequence[post.Attempt]) -> dict[str, list[post.Attempt]]:
-    """Per seat, the attempts whose message's latest result there is one the door could not confirm.
+    """Per seat, the attempts of each message whose latest result there is one the door could not confirm, or a
+    second delivery withheld before it typed: every attempt of that message there still unconfirmed, so the look
+    opens the journal that is still owed its one retype.
 
     Read from the attempts the pass already holds, in memory: a pass with nothing to look at opens nothing."""
     latest: dict[tuple[str, str], post.Attempt] = {}
+    every: dict[tuple[str, str], list[post.Attempt]] = {}
     for attempt in attempts:  # oldest first: the latest attempt is the one that speaks
         latest[(attempt.seat, attempt.message)] = attempt
+        every.setdefault((attempt.seat, attempt.message), []).append(attempt)
     found: dict[str, list[post.Attempt]] = {}
-    for attempt in latest.values():
+    for key, attempt in latest.items():
         if attempt.result in UNCONFIRMED:
-            found.setdefault(attempt.seat, []).append(attempt)
+            found.setdefault(attempt.seat, []).extend(a for a in every[key] if a.result in UNCONFIRMED)
+        elif attempt.result == "withheld" and str(attempt.detail or "").endswith(RESEND_DETAIL):
+            owed = [a for a in every[key] if a.result in UNCONFIRMED]
+            if owed:
+                found.setdefault(attempt.seat, []).extend(owed)
     return found
 
 
@@ -1002,10 +1026,18 @@ def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Atte
         return []  # a human's session takes only its waking line
     known = {a.path.name: a for a in attempts}
     done = []
-    for proof in _named(seat, [a.path.name for a in mine], known):
+    proofs = _named(seat, [a.path.name for a in mine], known)
+    for proof in proofs:  # a retype a dead service left half done is settled before anything else is looked at
+        if (proof.data["phase"] not in TERMINAL and proof.data.get("look", {}).get("outcome") == RETYPING
+                and str(proof.path) not in _RETYPING):
+            message = _message_of(service, proof, known)
+            if message is not None:
+                done += _settle_retype(service, seat, proof, message, known, "settled after the service ended mid-retype")
+    for proof in proofs:
         data = proof.data
-        if (data["phase"] in TERMINAL or "look" in data or not proof.same_launch(seat) or data.get("recovery")
-                or "receipt_refresh" in data or data.get("paste_clear")):
+        owed = data.get("look", {}).get("outcome") == NOT_TYPED
+        if (data["phase"] in TERMINAL or ("look" in data and not owed) or not proof.same_launch(seat)
+                or data.get("recovery") or "receipt_refresh" in data or data.get("paste_clear")):
             continue
         door = Door(seat)
         screen = door.screen()
@@ -1038,33 +1070,73 @@ def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Atte
             done.append(f"{message.short} to {seat.name}: submitted from the box; the record confirms it")
             continue
         if seen is None and clear and screen.box == "" and idle.reading(seat)[1] is None:
-            proof.save(look=dict(at=at, outcome="retyped", saw="an empty box, an idle seat, not in the record"),
-                       phase="cancelled", resolution=RETYPED)
-            for name in data["attempts"]:
-                service.attempts.close(known[name], "blind", RETYPED)
-            from .brief_change import carried
-            # The retype carries what the first typing held, its standing-orders head included, under the
-            # second-delivery line: never a text re-rendered without the head the seat was to read.
-            proof_line = service._deliver_claimed(seat, [message], resend=True,
-                                                  carried_head=carried(data["payload"]) or None)
-            # The second delivery's journal is named by its new attempt: only this message's journals are listed.
             folder = seat.ship.runtime / "post" / "pending" / seat.name
-            prefix = f"{message.id}-"
-            for path in post_dir.json_paths(folder):
-                if not path.name.startswith(prefix) or path == proof.path:
-                    continue
-                try:
-                    later = Proof(path, json.loads(post_dir.read_text(path)))
-                except FileNotFoundError:
-                    if not post_dir.gone(path):
-                        raise
-                    continue
-                if "look" not in later.data:
-                    later.save(look=dict(at=at, outcome="second delivery", of=proof.path.name))
-            done.append(f"{message.short} to {seat.name}: typed once more ({proof_line})")
+            before = sorted(path.name for path in post_dir.json_paths(folder) if path.name.startswith(f"{message.id}-"))
+            previous = data.get("look", {}).get("saw") if owed else None
+            proof.save(look=dict(at=at, outcome=RETYPING, saw="an empty box, an idle seat, not in the record",
+                                 before=before, **({"previous": previous} if previous else {})))
+            from .brief_change import carried
+            _RETYPING.add(str(proof.path))
+            try:
+                # The retype carries what the first typing held, its standing-orders head included, under the
+                # second-delivery line: never a text re-rendered without the head the seat was to read.
+                why = service._deliver_claimed(seat, [message], resend=True,
+                                               carried_head=carried(data["payload"]) or None)
+            except Exception as error:  # what it typed, if anything, its own journal says below
+                why = f"the delivery raised {type(error).__name__}: {error}"
+            finally:
+                _RETYPING.discard(str(proof.path))
+            done += _settle_retype(service, seat, proof, message, known, why)
             continue
         proof.save(look=dict(at=at, outcome="held", saw=reading[0][:200]))
     return done
+
+
+def _settle_retype(service: Service, seat: Seat, proof: Proof, message: post.Message,
+                   known: dict[str, post.Attempt], why: str) -> list[str]:
+    """After the look's retype, or a dead service's: settled from the second delivery's own journal.
+
+    The second journals are this message's journals at this seat that the old one did not name when it was marked
+    (``look.before``). One that left "prepared", and is not "cancelled", was typed: the old journal is cancelled and
+    its attempts closed, as before, and the second marked. None typed: the old journal stays as it was, its look
+    says why, and it is still owed its one retype. A reason it gave before is not said again."""
+    look = proof.data.get("look", {})
+    before = set(look.get("before") or ())
+    folder = seat.ship.runtime / "post" / "pending" / seat.name
+    seconds = []
+    for path in post_dir.json_paths(folder):
+        if not path.name.startswith(f"{message.id}-") or path == proof.path or path.name in before:
+            continue
+        try:
+            seconds.append(Proof(path, json.loads(post_dir.read_text(path))))
+        except FileNotFoundError:
+            if not post_dir.gone(path):
+                raise
+    at = post.now().isoformat()
+    if any(later.data.get("phase") not in ("prepared", "cancelled") for later in seconds):
+        proof.save(look=dict(at=at, outcome="retyped", saw=look.get("saw", "an empty box, an idle seat, not in the record")),
+                   phase="cancelled", resolution=RETYPED)
+        for name in proof.data["attempts"]:
+            if name in known:
+                service.attempts.close(known[name], "blind", RETYPED)
+        for later in seconds:
+            if "look" not in later.data:
+                later.save(look=dict(at=at, outcome="second delivery", of=proof.path.name))
+        return [f"{message.short} to {seat.name}: typed once more ({why})"]
+    reason = f"{NOT_TYPED}: {why}"[:200]
+    # A second delivery that reserved its journal and never pasted (it raised, or its service ended) is cancelled,
+    # and an attempt of it still open is closed withheld as a resend, so the old journal alone stays owed.
+    for later in seconds:
+        if later.data.get("phase") == "prepared":
+            later.save(phase="cancelled", resolution="the one look's retype never pasted")
+            names = set(later.data.get("attempts") or ())
+            for attempt in service.attempts.for_message(message.id):
+                if attempt.path.name in names and attempt.result is None:
+                    service.attempts.close(attempt, "withheld", f"{reason}{RESEND_DETAIL}")
+    proof.save(look=dict(at=at, outcome=NOT_TYPED, saw=reason))
+    if look.get("previous") == reason:
+        return []  # the same reason as the last look's: logged once while it stands
+    return [f"{message.short} to {seat.name}: {reason}; still owed its one retype"]
 
 
 def _submit_candidate(door: Door, screen: Screen | None, pane: Pane | None,

@@ -145,3 +145,124 @@ def test_a_pass_with_nothing_unconfirmed_opens_no_journal_and_finds_the_one_that
         svc.looks()
     assert set(opened) == {unsettled.path.name}, "only the journal its unconfirmed attempt names"
     assert looks(unsettled)["outcome"] == "submitted" and live["submitted"] == 3
+
+
+# -- a retype that did not type is still owed it; one that did is the only one ----------------------------------
+
+def ready_to_retype(setup, monkeypatch):
+    svc, seat, live, record = setup
+    message, proof = unconfirmed(svc, seat, monkeypatch)
+    live["box"] = ""
+    monkeypatch.setattr(idle, "reading", lambda seat, **kwargs: (None, None))  # the one idle proof, standing in
+    return svc, seat, live, message, proof
+
+
+def typings(live):
+    return live["pasted"], live["submitted"]
+
+
+def retyped_once(svc, seat, live, message, proof):
+    """The owed retype on a clear pass: typed once, the old journal cancelled, and never again."""
+    [line] = pending.one_look(svc, seat)
+    assert "typed once more" in line and typings(live) == (2, 2)
+    assert live["box"].startswith(f"qd > second delivery of {message.id}")
+    assert looks(proof)["outcome"] == "retyped"
+    assert pending.Proof(proof.path, __import__("json").loads(proof.path.read_text())).data["phase"] == "cancelled"
+    live["box"] = ""
+    assert pending.one_look(svc, seat) == [] and typings(live) == (2, 2), "never a third typing"
+
+
+def owed(proof, svc, message, why):
+    data = __import__("json").loads(proof.path.read_text())
+    assert data["phase"] not in pending.TERMINAL, "the old journal stays as it was"
+    assert data["look"]["outcome"] == pending.NOT_TYPED and why in data["look"]["saw"]
+    assert all(a.detail != pending.RETYPED for a in svc.attempts.for_message(message.id)), "no attempt closed as retyped"
+
+
+def test_a_retype_the_door_obstructs_is_still_owed_and_typed_once_on_a_clear_pass(setup, monkeypatch):
+    svc, seat, live, message, proof = ready_to_retype(setup, monkeypatch)
+    from quarterdeck.door import Door
+    with monkeypatch.context() as patch:
+        patch.setattr(Door, "initial_obstruction", lambda self, screen: "synthetic obstruction")
+        [line] = pending.one_look(svc, seat)
+        assert "retype not typed" in line and "synthetic obstruction" in line and "still owed" in line
+        assert typings(live) == (1, 1), "nothing typed"
+        owed(proof, svc, message, "synthetic obstruction")
+        assert pending.one_look(svc, seat) == [] and typings(live) == (1, 1), "the same reason is said once"
+    retyped_once(svc, seat, live, message, proof)
+
+
+def test_a_retype_withheld_after_its_attempt_opened_is_still_owed(setup, monkeypatch):
+    svc, seat, live, message, proof = ready_to_retype(setup, monkeypatch)
+    from quarterdeck import paste_refusal
+    calls = []
+
+    def refused(*args, **kwargs):  # passes the look's own check, then refuses inside the door's delivery
+        calls.append(1)
+        return "synthetic paste refusal" if len(calls) > 1 else None
+    with monkeypatch.context() as patch:
+        patch.setattr(paste_refusal, "refused", refused)
+        [line] = pending.one_look(svc, seat)
+        assert "retype not typed" in line and typings(live) == (1, 1)
+        assert svc.attempts.latest()[message.id] == "withheld", "the second attempt is the latest"
+        owed(proof, svc, message, "withheld")
+    retyped_once(svc, seat, live, message, proof)
+
+
+def test_a_retype_whose_delivery_raises_is_still_owed(setup, monkeypatch):
+    svc, seat, live, message, proof = ready_to_retype(setup, monkeypatch)
+    from quarterdeck.door import Door
+
+    def raises(self, *args, **kwargs):
+        raise RuntimeError("synthetic failure before the paste")
+    with monkeypatch.context() as patch:
+        patch.setattr(Door, "deliver", raises)
+        [line] = pending.one_look(svc, seat)
+        assert "retype not typed" in line and "RuntimeError" in line and typings(live) == (1, 1)
+        owed(proof, svc, message, "RuntimeError")
+        second = [p for p in pending.journals(seat)[0] if p.path != proof.path]
+        assert [p.data["phase"] for p in second] == ["cancelled"], "the reserved second journal never pasted"
+    retyped_once(svc, seat, live, message, proof)
+
+
+def test_a_service_that_dies_between_the_second_typing_and_the_cancel_never_types_a_third_time(setup, monkeypatch):
+    svc, seat, live, message, proof = ready_to_retype(setup, monkeypatch)
+
+    class Death(BaseException):
+        pass
+
+    def dies(*args, **kwargs):
+        raise Death()
+    with monkeypatch.context() as patch:
+        patch.setattr(pending, "_settle_retype", dies)
+        with pytest.raises(Death):
+            pending.one_look(svc, seat)
+    assert typings(live) == (2, 2), "the second delivery typed once"
+    assert looks(proof)["outcome"] == pending.RETYPING, "the old journal still says it was being retyped"
+    assert not pending._RETYPING, "the process's own mark went with it"
+    live["box"] = ""
+    lines = pending.one_look(svc, seat)  # the next pass, the next service
+    assert lines == [f"{message.short} to worker: typed once more (settled after the service ended mid-retype)"]
+    assert typings(live) == (2, 2), "no third typing"
+    assert looks(proof)["outcome"] == "retyped"
+    assert pending.one_look(svc, seat) == [] and typings(live) == (2, 2)
+
+
+def test_a_service_that_dies_before_the_second_typing_leaves_it_owed_and_typed_once(setup, monkeypatch):
+    svc, seat, live, message, proof = ready_to_retype(setup, monkeypatch)
+
+    class Death(BaseException):
+        pass
+
+    def dies(*args, **kwargs):
+        raise Death()
+    with monkeypatch.context() as patch:
+        patch.setattr(svc, "_deliver_claimed", dies)
+        with pytest.raises(Death):
+            pending.one_look(svc, seat)
+    assert typings(live) == (1, 1) and looks(proof)["outcome"] == pending.RETYPING
+    [settled, typed] = pending.one_look(svc, seat)
+    assert "retype not typed: settled after the service ended mid-retype" in settled
+    assert "typed once more" in typed and typings(live) == (2, 2)
+    live["box"] = ""
+    assert pending.one_look(svc, seat) == [] and typings(live) == (2, 2)
