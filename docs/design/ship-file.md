@@ -6,7 +6,7 @@ A page of [the design](../DESIGN.md).
 
 `ship.toml` is the ship's only configuration. It declares sessions, seats, workspaces and ways of paying for each program. Loading it validates the declaration without running a program or reading an account. Nothing undeclared runs.
 
-The example names Pike as captain, Scott as engineer and Maeve as desk:
+The example declares a captain, an engineer and Maeve as desk:
 
 ```toml
 [ship]
@@ -54,19 +54,19 @@ human = true                         # Into a session the human owns it types on
 [sessions.crew]
 title = "Crew"
 
-[seats.pike]
+[seats.captain]
 session = "bridge"
 role = "captain"
-persona = "Pike"
+persona = "Captain"
 harness = "claude"
 pool = "claude-secondary"
 model = "claude-opus-5-5"
 effort = "max"
 
-[seats.scott]
+[seats.engineer]
 session = "bridge"
 role = "engineering"
-persona = "Scott"
+persona = "Engineer"
 harness = "codex"
 pool = "codex"
 model = "gpt-6-astra"

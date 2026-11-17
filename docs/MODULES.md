@@ -152,7 +152,7 @@ The modules that the framework table does not list, the module of each part amon
 | `presentation.py` | published operational text, independent service liveness, stale age and bounded fallback to current facts; never lifecycle, receipt or usage evidence |
 | `procstat.py` | the states `/proc` gives a process that has exited, each read as ended |
 | `program_use.py` | each program's current activity, and its last use bound to saved launch evidence |
-| `push_reminder.py` | after a push of `main`, seen on the local tracking ref alone, one order twenty quiet minutes later to the seat named `una`, where the ship has one, to read the hosted runs of the pushed tips |
+| `push_reminder.py` | after a push of `main`, seen on the local tracking ref alone, one order twenty quiet minutes later to the seat that `push_reminder` under `[ship]` names, where one is declared, to read the hosted runs of the pushed tips |
 | `raise_ship.py` | a template ship, declared after the person approves its exact proposal |
 | `receipt_refresh.py` | the service's progress through one closed-record receipt pass per framework revision |
 | `recovery.py` | one native continuation after a proved thinking exhaustion, through the door's journal |

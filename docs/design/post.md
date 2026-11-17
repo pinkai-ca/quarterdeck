@@ -211,7 +211,7 @@ A message is one immutable JSON file:
   "id": "ord-20261106-2101-desk-7f3a",
   "kind": "order",
   "from": "desk",
-  "to": "scott",
+  "to": "engineer",
   "re": null,
   "subject": "Codex profile of the fake harness",
   "due": "2026-11-08T18:00:00-07:00",
