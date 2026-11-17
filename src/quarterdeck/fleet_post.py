@@ -352,7 +352,7 @@ def _chain(ship, message, target):
         if reference:
             _reference_bytes(peers(ship).get(target), entry)
             entry['reference'] = True
-        _refusal_clear(ship, raw, entry['origin'], reference=reference)
+        _refusal_clear(ship, raw, entry['origin'], reference=reference, root=not chain)
         chain.append(entry)
         from .forward_post import recorded
         if saved := recorded(ship.runtime, message.id):
@@ -373,8 +373,14 @@ def offer(ship, message, target):
     return value
 
 
-def _refusal_clear(ship, message, origin, *, reference=False):
-    """A refused ancestor holds its descendant; no refused words cross as context."""
+class Settled(ShipError):
+    """A refused message whose refusal notice has crossed back to its origin: done, on both ships. Neither waiting
+    nor held; only the notice the laws ask for remains. A caller that does not know it holds, as for any ShipError."""
+
+
+def _refusal_clear(ship, message, origin, *, reference=False, root=False):
+    """A refused ancestor holds its descendant; no refused words cross as context. A refused root whose notice has
+    crossed back to its origin is settled instead (Settled), so no false alert stays on either ship."""
     from . import refusal
     recipient, name = address(message.to, origin)
     destination = peers(ship).get(name)
@@ -385,7 +391,30 @@ def _refusal_clear(ship, message, origin, *, reference=False):
     except refusal.JournalError:
         raise ShipError('ancestor refusal evidence unreadable; descendant retained') from None
     if message.id in excluded and not reference:
+        if root and _notice_crossed(ship, destination, recipient, message, origin):
+            raise Settled('refused by its addressee; its sender told')
         raise ShipError('refused ancestor; descendant retained without copying its words')
+
+
+def _notice_crossed(ship, destination, recipient, message, origin):
+    """Whether the addressee's ship's refusal journal names a notice for this message that the origin ship holds,
+    imported from the addressee's ship. Read-only; anything unproved is False, and the message stays held."""
+    from . import refusal
+    home = ship if ship.folder.name == origin else peers(ship).get(origin)
+    if home is None:
+        return False
+    try:
+        notices = {n['id'] for event in refusal.load(destination.runtime, recipient)
+                   for n in event['notices'] if n['message'] == message.id}
+        for identifier in sorted(notices):
+            imported = provenance(home.runtime, identifier)
+            if imported and imported.get('origin') == destination.folder.name:
+                told, _ = _source(home, identifier)
+                if told.re == message.id and told.kind == 'report':
+                    return True
+    except (OSError, ValueError, KeyError, TypeError, ShipError, refusal.JournalError):
+        return False
+    return False
 
 
 def _ownership(source, identifier, origin, message, data, *, root):
@@ -591,6 +620,8 @@ def export(ship, store, *, worklist=None):
                     continue
             for target in destinations(ship, store, message):
                 offer(ship, message, target)
+        except Settled:
+            continue  # refused, and its sender told: nothing more to offer or to hold
         except (OSError, ValueError, KeyError, ShipError) as error:
             errors.append(_hold_line(f'{post.short_of(message.id)}: outbound held', error))
     if worklist is not None and not errors and before is not None:
@@ -645,7 +676,7 @@ def _offer(source, target, path):
             message, data = _source(source, entry['id'])
         _ownership(source, entry['id'], entry['origin'], message, data,
                    root=root)
-        _refusal_clear(source, message, entry['origin'], reference=entry.get('reference', False))
+        _refusal_clear(source, message, entry['origin'], reference=entry.get('reference', False), root=root)
         if len(data) != entry['size'] or digest(data) != entry['sha256']:
             raise ShipError('post transport offer no longer matches its source')
         if 'forward' in entry and value['format'] != 2:
@@ -772,6 +803,8 @@ def _run(ship, store, *, worklist=None):
                     if not fetched(source, ship, value):
                         fetch(ship, source, path)
                         store._cache = None
+                except Settled:
+                    continue  # refused here, and its sender told: settled, not incoming post held
                 except FileNotFoundError as error:
                     if not post_dir.gone(path):
                         errors.append(_hold_line(f'{name}: incoming post held', error))
@@ -801,6 +834,8 @@ def waiting(ship, store=None):
                 path = ship.runtime / 'post' / 'outbound' / target / (message.id + '.json')
                 value, _ = _offer(ship, target, path)
                 done = target in fleet and fetched(ship, fleet[target], value)
+            except Settled:
+                done = True  # fetched, refused there, and its notice back here: not waiting
             except (OSError, ValueError, KeyError, TypeError, ShipError):
                 done = False
             if not done:
