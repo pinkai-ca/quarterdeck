@@ -41,15 +41,60 @@ def test_only_declared_adapter_text_columns_support_the_lower_bound(adapter):
 
 def test_adapter_without_declared_text_columns_keeps_unknown():
     assert FakeHarness().minimum_box_rows(TEXT, 100) is None
+    seat, pane = seat_for(FakeHarness(), 16)
+    assert Door(seat).short_pane_reason(TEXT, pane) == '', 'no declared columns: no short-pane reading at all'
+
+
+# Each program whose fold is known, at 100 columns. The frames are synthetic: an invented payload inside each program's
+# composer chrome as its measured fixtures draw it (tests/fixtures/<program>/<version>): Codex's '›' prompt and its
+# status row (0.166.0); pi's rules (0.74.2); Claude Code's '❯' between rules (2.1.317, paste-3-lines-shown.txt);
+# OpenCode's '┃' bar and '╹▀' rule (1.19.5, session-*.json); Grok Build's bordered composer (1.0.77,
+# draft-multiline.json); Antigravity's '>' between rules (1.5.2, idle.txt). A 22-line paste shown whole is
+# synthetic for every one of them: each folds a paste that long. It stands for any paste a program shows whole that
+# is taller than its pane, and the folded form is each program's own marker for this paste.
+PROGRAMS = [('codex', CodexHarness()), ('pi', PiHarness()), ('claude', ClaudeHarness()),
+            ('opencode', OpenCodeHarness()), ('grok', GrokHarness()), ('antigravity', AntigravityHarness())]
+
+
+def payload(program):
+    """Grok's frames carry the same 22 lines with their line-end spaces stripped. Grok Build's box refuses a line that
+    ends in a space inside its padded composer, at any pane height: a separate finding about the door's comparison,
+    put to the captain on its own and not changed here. The short-pane decision is what these frames prove."""
+    return '\n'.join(line.rstrip(' ') for line in TEXT.split('\n')) if program == 'grok' else TEXT
+
+
+def marker(program):
+    text = payload(program)
+    lines, newlines = text.count('\n') + 1, text.count('\n')
+    return {'codex': f'[Pasted Content {len(text)} chars]', 'pi': f'[paste #1 +{lines} lines]',
+            'claude': f'[Pasted text #1 +{newlines} lines]', 'opencode': f'[Pasted ~{lines} lines]',
+            'grok': f'[Pasted: {lines} lines]', 'antigravity': f'[Pasted text #1 +{newlines} lines]'}[program]
+
+
+def composer(program, content, width=100):
+    lines = content.split('\n')
+    if program == 'codex':
+        return ['› ' + lines[0], *('  ' + x for x in lines[1:]), '  synthetic-model high · synthetic status']
+    if program == 'claude':
+        return ['─' * (width - 15) + ' invented-seat ─', '❯ ' + lines[0], *('  ' + x for x in lines[1:]), '─' * width,
+                '  ⏵⏵ auto mode on (shift+tab to cycle)']
+    if program == 'antigravity':
+        return ['─' * width, '> ' + lines[0], *('  ' + x for x in lines[1:]), '─' * width,
+                '? for shortcuts' + ' ' * 60 + 'Synthetic Model · high']
+    if program == 'opencode':
+        return ['  ┃', *('  ┃  ' + x for x in lines), '  ┃', '  ┃  Build auto · Synthetic Model', '  ╹' + '▀' * (width - 4),
+                '', '  /invented/work' + ' ' * 70 + '1.19.5']
+    if program == 'grok':
+        inner, tail = width - 6, ' Grok 4.7 (high) · always-approve ─╯'
+        return ['  /invented/project', '', '  ╭' + '─' * inner + '╮',
+                *('  │' + (prefix + x).ljust(inner) + '│' for prefix, x in zip([' ❯ '] + ['   '] * len(lines), lines)),
+                '  ╰' + '─' * (width - 5 - len(tail)) + tail, '',
+                '  Enter:send  │  Alt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+x:shortcuts']
+    return ['─' * width, *lines, '─' * width, '~/invented-project', 'synthetic stats  synthetic-model']
 
 
 def frame(program, content, height):
-    if program == 'codex':
-        rows = ['› ' + content.split('\n')[0], *('  ' + x for x in content.split('\n')[1:]),
-                '  synthetic-model high · synthetic status']
-    else:
-        rows = ['─' * 100, *content.split('\n'), '─' * 100, '~/invented-project',
-                'synthetic stats  synthetic-model']
+    rows = composer(program, content)
     return '\n'.join(([''] * max(0, height - len(rows)) + rows)[-height:])
 
 
@@ -59,34 +104,35 @@ def seat_for(adapter, height=16):
                            session=SimpleNamespace(human=False)), pane
 
 
-@pytest.mark.parametrize('program,adapter', [('codex', CodexHarness()), ('pi', PiHarness())])
+@pytest.mark.parametrize('program,adapter', PROGRAMS)
 @pytest.mark.parametrize('height', [16, 50])
 @pytest.mark.parametrize('folded', [False, True])
 def test_synthetic_short_frame_and_tall_control_keep_the_existing_box_decision(program, adapter, height, folded):
     seat, pane = seat_for(adapter, height)
-    marker = f'[Pasted Content {len(TEXT)} chars]' if program == 'codex' else f'[paste #1 +{TEXT.count(chr(10)) + 1} lines]'
-    capture = frame(program, marker if folded else TEXT, height)
+    text = payload(program)
+    capture = frame(program, marker(program) if folded else text, height)
     seat.read_pane = lambda: (pane, capture)
     door = Door(seat)
-    shown = door.box_shows(adapter.box(TEXT), seconds=0)
-    matched = door.matches(adapter.box(TEXT), shown)
+    shown = door.box_shows(adapter.box(text), seconds=0)
+    matched = door.matches(adapter.box(text), shown)
     assert matched == (folded or height == 50)
-    assert ('' if matched else door.short_pane_reason(TEXT, pane)) == (REASON if height == 16 and not folded else '')
+    assert ('' if matched else door.short_pane_reason(text, pane)) == (REASON if height == 16 and not folded else '')
 
 
-@pytest.mark.parametrize('adapter,marker', [
-    (CodexHarness(), f'[Pasted Content {len(TEXT)} chars]'),
-    (PiHarness(), f'[paste #1 +{TEXT.count(chr(10)) + 1} lines]'),
-    (ClaudeHarness(), f'[Pasted text #1 +{TEXT.count(chr(10))} lines]'),
-    (OpenCodeHarness(), f'[Pasted ~{TEXT.count(chr(10)) + 1} lines]'),
-    (AntigravityHarness(), f'[Pasted text #1 +{TEXT.count(chr(10))} lines]'),
-    (GrokHarness(), f'[Pasted: {TEXT.count(chr(10)) + 1} lines]'),
-])
+@pytest.mark.parametrize('program,adapter', PROGRAMS)
 @pytest.mark.parametrize('height', [16, 50])
-def test_known_fold_contract_still_fits_one_row_at_either_height(adapter, marker, height):
-    assert len(marker) < adapter.box_columns(100)
-    assert height > 1
-    assert adapter.box(TEXT).matches(marker, adapter.box_columns(100), adapter.wrap_slack)
+def test_known_fold_contract_still_fits_one_row_at_either_height(program, adapter, height):
+    """The fold marker fits one row of the text area, and read from a frame of that height it is the box, whole."""
+    text, folded = payload(program), marker(program)
+    assert len(folded) < adapter.box_columns(100)
+    assert adapter.box(text).matches(folded, adapter.box_columns(100), adapter.wrap_slack)
+    seat, pane = seat_for(adapter, height)
+    capture = frame(program, folded, height)
+    assert len(capture.split('\n')) == height
+    seat.read_pane = lambda: (pane, capture)
+    door = Door(seat)
+    shown = door.box_shows(adapter.box(text), seconds=0)
+    assert shown.box.strip() == folded and door.matches(adapter.box(text), shown)
 
 
 @pytest.fixture
@@ -172,9 +218,14 @@ def test_status_names_the_seat_and_short_pane_even_when_other_alerts_overflow(ov
         assert 'details: qd status' in line
 
 
-@pytest.mark.parametrize('program,adapter', [('codex', CodexHarness()), ('pi', PiHarness())])
+@pytest.mark.parametrize('program,adapter', PROGRAMS)
 @pytest.mark.parametrize('height', [16, 50])
-def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(program, adapter, height, tmp_path):
+@pytest.mark.parametrize('folded', [False, True])
+def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(program, adapter, height, folded,
+                                                                               tmp_path):
+    """Through the door's own delivery: a paste shown whole that the pane cannot hold is held with the reason; a folded
+    one, or one the pane holds, is submitted at either height."""
+    text = payload(program)
     seat, pane = seat_for(adapter, height)
     pane.pid, pane.in_mode = 7, False
     seat.name = 'invented-seat'
@@ -183,14 +234,17 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
     seat.launched = lambda: SimpleNamespace(pane=pane.id, pid=pane.pid, at='invented-launch',
                                              pool='invented-pool', version='invented-version')
     seat.record = lambda: None
+    seat.home = tmp_path / 'home'  # Claude Code types only once its startup choice is answered, as a launch leaves it
+    seat.home.mkdir()
+    (seat.home / '.claude.json').write_text(json.dumps({'hasSeenAutoDefaultNudge': True}))
 
     class Terminal:
         pasted = False
         submits = []
 
-        def paste(self, target, text):
+        def paste(self, target, pasted):
             self.pasted = True
-            assert target == pane.id and text == TEXT
+            assert target == pane.id and pasted == text
 
         def pane(self, target):
             return pane
@@ -200,11 +254,12 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
 
     terminal = Terminal()
     seat.tmux = terminal
-    seat.read_pane = lambda: (pane, frame(program, TEXT if terminal.pasted else '', height))
+    shown = marker(program) if folded else text
+    seat.read_pane = lambda: (pane, frame(program, shown if terminal.pasted else '', height))
 
     class Journal:
         path = tmp_path / 'synthetic-journal.json'
-        data = dict(phase='prepared', payload=TEXT, since='2001-01-01T00:00:01+00:00',
+        data = dict(phase='prepared', payload=text, since='2001-01-01T00:00:01+00:00',
                     identity=dict(pane=pane.id, pid=pane.pid, launch='invented-launch', harness=adapter.name))
 
         def same_launch(self, seat):
@@ -218,15 +273,15 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
     door = Door(seat)
     check = door.box_shows
     door.box_shows = lambda box: check(box, seconds=0)  # a stable synthetic frame needs no polling
-    result = door._deliver(TEXT, confirm=False, proof=proof)
-    if height == 16:
-        assert result.result == 'blind' and result.detail.startswith(REASON)
+    result = door._deliver(text, confirm=False, proof=proof)
+    if height == 16 and not folded:
+        assert result.result == 'blind' and result.detail.startswith(REASON), result.detail
         assert proof.data['phase'] == 'pasting'
         assert proof.data['paste_geometry'] == [100, 16]
         assert pane_meta.marker_path(proof.path).is_file()
         assert terminal.submits == []
     else:
-        assert result.result == 'typed' and proof.data['phase'] == 'submitted'
+        assert result.result == 'typed' and proof.data['phase'] == 'submitted', result.detail
         assert 'paste_geometry' not in proof.data
         assert terminal.submits == [adapter.keys.submit]
 
