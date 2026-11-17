@@ -48,15 +48,19 @@ def process_ancestry(pid: int, *, proc: Path = Path("/proc")) -> tuple[tuple[int
     return tuple(chain)
 
 
-def recorded_programs(project: Path) -> set[tuple[int, str]]:
-    """Read only current seat launch identities, including the separate office."""
+def recorded_programs(project: Path) -> tuple[set[tuple[int, str]], tuple[tuple[int, Path], ...]]:
+    """Read only current seat launch identities, including the separate office.
+
+    Returns the (pid, start) identities, and each record whose start is missing or not a
+    decimal start time with its pid: such a record can be matched by its pid alone.
+    """
     def entries(folder):
         try:
             return sorted(folder.iterdir())
         except FileNotFoundError:
             return []
 
-    programs = set()
+    programs, startless = set(), []
     try:
         folders = [project / "office", *[p for p in entries(project / "ships") if p.is_dir()]]
         for folder in folders:
@@ -69,25 +73,39 @@ def recorded_programs(project: Path) -> set[tuple[int, str]]:
                 except FileNotFoundError:
                     continue  # no recorded program at this seat
                 pid, start = data.get("pid"), data.get("start")
-                if type(pid) is not int or pid <= 0 or not isinstance(start, str) or not start.isdecimal():
+                if type(pid) is not int or pid <= 0:
                     raise ValueError("unreadable launch process identity")
-                programs.add((pid, start))
+                if isinstance(start, str) and start.isdecimal():
+                    programs.add((pid, start))
+                else:
+                    startless.append((pid, path))
     except (OSError, UnicodeError, ValueError, AttributeError) as error:
         raise ShipError(f"cannot read the project's recorded seat programs ({type(error).__name__}); "
                         "no yes accepted; retain the launch records for inspection") from None
-    return programs
+    return programs, tuple(startless)
 
 
-def require_person_process(project: Path) -> None:
-    """Check live ancestry at a new yes; cached consent remains a known trust limit."""
+def require_person_process(project: Path) -> list[str]:
+    """Check live ancestry at a new yes; cached consent remains a known trust limit.
+
+    Returns a line for each launch record without a readable start time that was ignored,
+    its pid being no pid of this ancestry; the answer names them.
+    """
     pid = os.getpid()
     before = process_ancestry(pid)
-    programs = recorded_programs(project)
+    programs, startless = recorded_programs(project)
     after = process_ancestry(pid)
     if before != after:
         raise ShipError("the approving process's ancestry changed; no yes accepted; ask again from the person's shell")
     if any((ancestor, start) in programs for ancestor, start, _ in after):
         raise ShipError("a recorded seat program owns this process ancestry; only the person's own shell can answer yes")
+    ancestors = {ancestor for ancestor, _, _ in after}
+    for recorded, path in startless:
+        if recorded in ancestors:
+            raise ShipError(f"a recorded seat program without a readable start time ({path}) has pid {recorded}, "
+                            "which is in this process ancestry; only the person's own shell can answer yes")
+    return [f"a recorded seat program without a readable start time was ignored: {path} "
+            f"(its pid {recorded} is not in this process ancestry)" for recorded, path in startless]
 
 
 def arguments(parser: argparse.ArgumentParser) -> None:
@@ -261,7 +279,7 @@ def run(args: argparse.Namespace, *, operations: setup.Operations | None = None,
         answers = sorted(records.glob(f"{draft.digest}.answer-*.json"))
         answer = answers[-1] if answers else None
         write_once(request, {"format": 1, "digest": draft.digest, "summary": draft.summary})
-        approved = False
+        approved, notes = False, []
         if answer is not None:
             saved = json.loads(answer.read_text())
             if saved.get("format") != 1 or saved.get("digest") != draft.digest or saved.get("answer") not in ("yes", "no"):
@@ -276,7 +294,7 @@ def run(args: argparse.Namespace, *, operations: setup.Operations | None = None,
                     raise ShipError("answer yes or no; no ship was raised")
             if response is not None:
                 if response == "yes":
-                    require_person_process(office.folder.parent)
+                    notes = require_person_process(office.folder.parent)
                 answer = records / f"{draft.digest}.answer-{len(answers) + 1:08d}.json"
                 write_once(answer, {"format": 1, "digest": draft.digest, "answer": response, "by": "person"})
                 approved = response == "yes"
@@ -285,7 +303,7 @@ def run(args: argparse.Namespace, *, operations: setup.Operations | None = None,
             return [draft.summary, f"Raise {state}; no ship started. Answer recorded in {records}.",
                     "From the person's own shell (QD_SEAT absent): " + approval_command(args, office, draft.digest)]
         folder = draft.folder
-        lines = []
+        lines = list(notes)
         if folder.exists():
             if any(not (folder / name).is_file() or (folder / name).read_text() != text
                    for name, text in draft.files.items()):

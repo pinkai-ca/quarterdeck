@@ -111,3 +111,31 @@ def test_cli_raise_uses_the_office_entry_in_a_persons_shell(project, monkeypatch
     assert cli.main(["raise", "default", "new-crew", "--accept", "yes"]) == 0
     assert calls[0].folder == root / "ships" / "new-crew"
     assert "Fleet address: new-crew" in capsys.readouterr().out
+
+
+def startless_record(root, pid):
+    path = root / "office" / "runtime" / "trusted" / "example" / "launch.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"pid": pid}))
+    return path
+
+
+def test_a_record_without_a_start_beside_the_persons_shell_names_it_and_takes_the_yes(project):
+    root, office, calls = project
+    ancestors = {pid for pid, _, _ in raise_ship.process_ancestry(os.getpid())}
+    stranger = next(pid for pid in range(4194303, 1, -1) if pid not in ancestors)
+    path = startless_record(root, stranger)
+    result = raise_ship.run(args(), interactive=True, read=lambda _: "yes", write=lambda _: None)
+    note = (f"a recorded seat program without a readable start time was ignored: {path} "
+            f"(its pid {stranger} is not in this process ancestry)")
+    assert result[0] == note and result[-1] == "Fleet address: mission"
+    assert calls == [ship.load(root / "ships" / "mission")]
+
+
+def test_a_record_without_a_start_in_the_persons_ancestry_refuses_the_yes(project):
+    root, office, calls = project
+    path = startless_record(root, os.getpid())
+    with pytest.raises(ship.ShipError, match=rf"without a readable start time \({path}\) has pid {os.getpid()}"):
+        raise_ship.run(args(), interactive=True, read=lambda _: "yes", write=lambda _: None)
+    assert not (root / "ships" / "mission").exists() and not calls
+    assert not list((office.runtime / "raise" / "mission").glob("*.answer-*.json"))
