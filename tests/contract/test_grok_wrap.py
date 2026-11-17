@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from quarterdeck.harness.grok import GrokHarness
+from quarterdeck.harness.types import Box
 
 FIXTURES = Path(__file__).parents[1] / 'fixtures/grok/1.0.77'
 SAMPLES = json.loads((FIXTURES / 'wrap-punctuation.json').read_text())['samples']
@@ -76,3 +77,72 @@ def test_unmeasured_scrollbar_forms_keep_the_generic_unknown(change):
     screen = GrokHarness().screen(text)
     assert screen.box is None and screen.unknown
     assert screen.unknown != "Grok composer is scrolled; the full draft is not visible"
+
+
+def _three_padded_rows(end: str, start: str) -> tuple[str, str, int]:
+    """The padded fixture's first three rows, its padding kept, with the soft wrap after row two's
+    last word rewritten: ``end`` closes row two and ``start`` opens row three, each as wide as before."""
+    sample = json.loads((FIXTURES / 'padded-wrap.json').read_text())
+    rows = sample['box'].split('\n')[:3]
+    edge = "Xxxx: xxx x xxxxxx'x xxxxxxxxxx xx"
+    assert sample['payload'].count(edge) == 1
+    assert rows[1].rstrip(' ').endswith("xxxxxx'x") and rows[2].startswith('xxxxxxxxxx ')
+    assert len(end) == 8 and len(start) == 10
+    text = rows[1].rstrip(' ')
+    rows[1] = text[:-8] + end + rows[1][len(text):]
+    rows[2] = start + rows[2][10:]
+    payload = sample['payload'].replace(edge, f'Xxxx: xxx x {end} {start} xx')
+    payload = payload[:payload.index(rows[2].rstrip(' ')) + len(rows[2].rstrip(' '))]
+    return payload, '\n'.join(rows), sample['box_columns']
+
+
+EDGES = {
+    'em dash ending the row': ("xxxxxx'—", 'xxxxxxxxxx', '—', '–'),
+    'em dash opening the next row': ("xxxxxx'x", '—xxxxxxxxx', '—', '-'),
+    'accented letter ending the row': ("xxxxxx'ế", 'xxxxxxxxxx', 'ế', 'e'),
+    'accented letter opening the next row': ("xxxxxx'x", 'ếxxxxxxxxx', 'ế', 'ê'),
+}
+
+
+@pytest.mark.parametrize('end, start, char, other', EDGES.values(), ids=EDGES)
+def test_a_character_outside_the_textwrap_table_at_a_wrap_edge_is_not_held(end, start, char, other):
+    harness = GrokHarness()
+    payload, box, columns = _three_padded_rows(end, start)
+    assert harness.box_columns(478) == columns and payload.count(char) == 1
+    rows = box.split('\n')
+    assert [len(row) for row in rows] == [columns + 1] * 3
+    # The exact textwrap comparison alone holds it; the generic first-fit wrap accepts it.
+    assert not Box(payload, textwrap_ascii=True).matches(box, columns)
+    assert harness.box(payload).matches(box, columns)
+    for mutated in (box.replace(char, other), box.replace(char, ''), box.replace(char, char + 'x'),
+                    box.replace(' \n', 'x\n', 1), box.replace('xx > ', 'xy > ', 1)):
+        assert mutated != box
+        assert not harness.box(payload).matches(mutated, columns)
+    for different in (payload.replace(char, other), payload + '!', 'Q' + payload[1:]):
+        assert not harness.box(different).matches(box, columns)
+
+
+def test_an_ascii_payload_keeps_the_exact_textwrap_check():
+    harness = GrokHarness()
+    # textwrap keeps an opening parenthesis and its space with the following word; first fit would not.
+    payload, box, columns = _three_padded_rows('xxxxxx (', 'xxxxxxxxxx')
+    assert not harness.box(payload).unmodelled  # ASCII and the table's middle dot only
+    assert Box(payload).matches(box, columns)
+    assert not harness.box(payload).matches(box, columns)
+    # Only a payload that holds a character outside the table may take the generic wrap.
+    unmodelled = payload.replace('Xxxx xxxx (', 'Xxxx xxx—(', 1)
+    assert unmodelled != payload
+    assert harness.box(unmodelled).matches(box.replace('Xxxx xxxx (', 'Xxxx xxx—(', 1), columns)
+
+
+def test_a_payload_outside_the_table_still_takes_the_measured_slash_break():
+    sample = json.loads((FIXTURES / 'padded-wrap.json').read_text())
+    harness = GrokHarness()
+    columns = sample['box_columns']
+    old = "Xxxx: xxx x xxxxxx'x"
+    assert sample['payload'].count(old) == 1 and sample['box'].count(old) == 1
+    payload, box = (text.replace(old, "Xxxx: xxx x xxx—xx'x") for text in (sample['payload'], sample['box']))
+    # The generic wrap has no slash break, so the exact comparison still decides this box.
+    assert not Box(payload).matches(box, columns)
+    assert harness.box(payload).matches(box, columns)
+    assert not harness.box(payload.replace('/', ' ', 1)).matches(box, columns)

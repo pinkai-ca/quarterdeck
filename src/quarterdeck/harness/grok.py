@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import tomllib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +22,7 @@ from .base import Harness, program_version
 from .home import credential, key_environment, merged, ship_template
 from .json_record import when
 from .limits import Usage
-from .types import Box, Control, Credential, Interruption, Keys, Launch, Screen
+from .types import Box, Control, Credential, Interruption, Keys, Launch, Screen, _line_class
 from . import grok_models, grok_notice, grok_record, grok_screen, grok_usage, grok_workspace
 
 VENDORS = ("claude", "cursor", "codex")
@@ -139,10 +139,23 @@ def launch_home(home: Path, seat: SeatSpec) -> None:
     no_extra_rules(config, "Grok home configuration")
 
 
+@dataclass(frozen=True)
 class GrokBox(Box):
     """Measured visual projection, retaining every explicit blank input row."""
 
+    unmodelled: bool = False  # the payload holds a character the textwrap comparison has no class for
+
     def matches(self, shown: str | None, columns: int | None = None, slack: int = 0) -> bool:
+        if self._matches(shown, columns, slack):
+            return True
+        # The textwrap comparison holds any wrap edge beside a character outside its table
+        # (an em dash, an accented letter beyond Latin Extended-B). Such a payload may also
+        # be the generic first-fit wrap it was checked by before; either comparison must
+        # account for the whole box.
+        return (self.unmodelled and self.textwrap_ascii
+                and replace(self, textwrap_ascii=False)._matches(shown, columns, slack))
+
+    def _matches(self, shown: str | None, columns: int | None, slack: int) -> bool:
         if not grok_screen.lf_layout(self.text):
             return False
         if self.text and not self.text.strip():
@@ -556,7 +569,9 @@ class GrokHarness(Harness):
         # Its measured path/punctuation wraps use the shared textwrap boundaries
         # already established for Codex; exact characters and first-fit width
         # still decide the comparison. This does not reconstruct a viewport.
-        return GrokBox(text, folded=folded, textwrap_ascii=True)
+        # A payload with a character outside that table may also take the generic wrap.
+        unmodelled = any(char != "\n" and _line_class(char) is None for char in text)
+        return GrokBox(text, folded=folded, textwrap_ascii=True, unmodelled=unmodelled)
 
     def controls(self) -> tuple[Control, ...]:
         return (Control("model", "--model <value>", "/model {value}", "screen"),
