@@ -539,7 +539,10 @@ class Driver:
                                 self.retry_generation = None
                                 emptied = True  # every seat has been read whole once: the gate may stitch
                 self.active = False
-                service.accounting_health.committed()
+                health = service.accounting_health
+                previous, failures, causes = health.since, health.failures, dict(health.causes)
+                if health.committed():  # failing accounting recovers: said once, as the direct path says it
+                    service.log('accounting-recovered', since=previous, failures=failures, causes=causes)
                 service.log('accounting-job-end', job=self.job, seconds=time.monotonic() - self.started,
                             records=len(self.records), counts=dict(self.counts),
                             retry=sorted(self.invalid), pending=service.ledger.catching_up())

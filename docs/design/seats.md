@@ -194,7 +194,8 @@ How a paste is checked and cleared, and how a message is typed into a seat that 
 runtime/
   .git/                a fence: no commits, never tracked, keeps git run above it out
   heartbeat/service.heartbeat  pid and time, written each tick and every 2 s, whole by rename; a jail is shown the
-                       folder, so it sees every beat (a single-file bind pinned its first); nothing else is written there
+                       folder, so it sees every beat (a single-file bind pinned its first); beside it only
+  heartbeat/service.pass  the main loop's own stamp (pid, time, duty) as it begins each pass, duty and rest
   locks/               every lock the service or qd waits on, hidden in every jail: service.lock (exclusive service
                        ownership; PID, process start and generation token stamp), request, install, admission/,
                        lifecycle/, attempts, check-outcomes/, raise/, the service log's and the ledger opening's,

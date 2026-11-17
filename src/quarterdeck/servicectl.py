@@ -24,6 +24,10 @@ from .ship import Ship, ShipError
 from .procstat import EXITED
 
 STALE_SECONDS = 10.0  # a tick longer than this reads as busy
+# A main loop with no new stamp for this long is stuck: the line alerts. Above the longest legitimate duty in the
+# service log's timings, deliveries at 56.8 s (and the longest whole pass, 184.7 s, is a run of many duties, each
+# stamped as it begins), by a margin of five times.
+LOOP_STUCK_SECONDS = 300.0
 JAILED_HEARTBEAT_SECONDS = 120.0  # inside a jail, which cannot see the lock: a service that ticked this recently is up
 ANSWER_SECONDS = 8.0
 EXIT_SETTLE = 2.0  # after the lock frees, how long stop waits for the kernel to mark the process gone
@@ -39,9 +43,15 @@ def heartbeat_path(runtime: Path) -> Path:
     running jail sees every beat. A single-file bind pinned the inode a jail started with, so a jail read its
     launch-time beat for ever, and a replace during bwrap's mount of the file stopped the launch.
 
-    runtime/heartbeat is shown to every jail, so nothing but the heartbeat, and its own temporary file while a beat
-    is written, may ever be written there."""
+    runtime/heartbeat is shown to every jail, so nothing but the service's two beats (this one, from a thread of
+    its own, and the main loop's pass stamp, pass_path), and their temporary files while one is written, may ever be
+    written there."""
     return runtime / HEARTBEAT_FOLDER / "service.heartbeat"
+
+
+def pass_path(runtime: Path) -> Path:
+    """The main loop's own stamp, beside the beat: the process may be alive while its loop is stuck in one duty."""
+    return runtime / HEARTBEAT_FOLDER / "service.pass"
 
 
 # Where the heartbeat lay before it moved into its folder. The copy that moved it (11ca0ea6) beat here too, for the
@@ -52,7 +62,7 @@ EARLIER_HEARTBEAT = "service.heartbeat"
 def remove_heartbeat(runtime: Path) -> None:
     """The beat, with a temporary file a beat cut short may have left, and what a copy that also beat at the earlier
     place left there."""
-    for path in (heartbeat_path(runtime), runtime / EARLIER_HEARTBEAT):
+    for path in (heartbeat_path(runtime), pass_path(runtime), runtime / EARLIER_HEARTBEAT):
         path.unlink(missing_ok=True)
         path.with_suffix(".tmp").unlink(missing_ok=True)
 
@@ -76,27 +86,51 @@ def write_heartbeat(runtime: Path) -> None:
     _beat(path)
 
 
+def write_pass(runtime: Path, duty: str, *, now: datetime | None = None, pid: int | None = None) -> None:
+    """The main loop's stamp, whole by rename: its pid, the time it began this duty, and the duty's name."""
+    path = pass_path(runtime)
+    path.parent.mkdir(exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    moment = (now or datetime.now(timezone.utc)).isoformat()
+    tmp.write_text(json.dumps(dict(pid=pid or os.getpid(), at=moment, duty=duty)) + "\n")
+    os.replace(tmp, path)
+
+
+def read_pass(runtime: Path, *, now: datetime | None = None) -> tuple[int, float, str] | None:
+    """The main loop's pid, the age of its last stamp in seconds, and the duty it was in; None when unreadable."""
+    try:
+        data = json.loads(pass_path(runtime).read_text())
+        moment = datetime.fromisoformat(data["at"])
+        if (type(data["pid"]) is not int or data["pid"] <= 0 or moment.tzinfo is None
+                or not isinstance(data["duty"], str) or not data["duty"]):
+            return None
+        age = (now or datetime.now(timezone.utc)).timestamp() - moment.timestamp()
+        return data["pid"], age, data["duty"]
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        return None
+
+
 def _beat(path: Path) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(f"{os.getpid()} {datetime.now(timezone.utc).isoformat()}\n")
     os.replace(tmp, path)
 
 
-def read_heartbeat(runtime: Path) -> tuple[int, float] | None:
+def read_heartbeat(runtime: Path, *, now: datetime | None = None) -> tuple[int, float] | None:
     """The service's pid and the age of its last tick in seconds, or None when none was written.
 
     Only the folder is read. Every copy a sync can return to beats there: the copy that moved the beat (11ca0ea6) and
     every later one; a service clears a beat it did not write at its start (Service.first_beat)."""
-    return _read_beat(heartbeat_path(runtime))
+    return _read_beat(heartbeat_path(runtime), now=now)
 
 
-def _read_beat(path: Path) -> tuple[int, float] | None:
+def _read_beat(path: Path, *, now: datetime | None = None) -> tuple[int, float] | None:
     try:
         pid, stamp = path.read_text().split()
         moment = datetime.fromisoformat(stamp)
         if int(pid) <= 0 or moment.tzinfo is None:
             return None
-        age = datetime.now(timezone.utc).timestamp() - moment.timestamp()
+        age = (now or datetime.now(timezone.utc)).timestamp() - moment.timestamp()
         return int(pid), age
     except (OSError, ValueError, OverflowError):
         return None

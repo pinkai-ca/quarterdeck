@@ -302,15 +302,26 @@ def running_settings(seat: Seat, *, screen=None) -> dict[str, str]:
     return found
 
 
-def service_state(runtime: Path) -> str:
-    """``ok``, ``busy <age>`` while a service holds its lock but has not ticked lately, or ``down``."""
+def service_state(runtime: Path, *, now=None) -> str:
+    """``ok``; ``busy <age> in <duty>`` while its main loop has made no new stamp lately, with ``main loop stuck``
+    once that passes servicectl.LOOP_STUCK_SECONDS; or ``down`` when no process holds the lock.
+
+    The beat, written from a thread of its own, proves only that the process is alive. The main loop's pass stamp,
+    written as it begins each pass and each duty, proves it is moving: a loop stuck in one duty never reads ok."""
     if not service.alive(runtime):
         return "down"
-    beat = service.read_heartbeat(runtime)
+    beat = service.read_heartbeat(runtime) if now is None else service.read_heartbeat(runtime, now=now)
     if beat is None or beat[1] < 0:
         return 'busy (heartbeat unknown)'
-    late = beat[1] if beat[1] > STALE_SECONDS else None
-    return f"busy {int(late)}s" if late else "ok"
+    if beat[1] > STALE_SECONDS:
+        return f"busy {int(beat[1])}s"  # the whole process is silent, its beat thread too
+    loop = service.read_pass(runtime, now=now)
+    if loop is None or loop[0] != beat[0] or loop[1] < 0:
+        return 'busy (main loop not yet seen)'
+    pid, age, duty = loop
+    if age > service.LOOP_STUCK_SECONDS:
+        return f"busy {int(age)}s in {duty}: main loop stuck, nothing is delivered"
+    return f"busy {int(age)}s in {duty}" if age > STALE_SECONDS else "ok"
 
 
 @post.reading_pass()

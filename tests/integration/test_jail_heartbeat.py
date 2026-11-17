@@ -205,7 +205,8 @@ def test_a_service_clears_a_beat_it_did_not_write_at_its_start_and_a_stop_clears
     pid, stamp = new.read_text().split()
     assert pid == str(os.getpid()) and datetime.now(timezone.utc) - datetime.fromisoformat(stamp) < timedelta(seconds=30)
     assert not old.exists(), 'the earlier place is cleared, never beaten'
-    assert sorted(p.name for p in new.parent.iterdir()) == ['service.heartbeat'], 'nothing else in the jail-shown folder'
+    assert sorted(p.name for p in new.parent.iterdir()) == ['service.heartbeat', 'service.pass'], \
+        "nothing but the service's two beats in the jail-shown folder"
     # The lock exists and nobody holds it: no service runs (without it, a fresh beat reads as one, as in a jail).
     servicectl.lock_path(runtime).parent.mkdir(parents=True, exist_ok=True)
     servicectl.lock_path(runtime).touch()

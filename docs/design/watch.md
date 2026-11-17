@@ -55,7 +55,7 @@ New seat windows copy the shown window's size while their placeholder runs when 
 
 ### Independent status presentation
 
-Tmux runs `qd status --line` on its own timer, independent of service and doors. Kernel service-lock ownership proves liveness: late heartbeat means busy, missing/invalid heartbeat unknown, released lock down. Up restarts a dead service. A blocked desk door cannot hide a service alarm.
+Tmux runs `qd status --line` on its own timer, independent of service and doors. Kernel service-lock ownership proves liveness: late heartbeat means busy, missing/invalid heartbeat unknown, released lock down. The heartbeat comes from a thread of its own and proves only that the process is alive; the main loop also stamps `heartbeat/service.pass` as it begins each pass, duty and rest. A stamp older than the stale bound reads `busy <age> in <duty>`, and one older than five minutes (`servicectl.LOOP_STUCK_SECONDS`, five times the longest duty the service has logged) adds `main loop stuck, nothing is delivered`; no stamp from the beating process reads `busy (main loop not yet seen)`. A stuck loop never reads ok. Up restarts a dead service. A blocked desk door cannot hide a service alarm.
 
 An atomic stop barrier under `runtime/locks` retains all observed identities before they are signalled. A stop run again while the barrier records the live service's own owner (an earlier stop interrupted, or one running beside it) gives that owner SIGTERM and its grace as a first stop does; only what the earlier stop recorded outside the owner's tree and scope is ended at once, and the line names it.
 

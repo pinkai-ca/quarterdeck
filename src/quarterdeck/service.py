@@ -213,10 +213,13 @@ class Service:
                     pass  # no published start: legacy claims stay held; the service loop still runs
                 self.settle_stale_claims()
                 while True:
+                    self.loop_stamp('pass')
                     self.tick()
+                    self.loop_stamp('drain_accounting')
                     with self.timings().measure('drain_accounting'):
                         self.drain_accounting()
                     arrivals.refresh(self.ship.seats)
+                    self.loop_stamp('rest')
                     with self.timings().measure('sleep'):
                         arrivals.wait(self.ship.tick)  # arrival or one tick; no full status work in this rest
                     self.timings().publish(self.log)
@@ -302,7 +305,8 @@ class Service:
         self._drain_between_duties()
         for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.deliveries, self.follow, self.requests, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.retire_hand_transcripts, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
-            self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
+            self.loop_stamp(step.__name__)  # a slow duty reads as busy, then stuck, never as ok; the beat thread
+            self.heartbeat()  # proves only that the process is alive, never that this loop is moving
             try:
                 with self.timings().measure(step.__name__), Service.non_accounting(self, step.__name__):
                     step()
@@ -513,6 +517,19 @@ class Service:
                 self.beat()
             except OSError:
                 pass  # the beat thread and the main step try again; storage failures are reported there
+        self.loop_stamp('start')
+
+    def loop_stamp(self, duty: str) -> None:
+        """The main loop's own stamp, as it begins a pass, a duty or its rest (servicectl.write_pass). Only the main
+        loop writes it: the beat thread proves the process alive, this proves the loop is making passes, so a loop
+        stuck in one duty reads busy, then stuck, never ok (law: nothing-waits-silently)."""
+        runtime = getattr(self, 'runtime', None)
+        if runtime is None:
+            return  # a partial service built for one step's test has no runtime to stamp
+        try:
+            servicectl.write_pass(runtime, duty)
+        except OSError:
+            pass  # the status reading holds what it cannot read as unknown, never as ok
 
     def beat(self) -> None:
         """The heartbeat, in its folder (servicectl.write_heartbeat)."""

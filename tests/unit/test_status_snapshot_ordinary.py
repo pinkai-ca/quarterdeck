@@ -16,6 +16,7 @@ def published(tmp_path, monkeypatch):
     ship.runtime.mkdir()
     lock = servicectl.acquire_lock(ship.runtime)
     servicectl.write_heartbeat(ship.runtime)
+    servicectl.write_pass(ship.runtime, 'pass')  # a running service's main loop stamps its pass beside the beat
     clock = [time.time_ns(), time.monotonic_ns()]
     monkeypatch.setattr(status_snapshot, 'time', SimpleNamespace(time_ns=lambda: clock[0], monotonic_ns=lambda: clock[1]))
     reading = watch.status_reading(ship, SimpleNamespace())

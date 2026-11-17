@@ -184,6 +184,7 @@ def test_an_expired_publication_collects_a_newly_waiting_seat(
     monkeypatch.setattr(Tmux, 'for_ship', classmethod(lambda cls, current: tmux))
     with servicectl.acquire_lock(ship.runtime):
         servicectl.write_heartbeat(ship.runtime)
+        servicectl.write_pass(ship.runtime, 'pass')  # a running service's main loop stamps its pass beside the beat
         store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
         assert presentation.publish(ship, tmux, presentation.framework_stamp(), store, attempts)
         file = ship.runtime / presentation.NAME
