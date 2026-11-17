@@ -127,6 +127,7 @@ def stalled_after_open(world, monkeypatch):
 
 
 def test_stop_after_open_stalled_past_ordinary_grace_waits_then_restart_types_once(world, monkeypatch):
+    monkeypatch.setattr(shutdown, 'ORDINARY_GRACE', 1.0)  # the ordinary bound low, so the delivery's shows past it
     message, _ = stalled_after_open(world, monkeypatch)
     runtime = world.ship.runtime
     crossed, release = threading.Event(), threading.Event()

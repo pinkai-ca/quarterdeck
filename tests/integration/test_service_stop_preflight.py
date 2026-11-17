@@ -79,6 +79,7 @@ post.Attempts.open = open_before_journal
 
 
 def test_stop_after_attempt_open_waits_for_the_write_unit(world, monkeypatch):
+    monkeypatch.setattr(shutdown, 'ORDINARY_GRACE', 1.0)  # the ordinary bound low, so the delivery's shows past it
     monkeypatch.setattr(phases, 'DRIVER', phases.DRIVER.replace(
         'loaded = ship.load(folder)', POST_ATTEMPT + '\nloaded = ship.load(folder)'))
     world.start('after-attempt-open')

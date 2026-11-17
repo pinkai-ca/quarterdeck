@@ -721,6 +721,9 @@ def _stop(runtime: Path, previous: dict[int, str] | None, told: set[int]) -> str
                        if extended else "")
                     + (f" · waited {time.monotonic() - term_started:.2f}s for relaunch boundary (limit {relaunch_intent.GRACE:g}s)"
                        if relaunching and not extended else "")
+                    + (f" · waited {time.monotonic() - term_started:.1f}s for the service to end"
+                       if how == "stopped" and not extended and not relaunching
+                       and time.monotonic() - term_started > shutdown.SLOW_STOP else "")
                     + (f" · relaunch of {', '.join(released)} left unfinished for the next service" if released else "")
                     + (f" · {detail}" if detail else ""))
     raise ShipError(f"service {pid} still holds {lock_path(runtime)} after SIGKILL")

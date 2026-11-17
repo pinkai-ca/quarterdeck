@@ -18,8 +18,13 @@ from . import durable
 from .procstat import EXITED
 
 BEFORE_PASTE = "prepared-before-paste-v1"
-ORDINARY_GRACE = 3.0
 DELIVERY_GRACE = 30.0
+# How long a stop waits for the service to end after SIGTERM: a SAFETY STOP far above any stall, the same bound as a
+# delivery's. The service answers at once (Stop.signal), but on a busy machine its unwinding, or the stop's own
+# reading, can take seconds; a 3-second bound read that as no answer and killed a service that was ending. A truly
+# hung service is still killed, at this bound. Every stop waits on it: qd down, sync, restart and the drills.
+ORDINARY_GRACE = DELIVERY_GRACE
+SLOW_STOP = 3.0  # past this the stop's line says how long it waited, so a slow stop stays visible
 MAX_JOURNAL_BYTES = 8 * 1024 * 1024
 _controller = None
 

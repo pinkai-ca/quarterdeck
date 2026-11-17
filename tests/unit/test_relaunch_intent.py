@@ -147,6 +147,7 @@ def test_the_bound_releases_a_held_stop_leaves_the_intent_and_shows_on_the_line(
             time.sleep(0.05)
         owner = shutdown.owner(runtime)
         assert relaunch_intent.held_by(runtime, owner) == ['worker-1']
+        monkeypatch.setattr(shutdown, 'ORDINARY_GRACE', 1.0)  # the ordinary bound low, so the relaunch's shows past it
         monkeypatch.setattr(relaunch_intent, 'GRACE', shutdown.ORDINARY_GRACE + 2.0)  # a bound past the ordinary
         started = time.monotonic()
         proof = servicectl.stop(runtime)
