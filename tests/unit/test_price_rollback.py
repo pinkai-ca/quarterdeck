@@ -103,7 +103,7 @@ def test_old_writer_round_trip_invalidates_stale_cost_evidence_without_losing_ra
 def test_real_launch_writer_keeps_old_launch_and_model_readers_usable(tmp_path, monkeypatch, old, reader, priced):
     pool = Pool('local', 'local', endpoint='http://127.0.0.1:1/v1', price=RATES if priced else None) if reader != 'fake' else Pool('local', 'fake')
     spec = SeatSpec('worker', 'crew', 'worker', reader, ('local',), cwd=tmp_path, sandbox=False)
-    ship = Ship(tmp_path, 'synthetic', 'admiral', tmp_path, {'local': pool},
+    ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, {'local': pool},
                 {'crew': Session('crew', 'crew')}, {'worker': spec})
     declaration = '[ship]\nname="synthetic"\n[pools.local]\nprovider="fake"\n' if reader == 'fake' else (
         '[ship]\nname="synthetic"\n[pools.local]\nprovider="local"\nendpoint="http://127.0.0.1:1/v1"\n')

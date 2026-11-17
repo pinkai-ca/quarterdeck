@@ -38,7 +38,7 @@ def test_an_idle_seat_shows_an_empty_box_and_its_model_and_effort():
     s = screen("idle")
     assert s.box == "" and not s.working and s.interruption is None
     assert s.shows == {"model": "Gemini 4 Argon", "effort": "high"} and same_name(s.shows["model"], "gemini-4-argon-high")
-    assert any(e.startswith("You are seat laan on ship example") for e in s.echoes), "the first message is echoed in full"
+    assert any(e.startswith("You are seat unit on ship example") for e in s.echoes), "the first message is echoed in full"
 
 
 def test_a_short_paste_shows_whole_and_a_long_one_folds_to_its_length():
@@ -64,7 +64,7 @@ def test_the_join_takes_the_one_conversation_that_appeared_since_the_launch(tmp_
     conversations.mkdir(parents=True)
     (conversations / "older.db").write_text("the user's own, from before")
     harness = AntigravityHarness()
-    seat = SeatSpec("laan", "bridge", "navigator", "antigravity", ("google",), cwd=tmp_path)
+    seat = SeatSpec("unit", "bridge", "navigator", "antigravity", ("google",), cwd=tmp_path)
     home, brief = tmp_path / "home", tmp_path / "brief.md"
     home.mkdir()
     brief.write_text("# Standing orders\n")
@@ -116,11 +116,11 @@ def test_background_task_screen_recognizes_empty_or_nonempty_box_and_fails_close
     # obstructs when real user text or a folded paste is in the box above a background job,
     # and fails closed on an unrecognized layout.
     pool = Pool("google", "antigravity")
-    spec = SeatSpec("laan", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
-    ship = Ship(tmp_path, "example", "admiral", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"laan": spec})
+    spec = SeatSpec("unit", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
+    ship = Ship(tmp_path, "example", "operator", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"unit": spec})
     holder = {"text": (SCREENS / "working-background-task.txt").read_text()}
     fake_tmux = type("FakeTmux", (), {
-        "pane": lambda self, pid: Pane("%1", "qd", "laan", 4242, 80, 24, False, False, None),
+        "pane": lambda self, pid: Pane("%1", "qd", "unit", 4242, 80, 24, False, False, None),
         "capture": lambda self, pid, history=0: holder["text"],
     })()
     seat = Seat(ship, spec, fake_tmux)
@@ -187,8 +187,8 @@ def test_the_controls_are_launch_only():
 def test_record_decodes_turns_tools_and_state_and_counts_an_unreported_class_as_zero(tmp_path: Path):
     home = tmp_path / "home"
     rec = AntigravityShape(home, tmp_path, "conv-1", "gemini-3.1-pro-high")
-    rec.begin("qd > order from pike · ord-1234\nCheck status", "gemini-3.1-pro-high", "high")
-    rec.consumed("qd > note from pike · not-5678\nExtra note")
+    rec.begin("qd > order from chair · ord-1234\nCheck status", "gemini-3.1-pro-high", "high")
+    rec.consumed("qd > note from chair · not-5678\nExtra note")
     rec.tool("run_command", "qd status", "service ok", False)
     rec.tool("run_command", "false", "failed", True)
     # Mark a step with has_subtrajectory=1 and an invoke_subagent tool call: subagent_turns must still be None
@@ -202,12 +202,12 @@ def test_record_decodes_turns_tools_and_state_and_counts_an_unreported_class_as_
     assert antigravity.first_timestamp(rec.path) is not None
     assert state.turn_open is False and state.turns == 1 and state.open_tool is None
     assert state.model == "gemini-3.1-pro-high" and state.effort is None
-    assert state.last_input == "qd > note from pike · not-5678\nExtra note"
-    assert state.consumed == ("qd > note from pike · not-5678\nExtra note",)
+    assert state.last_input == "qd > note from chair · not-5678\nExtra note"
+    assert state.consumed == ("qd > note from chair · not-5678\nExtra note",)
 
     assert len(turns) == 1
     turn = turns[0]
-    assert turn.input == "qd > order from pike · ord-1234\nCheck status"
+    assert turn.input == "qd > order from chair · ord-1234\nCheck status"
     assert turn.reply == "Status checked and reported."
     assert turn.model == "gemini-3.1-pro-high"
     assert [t.name for t in turn.tools] == ["run_command", "run_command", "invoke_subagent"]
@@ -284,7 +284,7 @@ def test_delayed_terminal_insertion_preserves_stable_turn_identity_and_idempoten
 
     book = Ledger(tmp_path / "ledger.sqlite")
     store = Store(tmp_path)
-    assert book.ingest("scott", "google", db_path, turns1, store) == 1
+    assert book.ingest("maker", "google", db_path, turns1, store) == 1
 
     # Now execution-0 gains its terminal executor_metadata row
     with sqlite3.connect(db_path) as con:
@@ -293,8 +293,8 @@ def test_delayed_terminal_insertion_preserves_stable_turn_identity_and_idempoten
 
     turns2 = antigravity.turns(db_path)
     assert [(t.index, t.input, t.tokens.read_uncached) for t in turns2] == [(0, "input-0", 10), (2, "input-1", 11)]
-    assert book.ingest("scott", "google", db_path, turns2, store) == 1
-    assert book.ingest("scott", "google", db_path, turns2, store) == 0, "idempotent reread writes nothing"
+    assert book.ingest("maker", "google", db_path, turns2, store) == 1
+    assert book.ingest("maker", "google", db_path, turns2, store) == 0, "idempotent reread writes nothing"
     rows = book.db.execute("SELECT turn, read_uncached FROM turns ORDER BY turn").fetchall()
     assert rows == [(0, 10), (2, 11)], "input-0 is present and input-1 is never charged twice"
     book.close()
@@ -344,9 +344,9 @@ def test_records_returns_only_proven_seat_owned_conversations_and_never_foreign_
     older.begin("user session", "gemini-3.1-pro-high", "high")
 
     pool = Pool("google", "antigravity")
-    spec = SeatSpec("scott", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
-    ship = Ship(tmp_path, "enterprise", "admiral", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"scott": spec})
-    fake_tmux = type("FakeTmux", (), {"pane": lambda self, pid: Pane("%1", "qd", "scott", 4242, 80, 24, False, False, None)})()
+    spec = SeatSpec("maker", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
+    ship = Ship(tmp_path, "enterprise", "operator", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"maker": spec})
+    fake_tmux = type("FakeTmux", (), {"pane": lambda self, pid: Pane("%1", "qd", "maker", 4242, 80, 24, False, False, None)})()
     seat = Seat(ship, spec, fake_tmux)
     seat.home.mkdir(parents=True, exist_ok=True)
     seat.trusted.mkdir(parents=True, exist_ok=True)
@@ -453,7 +453,7 @@ def test_corrupt_or_non_sqlite_record_raises_record_error(tmp_path: Path):
 
 def test_the_launch_carries_the_brief_as_the_first_message_and_our_settings(tmp_path: Path):
     harness = AntigravityHarness()
-    seat = SeatSpec("laan", "bridge", "navigator", "antigravity", ("google",), model="gemini-4-argon-high", effort="high",
+    seat = SeatSpec("unit", "bridge", "navigator", "antigravity", ("google",), model="gemini-4-argon-high", effort="high",
                     cwd=tmp_path / "work", settings={"theme": "dark"})
     home = tmp_path / "home"
     assert harness.build_home(home, seat, Pool("google", "antigravity"), None) is None
@@ -461,9 +461,9 @@ def test_the_launch_carries_the_brief_as_the_first_message_and_our_settings(tmp_
     assert settings == {"trustedWorkspaces": [str(tmp_path / "work")], "theme": "dark"}
     brief = tmp_path / "brief.md"
     brief.write_text("# Standing orders\nBe brief.\n")
-    launch = harness.launch(seat, Pool("google", "antigravity"), home, brief, None, "qd > briefed as laan")
+    launch = harness.launch(seat, Pool("google", "antigravity"), home, brief, None, "qd > briefed as unit")
     assert launch.argv[:3] == ("agy", "--dangerously-skip-permissions", "--settings")
-    assert launch.argv[-2:] == ("--prompt-interactive", "# Standing orders\nBe brief.\n\nqd > briefed as laan")
+    assert launch.argv[-2:] == ("--prompt-interactive", "# Standing orders\nBe brief.\n\nqd > briefed as unit")
     assert launch.env == {"AGY_CLI_DISABLE_AUTO_UPDATE": "true"}
     resumed = harness.launch(seat, Pool("google", "antigravity"), home, brief, "abc", None)
     assert "--conversation" in resumed.argv and "--prompt-interactive" not in resumed.argv, "a resumed conversation is not briefed twice"

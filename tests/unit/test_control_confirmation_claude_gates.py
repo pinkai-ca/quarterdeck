@@ -428,7 +428,7 @@ def test_the_control_never_types_into_a_box_holding_a_ship_message(ship_seat):
     assert delivery.result == 'withheld' and world.live['keys'] == [] and world.live['pasted'] == []
 
 
-def test_on_a_seat_the_admiral_owns_nothing_is_typed(ship_seat):
+def test_on_a_seat_the_operator_owns_nothing_is_typed(ship_seat):
     world = ship_seat(human=True)
     control, answer, question = proved_answer(world)
     assert world.door.answer_control(control, TARGET, answer, lambda: True, question=question).result == 'withheld'

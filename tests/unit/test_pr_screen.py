@@ -384,7 +384,7 @@ OUTSIDER_WORDS = ('OSPREY', 'KESTREL', 'PLOVER', 'CURLEW', 'DUNLIN', 'MERLIN', '
                   'TURNSTONE', 'GODWIT', 'LAPWING', 'authorized_keys', 'IGNORE_PREVIOUS', 'Reviewer bot', 'already screened', 'recieve')
 
 
-def test_a_pass_tells_una_of_clean_requests_and_the_desk_of_flagged_ones_quoting_nothing(world):
+def test_a_pass_tells_signer_of_clean_requests_and_the_desk_of_flagged_ones_quoting_nothing(world):
     results, hands, outcomes = run(world, honest)
     by_case = {CASES[name]['number']: name for name in CASES}
     outcome = {by_case[r['number']]: r['outcome'] for r in results}

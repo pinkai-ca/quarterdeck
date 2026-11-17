@@ -36,21 +36,21 @@ def seat(tmp_path: Path, name: str, pool: Pool, launched_pool: str | None = None
 
 def test_a_refreshed_seat_reseeds_the_pool_and_is_relinked(tmp_path: Path):
     ship, pool, source = ship_with_pool(tmp_path, live("old", 60))
-    pike = seat(tmp_path, "pike", pool)
-    link = pike.home / ".credentials.json"
+    chair = seat(tmp_path, "chair", pool)
+    link = chair.home / ".credentials.json"
     link.symlink_to(source)
-    assert credential.reseed(ship, [pike]) == [], "a link means no refresh happened"
+    assert credential.reseed(ship, [chair]) == [], "a link means no refresh happened"
     link.unlink()
     link.write_text(live("new", 3600))  # the program refreshed by atomic rename: a private file with the only live token
-    proofs = credential.reseed(ship, [pike])
-    assert proofs[0].startswith("claude-secondary reseeded from pike's refresh") and proofs[1] == "pike relinked to claude-secondary"
+    proofs = credential.reseed(ship, [chair])
+    assert proofs[0].startswith("claude-secondary reseeded from chair's refresh") and proofs[1] == "chair relinked to claude-secondary"
     assert link.is_symlink() and link.resolve() == source.resolve()
     assert json.loads(source.read_text())["claudeAiOauth"]["refreshToken"] == "new", "the pool holds the live token"
     assert proofs[0].endswith("the replaced file kept as runtime/credentials/claude-secondary-.credentials.json.stale")
     kept = tmp_path / "runtime" / "credentials" / "claude-secondary-.credentials.json.stale"
     assert json.loads(kept.read_text())["claudeAiOauth"]["refreshToken"] == "old"
     assert [p.name for p in source.parent.iterdir()] == [".credentials.json"], "the user's folder holds only the live file"  # law: one-folder
-    assert credential.reseed(ship, [pike]) == []
+    assert credential.reseed(ship, [chair]) == []
 
 
 def test_a_logged_out_stub_never_replaces_a_live_pool_but_is_relinked_to_it(tmp_path: Path):
@@ -65,22 +65,22 @@ def test_a_logged_out_stub_never_replaces_a_live_pool_but_is_relinked_to_it(tmp_
 
 def test_the_newest_live_refresh_wins_when_two_seats_detached_in_one_tick(tmp_path: Path):
     ship, pool, source = ship_with_pool(tmp_path, live("old", 60))
-    pike, scott, desk = seat(tmp_path, "pike", pool), seat(tmp_path, "scott", pool), seat(tmp_path, "desk", pool)
-    (pike.home / ".credentials.json").write_text(live("newer", 3600))
-    (scott.home / ".credentials.json").write_text(live("older", 1800))
+    chair, maker, desk = seat(tmp_path, "chair", pool), seat(tmp_path, "maker", pool), seat(tmp_path, "desk", pool)
+    (chair.home / ".credentials.json").write_text(live("newer", 3600))
+    (maker.home / ".credentials.json").write_text(live("older", 1800))
     (desk.home / ".credentials.json").write_text("{}")
-    proofs = credential.reseed(ship, [scott, desk, pike])
-    assert proofs[0].startswith("claude-secondary reseeded from pike's refresh")
+    proofs = credential.reseed(ship, [maker, desk, chair])
+    assert proofs[0].startswith("claude-secondary reseeded from chair's refresh")
     assert json.loads(source.read_text())["claudeAiOauth"]["refreshToken"] == "newer"
-    assert all((s.home / ".credentials.json").is_symlink() for s in (pike, scott, desk))
+    assert all((s.home / ".credentials.json").is_symlink() for s in (chair, maker, desk))
     assert len(list((tmp_path / "runtime" / "credentials").iterdir())) == 1, "the replaced file kept once"
 
 
 def test_an_older_refresh_than_the_pool_holds_installs_nothing(tmp_path: Path):
     ship, pool, source = ship_with_pool(tmp_path, live("current", 3600))
-    pike = seat(tmp_path, "pike", pool)
-    (pike.home / ".credentials.json").write_text(live("stale", 60))
-    assert credential.reseed(ship, [pike]) == ["pike relinked to claude-secondary"]
+    chair = seat(tmp_path, "chair", pool)
+    (chair.home / ".credentials.json").write_text(live("stale", 60))
+    assert credential.reseed(ship, [chair]) == ["chair relinked to claude-secondary"]
     assert json.loads(source.read_text())["claudeAiOauth"]["refreshToken"] == "current"
 
 
@@ -91,9 +91,9 @@ def test_the_pool_is_the_one_the_seat_was_launched_on(tmp_path: Path):
     pool_b = Pool("claude-primary", "anthropic", config_dir=pool_b_dir)
     (pool_b_dir / ".credentials.json").write_text(live("b", 3600))
     ship = Ship(tmp_path, "t", "operator", tmp_path, {pool_a.name: pool_a, pool_b.name: pool_b}, {}, {})
-    pike = seat(tmp_path, "pike", pool_b, launched_pool="claude-secondary")  # declared B since, still running on A
-    (pike.home / ".credentials.json").write_text(live("a-refreshed", 7200))
-    proofs = credential.reseed(ship, [pike])
+    chair = seat(tmp_path, "chair", pool_b, launched_pool="claude-secondary")  # declared B since, still running on A
+    (chair.home / ".credentials.json").write_text(live("a-refreshed", 7200))
+    proofs = credential.reseed(ship, [chair])
     assert proofs[0].startswith("claude-secondary reseeded")
     assert json.loads(source_a.read_text())["claudeAiOauth"]["refreshToken"] == "a-refreshed"
     assert json.loads((pool_b_dir / ".credentials.json").read_text())["claudeAiOauth"]["refreshToken"] == "b", "B untouched"

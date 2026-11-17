@@ -91,7 +91,7 @@ def test_measured_terminal_carriers_settle_only_the_matching_task(tmp_path, carr
     assert state.active_tools == ()
 
 
-def test_spock_sequence_holds_until_tools_queue_and_latest_turn_are_all_proved(tmp_path):
+def test_sentry_sequence_holds_until_tools_queue_and_latest_turn_are_all_proved(tmp_path):
     record, before = read(tmp_path, initial())
     assert idle.check(before).dimension == 'tools-pending'
     queue_end = notice('enqueue')

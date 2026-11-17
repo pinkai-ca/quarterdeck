@@ -30,7 +30,7 @@ def synthetic_seat(tmp_path, monkeypatch):
     pools = {name: Pool(name,'antigravity') for name in ('google-a','google-b')}
     sessions = {name: Session(name,name,human=name=='office') for name in ('bridge','crew','office')}
     spec = SeatSpec('worker','crew','worker','antigravity',tuple(pools),cwd=tmp_path)
-    ship = Ship(tmp_path,'example','admiral',tmp_path,pools,sessions,{'worker':spec})
+    ship = Ship(tmp_path,'example','operator',tmp_path,pools,sessions,{'worker':spec})
     shown = {'text':IDLE}
     actions = []
     tmux = SimpleNamespace(pane=lambda ident: Pane('%1','crew','worker',4242,80,24,False,False,None),

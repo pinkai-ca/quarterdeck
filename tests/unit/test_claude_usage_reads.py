@@ -125,7 +125,7 @@ def test_claude_reads_each_pool_at_most_every_five_minutes():
 @pytest.fixture
 def ship_service(tmp_path, monkeypatch):
     pools = {name: subscription(tmp_path, name) for name in ("claude-primary", "claude-secondary")}
-    ship = Ship(tmp_path, "example", "admiral", tmp_path, pools, {"crew": Session("crew", "crew")}, {})
+    ship = Ship(tmp_path, "example", "operator", tmp_path, pools, {"crew": Session("crew", "crew")}, {})
     clock = SimpleNamespace(mono=1000.0, wall=datetime.now(timezone.utc))
     monkeypatch.setattr(quota, "time", SimpleNamespace(monotonic=lambda: clock.mono))
     monkeypatch.setattr(servicemod.post, "now", lambda: clock.wall)

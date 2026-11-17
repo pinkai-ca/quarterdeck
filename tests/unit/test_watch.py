@@ -46,7 +46,7 @@ def test_the_status_line_says_everything_that_waits():  # law: nothing-waits-sil
     quiet = Facts(service="ok", waiting=0, oldest=0, blind=0)
     assert quiet.line() == "service ok · 0 waiting"
     assert Facts(service="busy 23s", waiting=0, oldest=0, blind=0).line() == "service busy 23s · 0 waiting", "busy is not dead"
-    loud = Facts(service="down", waiting=2, oldest=14, blind=1, needs_human=["laan"], unarmed=["desk"],
+    loud = Facts(service="down", waiting=2, oldest=14, blind=1, needs_human=["unit"], unarmed=["desk"],
                  held=["worker"], walls=["claude-primary 7d"], disks=[("root", 94)], login=[("claude-secondary", "11-13 22:24")],
                  queued=1, oldest_queued=31)
     assert loud.line() == ("SERVICE DOWN · 2 waiting · 1 queued · 1 blind · 1 need human · 1 unarmed"
@@ -79,15 +79,15 @@ def test_watch_and_seat_count_what_was_read_and_mark_what_was_not(tmp_path: Path
     from quarterdeck.tmux import Pane
 
     pool = Pool("google", "antigravity")
-    spec = SeatSpec("scott", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
-    ship = Ship(tmp_path, "enterprise", "admiral", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"scott": spec})
+    spec = SeatSpec("maker", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
+    ship = Ship(tmp_path, "enterprise", "operator", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"maker": spec})
     idle_screen = "─" * 80 + "\n>\n" + "─" * 80 + "\n                                              Gemini 3.1 Pro · high\n"
     working_screen = "─" * 80 + "\n>\n" + "─" * 80 + "\nesc to cancel                                 Gemini 3.1 Pro · high\n"
     state_holder = {"screen": working_screen}
 
     class FakeTmux:
         def pane(self, pane_id: str):
-            return Pane("%1", "qd", "scott", 4242, 80, 24, False, False, None)
+            return Pane("%1", "qd", "maker", 4242, 80, 24, False, False, None)
 
         def capture(self, pane_id: str, history: int = 0) -> str:
             return state_holder["screen"]

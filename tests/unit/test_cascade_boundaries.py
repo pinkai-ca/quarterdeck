@@ -20,7 +20,7 @@ from tests.unit import refusal_ship
 from tests.unit.refusal_ship import OTHER, REFUSED, World
 from tests.unit.thread_reading import row_for, thread_text
 
-RING = ("worker", "tester", "spock")
+RING = ("worker", "tester", "sentry")
 HOLDS = (ShipError, ValueError, KeyError, TypeError)
 REFUSAL_STOP = "provider refused this step"
 

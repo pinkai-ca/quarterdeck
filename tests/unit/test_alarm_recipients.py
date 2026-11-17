@@ -15,7 +15,7 @@ from quarterdeck.tmux import Pane
 from tests.conftest import FIXTURES
 
 WORKER = Pane('%1', 'Crew', 'worker', 123, 120, 40, False, False, None)
-SPOCK = Pane('%2', 'Bridge', 'spock', 222, 120, 40, False, False, None)
+SENTRY = Pane('%2', 'Bridge', 'sentry', 222, 120, 40, False, False, None)
 
 
 @pytest.fixture
@@ -26,10 +26,10 @@ def alarms(drydock):
         worker = replace(ship.seat('worker-1'), harness='pi')
         ship.seats[worker.name] = worker
         if systems != 'absent':
-            ship.seats['spock'] = replace(ship.seat('captain'), name='spock', role='systems', persona=None)
+            ship.seats['sentry'] = replace(ship.seat('captain'), name='sentry', role='systems', persona=None)
         whole = (FIXTURES / 'pi/0.74.2/fresh.txt').read_text()
         frame = [whole.replace('qwen3.8-27b • medium', '')]  # the partial frame reads as an unknown dialog
-        panes = {WORKER.id: WORKER, **({SPOCK.id: SPOCK} if systems == 'up' else {})}
+        panes = {WORKER.id: WORKER, **({SENTRY.id: SENTRY} if systems == 'up' else {})}
         def forbidden(*args, **kwargs):
             pytest.fail('an alarm never pastes, submits or presses a key')
         tmux = SimpleNamespace(pane=panes.get, read_pane=lambda pane, history=0: (panes[pane], frame[0]),
@@ -40,10 +40,10 @@ def alarms(drydock):
         seat.trusted.mkdir(parents=True, exist_ok=True)
         Launched(WORKER.id, WORKER.pid, at, worker.pools[0], None, ['pi'], '0.74.2', 'pi').write(seat.trusted / 'launch.json')
         if systems != 'absent':
-            spock = Seat(ship, ship.seat('spock'), tmux)
-            spock.folder.mkdir(parents=True)
-            spock.trusted.mkdir(parents=True, exist_ok=True)
-            Launched(SPOCK.id, SPOCK.pid, at, spock.spec.pools[0], None, ['fake'], None, 'fake').write(spock.trusted / 'launch.json')
+            sentry = Seat(ship, ship.seat('sentry'), tmux)
+            sentry.folder.mkdir(parents=True)
+            sentry.trusted.mkdir(parents=True, exist_ok=True)
+            Launched(SENTRY.id, SENTRY.pid, at, sentry.spec.pools[0], None, ['fake'], None, 'fake').write(sentry.trusted / 'launch.json')
         svc = service.Service(ship, tmux)
         built.append(svc)
 
@@ -72,8 +72,8 @@ def alarms(drydock):
 
 
 EXPECTED = {
-    ('up', 'unknown'): ['spock'],
-    ('up', 'login'): ['desk', 'spock'],
+    ('up', 'unknown'): ['sentry'],
+    ('up', 'login'): ['desk', 'sentry'],
     ('down', 'unknown'): ['desk'],
     ('down', 'login'): ['desk'],
     ('absent', 'unknown'): ['desk'],
@@ -105,32 +105,32 @@ def test_a_cleared_door_then_the_same_reason_tells_again(alarms):
     a = alarms('up')
     a.show('unknown')
     a.svc.needs_human(a.seat)
-    assert [to for to, _ in a.told()] == ['spock']
+    assert [to for to, _ in a.told()] == ['sentry']
     a.show((FIXTURES / 'pi/0.74.2/fresh.txt').read_text())
     a.svc.needs_human(a.seat)
     assert a.told() == []
     a.show('unknown')
     a.svc.needs_human(a.seat)
-    assert [to for to, _ in a.told()] == ['spock']
+    assert [to for to, _ in a.told()] == ['sentry']
 
 
 def test_recipients_changing_under_a_standing_reason_tell_only_the_newcomer(alarms):
     a = alarms('up')
     a.show('unknown')
-    del a.panes[SPOCK.id]  # the systems seat is down when the alarm first rings
+    del a.panes[SENTRY.id]  # the systems seat is down when the alarm first rings
     a.svc.needs_human(a.seat)
     assert [to for to, _ in a.told()] == ['desk']
-    a.panes[SPOCK.id] = SPOCK  # it comes up while the same reason stands
+    a.panes[SENTRY.id] = SENTRY  # it comes up while the same reason stands
     a.svc.needs_human(a.seat)
-    assert [to for to, _ in a.told()] == ['spock']
-    del a.panes[SPOCK.id]  # and goes down again: the desk already knows this reason
+    assert [to for to, _ in a.told()] == ['sentry']
+    del a.panes[SENTRY.id]  # and goes down again: the desk already knows this reason
     a.svc.needs_human(a.seat)
     assert a.told() == []
 
 
 def test_a_systems_seat_that_is_not_its_own_launch_is_not_up(alarms):
     a = alarms('up')
-    a.panes[SPOCK.id] = replace(SPOCK, pid=999)  # law: identity
+    a.panes[SENTRY.id] = replace(SENTRY, pid=999)  # law: identity
     a.show('unknown')
     a.svc.needs_human(a.seat)
     assert [to for to, _ in a.told()] == ['desk']
@@ -142,8 +142,8 @@ def test_an_obstructed_systems_seat_is_never_its_own_recipient(alarms):
     ship.seats['worker-1'] = replace(ship.seat('worker-1'), role='systems')
     a.show('unknown')
     a.svc.needs_human(a.seat)
-    assert [to for to, _ in a.told()] == ['spock'], 'the other systems seat that is up takes it'
-    del a.panes[SPOCK.id]
+    assert [to for to, _ in a.told()] == ['sentry'], 'the other systems seat that is up takes it'
+    del a.panes[SENTRY.id]
     a.show('login')
     a.svc.needs_human(a.seat)
     assert [to for to, _ in a.told()] == ['desk']

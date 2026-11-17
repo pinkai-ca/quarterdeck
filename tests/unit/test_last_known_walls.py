@@ -23,7 +23,7 @@ FAILED = "provider usage unavailable"
 def claude_seat(tmp_path) -> Seat:
     pools = {name: Pool(name, "claude") for name in ("claude-primary", "claude-secondary")}
     spec = SeatSpec("worker", "crew", "worker", "claude", tuple(pools), cwd=tmp_path)
-    ship = Ship(tmp_path, "example", "admiral", tmp_path, pools, {"crew": Session("crew", "crew")}, {"worker": spec})
+    ship = Ship(tmp_path, "example", "operator", tmp_path, pools, {"crew": Session("crew", "crew")}, {"worker": spec})
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: None))
     seat.folder.mkdir(parents=True)
     seat.trusted.mkdir(parents=True, exist_ok=True)

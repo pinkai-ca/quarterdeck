@@ -35,7 +35,7 @@ def test_without_systemd_run_or_its_manager_the_service_starts_as_today_and_says
 
 
 def test_the_declared_environment_keeps_its_list_and_the_pools_keys_and_never_a_seat():
-    environ = {'PATH': '/bin', 'HOME': '/h', 'QD_SEAT': 'una', 'QD_TMUX_SOCKET': '/s', 'GIT_CONFIG_GLOBAL': '/dev/null',
+    environ = {'PATH': '/bin', 'HOME': '/h', 'QD_SEAT': 'signer', 'QD_TMUX_SOCKET': '/s', 'GIT_CONFIG_GLOBAL': '/dev/null',
                'LC_ALL': 'C', 'OPENAI_API_KEY': 'x', 'DISPLAY': ':0', 'POOL_API_KEY': 'k', 'QD_DECOY_TOKEN': 'x',
                'GIT_ASKPASS': 'x', 'XDG_RUNTIME_DIR': '/run/user/1', 'GIT_DIR': '/r/.git', 'GIT_WORK_TREE': '/r',
                'GIT_INDEX_FILE': '/i', 'GIT_OBJECT_DIRECTORY': '/o', 'GIT_SSH_COMMAND': 'ssh -i k', 'GIT_SSH': 's',
@@ -60,7 +60,7 @@ def test_an_unjailed_seat_refuses_a_secret_name_but_the_one_its_pools_declared_k
     from quarterdeck.ship import Pool, ShipError
     from quarterdeck.harness.home import key_environment
 
-    caller = {'PATH': '/bin', 'HOME': '/h', 'POOL_KEY_NAME': 'k-123', 'UNDECLARED_API_KEY': 'u-456', 'QD_SEAT': 'una'}
+    caller = {'PATH': '/bin', 'HOME': '/h', 'POOL_KEY_NAME': 'k-123', 'UNDECLARED_API_KEY': 'u-456', 'QD_SEAT': 'signer'}
     keyed = Pool('keyed', 'anthropic', api_key='env:POOL_KEY_NAME')
     plain = Pool('plain', 'anthropic')
     # The service starts from its declared environment: no key, declared or not, and no seat.
@@ -78,7 +78,7 @@ def test_an_unjailed_seat_refuses_a_secret_name_but_the_one_its_pools_declared_k
 
 def test_the_unjailed_list_has_the_desktop_names_and_the_jails_has_none():
     environ = {'DISPLAY': ':0', 'WAYLAND_DISPLAY': 'w', 'XDG_SESSION_TYPE': 'x', 'XDG_CURRENT_DESKTOP': 'G',
-               'DBUS_SESSION_BUS_ADDRESS': 'd', 'SSH_AUTH_SOCK': 's', 'PATH': '/bin', 'QD_SEAT': 'una',
+               'DBUS_SESSION_BUS_ADDRESS': 'd', 'SSH_AUTH_SOCK': 's', 'PATH': '/bin', 'QD_SEAT': 'signer',
                'OPENAI_API_KEY': 'x', 'QD_FAKE_STEPS': '1', 'HARMLESS': 'x'}
     pane = je.unjailed_environment(environ)
     assert set(pane) == {'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_SESSION_TYPE', 'XDG_CURRENT_DESKTOP',

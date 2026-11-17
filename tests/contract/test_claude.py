@@ -113,9 +113,9 @@ def test_trust_covers_the_inherited_workspace(tmp_path: Path):
     folder.mkdir()
     (folder / "ship.toml").write_text((F / "ships" / "enterprise.toml").read_text())
     ship = shipmod.load(folder)
-    pike = ship.seat("pike")
-    assert pike.cwd is None, "pike inherits the ship's workspace"
-    resolved = replace(pike, cwd=ship.cwd_of(pike))  # what Seat.up hands the adapter
+    chair = ship.seat("chair")
+    assert chair.cwd is None, "chair inherits the ship's workspace"
+    resolved = replace(chair, cwd=ship.cwd_of(chair))  # what Seat.up hands the adapter
     pool_dir = tmp_path / "pool"
     pool_dir.mkdir()
     (pool_dir / ".credentials.json").write_text("{}")
@@ -152,9 +152,9 @@ def test_the_launch_carries_our_files_and_nothing_of_the_users(tmp_path: Path):
     (pool_dir / ".credentials.json").write_text("{}")
     (pool_dir / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acc", "organizationUuid": "org"}, "theme": "light"}))
     pool = Pool("claude-secondary", "claude", config_dir=pool_dir)
-    seat = SeatSpec("pike", "bridge", "captain", "claude", ("claude-secondary",), model="claude-opus-5-5", effort="max",
-                    persona="Pike", cwd=tmp_path / "work", settings={"autoCompactWindow": "auto"})
-    home = tmp_path / "runtime" / "seats" / "pike" / "home"
+    seat = SeatSpec("chair", "bridge", "captain", "claude", ("claude-secondary",), model="claude-opus-5-5", effort="max",
+                    persona="Chair", cwd=tmp_path / "work", settings={"autoCompactWindow": "auto"})
+    home = tmp_path / "runtime" / "seats" / "chair" / "home"
     credential = harness.build_home(home, seat, pool, None)
     assert credential.link == (home / ".credentials.json", pool_dir / ".credentials.json")
     assert (home / ".credentials.json").is_symlink(), "shared by one link, never a copy"
@@ -171,14 +171,14 @@ def test_the_launch_carries_our_files_and_nothing_of_the_users(tmp_path: Path):
     assert state["oauthAccount"] == {"accountUuid": "acc", "organizationUuid": "org"} and state["theme"] == "dark", \
         "the pool's account record, nothing else of its state"
     brief = tmp_path / "brief.md"
-    launch = harness.launch(seat, pool, home, brief, None, "qd > briefed as pike")
-    assert launch.argv == ("claude", "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", "Pike",
-                           "--model", "claude-opus-5-5", "--effort", "max", "qd > briefed as pike")
+    launch = harness.launch(seat, pool, home, brief, None, "qd > briefed as chair")
+    assert launch.argv == ("claude", "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", "Chair",
+                           "--model", "claude-opus-5-5", "--effort", "max", "qd > briefed as chair")
     assert launch.env == {"CLAUDE_CONFIG_DIR": str(home)}
     resumed = harness.launch(seat, pool, home, brief, "abc-123", None)
     assert resumed.argv[-2:] == ("--resume", "abc-123")
-    reachable = harness.launch(replace(seat, remote_control=True), pool, home, brief, None, "qd > briefed as pike")
-    assert reachable.argv[7:9] == ("--remote-control", "Pike") and reachable.argv[-1] == "qd > briefed as pike"
+    reachable = harness.launch(replace(seat, remote_control=True), pool, home, brief, None, "qd > briefed as chair")
+    assert reachable.argv[7:9] == ("--remote-control", "Chair") and reachable.argv[-1] == "qd > briefed as chair"
 
 
 def test_a_move_to_another_pool_replaces_the_link_and_copies_no_token(tmp_path: Path):
@@ -190,7 +190,7 @@ def test_a_move_to_another_pool_replaces_the_link_and_copies_no_token(tmp_path: 
         (folder / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"refreshToken": name}}))
         os.utime(folder / ".credentials.json", (1_000_000, 1_000_000))  # both pools' files older than the refresh below
         pools[name] = Pool(f"pool-{name}", "claude", config_dir=folder)
-    seat = SeatSpec("pike", "bridge", "captain", "claude", ("pool-a", "pool-b"), cwd=tmp_path)
+    seat = SeatSpec("chair", "bridge", "captain", "claude", ("pool-a", "pool-b"), cwd=tmp_path)
     home = tmp_path / "home"
     harness.build_home(home, seat, pools["a"], None)
     link = home / ".credentials.json"

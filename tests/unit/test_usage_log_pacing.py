@@ -21,7 +21,7 @@ NOW = datetime.now(timezone.utc)
 
 
 def service_with(tmp_path, *pools: Pool) -> Service:
-    ship = Ship(tmp_path, "example", "admiral", tmp_path, {p.name: p for p in pools}, {"crew": Session("crew", "crew")}, {})
+    ship = Ship(tmp_path, "example", "operator", tmp_path, {p.name: p for p in pools}, {"crew": Session("crew", "crew")}, {})
     return Service(ship, SimpleNamespace())
 
 

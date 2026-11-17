@@ -17,12 +17,12 @@ from quarterdeck.service import Service
 
 def test_receipt_matches_the_message_id_and_distinguishes_queue_acceptance(tmp_path: Path) -> None:
     store = Store(tmp_path)
-    earlier = store.new("order", "desk", "scott", "done")
+    earlier = store.new("order", "desk", "maker", "done")
     record = ClaudeShape(tmp_path / "home", Path("/work"), "s1", "fake-1")
     record.begin(post.typed([earlier]), "fake-1", "low")
     record.end("ok")
     since = datetime.now(timezone.utc) - timedelta(seconds=1)
-    later = store.new("order", "desk", "scott", "done")  # the same body, another id
+    later = store.new("order", "desk", "maker", "done")  # the same body, another id
     assert delivery_record.receipt(FakeHarness(), record.path, earlier, since) == "delivered"
     assert delivery_record.receipt(FakeHarness(), record.path, later, since) is None  # law: one-door
     # an input older than the attempt proves nothing about it
@@ -34,7 +34,7 @@ def test_receipt_matches_the_message_id_and_distinguishes_queue_acceptance(tmp_p
 
 
 def test_receipt_without_a_record_is_unknown(tmp_path: Path) -> None:
-    message = Message("ord-1-d-0001", "order", "desk", "scott", post.now(), "x")
+    message = Message("ord-1-d-0001", "order", "desk", "maker", post.now(), "x")
     assert delivery_record.receipt(FakeHarness(), None, message, post.now()) is None
 
 
@@ -49,11 +49,11 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     from quarterdeck.tmux import Pane
 
     pool = Pool("google", "antigravity")
-    spec = SeatSpec("scott", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
-    ship = Ship(tmp_path, "enterprise", "admiral", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"scott": spec})
-    fake_tmux = SimpleNamespace(pane=lambda pane_id: Pane("%1", "qd", "scott", 4242, 80, 24, False, False, None), capture=lambda *a, **k: "")
+    spec = SeatSpec("maker", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
+    ship = Ship(tmp_path, "enterprise", "operator", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"maker": spec})
+    fake_tmux = SimpleNamespace(pane=lambda pane_id: Pane("%1", "qd", "maker", 4242, 80, 24, False, False, None), capture=lambda *a, **k: "")
     svc = Service(ship, fake_tmux)
-    seat = svc.seat("scott")
+    seat = svc.seat("maker")
     seat.folder.mkdir(parents=True, exist_ok=True)
     seat.trusted.mkdir(parents=True, exist_ok=True)
     rec = AntigravityShape(seat.home, tmp_path, "conv-wal", "gemini-3.1-pro-high")
@@ -92,14 +92,14 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     monkeypatch.setattr(antigravity.AntigravityHarness, "read", staticmethod(flaky_read))
     svc.account()
     assert svc.ledger.ingested(rec.path) == 0 and rec.path not in svc.read_marks
-    assert svc.ledger.incomplete_records() == [(str(rec.path), "scott", "google", "transient concurrent write")]
+    assert svc.ledger.incomplete_records() == [(str(rec.path), "maker", "google", "transient concurrent write")]
     assert svc.ledger.rollup("seat")[0].unmeasured == 1, "nothing read yet, and the figure says so with a +"
     # Record, registry and launch evidence unchanged: no re-read inside the bound, though a read would now succeed
     for step in (0.0, service_module.ACCOUNT_RETRY - 1):
         clock.now += step
         svc.account()
         assert svc.ledger.ingested(rec.path) == 0 and rec.path not in svc.read_marks
-        assert svc.ledger.incomplete_records() == [(str(rec.path), "scott", "google", "transient concurrent write")]
+        assert svc.ledger.incomplete_records() == [(str(rec.path), "maker", "google", "transient concurrent write")]
     clock.now += 1  # the bound itself: the unchanged record is read again and recovers
     svc.account()
     assert svc.ledger.ingested(rec.path) == 1 and rec.path in svc.read_marks
@@ -110,7 +110,7 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     failing["next"] = True
     os.utime(rec.path, ns=(rec.path.stat().st_atime_ns, rec.path.stat().st_mtime_ns + 1_000_000))
     svc.account()
-    assert svc.ledger.incomplete_records() == [(str(rec.path), "scott", "google", "transient concurrent write")]
+    assert svc.ledger.incomplete_records() == [(str(rec.path), "maker", "google", "transient concurrent write")]
     assert rec.path not in svc.read_marks and svc.ledger.ingested(rec.path) == 1
     os.utime(rec.path, ns=(rec.path.stat().st_atime_ns, rec.path.stat().st_mtime_ns + 1_000_000))
     svc.account()
@@ -212,11 +212,11 @@ def test_a_blind_attempt_is_judged_delivered_once_a_record_shows_the_message(tmp
     from quarterdeck.tmux import Pane
 
     pool = Pool("claude-secondary", "claude", config_dir=tmp_path / "pool")
-    spec = SeatSpec("scott", "bridge", "worker", "claude", ("claude-secondary",), cwd=tmp_path)
-    ship = Ship(tmp_path, "t", "operator", tmp_path, {"claude-secondary": pool}, {"bridge": Session("bridge", "qd")}, {"scott": spec})
-    fake_tmux = SimpleNamespace(pane=lambda pane_id: Pane("%1", "qd", "scott", 4242, 80, 24, False, False, None), capture=lambda *a, **k: "")
+    spec = SeatSpec("maker", "bridge", "worker", "claude", ("claude-secondary",), cwd=tmp_path)
+    ship = Ship(tmp_path, "t", "operator", tmp_path, {"claude-secondary": pool}, {"bridge": Session("bridge", "qd")}, {"maker": spec})
+    fake_tmux = SimpleNamespace(pane=lambda pane_id: Pane("%1", "qd", "maker", 4242, 80, 24, False, False, None), capture=lambda *a, **k: "")
     svc = Service(ship, fake_tmux)
-    seat = svc.seat("scott")
+    seat = svc.seat("maker")
     seat.folder.mkdir(parents=True, exist_ok=True)
     seat.trusted.mkdir(parents=True, exist_ok=True)
     launched_at = datetime.now(timezone.utc) - timedelta(minutes=5)
@@ -224,8 +224,8 @@ def test_a_blind_attempt_is_judged_delivered_once_a_record_shows_the_message(tmp
                                                          "pool": "claude-secondary", "resume": None, "argv": ["claude"], "version": "2.1.317"}))
     record = ClaudeShape(seat.home, tmp_path, "s1", "claude-opus-5-5")
     (seat.trusted / "record").write_text(f"{record.path}\n")
-    message = svc.store.new("order", "desk", "scott", "Count the stars.")
-    attempt = svc.attempts.open(message, "scott", "%1", 4242, launched_at.isoformat())
+    message = svc.store.new("order", "desk", "maker", "Count the stars.")
+    attempt = svc.attempts.open(message, "maker", "%1", 4242, launched_at.isoformat())
     svc.attempts.close(attempt, "blind", "typed and submitted, not seen in the record within 5s")
     assert svc.attempts.blind_ids() == {message.id}
     svc.reconcile()

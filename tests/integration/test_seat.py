@@ -331,7 +331,7 @@ def test_a_saved_pool_no_longer_declared_gives_way_to_the_first_declared_even_wi
         listed: shipmod.Ship, tmux: Tmux, monkeypatch):
     from quarterdeck import ledger
     _saved_on_spare(listed, tmux)
-    file = listed.folder / "ship.toml"  # the Admiral takes spare out of the list, and declares another
+    file = listed.folder / "ship.toml"  # the Operator takes spare out of the list, and declares another
     text = file.read_text().replace('pool = ["fake", "spare"]', 'pool = ["fake", "other"]', 1)
     file.write_text(text.replace('[pools.spare]', '[pools.other]\nprovider = "synthetic"\n\n[pools.spare]', 1))
     changed = shipmod.load(listed.folder)

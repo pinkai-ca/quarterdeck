@@ -177,7 +177,7 @@ def test_undelivered_judges_only_the_seats_own_messages_by_their_latest_result(t
     judged = store.new("question", "operator", "desk", "judged")
     fresh = store.new("question", "operator", "desk", "never attempted")
     store.new("ack", "operator", "desk", "an ack is never delivered", re=judged.id)
-    other = store.new("question", "operator", "scott", "another seat's")
+    other = store.new("question", "operator", "maker", "another seat's")
     results = {judged.id: result, other.id: None}
     expected = [judged, fresh] if delivered else [fresh]
     assert attempts.undelivered(store, "desk", results=results, for_launch=for_launch) == expected

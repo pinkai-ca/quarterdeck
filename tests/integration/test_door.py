@@ -201,9 +201,9 @@ def test_an_echo_longer_than_the_screen_is_read_from_the_scrollback(tmux: Tmux, 
     script = tmp_path / "transcript.sh"
     script.write_text("cat <<'EOF'\n" + "\n".join(shown) + "\nEOF\nsleep 30\n")
     tmux.new_session("Crew")
-    pane = tmux.new_window("Crew", "scott", tmp_path, ["sh", str(script)])
+    pane = tmux.new_window("Crew", "maker", tmp_path, ["sh", str(script)])
     wait_for(lambda: "GPT-6-Astra" in tmux.capture(pane.id))
-    seat = SimpleNamespace(name="scott", pane=lambda: tmux.pane(pane.id), harness=CodexHarness(), tmux=tmux,
+    seat = SimpleNamespace(name="maker", pane=lambda: tmux.pane(pane.id), harness=CodexHarness(), tmux=tmux,
                            session=SimpleNamespace(human=False))
     door = Door(seat)
     wanted = " ".join(f"qd > order from desk · ord-1234 · Long\n{body}".split())

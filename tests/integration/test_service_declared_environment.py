@@ -35,7 +35,7 @@ def environ_names(pid: int) -> set[str]:
 def seeded(monkeypatch) -> None:
     for name in (*DECOYS, *SESSION):
         monkeypatch.setenv(name, 'decoy-value')
-    monkeypatch.setenv('QD_SEAT', 'una')  # the pane that ran qd sync
+    monkeypatch.setenv('QD_SEAT', 'signer')  # the pane that ran qd sync
     monkeypatch.setenv(POOL_KEY, 'decoy-key')
     monkeypatch.setenv(KEY_POOL_KEY, 'decoy-key')
     monkeypatch.setenv(ASKPASS, '/usr/bin/ssh-askpass')
@@ -181,7 +181,7 @@ def test_a_running_servers_environment_is_cleaned_at_the_service_start(ship, mon
     from quarterdeck.tmux import ship_socket
     socket = ship_socket(ship)
     socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    old = dict(os.environ, **DESKTOP, QD_DECOY_OPENAI_API_KEY='decoy', DECOY_CLIENT_SECRET='decoy', QD_SEAT='una',
+    old = dict(os.environ, **DESKTOP, QD_DECOY_OPENAI_API_KEY='decoy', DECOY_CLIENT_SECRET='decoy', QD_SEAT='signer',
                SUDO_ASKPASS='/usr/bin/ssh-askpass')
     subprocess.run(['tmux', '-S', str(socket), 'new-session', '-d', '-s', 'Old', 'sleep 600'], env=old, check=True)
     subprocess.run(['tmux', '-S', str(socket), 'set-environment', '-g', 'DECOY_JMAP_TOKEN', 'decoy'], check=True)

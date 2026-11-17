@@ -112,12 +112,12 @@ def cleared(ship):
 
 @pytest.fixture
 def person(ship, tmux, monkeypatch):
-    """qd run by Spock on this ship, on the test's private server."""
+    """qd run by Sentry on this ship, on the test's private server."""
     import argparse
     from quarterdeck import cli
 
     monkeypatch.setenv('QD_TMUX_SOCKET', tmux.socket)
-    monkeypatch.setenv('QD_SEAT', 'spock')
+    monkeypatch.setenv('QD_SEAT', 'sentry')
     monkeypatch.setenv('QD_SHIP', str(ship.folder))
     monkeypatch.setattr(cli, 'seat_of', lambda found, name: seatmod.Seat(found, found.seat(name), tmux))
     return lambda verb, **extra: getattr(cli, f'cmd_{verb}')(argparse.Namespace(ship=str(ship.folder), **extra))
@@ -127,7 +127,7 @@ def test_an_intent_then_qd_down_then_a_new_service_leaves_the_seat_down(ship, tm
     worker = lambda name: seatmod.Seat(ship, ship.seat(name), tmux)
     leave(ship)
     person('down', seat='worker-1')
-    assert cleared(ship) == ['cleared by qd down by spock']
+    assert cleared(ship) == ['cleared by qd down by sentry']
     assert not relaunch_intent.path(ship.runtime, 'worker-1').exists()
     svc = service(ship, worker)
     relaunch_intent.finish(svc)
@@ -138,7 +138,7 @@ def test_qd_down_of_the_whole_ship_clears_every_intent(ship, tmux, person):
     leave(ship, seat='worker-1')
     leave(ship, seat='captain')
     person('down', seat=None)
-    assert sorted(cleared(ship)) == ['cleared by qd down by spock'] * 2
+    assert sorted(cleared(ship)) == ['cleared by qd down by sentry'] * 2
     assert not any(relaunch_intent.folder(ship.runtime).iterdir())
 
 
@@ -148,14 +148,14 @@ def test_qd_stop_clears_the_intent_even_with_no_service_to_ask(ship, tmux, perso
     leave(ship)
     with pytest.raises(ShipError, match='service down'):
         person('stop', seat='worker-1')
-    assert cleared(ship) == ['cleared by qd stop by spock']
+    assert cleared(ship) == ['cleared by qd stop by sentry']
 
 
 def test_qd_fresh_clears_the_intent_and_starts_the_seat_once(ship, tmux, person):
     worker = lambda name: seatmod.Seat(ship, ship.seat(name), tmux)
     leave(ship)
     person('fresh', seat='worker-1', cancel=None)
-    assert cleared(ship) == ['cleared by qd fresh by spock']
+    assert cleared(ship) == ['cleared by qd fresh by sentry']
     seat = worker('worker-1')
     launched = seat.launched()
     svc = service(ship, worker)

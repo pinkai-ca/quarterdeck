@@ -72,7 +72,7 @@ def two_seat_ship(tmp_path, *, copy: bool):
     source.write_text(grant("synthetic-0", START))
     os.chmod(source, 0o600)
     pool = Pool("synthetic-plan", "xai", config_dir=pool_dir)
-    ship = Ship(tmp_path, "synthetic", "admiral", tmp_path, {pool.name: pool}, {"crew": Session("crew", "crew")}, {})
+    ship = Ship(tmp_path, "synthetic", "operator", tmp_path, {pool.name: pool}, {"crew": Session("crew", "crew")}, {})
     seats = []
     for name in ("worker-a", "worker-b"):
         home = tmp_path / "runtime" / "seats" / name / "home"

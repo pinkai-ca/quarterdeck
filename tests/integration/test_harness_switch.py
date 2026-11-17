@@ -34,7 +34,7 @@ def test_fresh_codex_shape_process_joins_without_reusing_old_sqlite(tmp_path: Pa
         monkeypatch.setattr(AntigravityHarness, "read", lambda *a: pytest.fail("untyped history was guessed"))
     selected.ship.file.write_text("""[ship]
 name = "example"
-operator = "admiral"
+operator = "operator"
 workspace = "."
 [pools.codex]
 provider = "codex"

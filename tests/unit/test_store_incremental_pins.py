@@ -1,4 +1,4 @@
-"""The Store's per-file cache never serves a stale or outside byte (La'an's probe of the incremental refresh, pinned).
+"""The Store's per-file cache never serves a stale or outside byte (security's probe of the incremental refresh, pinned).
 
 The cache is the one place that skips the guarded read, so every way a store name can change under a
 warm, certified cache is tried here: what the name points at, what kind of file it is, its bytes, its

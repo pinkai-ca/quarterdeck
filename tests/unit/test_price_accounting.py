@@ -29,7 +29,7 @@ def append_turn(path, minutes):
 def test_account_prices_resume_fresh_pool_edit_and_restart_from_launch_evidence(tmp_path, monkeypatch):
     pool = Pool('a', 'local', endpoint='http://127.0.0.1:1/v1', price=RATES)
     spec = SeatSpec('worker', 'crew', 'worker', 'pi', ('a', 'b'), cwd=tmp_path)
-    ship = Ship(tmp_path, 'synthetic', 'admiral', tmp_path, {'a': pool, 'b': replace(pool, name='b')},
+    ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, {'a': pool, 'b': replace(pool, name='b')},
                 {'crew': Session('crew', 'crew')}, {'worker': spec})
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: None))
     folder = seat.home / 'sessions'

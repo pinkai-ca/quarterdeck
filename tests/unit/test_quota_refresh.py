@@ -20,7 +20,7 @@ def declared_ship(tmp_path, layout):
         program = 'codex' if layout == 'codex' else 'antigravity'
         pool = 'codex' if program == 'codex' else 'google'
         specs['worker'] = SeatSpec('worker', 'crew', 'worker', program, (pool,), up=False)
-    return Ship(tmp_path, 'example', 'admiral', tmp_path, pools,
+    return Ship(tmp_path, 'example', 'operator', tmp_path, pools,
                 {'crew': Session('crew', 'crew')}, specs)
 
 

@@ -1,4 +1,4 @@
-"""Bounded short-id allocation, on La'an's terms: the allocator avoids the store's shorts, the shorts its round
+"""Bounded short-id allocation, on security's terms: the allocator avoids the store's shorts, the shorts its round
 has prepared, and the drop windows its round has listed, and lists no drop folder past its window. A queued short
 beyond a window may be drawn again; Store.get then refuses that short as ambiguous, never misdelivers. Its draws
 are bounded: a kind with no free short is refused with one fixed reason, never a spin.

@@ -1,4 +1,4 @@
-"""At launch, the ship file is the Admiral's order: a down seat takes its first declared choice with room.
+"""At launch, the ship file is the Operator's order: a down seat takes its first declared choice with room.
 
 A saved choice later in the list than a choice with room gives way, and so does one the ship file no longer
 declares; a person's explicit choice for the next launch, by ``qd set pool=`` on a down seat or ``qd up

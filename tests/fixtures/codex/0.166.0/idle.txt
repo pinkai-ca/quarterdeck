@@ -1,7 +1,7 @@
-  qd > reply: qd post report --re ord-7f3a · inbox: post/inbox/scott.md
+  qd > reply: qd post report --re ord-7f3a · inbox: post/inbox/maker.md
 
 
-• I’m seat scott. NO-MARKER. I’ll run qd --version.
+• I’m seat maker. NO-MARKER. I’ll run qd --version.
 
 • Ran qd --version
   └ qd 0.1.0
@@ -9,7 +9,7 @@
 • Exited (status 2) qd post report --re ord-7f3a
   └ qd: an empty body: give the text, --body-file, or '-' for stdin
 
-• Seat scott. NO-MARKER.
+• Seat maker. NO-MARKER.
 
   qd --version returned qd 0.1.0.
 

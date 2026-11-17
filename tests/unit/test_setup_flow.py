@@ -118,7 +118,7 @@ def test_non_tty_names_exact_missing_answer(answers, missing):
     # current required answer and declines defaults, then removes exactly one.
     for alias in ("desk", "captain", "engineer"):
         answers.pop(alias)
-    answers.update(operator="Admiral", office="Office", use_defaults="no",
+    answers.update(operator="Operator", office="Office", use_defaults="no",
                    seats={role: dict(name=role.capitalize(), harness="codex", model="gpt-6-astra",
                                      effort="medium", pools=["codex"])
                           for role in ("desk", "captain", "engineering")})
@@ -254,7 +254,7 @@ def test_existing_rerun_leaves_default_mark_alone(answers, mode):
 
 def test_existing_rerun_needs_explicit_answer_without_tty(answers):
     execute(answers)
-    rerun = dict(folder=answers["folder"], operator="Admiral", office="Office", name="example",
+    rerun = dict(folder=answers["folder"], operator="Operator", office="Office", name="example",
                  workspace=answers["workspace"], use_defaults="no", accept="yes", check="yes", start="yes")
     with pytest.raises(ship.ShipError, match="missing answer existing"):
         execute(rerun)
@@ -396,7 +396,7 @@ def test_explicit_openrouter_key_uses_declared_endpoint_and_variable(answers):
 def test_interactive_readiness_wait_is_person_driven_and_rereads(answers):
     operations = ScriptedOperations()
     operations.refuse = Check("pool codex", False, "complete native sign-in yourself")
-    answers.update(wait_for_sign_in="yes", operator="Admiral", office="Office",
+    answers.update(wait_for_sign_in="yes", operator="Operator", office="Office",
                    seats={role: dict(name=role.capitalize(), harness="codex", model="gpt-6-astra",
                                      effort="medium", pools=["codex"])
                           for role in ("desk", "captain", "engineering")})

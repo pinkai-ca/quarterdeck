@@ -1,6 +1,6 @@
 [ship]
 name = "enterprise"
-operator = "Admiral"                 # what this ship calls its human
+operator = "Operator"                 # what this ship calls its human
 workspace = "~/dev/quarterdeck"      # the default working directory of every seat
 
 [pools.claude-primary]
@@ -32,25 +32,25 @@ endpoint = "http://127.0.0.1:8000/v1"  # a model served on this machine: no cred
 title = "Ship's Bridge"
 
 [sessions.office]
-title = "Admiral's Office"
+title = "Operator's Office"
 human = true                         # Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty.
 
 [sessions.crew]
 title = "Crew"
 
-[seats.pike]
+[seats.chair]
 session = "bridge"
 role = "captain"
-persona = "Pike"
+persona = "Chair"
 harness = "claude"
 pool = "claude-secondary"
 model = "claude-opus-5-5"
 effort = "max"
 
-[seats.scott]
+[seats.maker]
 session = "bridge"
 role = "engineering"
-persona = "Scott"
+persona = "Maker"
 harness = "codex"
 pool = "codex"
 model = "gpt-6-astra"
@@ -59,7 +59,7 @@ effort = "xhigh"
 [seats.desk]
 session = "office"
 role = "desk"
-persona = "Maeve"
+persona = "Clerk"
 harness = "claude"
 pool = ["claude-secondary", "claude-primary"]   # starts on the first; moves on at a wall and stays
 model = "claude-opus-5-5"

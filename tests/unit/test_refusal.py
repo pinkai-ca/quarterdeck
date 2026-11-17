@@ -35,7 +35,7 @@ def notices(world, to=None):
 
 def test_a_refused_seat_starts_fresh_once_without_the_refused_message_and_its_sender_is_told(world):  # law: context-is-cache
     world.launch('worker')
-    other = world.order('worker', 'An earlier invented order that stays open.', sender='spock')
+    other = world.order('worker', 'An earlier invented order that stays open.', sender='sentry')
     refused = world.order('worker', 'The invented order the provider refused.')
     world.turn('worker', refused, error=REFUSED)
     world.svc.refusals()
@@ -205,7 +205,7 @@ def test_the_inbox_shows_the_refused_message_as_a_notice_and_the_store_keeps_its
 
 def test_an_unknown_tool_set_holds_only_the_fresh_start_and_still_quarantines_and_tells(world, monkeypatch):  # law: context-is-cache
     world.launch('worker')
-    other = world.order('worker', 'An earlier invented order that stays open.', sender='spock')
+    other = world.order('worker', 'An earlier invented order that stays open.', sender='sentry')
     refused = world.order('worker', 'The invented order the provider refused.')
     world.event('worker', {'type': 'task_started'})
     world.typed('worker', refused)

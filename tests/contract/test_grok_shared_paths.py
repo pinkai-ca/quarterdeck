@@ -42,7 +42,7 @@ def grok_ship(tmp_path, seats=None):
     pool_dir.mkdir()
     (pool_dir / "auth.json").write_text(grant("pool", "2040-01-01T00:00:00Z"))
     pool = Pool("synthetic-plan", "xai", config_dir=pool_dir)
-    ship = Ship(tmp_path, "synthetic", "admiral", tmp_path, {pool.name: pool},
+    ship = Ship(tmp_path, "synthetic", "operator", tmp_path, {pool.name: pool},
                 {"crew": Session("crew", "crew")}, seats or {})
     return ship, pool, pool_dir / "auth.json"
 
@@ -88,7 +88,7 @@ def test_tmux_adds_style_escapes_only_when_asked_and_keeps_one_queue(styles):
 def launched_seat(tmp_path, tmux):
     pool = Pool("synthetic-fake", "fake")
     spec = SeatSpec("worker", "crew", "worker", "fake", (pool.name,), cwd=tmp_path)
-    ship = Ship(tmp_path, "synthetic", "admiral", tmp_path, {pool.name: pool},
+    ship = Ship(tmp_path, "synthetic", "operator", tmp_path, {pool.name: pool},
                 {"crew": Session("crew", "crew")}, {"worker": spec})
     seat = Seat(ship, spec, tmux)
     seat.folder.mkdir(parents=True)

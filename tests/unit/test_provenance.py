@@ -19,7 +19,7 @@ from quarterdeck.tmux import Pane
 def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, monkeypatch):
     pools = {name: Pool(name, 'fake') for name in ('pool-a', 'pool-b')}
     spec = SeatSpec('worker', 'crew', 'worker', 'fake', tuple(pools), cwd=tmp_path)
-    ship = Ship(tmp_path, 'example', 'admiral', tmp_path, pools,
+    ship = Ship(tmp_path, 'example', 'operator', tmp_path, pools,
                 {'crew': Session('crew', 'crew')}, {'worker': spec})
     active = {'pane': Pane('%1', 'crew', 'worker', 1001, 80, 24, False, False, None)}
     tmux = SimpleNamespace(pane=lambda ident: active['pane'], kill_window=lambda ident, *, expected_pid=None: active.update(pane=None))

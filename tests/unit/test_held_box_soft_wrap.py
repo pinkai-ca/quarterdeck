@@ -138,7 +138,7 @@ def test_a_wrap_is_soft_only_where_the_row_reaches_the_text_edge():
     assert not held_box_matches('alpha', 'alpha', None, 12) and not held_box_matches('alpha', None, 10, 12)
 
 
-def spock_shape(kind_short: str, sender: str, body_length: int, seed: int):
+def sentry_shape(kind_short: str, sender: str, body_length: int, seed: int):
     """A delivery the door types: its qd header line, the body, the trailing newline (post_message.typed)."""
     message = post.Message(f'ans-20261115-2032-{sender}-{kind_short}', 'answer', sender, 'synthetic-seat',
                            datetime(2026, 11, 15, tzinfo=timezone.utc), words(body_length, seed),
@@ -150,7 +150,7 @@ def spock_shape(kind_short: str, sender: str, body_length: int, seed: int):
 @pytest.mark.parametrize('shape', [('b6d0c1', 'host', 717, 50, 769), ('8ca7f0', 'hosts', 540, 51, 593)])
 def test_the_two_held_shapes_are_accepted_and_refused_when_changed(width, shape):
     short, sender, body, header, total = shape
-    payload = spock_shape(short, sender, body, len(sender))
+    payload = sentry_shape(short, sender, body, len(sender))
     assert [len(line) for line in payload.split('\n')] == [header, body, 0] and len(payload) == total
     assert payload.split('\n')[0].startswith('qd > answer from ')
     # The final newline: by the door's existing rule, a final newline of the message or of the box is no

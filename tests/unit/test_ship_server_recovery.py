@@ -51,7 +51,7 @@ class Server:
 @pytest.fixture
 def ship(drydock, tmp_path, monkeypatch):
     loaded = shipmod.load(drydock)
-    loaded.seats['spock'] = shipmod.replace(loaded.seat('captain'), name='spock', role='systems', persona=None) \
+    loaded.seats['sentry'] = shipmod.replace(loaded.seat('captain'), name='sentry', role='systems', persona=None) \
         if hasattr(shipmod, 'replace') else loaded.seats['captain']
     upped, calls = set(), []
 

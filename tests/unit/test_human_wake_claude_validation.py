@@ -33,7 +33,7 @@ EXACT = 'qd > ship: messages are waiting. Run qd inbox --wait now to read them.'
 MARKER = 'synthetic-planted-payload-wqzv'
 RULE = '─' * 40
 DESK = Pane('%7', 'Office', 'desk', 4242, 400, 40, False, False, None)
-SPOCK = Pane('%8', 'Bridge', 'spock', 4343, 400, 40, False, False, None)
+SENTRY = Pane('%8', 'Bridge', 'sentry', 4343, 400, 40, False, False, None)
 
 
 class Composer:
@@ -92,7 +92,7 @@ def launch(seat: Seat, pane: Pane, minutes: int = 1) -> None:
 def desk(drydock, monkeypatch):
     """The drydock's human desk on a known-empty idle composer, its record holding one ended turn."""
     ship = shipmod.load(drydock)
-    ship.seats['spock'] = replace(ship.seat('captain'), name='spock', role='systems', persona=None)
+    ship.seats['sentry'] = replace(ship.seat('captain'), name='sentry', role='systems', persona=None)
     tmux = Composer(DESK)
     seat = Seat(ship, ship.seat('desk'), tmux)
     seat.folder.mkdir(parents=True, exist_ok=True)
@@ -715,10 +715,10 @@ def test_a_record_written_after_observation_reads_as_stale(desk):
 
 @pytest.fixture
 def alarms(desk):
-    desk.tmux.panes[SPOCK.id] = SPOCK
-    spock = Seat(desk.ship, desk.ship.seat('spock'), desk.tmux)
-    spock.folder.mkdir(parents=True, exist_ok=True)
-    launch(spock, SPOCK)
+    desk.tmux.panes[SENTRY.id] = SENTRY
+    sentry = Seat(desk.ship, desk.ship.seat('sentry'), desk.tmux)
+    sentry.folder.mkdir(parents=True, exist_ok=True)
+    launch(sentry, SENTRY)
     svc = Service(desk.ship, desk.tmux)
     seen = {m.id for m in desk.store.all()}
 
@@ -753,7 +753,7 @@ def test_a_draft_in_the_box_shows_in_status_and_posts_no_alarm(alarms):
     assert human_wake.status(d.seat) == 'human wake box not empty; untouched'
 
 
-def test_a_person_end_state_tells_spock_once_and_never_the_obstructed_desk(alarms):
+def test_a_person_end_state_tells_sentry_once_and_never_the_obstructed_desk(alarms):
     d = alarms.desk
     confirmed_wake(d)
     d.record.end('synthetic answer without arming')
@@ -761,7 +761,7 @@ def test_a_person_end_state_tells_spock_once_and_never_the_obstructed_desk(alarm
         human_wake.run(d.seat)
         alarms.svc.needs_human(d.seat)
     told = alarms.told()
-    assert [to for to, _ in told] == ['spock']
+    assert [to for to, _ in told] == ['sentry']
     assert 'watch not armed' in told[0][1]
 
 

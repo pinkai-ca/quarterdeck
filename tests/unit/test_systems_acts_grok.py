@@ -22,7 +22,7 @@ from quarterdeck.ship import Pool, SeatSpec, Session, Ship
 from quarterdeck.tmux import Pane
 from tests.unit import test_systems_acts
 
-DIALOGS = test_systems_acts.LAAN_DIALOGS  # security's samples of real programs' forms
+DIALOGS = test_systems_acts.SECURITY_DIALOGS  # security's samples of real programs' forms
 
 IDLE = json.loads((Path(__file__).parents[1] / "fixtures/grok/1.0.77/idle-mono.json").read_text())["lines"]
 TOP = grok_screen.composer_rows(GrokHarness().screen("\n".join(IDLE) + "\n").text.split("\n"))[0]

@@ -388,7 +388,7 @@ def test_the_roots_are_read_again_just_before_each_kill(ship, tmp_path):
 
 @jailed
 def test_a_pane_opened_between_the_roots_reading_and_the_scan_keeps_its_jail(ship, tmp_path, tmux, monkeypatch):
-    """La'an's case, on a real private server: right after the sweep reads its roots, a new pane opens and a throwaway
+    """security's case, on a real private server: right after the sweep reads its roots, a new pane opens and a throwaway
     jail is exec'd in it, before the scan. The pane is in no reading the sweep made; the server it descends from is.
     The jail survives, with no alarm and no evidence."""
     real = jail_end.live_roots

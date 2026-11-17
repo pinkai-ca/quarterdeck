@@ -51,7 +51,7 @@ def test_activity_and_door_from_record_and_screen(ship: shipmod.Ship, tmux: Tmux
     assert r.today.known > 0 and r.today.unmeasured == 0 and r.model == "fake-1" and r.pool == "fake" and r.harness == "fake" and r.version == "fake"
     captain.down()
     tmux.new_session("Bridge") if not tmux.has_session("Bridge") else None
-    pane = tmux.new_window("Bridge", "Pike", ship.folder, ["sh", "-c", "exit 7"])
+    pane = tmux.new_window("Bridge", "Chair", ship.folder, ["sh", "-c", "exit 7"])
     (ship.runtime / "trusted" / "captain" / "launch.json").write_text(
         '{"pane": "%s", "pid": %d, "at": "2026-11-07T00:00:00+00:00", "pool": "fake", "resume": null, "argv": [], "version": "fake"}'
         % (pane.id, pane.pid))

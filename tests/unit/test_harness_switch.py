@@ -29,7 +29,7 @@ def setup_seat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pools = {"google": Pool("google", "antigravity"), "codex": Pool("codex", "codex")}
     specs = {"worker": SeatSpec("worker", "crew", "worker", "antigravity", ("google",), cwd=tmp_path),
              "neighbor": SeatSpec("neighbor", "crew", "worker", "codex", ("codex",), up=False)}
-    ship = Ship(tmp_path, "example", "admiral", tmp_path, pools, {"crew": Session("crew", "crew")}, specs)
+    ship = Ship(tmp_path, "example", "operator", tmp_path, pools, {"crew": Session("crew", "crew")}, specs)
     active = {"pane": None}
     tmux = SimpleNamespace(pane=lambda ident: active["pane"], kill_window=lambda ident, *, expected_pid=None: active.update(pane=None))
     seat = Seat(ship, specs["worker"], tmux)

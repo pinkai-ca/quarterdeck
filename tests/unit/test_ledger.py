@@ -53,19 +53,19 @@ def test_attribution_claimed_then_only_open_then_closing_turn(tmp_path: Path):
     store = Store(tmp_path)
     now = datetime.now(timezone.utc)
     turn = claude.Turn(0, now - timedelta(minutes=5), now - timedelta(minutes=4), "x", "y", "m", claude.Tokens())
-    assert attribution(store, "scott", turn) == ledgermod.UNATTRIBUTED
-    a = store.new("order", "desk", "scott", "a")
+    assert attribution(store, "maker", turn) == ledgermod.UNATTRIBUTED
+    a = store.new("order", "desk", "maker", "a")
     turn = claude.Turn(0, now - timedelta(seconds=30), now + timedelta(seconds=1), "x", "y", "m", claude.Tokens())
-    assert attribution(store, "scott", turn) == a.id, "the only open order"
-    b = store.new("order", "desk", "scott", "b")
+    assert attribution(store, "maker", turn) == a.id, "the only open order"
+    b = store.new("order", "desk", "maker", "b")
     turn = claude.Turn(1, now - timedelta(seconds=10), now + timedelta(seconds=1), "x", "y", "m", claude.Tokens())
-    assert attribution(store, "scott", turn) == ledgermod.UNATTRIBUTED, "two open, none claimed"
-    store.new("ack", "scott", "desk", "on b", re=b.id)
+    assert attribution(store, "maker", turn) == ledgermod.UNATTRIBUTED, "two open, none claimed"
+    store.new("ack", "maker", "desk", "on b", re=b.id)
     turn = claude.Turn(2, now - timedelta(seconds=1), now + timedelta(seconds=2), "x", "y", "m", claude.Tokens())
-    assert attribution(store, "scott", turn) == b.id, "the claim"
-    report = store.new("report", "scott", "desk", "a done", re=a.id)
+    assert attribution(store, "maker", turn) == b.id, "the claim"
+    report = store.new("report", "maker", "desk", "a done", re=a.id)
     turn = claude.Turn(3, report.at - timedelta(seconds=1), report.at + timedelta(seconds=1), "x", "y", "m", claude.Tokens())
-    assert attribution(store, "scott", turn) == a.id, "the closing turn is charged to the order it closes"
+    assert attribution(store, "maker", turn) == a.id, "the closing turn is charged to the order it closes"
 
 
 def test_pool_windows_and_walls(tmp_path: Path):
@@ -131,25 +131,25 @@ def test_what_the_record_did_not_measure_is_counted_and_marked_with_a_plus(tmp_p
     store = Store(tmp_path)
     ended = datetime.now(timezone.utc)
     day = ended.astimezone().date().isoformat()
-    assert book.today("scott", day) == ledgermod.Count(0, 0), "no turns on that day: 0 tokens, nothing unmeasured"
+    assert book.today("maker", day) == ledgermod.Count(0, 0), "no turns on that day: 0 tokens, nothing unmeasured"
 
     # A turn measured in every class the provider reports, with one tool call the record did not time
     t0 = Turn(0, ended - timedelta(seconds=10), ended - timedelta(seconds=5), "in0", "out0", "gemini-4-argon-high",
               Tokens(read_cached=500, read_uncached=100, cache_written=0, written=40),
               tools=(ToolCall("run_command", 1.5, False), ToolCall("run_command", None, True)), subagent_turns=None)
-    book.ingest("scott", "google", tmp_path / "agy.db", [t0], store)
+    book.ingest("maker", "google", tmp_path / "agy.db", [t0], store)
     row = book.rollup("seat")[0]
     assert (row.read_cached, row.read_uncached, row.cache_written, row.written, row.unmeasured) == (500, 100, 0, 40, 0)
-    assert book.today("scott", day) == ledgermod.Count(640, 0) and str(book.today("scott", day)) == "640"
+    assert book.today("maker", day) == ledgermod.Count(640, 0) and str(book.today("maker", day)) == "640"
     assert book.tools() == [("run_command", 2, 1.5, 1, 1, 0)], "the call without a duration is counted, and the seconds carry its mark"
     assert ledgermod.tools_table(book)[1].split() == ["run_command", "2", "1.5+", "1"]
 
     # A second turn whose usage the record did not hold at all: the sums stand, and every figure built on them says +
     t1 = Turn(1, ended - timedelta(seconds=4), ended, "in1", "out1", "gemini-4-argon-high", Tokens.unknown())
-    book.ingest("scott", "google", tmp_path / "agy.db", [t0, t1], store)
+    book.ingest("maker", "google", tmp_path / "agy.db", [t0, t1], store)
     row = book.rollup("seat")[0]
     assert (row.turns, row.read_cached, row.written, row.unmeasured) == (2, 500, 40, 1), "the known part is kept, the gap counted"
-    assert str(book.today("scott", day)) == "640+"
+    assert str(book.today("maker", day)) == "640+"
     rendered = ledgermod.table(book, "seat")
     assert "500+" in rendered[1] and "40+" in rendered[1] and ledgermod.PLUS_NOTE in rendered
     book.close()
@@ -162,25 +162,25 @@ def test_a_record_that_would_not_read_is_noted_and_marks_its_seats_figures(tmp_p
     day = datetime.now().astimezone().date().isoformat()
 
     # 1. An unreadable record with no turn read yet: its seat shows 0+ and the note names the file
-    book.mark_record(bad_rec, "scott", "google", "corrupt sqlite header")
+    book.mark_record(bad_rec, "maker", "google", "corrupt sqlite header")
     book.close()
     book = Ledger(tmp_path / "ledger.sqlite")
-    assert book.incomplete_records() == [(str(bad_rec), "scott", "google", "corrupt sqlite header")]
+    assert book.incomplete_records() == [(str(bad_rec), "maker", "google", "corrupt sqlite header")]
     seat_rows = book.rollup("seat")
-    assert len(seat_rows) == 1 and seat_rows[0].key == "scott" and seat_rows[0].turns == 0 and seat_rows[0].unmeasured == 1
-    assert str(book.today("scott", day)) == "0+"
+    assert len(seat_rows) == 1 and seat_rows[0].key == "maker" and seat_rows[0].turns == 0 and seat_rows[0].unmeasured == 1
+    assert str(book.today("maker", day)) == "0+"
     seat_table = "\n".join(ledgermod.table(book, "seat"))
-    assert "0+" in seat_table and "unread record: corrupt.db (scott, google) · corrupt sqlite header" in seat_table
-    assert "unread record: corrupt.db (scott, google) · corrupt sqlite header" in "\n".join(ledgermod.pools_table(book))
+    assert "0+" in seat_table and "unread record: corrupt.db (maker, google) · corrupt sqlite header" in seat_table
+    assert "unread record: corrupt.db (maker, google) · corrupt sqlite header" in "\n".join(ledgermod.pools_table(book))
 
     # 2. Once the record reads, the note goes and the figures stand plain
     now = datetime.now(timezone.utc)
     t0 = claude.Turn(0, now - timedelta(seconds=5), now, "in", "out", "m", claude.Tokens(1, 2, 3, 4))
-    book.ingest("scott", "google", bad_rec, [t0], store)
-    book.mark_record(bad_rec, "scott", "google", None)
+    book.ingest("maker", "google", bad_rec, [t0], store)
+    book.mark_record(bad_rec, "maker", "google", None)
     assert book.incomplete_records() == []
     assert book.rollup("seat")[0].turns == 1 and book.rollup("seat")[0].unmeasured == 0
-    assert book.today("scott", day) == ledgermod.Count(10) and ledgermod.PLUS_NOTE not in ledgermod.table(book, "seat")
+    assert book.today("maker", day) == ledgermod.Count(10) and ledgermod.PLUS_NOTE not in ledgermod.table(book, "seat")
     book.close()
 
 

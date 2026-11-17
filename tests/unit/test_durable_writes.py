@@ -79,7 +79,7 @@ class Disk:
 def seat_at(base: Path) -> Seat:
     pools = {name: Pool(name, "fake") for name in ("pool-a", "pool-b")}
     spec = SeatSpec("worker", "crew", "worker", "fake", tuple(pools), cwd=base)
-    ship = Ship(base, "example", "admiral", base, pools, {"crew": Session("crew", "crew")}, {"worker": spec})
+    ship = Ship(base, "example", "operator", base, pools, {"crew": Session("crew", "crew")}, {"worker": spec})
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: None))
     seat.folder.mkdir(parents=True, exist_ok=True)
     seat.trusted.mkdir(parents=True, exist_ok=True)
@@ -257,7 +257,7 @@ def test_the_shared_writer_removes_its_temporary_on_an_ordinary_failure(tmp_path
 
 @pytest.mark.parametrize("pointer", [b"", b"\n", b"  \n", b"\xff\xfe\n"], ids=["empty", "newline", "blank", "undecodable"])
 def test_an_emptied_or_unreadable_record_pointer_joins_no_record(tmp_path, pointer):
-    """What the crash left for una: a pointer emptied after its launch; nothing is guessed from it."""
+    """What the crash left for signer: a pointer emptied after its launch; nothing is guessed from it."""
     seat = seat_at(tmp_path)
     launched("%1", 1001).write(seat.trusted / "launch.json")
     (seat.trusted / "record").write_bytes(pointer)

@@ -32,7 +32,7 @@ session = "crew"
 role = "engineer"
 harness = "codex"
 pool = "test"
-[seats.spock]
+[seats.sentry]
 session = "crew"
 role = "systems"
 harness = "codex"

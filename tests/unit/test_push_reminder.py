@@ -286,7 +286,7 @@ def test_the_ship_file_declares_the_seat_or_leaves_the_reminder_off(tmp_path):
 
 
 @pytest.mark.parametrize('line,refusal', [
-    ('push_reminder = "una"', r"ship\.push_reminder names 'una', which is not a declared seat; declared: reviewer"),
+    ('push_reminder = "signer"', r"ship\.push_reminder names 'signer', which is not a declared seat; declared: reviewer"),
     ('push_reminder = ""', r'ship\.push_reminder must name a declared seat'),
     ('push_reminder = true', r'ship\.push_reminder must name a declared seat'),
     ('push_reminder = ["reviewer"]', r'ship\.push_reminder must name a declared seat'),

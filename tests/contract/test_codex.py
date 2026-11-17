@@ -176,9 +176,9 @@ def test_the_launch_builds_a_home_of_the_ships_own(tmp_path: Path):
     (pool_dir / "auth.json").write_text("{}")
     pool = Pool("codex", "codex", config_dir=pool_dir)
     runtime = tmp_path / "ship" / "runtime"
-    seat = SeatSpec("scott", "bridge", "engineering", "codex", ("codex",), model="gpt-6-astra", effort="xhigh",
+    seat = SeatSpec("maker", "bridge", "engineering", "codex", ("codex",), model="gpt-6-astra", effort="xhigh",
                     cwd=tmp_path / "work", settings={"model_auto_compact_token_limit": 200000})
-    home = runtime / "seats" / "scott" / "home"
+    home = runtime / "seats" / "maker" / "home"
     credential = harness.build_home(home, seat, pool, None)
     assert credential.link == (home / "auth.json", pool_dir / "auth.json") and (home / "auth.json").is_symlink()
     config = (home / "config.toml").read_text()
@@ -293,7 +293,7 @@ def test_restart_rebuilds_generated_policy_before_opening_the_program(tmp_path, 
     from quarterdeck.ship import Session, Ship
 
     spec = SeatSpec('worker','crew','worker','codex',('codex',),cwd=tmp_path)
-    ship = Ship(tmp_path,'example','admiral',tmp_path,{'codex':Pool('codex','codex')},
+    ship = Ship(tmp_path,'example','operator',tmp_path,{'codex':Pool('codex','codex')},
                 {'crew':Session('crew','crew')},{'worker':spec})
     seat = Seat(ship,spec,SimpleNamespace())
     seat.home.mkdir(parents=True)

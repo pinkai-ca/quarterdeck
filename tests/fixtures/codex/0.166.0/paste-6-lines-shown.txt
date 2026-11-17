@@ -4,7 +4,7 @@
 • Exited (status 2) qd post report --re ord-7f3a
   └ qd: an empty body: give the text, --body-file, or '-' for stdin
 
-• Seat scott. NO-MARKER.
+• Seat maker. NO-MARKER.
 
   qd --version returned qd 0.1.0.
 

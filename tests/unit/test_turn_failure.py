@@ -61,13 +61,13 @@ def test_a_held_door_types_nothing_and_withholds_before_any_key(world):  # law: 
 
 
 def test_the_alarm_goes_to_the_systems_seat_and_for_a_human_seat_to_the_desk_too(world):  # law: nothing-waits-silently
-    world.launch('spock')
+    world.launch('sentry')
     seat = world.launch('worker')
     world.turn('worker', world.order('worker'), error=REFUSED)
     reason = turn_failure.obstruction(seat)
-    assert world.svc.alarm_recipients(seat, reason) == ['spock']
+    assert world.svc.alarm_recipients(seat, reason) == ['sentry']
     aide = world.launch('aide')
-    assert world.svc.alarm_recipients(aide, 'provider refusal: synthetic') == ['spock', 'desk']
+    assert world.svc.alarm_recipients(aide, 'provider refusal: synthetic') == ['sentry', 'desk']
 
 
 @pytest.mark.parametrize('output,last,expected', [
