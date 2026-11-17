@@ -72,7 +72,7 @@ CI mode checks out exact HEAD/tree with complete reachable local history into an
 
 Run/session-registry variables are absent from setup/pytest/children and no basetemp is forced. A separately copied/hash-recorded evidence plugin observes cwd, TMPDIR/tempdir, source origins, disk policy and owned private-server births; ordinary conftest cannot use that context. Nested tools strip it. Missing observations make CI evidence incomplete. Independent-repository retirement retains its recorded identity requirements.
 
-This mode does not reproduce hosted OS/native versions, provisioning, Actions services, the Python matrix, whole-job limit or separate drill. Native sockets retain the common owned short anchor rather than RUNNER_TEMP. Its disk observation is a seam, not a physical no-room namespace. A local CI-layout result is not GitHub execution.
+This mode does not reproduce hosted OS/native versions, provisioning, Actions services, the Python matrix, whole-job limit or separate drill. Native sockets retain the common owned short anchor rather than RUNNER_TEMP, so the mode reproduces neither CI's socket anchor nor its socket-path length guard, and hosted socket-path behaviour is outside its claim. The hazard there was dealt with separately: anchored under a hosted runner's long checkout path, the test sockets would have passed the length guard, and every test would have stopped at the session fixture. Its fix is that common short anchor: a private socket root for each project under the system's temporary folder, whatever the checkout's path. Its disk observation is a seam, not a physical no-room namespace. A local CI-layout result is not GitHub execution.
 
 ### Installed copies and sync
 
