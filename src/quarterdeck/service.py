@@ -2371,8 +2371,11 @@ class Service:
                         stable = stamp == ledger.record_stamp(owned)
                     except OSError:
                         stable = False
-                    # Empty records retain ordinary read/error checks: no measured turn was accounted.
-                    if stable and turns and state.turns is not None and state.turn_open is not None:
+                    # A stable record read whole is accounted: one with turns and a known turn state, or one that reads
+                    # as no turns with no turn open, a complete reading of nothing. A record whose turn state is
+                    # unknown keeps its ordinary read/error checks, empty or not.
+                    complete_empty = not turns and state.turns == 0 and state.turn_open is False
+                    if stable and state.turns is not None and state.turn_open is not None and (turns or complete_empty):
                         checkpoints[record] = checkpoint
                     if stable and state.turn_open is None and (hold := held_reading.unknown_until(owned)) is not None:
                         held[record] = hold

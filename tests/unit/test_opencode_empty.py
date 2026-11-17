@@ -1,6 +1,7 @@
 """An empty recognized database is not a missing turn; bad or orphaned records remain uncertain."""
 
 from datetime import timedelta
+import os
 import json
 import sqlite3
 from types import SimpleNamespace
@@ -108,6 +109,10 @@ def test_bad_and_incomplete_records_keep_reader_and_accounting_uncertainty(setup
             return original(path, *args, **kwargs)
         monkeypatch.setattr(opencode_record, 'cached', unreadable)
         svc.read_marks.pop(fresh)  # model a service restart/retry without touching real permissions
+        # The empty record read whole was accounted, and an accounted record standing as it was is not read again,
+        # as with any record: it changes, as in every case here, before its read fails.
+        info = fresh.stat()
+        os.utime(fresh, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
     elif bad == 'corrupt':
         fresh.write_bytes(b'synthetic invalid SQLite')
     else:
