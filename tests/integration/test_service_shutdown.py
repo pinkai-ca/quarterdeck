@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from quarterdeck import install, pending, servicectl, ship as shipmod, shutdown
+from quarterdeck import install, pending, post_dir, servicectl, ship as shipmod, shutdown
 from quarterdeck.door import Door
 from quarterdeck.harness.synthetic_control import events
 from quarterdeck.post import Attempts, Store
@@ -160,7 +160,7 @@ step_seconds = 0
                 try:
                     return Attempts(ship.runtime).latest().get(message.id) == "delivered"
                 except shipmod.ShipError as error:
-                    if str(error) != "post path changed during its read":
+                    if not str(error).startswith(post_dir.CHANGED):  # the refusal names the path after the prefix
                         raise
                     return False  # retry a receipt rewritten during the validated read
             wait_for(lambda: delivered(original))
