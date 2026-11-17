@@ -93,3 +93,52 @@ def test_a_publication_refused_by_the_store_is_named_and_not_a_message(forum, mo
 
     monkeypatch.setattr(group_post, '_fanout', broken)
     assert held(forum, 'lead') == [group_post.PUBLICATION_IO]
+
+
+def forwarded_with_journal(forum, text=None, *, link_to=None):
+    """An open order to the lead, its forward staged, and a journal already saved for its root as given."""
+    store = post.Store(forum.runtime)
+    root = store.new('order', 'operator', 'lead', 'forward me')
+    stage(forum, 'lead', root.id)
+    journal = forum.runtime / 'post' / 'groups' / f'{root.id}.json'
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    if link_to is not None:
+        journal.symlink_to(link_to)
+    else:
+        journal.write_text(text)
+    return root, journal
+
+
+@pytest.mark.parametrize('content', [
+    '{not json',
+    json.dumps({'format': 2}),  # an unknown format: _load refuses it as a ShipError
+    json.dumps({'format': 1, 'group': 'reviewers', 'lead': 'lead', 'root': {}, 'copies': [], 'notice': None}),
+    json.dumps([]),
+], ids=['not-json', 'unknown-format', 'inconsistent', 'not-an-object'])
+def test_a_malformed_saved_journal_holds_as_malformed_never_as_a_refused_publication(forum, content):
+    root, journal = forwarded_with_journal(forum, content)
+    assert held(forum, 'lead') == [group_post.JOURNAL_MALFORMED]
+    assert journal.read_text() == content, 'the journal is kept as found'
+
+
+def test_an_inconsistent_saved_journal_holds_as_malformed(forum):
+    store = post.Store(forum.runtime)
+    root = store.new('order', 'operator', 'lead', 'forward me')
+    other = store.new('order', 'operator', 'lead', 'another root')
+    stage(forum, 'lead', root.id)
+    journal = forum.runtime / 'post' / 'groups' / f'{root.id}.json'
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    copy = json.loads(other.to_json()) | {'to': 'reviewer-1', 'sender': 'lead', 're': other.id}
+    journal.write_text(json.dumps({'format': 1, 'group': 'reviewers', 'lead': 'lead', 'root': json.loads(other.to_json()),
+                                   'copies': [copy], 'notice': None, 'failed': {}}))
+    with pytest.raises(shipmod.ShipError, match='inconsistent group intent'):
+        group_post._load(journal)  # its stem names another root: the ShipError the filing must not call a refusal
+    assert held(forum, 'lead') == [group_post.JOURNAL_MALFORMED]
+
+
+def test_a_link_at_the_saved_journal_holds_as_a_held_link(forum, tmp_path):
+    target = tmp_path / 'elsewhere.json'
+    target.write_text('{}')
+    root, journal = forwarded_with_journal(forum, link_to=target)
+    assert held(forum, 'lead') == [group_post.LINK_HELD]
+    assert journal.is_symlink() and target.read_text() == '{}', 'the link is held in place, never followed'

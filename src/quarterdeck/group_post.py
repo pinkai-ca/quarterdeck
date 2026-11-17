@@ -306,11 +306,20 @@ def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path, taken: se
     if forward and (root_text is not None or not post._regular(stored) or not store.is_open(message)):
         return FORWARD_NOT_OPEN_STORED  # a forward is of an open order already in the store, never a new root
     journal = _folder(ship) / f'{message.id}.json'
-    try:
+    saved = None
+    try:  # the journal already saved, read on its own: what it holds is never a refusal of the publication
         if post_dir.exists(journal):
             saved = _load(journal)
             if saved['group'] != data['group'] or _message(saved['root']) != message:
                 return 'id already stored'
+    except ShipError as error:  # an unknown format or an inconsistent intent, or a link held on the way to it
+        return LINK_HELD if str(error).startswith(post_dir.LINK_HELD) else JOURNAL_MALFORMED
+    except OSError:
+        return PUBLICATION_IO
+    except (ValueError, TypeError, KeyError, AttributeError):  # not JSON, or not the journal's shape
+        return JOURNAL_MALFORMED
+    try:
+        if saved is not None:
             _fanout(store, saved)
         else:
             if root_text is not None and not post._regular(stored):
