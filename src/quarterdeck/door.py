@@ -23,11 +23,49 @@ from .ship import ShipError
 from .tmux import TmuxError
 
 CONFIRM_SECONDS = 5.0
-BOX_SECONDS = 2.0
+BOX_SECONDS = 2.0  # the short checks' bound; a paste's box wait past it is logged
+# The safety stop on a paste's box: the door waits for the box to show the message, its event, and stops here only
+# for a box that never does; below the service loop's 30 s busy line (one seat's wait holds the loop).
+PASTE_SHOWN_SECONDS = 20.0
 SETTLE_SECONDS = 0.1
 ANSWER_SECONDS = 5.0
 TRANSCRIPT_LINES = 2000  # scrollback read for an echo: a long message's echo climbs above the screen
 UNCAPTURED = object()
+_clock, _sleep = time.monotonic, time.sleep  # the box wait's clock, injected by its tests
+
+
+def fold_head(pattern: str | None) -> str:
+    """The literal start of a fold placeholder's pattern: its characters up to the first regular-expression operator,
+    escapes undone. All of it for a fold with no variable part ('[Pasted ~4 lines]'), else its words before the
+    count ('[Pasted text #')."""
+    head, at = [], 0
+    while pattern and at < len(pattern):
+        char = pattern[at]
+        if char == "\\" and at + 1 < len(pattern) and not pattern[at + 1].isalnum():
+            head.append(pattern[at + 1])
+            at += 2
+        elif char == "\\" or char in ".^$*+?{}[]|()":
+            break
+        else:
+            head.append(char)
+            at += 1
+    return "".join(head)
+
+
+def cannot_become(box, drawn: str | None) -> bool:
+    """A box that cannot become the message as drawing goes on: not empty, and its visible characters are the start
+    neither of the message's text nor of its fold placeholder's (``box.folded``). Whitespace is set aside, since a
+    program wraps and pads a box. The adapters' matchers compare whole drawings and cannot say "a prefix of it", so
+    this is the door's own test. A fold is read by its literal head (fold_head): a box that begins with it, or is
+    its start, may still become the fold. That errs only towards waiting, never towards giving a real fold up early;
+    an unread or empty box may still fill."""
+    if drawn is None or not drawn.strip():
+        return False
+    shown = "".join(drawn.split())
+    if "".join(box.text.split()).startswith(shown):
+        return False
+    head = "".join(fold_head(getattr(box, "folded", None)).split())
+    return not (head and (shown.startswith(head) or head.startswith(shown)))
 
 
 @dataclass(frozen=True)
@@ -564,7 +602,7 @@ class Door:
         if proof:
             proof.save(phase="pasting")
         self.tmux.paste(pane.id, text)
-        shown = self.box_shows(self.harness.box(text))
+        shown = self.box_shows(self.harness.box(text))  # its event, not a guess at draw speed
         self.after_paste = shown
         if shown is None or not self.matches(self.harness.box(text), shown):  # law: one-door
             unread = shown is None or shown.box is None
@@ -718,14 +756,44 @@ class Door:
         columns = self.harness.box_columns_for_screen(pane.width, screen)
         return held_box_matches(box.text, self.harness.box_comparison(screen, pane.width), columns, pane.width)
 
-    def box_shows(self, box, seconds: float = BOX_SECONDS) -> Screen | None:
-        """The screen once the box shows the paste as the program folds it, or the last screen seen."""
-        deadline = time.monotonic() + seconds
+    def box_shows(self, box, seconds: float = PASTE_SHOWN_SECONDS) -> Screen | None:
+        """The screen once the box shows the paste as the program folds it, or the last screen seen.
+
+        It waits for that event, reading only (nothing is typed, resent or cleared while it waits), and stops early
+        on a box that cannot become the message, read so twice in a row, or at ``seconds`` for safety. A wait past
+        BOX_SECONDS is logged with its length and the seat's program, so a program's slow draws are seen."""
+        began = _clock()
+        deadline = began + seconds
+        foreign = None
         while True:
             screen = self.screen()
-            if screen is not None and self.matches(box, screen) or time.monotonic() > deadline:
-                return screen
-            time.sleep(SETTLE_SECONDS)
+            if screen is not None and self.matches(box, screen):
+                outcome = "shown"
+                break
+            drawn = screen.box if screen is not None and cannot_become(box, screen.box) else None
+            if drawn is not None and drawn == foreign:
+                outcome = "cannot become the message"
+                break
+            foreign = drawn
+            if _clock() > deadline:
+                outcome = "safety stop"
+                break
+            _sleep(SETTLE_SECONDS)
+        waited = _clock() - began
+        if waited > BOX_SECONDS:
+            self._log_box_wait(waited, outcome)
+        return screen
+
+    def _log_box_wait(self, waited: float, outcome: str) -> None:
+        runtime = getattr(getattr(self.seat, "ship", None), "runtime", None)
+        if runtime is None:
+            return
+        from .servicectl import append_log
+        try:
+            append_log(runtime, "box-wait", seat=self.seat.name, program=self.harness.name,
+                       seconds=round(waited, 2), outcome=outcome)
+        except OSError:
+            pass  # a log line never decides a delivery
 
     def submit(self, pane_id: str) -> None:
         """Enter, or a raw carriage return when the pane is in copy mode, which swallows keys."""
