@@ -312,8 +312,11 @@ def test_without_the_seed_a_crew_seat_takes_nothing(seeded):
 
 
 def test_a_human_session_launch_reaches_idle_and_takes_the_waking_line_through_the_door(seeded):
+    from quarterdeck.tmux import ControlFrame
     d = seeded("desk")
     assert d.seat.session.human and d.notice.endswith(grok.PRIVACY_ACK_NOTICE)
+    # A person's fresh composer reads idle only with the cursor at its first cell, as measured (column 6).
+    d.tmux.read_control_frame = lambda ident: ControlFrame(d.tmux.panes[ident], d.tmux.frame(), True, (6, 30))
     post.Store(d.ship.runtime).new("order", "captain", "desk", "Synthetic waiting order", subject="synthetic")
     human_wake.run(d.seat)
     assert pastes(d) == [EXACT] and [s for s in d.tmux.sent if s[0] == "keys"] == [("keys", ("Enter",))]

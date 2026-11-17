@@ -369,9 +369,14 @@ def empty_cell(screen: Screen) -> tuple[int, int] | None:
     of the prompt row, in the empty composer, and two typed spaces move it to column 8. The Door reads the box
     empty only where the cursor, read with the frame, sits on this cell; anywhere else, or unread, the padding
     stays text in the box.
+
+    The fresh one-row composer, before any turn (``screen.fresh``), draws the same prompt row, so its first cell
+    is named too: in a person's own session the Door reads that form idle only with the cursor there.
     """
-    if (screen.box is None or screen.box == "" or screen.box.strip(" ") or "\n" in screen.box
-            or screen.unknown is not None or screen.interruption is not None or screen.fresh is not None):
+    fresh = (screen.fresh is not None and screen.box is None and screen.unknown == FRESH
+             and screen.interruption is None)
+    if not fresh and (screen.box is None or screen.box == "" or screen.box.strip(" ") or "\n" in screen.box
+                      or screen.unknown is not None or screen.interruption is not None or screen.fresh is not None):
         return None
     rows = [index for index, row in enumerate(screen.text.split("\n")) if row.startswith(PROMPT)]
     return (len(PROMPT), rows[0]) if len(rows) == 1 else None

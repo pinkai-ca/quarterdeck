@@ -94,9 +94,11 @@ def test_the_measured_cursor_is_at_the_first_cell_when_empty_and_moves_with_type
     assert all(measured(name)["cursor_visible"] for name in (EMPTY_80, EMPTY_112_WORKING, SPACES_80, SPACES_112))
 
 
-def test_no_cell_is_named_for_a_draft_a_question_a_fresh_composer_or_another_program():
+def test_no_cell_is_named_for_a_draft_a_question_or_another_program():
     assert grok_screen.empty_cell(grok_screen.read(composer("draft"))) is None
-    assert grok_screen.empty_cell(grok_screen.read(composer(""))) is None  # the fresh form: the Door's own rule
+    # The fresh form names its first cell too: in a person's session the Door reads it idle only with the cursor
+    # there (test_grok_fresh_human_cursor).
+    assert grok_screen.empty_cell(grok_screen.read(composer(""))) == (6, 30)
     question = "\n".join(lines("training-question-256")) + "\n"
     assert grok_screen.empty_cell(grok_screen.read(question)) is None
     claude = ClaudeHarness()

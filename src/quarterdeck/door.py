@@ -100,27 +100,39 @@ class Door:
         read the same box with the cursor on that same cell. A person's typed spaces move the cursor, so they stay
         text in the box and the human waking line is never typed after them. A cursor that cannot be read, hidden,
         moving or elsewhere leaves the box as the reader read it."""
-        cell = self.harness.empty_cell(screen) if screen is not None else None
+        if screen is None or screen.fresh is not None:
+            return screen  # the fresh form is settled by known(), by its launch's evidence and, for a person, this cursor
+        return replace(screen, box="") if self.cursor_at_first_cell(screen) else screen
+
+    def cursor_at_first_cell(self, screen: Screen) -> bool:
+        """Whether the visible terminal cursor, read with a second frame in one bracket of identical readings by the
+        same process, sits on the cell the adapter names as this composer's first, and that frame reads the same."""
+        cell = self.harness.empty_cell(screen)
         read = getattr(self.seat, 'read_control_frame', None)
         if cell is None or read is None:
-            return screen
+            return False
         frame = read()
         if (frame is None or frame.cursor_visible is not True or frame.cursor != cell
                 or (self.captured_pane is not None and frame.pane.pid != self.captured_pane.pid)):
-            return screen
+            return False
         again = self.harness.screen(frame.text)
-        if again.box != screen.box or again.working != screen.working or self.harness.empty_cell(again) != cell:
-            return screen
-        return replace(screen, box="")
+        return (again.box == screen.box and again.working == screen.working and again.fresh == screen.fresh
+                and self.harness.empty_cell(again) == cell)
 
     def known(self, screen: Screen | None) -> Screen | None:
         """A composer the adapter knows only as fresh reads as the measured empty idle composer where this
         launch's own evidence settles its question: the framework's recorded press that cleared it, or the
         adapter's own seed named in the launch record and marked in the home. Without that evidence it stays
         unknown, so every reader of the door's capture, the human waking line's included, sees one reading.
-        The measured form draws nothing under its footer, no working sign: it reads not working."""
+        The measured form draws nothing under its footer, no working sign: it reads not working.
+
+        In a person's own session the fresh form reads idle only where the cursor sits on its first cell, as for the
+        ordinary composer (padded): the program draws typed spaces like its padding, so a person's spaces before any
+        turn stay unknown and the waking line is never typed after them. A crew seat's fresh form is as before."""
         if screen is not None and screen.fresh is not None and (
                 self.answered_and_cleared(screen.fresh) or self.seeded(screen.fresh)):
+            if self.seat.session.human and not self.cursor_at_first_cell(screen):
+                return screen
             return replace(screen, box="", unknown=None, fresh=None, working=False)  # the measured form, in its own launch
         return screen
 
