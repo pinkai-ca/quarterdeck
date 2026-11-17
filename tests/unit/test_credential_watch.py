@@ -208,3 +208,125 @@ def test_a_program_whose_seats_hold_a_copy_is_left_to_the_pass(crew, monkeypatch
     service, source = crew
     monkeypatch.setattr(type(harnesses.native_for("anthropic")), "credential_copy", True, raising=False)
     assert credential.linked_names(service.ship, service.resolved_seats()) == []
+
+
+RETIRED = "check-claude-ab12"  # a temporary check seat's form; never declared, so a later pass cannot rebuild it
+SENTINEL = "fake-sentinel-token-5c1e"
+
+
+def held_lock(service):
+    lock = service.ship.runtime / sandbox.LOCKS / "credential-reseed.lock"
+    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held, fcntl.LOCK_EX)  # another reseed holding the lock past the seat's wait
+    return held
+
+
+def retire_temporary_seat(service, source, *, renewed: bool, monkeypatch):
+    """A temporary seat on the pool taken down by its own teardown while another reseed holds the lock."""
+    from contextlib import ExitStack
+    from dataclasses import replace
+    from quarterdeck import seat as seatmod
+
+    ship = service.ship
+    spec = shipmod.SeatSpec(RETIRED, "qd-" + RETIRED, "worker", "claude", ("fake",), cwd=ship.workspace)
+    treated = replace(ship, sessions={**ship.sessions, spec.session: shipmod.Session(spec.session, spec.session)},
+                      seats={**ship.seats, RETIRED: spec})
+    seat = seatmod.Seat(treated, spec, service.tmux)
+    seat.home.mkdir(parents=True)
+    name = seat.home / source.name
+    name.symlink_to(source)
+    if renewed:
+        renew_by_replacement(name, fake(RENEWED, 8 * 3600))  # its program renewed: the only live token is here
+    monkeypatch.setattr(credential, "DOWN_WAIT", 0.2)
+    held = held_lock(service)
+    try:
+        with ExitStack() as cleanup:
+            seatmod._teardown(cleanup, treated, seat, service.tmux, [], "synthetic check", lambda: None,
+                              down=lambda: None)
+    finally:
+        os.close(held)
+    return seat
+
+
+def test_a_skipped_reseed_keeps_a_renewal_in_a_retired_seats_home_names_it_and_a_later_pass_settles_it(
+        crew, monkeypatch):
+    from quarterdeck import seat as seatmod
+    service, source = crew
+    seat = retire_temporary_seat(service, source, renewed=True, monkeypatch=monkeypatch)
+    assert read_token(seat.home / source.name) == RENEWED, "the home and its renewal are kept"
+    assert read_token(source) == "fake-old", "the skipped reseed installed nothing"
+    record = service.ship.runtime / credential.HELD / f"{RETIRED}.json"
+    assert record.is_file()
+    words = seatmod.leftover_checks(service.ship)
+    assert any(RETIRED in line and "a renewal held in a retired seat's home" in line for line in words), words
+    service.credentials()  # the service's next pass, with the lock free
+    assert read_token(source) == RENEWED, "the pool takes the renewal from the kept home"
+    assert not seat.folder.exists() and not seat.trusted.exists() and not record.exists()
+    assert seatmod.leftover_checks(service.ship) == []
+    log = service.log_path.read_text()
+    events = [json.loads(line) for line in log.splitlines()]
+    assert any(e["event"] == "credential" and e.get("by") == "held" and f"reseeded from {RETIRED}" in e["proof"]
+               for e in events), events
+    assert RENEWED not in log and "fake-old" not in log, "no token value is logged"
+
+
+def test_a_skipped_reseed_with_no_renewal_still_removes_the_home(crew, monkeypatch):
+    from quarterdeck import seat as seatmod
+    service, source = crew
+    seat = retire_temporary_seat(service, source, renewed=False, monkeypatch=monkeypatch)
+    assert not seat.folder.exists(), "a link left as a link holds nothing to keep"
+    assert not (service.ship.runtime / credential.HELD / f"{RETIRED}.json").exists()
+    assert seatmod.leftover_checks(service.ship) == []
+    assert read_token(source) == "fake-old"
+
+
+def test_a_failing_watch_logs_each_cause_once_and_its_clearing_once(crew, monkeypatch):
+    import errno
+    service, source = crew
+    service.credentials()
+    renew_by_replacement(service.ship.runtime / "seats" / "desk" / "home" / source.name, fake(SENTINEL, 8 * 3600))
+    real = credential.reseed
+    calls = []
+    cause = {"error": lambda: OSError(errno.EACCES, f"denied reading {SENTINEL}", f"/synthetic/{SENTINEL}")}
+
+    def failing(*args, **kwargs):
+        calls.append(1)
+        error = cause["error"]()
+        if error is None:
+            return real(*args, **kwargs)
+        raise error
+
+    monkeypatch.setattr(credential, "reseed", failing)
+    monkeypatch.setattr(credential, "WATCH_SECONDS", 0.002)
+    stop, thread = watching(service)
+
+    def ticks(count):
+        target = len(calls) + count
+        deadline = time.monotonic() + 30
+        while len(calls) < target:
+            assert time.monotonic() < deadline, len(calls)
+            time.sleep(0.01)
+
+    try:
+        ticks(100)  # the same failure, a hundred times
+        cause["error"] = lambda: ValueError(f"bad token {SENTINEL}")
+        ticks(20)  # a new cause
+        cause["error"] = lambda: OSError(errno.EACCES, f"denied reading {SENTINEL}")
+        ticks(20)  # the first cause again, while still failing: already said
+        cause["error"] = lambda: None
+        deadline = time.monotonic() + 10
+        while read_token(source) != SENTINEL:
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        time.sleep(20 * 0.002 + 0.2)
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    log = service.log_path.read_text()
+    events = [json.loads(line) for line in log.splitlines()]
+    failures = [e for e in events if e["event"] == "error" and e.get("step") == "credential-watch"]
+    assert [e["cause"] for e in failures] == ["PermissionError EACCES", "ValueError"], failures
+    cleared = [e for e in events if e["event"] == "credential-watch-cleared"]
+    assert len(cleared) == 1 and cleared[0]["causes"] == ["PermissionError EACCES", "ValueError"], cleared
+    assert SENTINEL not in log and "synthetic" not in log, "no token value nor its path in any log line"

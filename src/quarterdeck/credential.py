@@ -20,7 +20,8 @@ holds, and they fail until the pool's file has it. So a dedicated watch in the s
 each linked seat's credential name twice a second, and a name that stopped being a link reseeds
 at once. Every reseed with something to judge, the watch's, the pass's and a seat's own at down,
 holds one lock file in runtime/locks, which every jail hides; the pass and the watch wait for it
-at most two seconds and skip the round, a seat going down at most thirty.
+at most two seconds and skip the round, a seat going down at most thirty. A temporary seat whose reseed is skipped
+keeps its home while it holds a detached credential, until the pass settles it (``hold_home``, ``settle_held``).
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import fcntl
+import json
 import os
 import stat
 import time
@@ -190,7 +192,11 @@ def reseed(ship: Ship, seats: list[Seat], *, wait: float = RESEED_WAIT) -> list[
 def _due(ship: Ship, seats: list[Seat]) -> bool:
     """Whether a reseed has anything to judge, by metadata alone: a linked name that is no longer a link, or a
     held copy whose size or modification time differs from the pool's file (a copy is made with the pool's times)."""
-    for seat in participants(ship, seats):
+    return _due_of(ship, participants(ship, seats))
+
+
+def _due_of(ship: Ship, found: list[Participant]) -> bool:
+    for seat in found:
         pool = ship.pools.get(seat.pool)
         source = pool_file(pool) if pool is not None else None
         if source is None:
@@ -214,8 +220,12 @@ def _due(ship: Ship, seats: list[Seat]) -> bool:
 
 
 def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:
+    return _reseed_of(ship, participants(ship, seats))
+
+
+def _reseed_of(ship: Ship, found: list[Participant]) -> list[str]:
     detached: dict[str, list[tuple[Path, Participant]]] = {}
-    for seat in participants(ship, seats):
+    for seat in found:
         pool_name = seat.pool
         source = pool_file(ship.pools[pool_name])
         if source is None:
@@ -253,6 +263,79 @@ def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:
             seat_files.symlink(link, source)  # renamed over the name: a link the jail planted is replaced, never followed
             proofs.append(f"{seat.name} relinked to {pool_name}")
     return proofs
+
+
+# A retired temporary seat's home is removed after its reseed. When that reseed was skipped past its wait and the home
+# still holds a detached credential, a renewal may be the only live token: the home is kept instead, named on the
+# status line, and the service's pass reseeds the pool from it and then removes it. One record each, outside the seat
+# folder (a jail writes all of its own), written by the unjailed qd that took the seat down.
+HELD = Path("credentials") / "held"
+
+
+def hold_home(ship: Ship, seat: Seat) -> bool:
+    """After a skipped reseed at a temporary seat's teardown: whether its home must be kept, and if so record it."""
+    found = participants(ship, [seat])
+    if not found or not _due_of(ship, found):
+        return False  # nothing detached (a link is still a link), or never a credential's source: nothing to keep
+    folder = ship.runtime / HELD
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record = folder / f"{seat.name}.json"
+    temporary = record.with_name(f".{record.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps({"seat": seat.name, "pool": found[0].pool}) + "\n")
+    os.replace(temporary, record)
+    return True
+
+
+def _held(ship: Ship) -> list[tuple[Path, str | None, str | None]]:
+    """Each record of a held home: its file, and its seat and pool, both None when it cannot be read as one."""
+    folder = ship.runtime / HELD
+    found = []
+    for record in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        try:
+            data = json.loads(record.read_text())
+            name, pool = data["seat"], data["pool"]
+            valid = (isinstance(name, str) and name == record.stem and "/" not in name and name not in ship.seats
+                     and pool in ship.pools)
+        except (OSError, ValueError, KeyError, TypeError):
+            valid = False
+        found.append((record, name, pool) if valid else (record, None, None))
+    return found
+
+
+def held_words(ship: Ship) -> list[str]:
+    """Plain words for the status line, for every home kept for its renewal, until a pass settles it."""
+    return [f"{name}: a renewal held in a retired seat's home; the service reseeds {pool} from it, then removes it"
+            if name is not None else f"{record.stem}: a held renewal's record is unreadable; inspect runtime/{HELD}"
+            for record, name, pool in _held(ship)]  # law: nothing-waits-silently
+
+
+def settle_held(ship: Ship, *, wait: float = RESEED_WAIT) -> list[str]:
+    """The service's pass: reseed each held home's pool from it, then remove the home and its record; proof lines.
+
+    A record that cannot be read is left for a person, and the status line names it. A skipped round retries."""
+    from . import trusted_files
+    lines = []
+    for record, name, pool in _held(ship):
+        if name is None:
+            continue
+        seat_folder = ship.runtime / "seats" / name
+        found = [Participant(name, seat_folder / "home", pool)]
+        if _due_of(ship, found):
+            try:
+                with _reseeding(ship, wait):
+                    lines += _reseed_of(ship, found)
+            except Busy:
+                lines.append(f"{SKIPPED} for {wait:g} s; {name}'s held renewal waits for the next round")
+                continue
+            if _due_of(ship, found):
+                continue  # still detached (a copy not brought up): kept, still named, tried again next pass
+        if seat_folder.exists():
+            shutil.rmtree(seat_folder)
+        if trusted_files.folder(ship.runtime, name).is_dir():
+            shutil.rmtree(trusted_files.folder(ship.runtime, name))
+        record.unlink()
+        lines.append(f"{name}'s home removed once its held renewal was judged for {pool}")
+    return lines
 
 
 def _bring_up(source: Path, path: Path, name: str, pool_name: str) -> str:

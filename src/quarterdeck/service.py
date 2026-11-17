@@ -10,6 +10,7 @@ than the tick (law: events-not-clocks).
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import hashlib
 import os
@@ -101,6 +102,13 @@ def ship_file_stamp(ship) -> tuple | None:
     except (OSError, AttributeError):
         return None
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def watch_cause(error: BaseException) -> str:
+    """A failure's kind and a stable reason, never its message: a token or a path's secret part could be in it."""
+    if isinstance(error, OSError) and error.errno in errno.errorcode:
+        return f"{type(error).__name__} {errno.errorcode[error.errno]}"
+    return type(error).__name__
 
 
 class Service:
@@ -2104,6 +2112,11 @@ class Service:
         for line in credential.reseed(self.ship, ready):
             self.log("credential", proof=line)
         try:
+            for line in credential.settle_held(self.ship):  # a retired seat's home kept for its renewal
+                self.log("credential", proof=line, by="held")
+        except Exception as error:
+            self.log("error", step="credential-held", cause=watch_cause(error))
+        try:
             names = credential.linked_names(self.ship, ready)
         except Exception as error:
             names = []
@@ -2118,20 +2131,30 @@ class Service:
         is not handled again until it changes. The pass still reseeds as before.
         """
         handled: frozenset = frozenset()
+        failing: set[str] = set()  # the causes logged since the watch last ran clean: each once, never per tick
         while not stop.wait(credential.WATCH_SECONDS):
             try:
                 seats, names = self.credential_watch
                 marks = credential.detached_marks(names)
+                skipped = False
                 if marks and not marks <= handled:
                     lines = credential.reseed(self.ship, seats)
                     for line in lines:
                         self.log("credential", proof=line, by="watch")
-                    if any(line.startswith(credential.SKIPPED) for line in lines):
-                        continue  # the lock was held: nothing is marked handled, the next tick tries again
-                    marks = credential.detached_marks(names)  # what is left detached after the reseed: retained ones
-                handled = marks
+                    skipped = any(line.startswith(credential.SKIPPED) for line in lines)
+                    if not skipped:  # the lock was held: nothing is marked handled, the next tick tries again
+                        marks = credential.detached_marks(names)  # what is left detached after the reseed: retained ones
+                if not skipped:
+                    handled = marks
             except Exception as error:  # the watch never stops the service; the pass still reseeds
-                self.log("error", step="credential-watch", error=repr(error))
+                cause = watch_cause(error)
+                if cause not in failing:
+                    failing.add(cause)
+                    self.log("error", step="credential-watch", cause=cause)
+                continue
+            if failing:
+                self.log("credential-watch-cleared", causes=sorted(failing))
+                failing = set()
 
     def authentications(self) -> None:
         from . import auth_failure

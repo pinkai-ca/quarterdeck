@@ -354,7 +354,12 @@ newest live one in the pool's place, keeps a copy of the replaced file under
 the runtime and links the seat again. A tick alone is too slow, because a
 renewal retires the token that every other seat on the pool still holds. The
 service therefore also looks at each linked seat's credential twice a second,
-and acts at once when a link has become a file. A program that writes its refresh through
+and acts at once when a link has become a file. A watch that keeps failing logs each
+cause once, by its kind and a fixed reason and never its message, and logs again once it
+runs clean. A temporary seat's home is removed only after its reseed: when that reseed is
+skipped because another holds the lock and the home still holds a detached credential,
+the home is kept, the status line names it as a renewal held in a retired seat's home,
+and the service's next pass reseeds the pool from it and then removes it. A program that writes its refresh through
 the link would race other seats in the pool's own file, so the seats of that
 program hold a copy instead, brought up to the pool's file on the tick. Putting
 a refreshed file in the pool's place is the one write `qd` makes outside its

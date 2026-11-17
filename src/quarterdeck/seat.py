@@ -1644,7 +1644,9 @@ def _teardown(cleanup: ExitStack, treated: Ship, seat: Seat, tmux: Tmux, orders:
         if retired and not running and not (seat.trusted / trusted_files.LAUNCH).exists():
             from . import credential
 
-            credential.reseed(treated, [seat], wait=credential.DOWN_WAIT)  # its one pool: a refresh left in the home is not deleted with it
+            lines = credential.reseed(treated, [seat], wait=credential.DOWN_WAIT)  # its one pool: a refresh left in the home
+            if any(line.startswith(credential.SKIPPED) for line in lines) and credential.hold_home(treated, seat):
+                return  # not reseeded, so never deleted with its home: kept and named until the service's pass settles it
             shutil.rmtree(seat.folder)
             if seat.trusted.is_dir():
                 shutil.rmtree(seat.trusted)  # its trusted files go with it
@@ -1698,9 +1700,11 @@ def _leftover(ship: Ship, name: str) -> dict | None:
 
 
 def leftover_checks(ship: Ship) -> list[str]:
-    """Plain words for every check's seat that outlived its check, for the status line, until it is gone."""
+    """Plain words for every check's seat that outlived its check, for the status line, until it is gone; and for
+    every retired seat's home kept for a renewal its reseed did not take, until the service's pass settles it."""
+    from . import credential
     folder = ship.runtime / "seats"
-    words = []
+    words = credential.held_words(ship)
     for path in sorted(folder.glob("check-*")) if folder.is_dir() else []:
         launch = _leftover(ship, path.name)
         if launch is None:
