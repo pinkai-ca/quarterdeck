@@ -297,7 +297,8 @@ def _associated(turn, text, since, inputs):
 
 def _target(seat, record, state, conversation, order, proofs):
     """Resolve a finished continuation through its already reserved source only."""
-    canonical = post.typed([order])
+    forms = post.delivered_forms(order)  # the order as typed now, or in an earlier form the record may hold
+    canonical = next((form for form in forms if input_receipt.same_text(state.last_input or '', form)), forms[0])
     matches = []
     for proof in proofs:
         meta = proof.data.get('recovery')
@@ -311,7 +312,8 @@ def _target(seat, record, state, conversation, order, proofs):
         client = recovery._client(seat)
         if client is None:
             return None
-        original = client.accepted_input(record, canonical, order.at, conversation)
+        original = next((found for form in forms
+                         if (found := client.accepted_input(record, form, order.at, conversation)) is not None), None)
         if original != meta['source']['work']:
             continue
         if (not recovery._publication(seat, proof) or meta['error'] is not None

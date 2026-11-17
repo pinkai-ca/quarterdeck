@@ -210,11 +210,12 @@ class Drill:
             return False
         proofs, errors = journals(captain)
         proof = next((p for p in proofs if attempts[0].path.name in p.data["attempts"]), None)
+        forms = post.delivered_forms(order)
         if (errors or proof is None or proof.data["phase"] != "submitted" or not proof.same_launch(captain)
-                or proof.data["payload"] != post.typed([order]) or proof.confirmed(captain)):
+                or proof.data["payload"] not in forms or proof.confirmed(captain)):
             return False
         reached = gate.reached() if gate else None
-        return gate is None or bool(reached and reached["text"] == post.typed([order]).strip() and
+        return gate is None or bool(reached and reached["text"] in {form.strip() for form in forms} and
                                     reached["pid"] == captain.pane().pid)
 
     def crash(self) -> None:
@@ -248,11 +249,14 @@ class Drill:
                                [a.result for a in self.attempts.for_message(order.id)] == ["delivered"], self.patience)
             results = [a.result for a in self.attempts.for_message(order.id)]
             record = captain.record()
-            payload = post.typed([order])
-            typed = acceptances(captain.harness.inputs(record), payload, attempt.receipt_since) if record else 0
+            forms = post.delivered_forms(order)  # any form it was typed in, a second delivery's too
+            typed = sum(acceptances(captain.harness.inputs(record), form, attempt.receipt_since)
+                        for form in forms) if record else 0
             delivered = record is not None and input_receipt.confirmed(
-                captain.harness, record, payload, attempt.receipt_since) == 'delivered'
-            submits = sum(e == {"event": "submitted", "text": post.typed([order]).strip()} for e in events(captain.home)) if gate else None
+                captain.harness, record, forms, attempt.receipt_since) == 'delivered'
+            texts = {form.strip() for form in forms}
+            submits = sum(set(e) == {"event", "text"} and e["event"] == "submitted" and e["text"] in texts
+                          for e in events(captain.home)) if gate else None
             once = delivered and typed == 1 and (submits == 1 if gate else True)
             self.check("service killed mid-delivery, recovered", bool(settled) and once,
                        f"caught submitted open attempt before record acceptance; attempts {results}; "

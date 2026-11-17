@@ -97,9 +97,11 @@ def consumed_ids(store: post.Store, seat: str, role: str, inputs: Iterable[Input
                 if incoming else None
             incoming = False
         elif incoming:
-            token = post.typed([message]).strip()
-            second = post.typed([message], second=(message.id,)).strip()  # a second delivery reads as consumed too
-            tokens.setdefault(second.partition('\n')[0], []).append((second, message, incoming))
+            # Any form it was typed in reads as consumed: a first or second delivery, and the same as typed before
+            # line ends were taken off, or with the old inbox footer (post.delivered_forms).
+            token, *others = (form.strip() for form in post.delivered_forms(message))
+            for other in others:
+                tokens.setdefault(other.partition('\n')[0], []).append((other, message, incoming))
         elif message.sender == seat and message.kind == 'question':
             token = context(message).strip()
         else:

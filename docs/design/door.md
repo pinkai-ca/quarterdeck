@@ -103,5 +103,11 @@ payload with a line-end space rather than guess. The door therefore types every
 message with each line's end spaces taken off, its header included, and so the
 standing-orders head it carries (`post_message.line_ends`). The stored message
 keeps them, and `qd thread` prints it whole. A delivery typed before this is
-still found in the record by its old form, which `delivered_forms` keeps. A
-launch's opening is the program's argument, not a paste, and is not changed.
+still found by its old form: every place that compares a record's input or a
+journal's payload with a message's typed text (the door's one look, the delivery
+record, a resumed conversation's consumed messages, a recovery's publication, a
+finished turn's structure outcome, attribution, the drill) matches any form
+`delivered_forms` keeps. A launch's opening is the program's argument, which no
+box reads. What it carries in the ordinary typed form, a hand's order in hand,
+loses its line-end spaces like any typing; a fresh start's own handoff is typed
+whole and keeps them.

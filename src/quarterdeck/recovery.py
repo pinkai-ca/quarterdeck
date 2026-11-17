@@ -126,7 +126,7 @@ def _publication(seat, proof):
     except (OSError, ValueError, ShipError):
         return False
     return (message.kind == 'report' and message.sender == post.SHIP and message.to == seat.name
-            and post.typed([message]) == proof.data['payload'])
+            and proof.data['payload'] in post.delivered_forms(message))  # a reservation typed in an earlier form too
 
 
 def _received(seat, proof):
