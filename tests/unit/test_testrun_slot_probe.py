@@ -4,6 +4,7 @@
 (3) A run refused or timed out before its work begins leaves no empty results/<run> folder behind; a folder with
 anything in it is never removed. (2) A storage record that cannot be read names itself and how to clear it.
 """
+import fcntl
 import json
 import os
 import subprocess
@@ -49,9 +50,11 @@ class _Os:
 
 
 def test_a_probe_never_takes_a_free_slot_from_a_run_starting_at_that_moment(tmp_path, monkeypatch):
+    """A free slot whose note names another run is never locked by the question. (One whose note still names the
+    asked run, a crashed run's, is confirmed by its own lock for that moment: /proc/locks cannot prove it free.)"""
     root = root_at(tmp_path)
     held = three_held(root)
-    crashed_note(tmp_path, RUN)
+    crashed_note(tmp_path, '20000101-000000-00d4')
     fourth = os.stat(tmp_path / 'slot-4.lock').st_ino
     outcome = {}
 
@@ -179,3 +182,84 @@ def test_an_unreadable_storage_record_names_itself_and_how_to_clear_it(tmp_path)
         assert 'every new run is refused' in words and 'move that one file' in words, words
     finally:
         root.close()
+
+
+def test_a_live_holder_whose_line_is_missing_from_proc_locks_is_held(tmp_path, monkeypatch):
+    """/proc/locks may only say held: a live holder's absent line is confirmed by the slot's own lock."""
+    monkeypatch.setattr(layout, '_flock_inodes', lambda: set())  # the line skipped, at its exact step
+    root = root_at(tmp_path)
+    live = layout.Slot(root)
+    try:
+        live.acquire({'verb': 'run', 'run': RUN})
+        assert layout.run_holds_slot(root, RUN) is True
+    finally:
+        live.release()
+        root.close()
+
+
+def test_a_crashed_slot_with_its_line_missing_stays_free(tmp_path, monkeypatch):
+    monkeypatch.setattr(layout, '_flock_inodes', lambda: set())
+    root = root_at(tmp_path)
+    try:
+        crashed_note(tmp_path, RUN)
+        assert layout.run_holds_slot(root, RUN) is False
+        assert layout.run_holds_slot(root, RUN) is False, 'the confirming lock was let go'
+    finally:
+        root.close()
+
+
+def test_a_free_slot_with_an_empty_or_other_note_is_never_locked(tmp_path, monkeypatch):
+    root = root_at(tmp_path)
+    pool = layout.Slot(root)  # makes the four slot files
+    pool.release()
+    (tmp_path / 'slot-2.lock').write_text(json.dumps({'verb': 'run', 'run': '20000101-000000-00c3'}))
+    locked = []
+    real = layout.fcntl.flock
+    monkeypatch.setattr(layout.fcntl, 'flock', lambda fd, op: locked.append(op) or real(fd, op))
+    monkeypatch.setattr(layout, '_flock_inodes', lambda: set())
+    try:
+        assert layout.run_holds_slot(root, RUN) is False
+        assert locked == [], 'no free slot was locked by the question'
+    finally:
+        monkeypatch.undo()
+        root.close()
+
+
+def test_a_line_skipped_by_a_moving_proc_locks_still_reads_held(tmp_path, monkeypatch):
+    """The reproduction, deterministic: the probe reads /proc/locks in small reads; between them the newest of the
+    locks above the holder's line are released, so the kernel's walk skips lines. The probe's answer must stay held."""
+    original = os.sched_getaffinity(0)
+    os.sched_setaffinity(0, {sorted(original)[0]})  # one CPU: one list of locks, in the order taken
+    root = root_at(tmp_path)
+    live = layout.Slot(root)
+    extra = []
+    try:
+        live.acquire({'verb': 'run', 'run': RUN})
+        for index in range(60):  # taken after the holder: above its line in the walk
+            fd = os.open(tmp_path / f'other-{index}.lock', os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            extra.append(fd)
+
+        def moving():
+            fd = os.open('/proc/locks', os.O_RDONLY)
+            text = b''
+            try:
+                while text.count(b'\n') < 45:
+                    text += os.read(fd, 64)
+                for other in extra[-40:]:  # already read past: every later line moves up
+                    os.close(other)
+                del extra[-40:]
+                while chunk := os.read(fd, 4096):
+                    text += chunk
+            finally:
+                os.close(fd)
+            return text.decode('ascii', 'replace')
+
+        monkeypatch.setattr(layout, '_proc_locks', moving)
+        assert layout.run_holds_slot(root, RUN) is True
+    finally:
+        for other in extra:
+            os.close(other)
+        live.release()
+        root.close()
+        os.sched_setaffinity(0, original)

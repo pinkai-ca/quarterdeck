@@ -335,28 +335,48 @@ class Slot:
             self.fds, self.selected, self.held = [], None, []
 
 
+def _proc_locks() -> str:
+    """/proc/locks, read whole. Raises OSError.
+
+    The kernel hands it out a page per read() whatever the size asked (measured: 4,068 bytes of 5,136 in the first),
+    walking its lock list again from a saved position at each read, so a lock released elsewhere between two reads
+    can move a held lock's line past the walk. No single read can prevent that; run_holds_slot treats an absent line
+    as no answer, and lets the slot's own lock decide."""
+    fd = os.open('/proc/locks', os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        parts = []
+        while chunk := os.read(fd, 1 << 16):
+            parts.append(chunk)
+    finally:
+        os.close(fd)
+    return b''.join(parts).decode('ascii', 'replace')
+
+
 def _flock_inodes() -> set[int]:
-    """The inodes that hold a flock now, from /proc/locks; a waiter's line ('->') holds nothing. Raises OSError."""
+    """The inodes whose flock line /proc/locks shows; a waiter's line ('->') holds nothing. Raises OSError.
+
+    A line it shows proves the lock held; a line it does not show proves nothing (_proc_locks)."""
     held = set()
-    with open('/proc/locks', encoding='ascii', errors='replace') as stream:
-        for line in stream:
-            fields = line.split()
-            if len(fields) >= 6 and fields[1] == 'FLOCK':
-                try:
-                    held.add(int(fields[5].rsplit(':', 1)[1]))
-                except (IndexError, ValueError):
-                    continue
+    for line in _proc_locks().splitlines():
+        fields = line.split()
+        if len(fields) >= 6 and fields[1] == 'FLOCK':
+            try:
+                held.add(int(fields[5].rsplit(':', 1)[1]))
+            except (IndexError, ValueError):
+                continue
     return held
 
 
 def run_holds_slot(root: Root, run: str) -> bool:
     """An older tool may not hold the new result-directory guard yet.
 
-    Asked without taking any slot's lock, so a run starting at that very moment is never refused because of the
-    question: a slot's note is read first, and only a note naming this run is asked about, by its inode in
-    /proc/locks (Linux, as the rest of this tool's process evidence). Where /proc/locks cannot be read, that one slot
-    is probed by its lock as before; a free slot whose note still names this run is one a crashed run left, and the
-    probe holds it for no longer than a non-blocking lock and its release."""
+    A slot's note is read first, without any lock, and only a note naming this run is asked about, so a free slot
+    with an empty or other note is never locked and a run starting at that moment is never refused because of the
+    question. /proc/locks may only say HELD: the inode's flock line there proves the run holds it. Its absence proves
+    nothing, since the file can skip a held lock's line while locks elsewhere come and go (_proc_locks), so then, and
+    where /proc/locks cannot be read, the slot's own non-blocking lock decides: blocked is held; taken is free, and
+    let go at once. A false 'not held' cannot come out. The lock is taken only on a slot whose note still names this
+    run and whose line is absent: a crashed run's, or, rarely, a live one's whose line the file skipped."""
     for index in range(SLOT_COUNT):
         name = SLOT if index == 0 else f'slot-{index + 1}.lock'
         try:
@@ -376,9 +396,8 @@ def run_holds_slot(root: Root, run: str) -> bool:
             try:
                 if info.st_ino in _flock_inodes():
                     return True
-                continue
             except OSError:
-                pass
+                pass  # unreadable: the lock decides, as for an absent line
             probe = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root.fd)
             try:
                 if os.fstat(probe).st_ino != info.st_ino:
