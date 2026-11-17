@@ -92,7 +92,10 @@ def test_dead_child_retries_without_counting_partial_work_twice(tmp_path, monkey
     svc, _, record, _ = world(tmp_path, monkeypatch, 20)
     driver = Driver()
     try:
-        driver.step(svc)
+        until = time.monotonic() + 60  # step until the child exists, the event this needs; a safety bound only
+        while driver.process is None and time.monotonic() < until:
+            driver.step(svc)
+        assert driver.process is not None, 'the planning child never started'
         driver.process.kill()
         driver.process.wait(timeout=2)
         driver.step(svc)

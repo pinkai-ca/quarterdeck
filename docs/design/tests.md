@@ -15,6 +15,8 @@ The suite separates pure logic, native-format contracts, synthetic integration a
 | Integration | Real private tmux with Claude/Codex-shaped fake programs, ordinary services and recorded delivery/lifecycle outcomes. Other programs rely on their native contracts and installed checks. |
 | Live drill | Explicitly requested real-program throwaway seats, delivery matrix and verifiable filesystem/command/post tasks. It spends tokens; it is never implied by a synthetic pass. |
 
+A test waits for the event it needs, never a fixed real-time bound, and proves its timing with a stalled clock (`tests/stalled_clock.py`: one module's monotonic clock jumps on its first few reads, then runs freely), not with load, which rarely lands a pause where a race needs it.
+
 Repository checks also guard runtime-content exclusion and ignored runtimes, law carriers and existing law IDs. File length is guidance: split by concept, without compressing code to satisfy a count.
 
 ### Drill evidence
