@@ -154,6 +154,7 @@ The modules that the framework table does not list, the module of each part amon
 | `program_use.py` | each program's current activity, and its last use bound to saved launch evidence |
 | `push_reminder.py` | after a push of `main`, seen on the local tracking ref alone, one order twenty quiet minutes later to the seat that `push_reminder` under `[ship]` names, where one is declared, to read the hosted runs of the pushed tips |
 | `raise_ship.py` | a template ship, declared after the person approves its exact proposal |
+| `raise_notice.py` | every raise seen: the order that told the office's desk of a crew qd raise started, kept beside the raise's records; the status line names the raise while that order is open, and the desk's report on it clears it |
 | `receipt_refresh.py` | the service's progress through one closed-record receipt pass per framework revision |
 | `recovery.py` | one native continuation after a proved thinking exhaustion, through the door's journal |
 | `relaunch_intent.py` | a relaunch the service makes as one section a stop waits out: its intent written and a line logged before the down, a line after the up, and an intent a killed service left finished once by the next service, or said on the status line |

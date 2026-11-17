@@ -34,6 +34,8 @@ def test_person_raises_and_resumes_a_complete_synthetic_shuttle(tmp_path, monkey
     }.items():
         monkeypatch.setenv(key, value)
     setup.init_office(argparse.Namespace(ship=None), start=False)
+    # pytest gives no terminal; the yes's terminal gate is proven on real terminals in test_raise_terminal.py.
+    monkeypatch.setattr(raise_ship, "approving_terminal", lambda project: "/dev/pts/synthetic")
     args = cli.build_parser().parse_args([
         "raise", "shuttle", "mission", "--pool", "anthropic=claude", "--pool", "openai=claude", "--accept", "yes"])
     folder = project / "ships" / "mission"

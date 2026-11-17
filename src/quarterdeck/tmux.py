@@ -686,6 +686,12 @@ class Tmux:
         args = ["list-panes", "-F", _FORMAT] + (["-s", "-t", _session(session)] if session else ["-a"])
         return [_parse(line) for line in self.run(*args).splitlines()]
 
+    def pane_ttys(self) -> list[str]:
+        """Every pane's terminal on this server, by its device path; none when the server does not run."""
+        if not self.running():
+            return []
+        return [line for line in self.run("list-panes", "-a", "-F", "#{pane_tty}").splitlines() if line]
+
     def started_with(self) -> list[tuple[str, int, bool, str]]:
         """Every pane of the server with its pid, whether it is dead, and the command it was started with, which
         tmux fixes when the window is made: nothing run inside a pane can change it."""

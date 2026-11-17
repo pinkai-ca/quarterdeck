@@ -91,6 +91,10 @@ def require_person_process(project: Path) -> list[str]:
     Returns a line for each launch record without a readable start time that was ignored,
     its pid being no pid of this ancestry; the answer names them.
     """
+    return _person_process(project)[0]
+
+
+def _person_process(project: Path) -> tuple[list[str], tuple[tuple[int, str, int], ...]]:
     pid = os.getpid()
     before = process_ancestry(pid)
     programs, startless = recorded_programs(project)
@@ -105,7 +109,106 @@ def require_person_process(project: Path) -> list[str]:
             raise ShipError(f"a recorded seat program without a readable start time ({path}) has pid {recorded}, "
                             "which is in this process ancestry; only the person's own shell can answer yes")
     return [f"a recorded seat program without a readable start time was ignored: {path} "
-            f"(its pid {recorded} is not in this process ancestry)" for recorded, path in startless]
+            f"(its pid {recorded} is not in this process ancestry)" for recorded, path in startless], after
+
+
+def controlling_terminal(*, proc: Path = Path("/proc")) -> int | None:
+    """This process's controlling terminal as a device number, or None when it has none (detached)."""
+    try:
+        text = (proc / "self" / "stat").read_text()
+        tty_nr = int(text.rsplit(")", 1)[1].split()[4])
+    except (OSError, UnicodeError, ValueError, IndexError):
+        raise ShipError("cannot read this process's controlling terminal; no yes accepted") from None
+    if tty_nr == 0:
+        return None
+    return os.makedev((tty_nr >> 8) & 0xfff, (tty_nr & 0xff) | ((tty_nr >> 12) & 0xfff00))
+
+
+def seat_terminals(project: Path) -> dict[str, set[int]]:
+    """The terminal devices of every pane on each ship's tmux server in the project, the office's included.
+
+    Each ship's own server, a default server still holding that ship's sessions, and a private test
+    server named by QD_TMUX_SOCKET, all read through qd's own socket handling, never TMUX.
+    """
+    from .tmux import Tmux, TmuxError, ship_sessions, ship_socket
+    from .tmux_socket import private_endpoint
+    folders = [project / "office", *sorted(p for p in (project / "ships").glob("*") if p.is_dir())]
+    found: dict[str, set[int]] = {}
+    for folder in folders:
+        if not (folder / "ship.toml").is_file():
+            continue
+        try:
+            current = ships.load(folder)
+            own = ship_socket(current)
+            servers = [Tmux(str(own), ship=True, name=current.name)] if own.exists() else []
+            servers += [old for old in Tmux.defaults(own) if ship_sessions(old, current)]
+            named = os.environ.get("QD_TMUX_SOCKET")
+            if named and private_endpoint(named):
+                servers.append(Tmux(named))
+            devices = set()
+            for server in servers:
+                for path in server.pane_ttys():
+                    try:
+                        devices.add(os.stat(path).st_rdev)
+                    except OSError:
+                        continue  # a pane whose terminal is gone is no terminal a yes can come from
+        except (ShipError, TmuxError, OSError) as error:
+            raise ShipError(f"cannot read the panes of {folder.name}'s tmux server ({type(error).__name__}); "
+                            "no yes accepted") from None
+        found[current.name] = devices
+    return found
+
+
+def approving_terminal(project: Path) -> str:
+    """The person's own terminal a yes comes from, or a refusal naming why.
+
+    stdin must be a terminal and this process's controlling terminal, and no pane of any ship's tmux
+    server: a seat's pane, a pipe and a detached process are refused. A same-user process that opens a
+    pseudo-terminal of its own passes; that limit is the design's, named in docs/design/structures.md.
+    """
+    try:
+        if not os.isatty(0):
+            raise ShipError("no yes accepted: stdin is not a terminal; answer yes from the person's own terminal")
+        name, device = os.ttyname(0), os.fstat(0).st_rdev
+    except OSError:
+        raise ShipError("no yes accepted: stdin's terminal cannot be read; answer yes from the person's own terminal") from None
+    controlling = controlling_terminal()
+    if controlling is None:
+        raise ShipError("no yes accepted: this process has no controlling terminal (it is detached); "
+                        "answer yes from the person's own terminal")
+    if controlling != device:
+        raise ShipError(f"no yes accepted: stdin ({name}) is not this process's controlling terminal; "
+                        "answer yes from the person's own terminal")
+    for ship_name, devices in seat_terminals(project).items():
+        if device in devices:
+            raise ShipError(f"no yes accepted: {name} is a pane of ship {ship_name}'s tmux server; "
+                            "only the person's own terminal can answer yes")
+    return name
+
+
+def person_approval(project: Path) -> dict:
+    """Every check of a new yes, and what the answer record keeps of it: the terminal, the process, its ancestry."""
+    terminal = approving_terminal(project)
+    notes, ancestry = _person_process(project)
+    return {"terminal": terminal, "process": {"pid": ancestry[0][0], "start": ancestry[0][1]},
+            "ancestry": [list(entry) for entry in ancestry], "notes": notes}
+
+
+def tell_desk(office: ships.Ship, draft: "Proposal", answer: Path | None) -> str:
+    """Post a crew's start to the office's desk before it starts; the open order shows on the status line."""
+    from . import post, raise_notice
+    desks = sorted(name for name, spec in office.seats.items() if spec.role == "desk")
+    if len(desks) != 1:
+        raise ShipError(f"the office needs one desk to tell of a raise; found {len(desks)}; no crew started")
+    saved = json.loads(answer.read_text()) if answer is not None else {}
+    terminal = saved.get("terminal", "a terminal not recorded")
+    body = (f"Ship {draft.name} was raised at {draft.folder} and its crew is starting, on a yes from "
+            f"{terminal} (answer record {answer}). If {office.operator or 'the person'} did not raise it, stop it with "
+            f"qd --ship {draft.folder} down and tell them. Report on this order once it is seen; "
+            "that clears it from the status line.")
+    message = post.Store(office.runtime).new("order", post.SHIP, desks[0], body, subject=raise_notice.SUBJECT)
+    raise_notice.record(office.runtime, draft.name, message.id, terminal)
+    return message.id
 
 
 def arguments(parser: argparse.ArgumentParser) -> None:
@@ -293,10 +396,13 @@ def run(args: argparse.Namespace, *, operations: setup.Operations | None = None,
                 if response not in ("yes", "no"):
                     raise ShipError("answer yes or no; no ship was raised")
             if response is not None:
+                saved = {"format": 1, "digest": draft.digest, "answer": response, "by": "person"}
                 if response == "yes":
-                    notes = require_person_process(office.folder.parent)
+                    approval = person_approval(office.folder.parent)
+                    notes = approval.pop("notes")
+                    saved.update(approval)  # every yes is seen: its terminal, its process and their ancestry
                 answer = records / f"{draft.digest}.answer-{len(answers) + 1:08d}.json"
-                write_once(answer, {"format": 1, "digest": draft.digest, "answer": response, "by": "person"})
+                write_once(answer, saved)
                 approved = response == "yes"
         if not approved:
             state = "declined" if answer is not None else "pending the person's answer"
@@ -329,5 +435,7 @@ def run(args: argparse.Namespace, *, operations: setup.Operations | None = None,
                                 "commit only its declaration and template files before rerunning raise") from None
             current = ships.load(folder)
             lines.append(f"{draft.name} created at {folder} · committed {commit} · runtime ignored")
+        told = tell_desk(office, draft, answer)
+        lines.append(f"the desk is told on {told}; its report on that order clears it from the status line")
         result = operations.up(current)
         return lines + ([result] if isinstance(result, str) else result) + [f"Fleet address: {draft.name}"]

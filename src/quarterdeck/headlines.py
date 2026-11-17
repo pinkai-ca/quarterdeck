@@ -33,6 +33,8 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += getattr(facts, 'move_holds', ())
     # A seat down because its program is still ending, or its relaunch was refused for that, keeps its name.
     parts += getattr(facts, 'ending', ())
+    # A crew qd raise started keeps its ship and the desk's order that clears it.
+    parts += getattr(facts, 'raises', ())
     # A seat stopped at its write bound keeps its name and the word that lifts it.
     parts += getattr(facts, 'write_bounds', ())
     # A ship-folder git that has not answered keeps its words: every rule change is told to its editor too.

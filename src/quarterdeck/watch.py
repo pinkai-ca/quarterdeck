@@ -552,6 +552,7 @@ class Facts:
     move_holds: list[str] = field(default_factory=list)
     ending: list[str] = field(default_factory=list)  # a seat down because its program is still ending: names kept
     leftover_checks: list[str] = field(default_factory=list)  # a check's seat that outlived its check, until it is gone
+    raises: list[str] = field(default_factory=list)  # a crew qd raise started, until the desk reports on its order
     sign_in_failures: list[str] = field(default_factory=list)  # retain seat and fixed failure on overflow
     request_waits: list[str] = field(default_factory=list)
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
@@ -616,6 +617,7 @@ class Facts:
         parts += self.move_holds
         parts += self.ending
         parts += self.leftover_checks
+        parts += self.raises
         parts += self.request_waits
         parts += self.server_recovery
         parts += self.relaunches
@@ -1142,6 +1144,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
                                  for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
     from . import brief_change, compaction_alert, jail_end, ledger_recovery, model_mismatch, pr_screen, stop_barrier, write_bound
+    from . import raise_notice
     from . import human_wake
     from .harness import record_file
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
@@ -1161,6 +1164,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         held=held,
         move_holds=move_reasons,
         leftover_checks=leftover_checks(ship),
+        raises=raise_notice.unseen(ship.runtime, store),
         request_waits=[request_queue.headline(row) for row in
                        (request_queue.pending(ship.runtime) if request_rows is None else request_rows)],
         cutover=(f"tmux: still on the default server {tmux.socket}; qd down, then qd up, moves it"

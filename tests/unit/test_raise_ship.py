@@ -41,6 +41,8 @@ context = 32768
 ''')
     calls = []
     monkeypatch.setattr(setup.Operations, "up", lambda _, current: calls.append(current) or ["synthetic crew up"])
+    # pytest gives no terminal; the yes's terminal gate is proven on real terminals in test_raise_terminal.py.
+    monkeypatch.setattr(raise_ship, "approving_terminal", lambda project: "/dev/pts/synthetic")
     return tmp_path, ship.load(office), calls
 
 
