@@ -109,7 +109,7 @@ The modules that the framework table does not list, the module of each part amon
 | `accounting_slices.py` | the Ledger's catch-up in slices: a low-priority child process reads the records and plans the rows, and the service commits the plan in bounded steps |
 | `accounting_gate.py` | private, tick-bounded input evidence lets a completed accounting job wait for a change or a due hold, with a ten-minute backstop and bounded class/count start diagnostics |
 | `accounting_scope.py` | per-input dirty observations and proven record owners select whole-seat jobs below unchanged global barriers, without postponing the full backstop |
-| `acts.py` | `qd press` and `qd type`: a systems seat's answer to a screen the door does not know, through the door's own path, recorded before the key is pressed, and never into a session the human owns |
+| `acts.py` | `qd press`, `qd type` and `qd set-aside`: a systems seat's answer to what the door cannot settle (a screen it does not know, or one named delivery journal that is provably stuck, moved unchanged into the runtime's evidence), through the door's own path, recorded before anything is sent or moved, and never into a session the human owns |
 | `alarms.py` | the alarms' saved readings, their reports to the systems seats, or to the desk where no systems seat is up or an alarm stays untaken, each rebuilt by the service from checked fields, and the reply that takes an alarm |
 | `attribution_cache.py` | the attribution the service writes beside the turn rows, which any turn write invalidates |
 | `auth_failure.py` | recorded sign-in failures: the next delivery first, then bounded resumes once the pool's sign-in is renewed |

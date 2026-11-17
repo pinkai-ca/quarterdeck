@@ -1484,11 +1484,13 @@ class Service:
             return self.deliver(seat, [message], resend=True)
         if kind == "submit":
             return pending_delivery.submit(self, self.seat(data["seat"]))
-        if kind in ("press", "type"):  # Systems' act on a screen the door does not know (law: one-door)
+        if kind in ("press", "type", "set-aside"):  # Systems' acts on what the door cannot settle (law: one-door)
             from . import acts
             seat = self.seat(data["seat"])
             if kind == "press":
                 return acts.press(self, seat, str(data["choice"]), data.get("caller"))
+            if kind == "set-aside":
+                return acts.set_aside(self, seat, str(data["journal"]), data.get("caller"))
             return acts.type_line(self, seat, str(data["line"]), data.get("caller"))
         if kind == "control":
             # The CLI writes the declaration, then queues the control: when that write came after this pass loaded

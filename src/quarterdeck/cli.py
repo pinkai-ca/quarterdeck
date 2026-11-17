@@ -171,6 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("type", cmd_type, "systems only: type one line into a stalled seat's empty box and submit it, recorded first")
     p.add_argument("seat", help="the stalled seat")
     p.add_argument("line", help="the one line to type")
+    p = verb("set-aside", cmd_set_aside,
+             "systems only: move one named, provably stuck delivery journal of a seat into the runtime's evidence")
+    p.add_argument("seat", help="the seat whose pending folder holds the journal")
+    p.add_argument("journal", help="the journal's file name, as its pending folder lists it")
     p = verb("set", cmd_set, "change a seat: writes the ship file, then applies what it can")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("changes", nargs="*", metavar="KEY=VALUE", help="model=…, effort=…, pool=a,b, up=true")
@@ -512,6 +516,10 @@ def cmd_press(args: argparse.Namespace) -> str:
 
 def cmd_type(args: argparse.Namespace) -> str:
     return _act(args, "type", line=args.line)
+
+
+def cmd_set_aside(args: argparse.Namespace) -> str:
+    return _act(args, "set-aside", journal=args.journal)
 
 
 def cmd_set(args: argparse.Namespace) -> list[str]:

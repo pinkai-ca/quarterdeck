@@ -1509,6 +1509,8 @@ ACCEPTED = ("delivered", "queued", "launch", "watch")
 # Typed and taken, but the turn ended in a recorded error: unacted proved no model output, so the
 # next start carries it; uncertain could not tell, so it waits for a hand (law: one-door).
 UNSETTLED = ("unacted", "uncertain")
+# A message whose latest attempt reads one of these is never typed again by the service (law: one-door).
+HELD = (*ACCEPTED, "blind", None, "pending", "abandoned", "uncertain", "not-in-closed-record")
 
 
 @dataclass(frozen=True)
@@ -1872,7 +1874,7 @@ class Attempts:
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
         results = self.latest() if results is None else results
-        held = (*ACCEPTED, "blind", None, "pending", "abandoned", "uncertain", "not-in-closed-record")
+        held = HELD
 
         def skipped(identifier: str) -> bool:
             # Only a message with an attempt is judged by its latest result; one never attempted is not held.

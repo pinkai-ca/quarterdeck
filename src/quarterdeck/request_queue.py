@@ -18,7 +18,7 @@ from . import durable, post
 from .ship import ShipError
 
 
-SEAT_KINDS = frozenset({'relaunch', 'control', 'select', 'stop', 'submit', 'press', 'type'})
+SEAT_KINDS = frozenset({'relaunch', 'control', 'select', 'stop', 'submit', 'press', 'type', 'set-aside'})
 QUICK_KINDS = frozenset({'submit', 'resend'})
 NOTICE_RECEIPTS = 'request-notices.json'  # canonical trusted file; service alone writes it
 RESTART_SETTLEMENT = 'settled without applying: the service that claimed it restarted'

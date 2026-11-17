@@ -275,7 +275,8 @@ def last(seat) -> dict | None:
 
 
 def describe(act: dict) -> str:
-    what = f"pressed {act.get('choice')!r}" if act.get("verb") == "press" else f"typed {act.get('line')!r}"
+    what = {"press": f"pressed {act.get('choice')!r}", "set-aside": f"set aside {act.get('journal')!r}"}.get(
+        act.get("verb"), f"typed {act.get('line')!r}")
     text = f"last act: {what} by {act.get('caller')} at {act.get('at')} · {act.get('outcome')}"
     return text + (f" ({act['detail']})" if act.get("detail") else "")
 
@@ -437,3 +438,126 @@ def _finish(seat, act: dict, outcome: str, detail: str) -> str:
     if outcome.startswith("not "):
         what = f"{act['verb']} {act.get('choice', act.get('line'))!r}: {outcome}"
     return f"{seat.name}: {what} · {detail} · recorded in {path(seat).relative_to(seat.ship.runtime)}{kept}"
+
+
+# -- qd set-aside: one named delivery journal moved aside, unchanged, with a proof line ---------------------------
+
+ASIDE = "journals-set-aside"  # under runtime/evidence: the one fixed archive, never a path given on the command line
+
+
+def _journal_name(name: str) -> str | None:
+    """Why ``name`` names no journal file of a pending folder, or None: one plain file name, a .json, no dot first."""
+    if (not name or name in (".", "..") or "/" in name or "\\" in name or "\0" in name or name.startswith(".")
+            or Path(name).name != name or not name.endswith(".json")):
+        return f"{name!r} is not a journal's file name: name one file of the seat's pending folder, as it is listed"
+    return None
+
+
+def _stuck(service, seat, data) -> str | None:
+    """Why the journal read as ``data`` (None: unreadable) is not provably stuck, or None when it is.
+
+    Provably stuck reads, with the seat's admission and lifecycle claim held so no delivery or transition starts:
+    every delivery attempt to the seat is read and none is still open (an open one is a live delivery, in this
+    journal or another); and the journal, where it reads, is not terminal (a terminal journal holds nothing) and
+    not mid-recovery. A journal that cannot be read is stuck only by the attempts: it can hold no live delivery when
+    none is open. Anything that cannot be read refuses."""
+    try:
+        attempts = [a for a in service.attempts.all() if a.seat == seat.name]
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        return f"its seat's delivery attempts cannot be read ({type(error).__name__}); nothing is moved"
+    live = [a for a in attempts if a.result is None]
+    if live:
+        return (f"a delivery to {seat.name} is still open (attempt {live[0].path.name}): a live delivery, never "
+                "set aside")
+    if data is None:
+        return None
+    from . import pending
+    if data["phase"] in pending.TERMINAL:
+        return f"its phase is {data['phase']!r}, which holds nothing: it is not stuck"
+    from .receipt_refresh import unfinished
+    if unfinished(data):
+        return "a recovery of its receipt is under way: it is not stuck"
+    return None
+
+
+def set_aside(service, seat, name: str, caller: str | None) -> str:
+    """qd set-aside: one named delivery journal of a seat moved, unchanged, into the runtime's evidence, with a proof
+    line, when it is provably stuck (see _stuck); recorded before it is moved. Never deleted, never a given path."""
+    import hashlib
+    import stat as stat_module
+    from . import lifecycle, pending, post, ship_locks
+    if reason := authority(service.ship, caller, seat):
+        return reason
+    if reason := _journal_name(name):
+        return f"refused: {reason}; nothing is moved"
+    runtime = service.ship.runtime
+    folder = runtime / "post" / "pending" / seat.name
+    try:
+        if not stat_module.S_ISDIR(os.lstat(folder).st_mode):
+            return f"refused: {seat.name}'s pending folder is not a folder; nothing is moved"
+        source = folder / name
+        info = os.lstat(source)
+    except FileNotFoundError:
+        return f"refused: {seat.name} has no pending journal {name!r}; nothing is moved"
+    except OSError as error:
+        return f"refused: {seat.name}'s pending journal {name!r} cannot be read ({error.strerror}); nothing is moved"
+    if not stat_module.S_ISREG(info.st_mode):
+        return f"refused: {name!r} is not a regular file (a link or another kind); nothing is moved"
+    try:
+        with post.admission(runtime, seat.name, wait=0), lifecycle.claim(runtime, seat.name, wait=0):
+            try:
+                descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                with os.fdopen(descriptor, "rb") as stream:
+                    raw = stream.read()
+            except OSError as error:
+                return f"refused: {name!r} cannot be read ({error.strerror}); nothing is moved"
+            try:
+                data = json.loads(raw)
+                pending.validate(data, seat.name)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                data = None
+            if reason := _stuck(service, seat, data):
+                return f"refused: {reason}; nothing is moved"
+            digest = hashlib.sha256(raw).hexdigest()
+            message = data.get("message") if data else None
+            act = dict(act=uuid.uuid4().hex[:12], verb="set-aside", at=_now(), caller=caller, seat=seat.name,
+                       journal=name, size=len(raw), sha256=digest, message=message, outcome="setting aside")
+            try:
+                write(seat, act)
+            except (OSError, seat_files.LinkRefused) as error:
+                return f"refused: the act could not be recorded ({error}); nothing is moved"  # law: one-door
+            target = runtime / "evidence" / ASIDE / seat.name / f"{act['act']}-{name}"
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.link(source, target, follow_symlinks=False)  # never over an existing file
+                if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+                    os.unlink(target)
+                    return _aside_finish(seat, act, "not set aside", "the copy differs from the journal; left in place")
+                os.unlink(source)
+            except OSError as error:
+                return _aside_finish(seat, act, "not set aside", f"the move failed ({error.strerror}); left in place")
+    except (lifecycle.Busy, ship_locks.Busy):
+        return (f"refused: {seat.name}'s door is active (a delivery or a transition holds it); a journal is set aside "
+                "only while the door is idle; nothing is moved")
+    if message:
+        latest = service.attempts.latest().get(message)
+        which = (f"message {message}, held by its attempt ({latest}) and never typed again by the door"
+                 if latest in post.HELD else
+                 f"message {message}, whose attempt reads {latest}: it was never typed, so the door may deliver it")
+    else:
+        which = "its message could not be identified; no message is resent for it"
+    proof = (f"set aside {source.relative_to(runtime)} ({len(raw)} bytes, sha256 {digest}) to "
+             f"{target.relative_to(runtime)}: no delivery to {seat.name} is open and the journal "
+             + ("could not be read" if data is None else f"rests at {data['phase']!r}") + f"; {which}")
+    service.log("set-aside", seat=seat.name, journal=name, sha256=digest, target=str(target.relative_to(runtime)),
+                message=message, caller=caller)
+    return _aside_finish(seat, act, "set aside", proof)
+
+
+def _aside_finish(seat, act: dict, outcome: str, detail: str) -> str:
+    try:
+        write(seat, dict(act=act["act"], verb=act["verb"], at=_now(), outcome=outcome, detail=detail))
+        kept = ""
+    except (OSError, seat_files.LinkRefused) as error:
+        kept = f"; its outcome could not be recorded ({error})"
+    return f"{seat.name}: {outcome}: {detail} · recorded in {path(seat).relative_to(seat.ship.runtime)}{kept}"
