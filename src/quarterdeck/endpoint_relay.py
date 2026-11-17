@@ -93,12 +93,23 @@ os.execvp(argv[0], argv)
 '''
 
 
-def folder_for(seat_folder: Path) -> Path:
-    """A short private folder for one seat's relay: a unix socket's path is limited to about a hundred bytes."""
+RELAY_ROOT = Path('/tmp')  # short: a unix socket's path is limited to about a hundred bytes
+
+
+def folder_for(seat_folder: Path, launch: str = '') -> Path:
+    """A short private folder for one launch's relay: the seat's own name, then the launch's own token (the jail's
+    launch, drawn by sandbox.plan and held in the launch record's argv). Each launch has its own, so an older relay
+    that exits after a relaunch removes only its own folder, never the new one's."""
     import hashlib
 
     digest = hashlib.sha256(str(seat_folder).encode()).hexdigest()[:16]
-    return Path('/tmp') / f'qd-endpoint-{os.getuid()}-{digest}'
+    return RELAY_ROOT / (f'qd-endpoint-{os.getuid()}-{digest}' + (f'-{launch}' if launch else ''))
+
+
+def of_seat(path, seat_folder: Path) -> bool:
+    """Whether ``path`` is a relay folder of this seat's, of any launch."""
+    base, path = folder_for(seat_folder), Path(path)
+    return path.parent == base.parent and (path.name == base.name or path.name.startswith(base.name + '-'))
 
 
 def _prepare(folder: Path) -> None:

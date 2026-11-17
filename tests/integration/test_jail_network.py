@@ -173,7 +173,7 @@ def test_the_endpoint_answers_through_the_relay_and_streams_and_nothing_else_ope
     assert isinstance(stream, list) and len(stream) == 3, stream
     assert stream[0] < stream[-1] - 0.8, f'the answer streamed piece by piece through the relay: {stream}'
     assert seen['abstract'] == [] and seen['elsewhere'] is False and seen['resolved'] is False
-    assert not endpoint_relay.folder_for(jail.seat_folder).exists(), 'the relay removes its folder when the jail ends'
+    assert not sandbox.relay_folder(jail).exists(), 'the relay removes its folder when the jail ends'
 
 
 def test_without_its_relay_the_jail_reaches_nothing_and_nothing_falls_open(drydock: Path, tmp_path: Path, endpoint):
@@ -183,7 +183,7 @@ def test_without_its_relay_the_jail_reaches_nothing_and_nothing_falls_open(drydo
     argv = sandbox.command(jail, [sys.executable, '-I', '-c', PROBE, '[]', '1', str(endpoint)])
     relay = argv.index('quarterdeck.endpoint_relay')
     jailed = argv[argv.index('--', relay) + 1:]  # the jail itself, started without the relay that would serve it
-    folder = endpoint_relay.folder_for(jail.seat_folder)
+    folder = sandbox.relay_folder(jail)
     endpoint_relay._prepare(folder)
     endpoint_relay._hosts(folder, None)
     try:
@@ -217,4 +217,4 @@ def test_a_relay_that_dies_takes_the_jail_with_it(drydock: Path, tmp_path: Path,
         if relay.poll() is None:
             os.killpg(relay.pid, signal.SIGKILL)
         subprocess.run(['pkill', '-KILL', '-s', str(relay.pid)], capture_output=True)
-        shutil.rmtree(endpoint_relay.folder_for(jail.seat_folder), ignore_errors=True)
+        shutil.rmtree(sandbox.relay_folder(jail), ignore_errors=True)

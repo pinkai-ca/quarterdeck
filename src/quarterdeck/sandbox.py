@@ -18,6 +18,7 @@ merely out of bounds but absent, so nothing the model does inside can read or ch
 from __future__ import annotations
 
 import os
+import secrets
 import pwd
 import shlex
 import shutil
@@ -113,6 +114,7 @@ class Jail:
     endpoint: str | None = None  # the pool's model endpoint, relayed into the jail's own network; None: no way out
     seat: str = ''  # the seat's name, set inside as QD_SEAT
     path: str = ''  # the PATH qd launches with, set inside as PATH
+    launch: str = ''  # this launch's own token, drawn at plan: it names the launch's relay folder (relay_folder)
 
 
 def git_identity(workspace: Path) -> tuple[tuple[str, str], ...]:
@@ -325,7 +327,8 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     if endpoint is not None:
         endpoint_parts(endpoint)  # refused here, before anything starts, when the jail could not reach it
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
-                (drop, proof), git_identity(workspace), declarations, view, foreign, endpoint, seat_name, path)
+                (drop, proof), git_identity(workspace), declarations, view, foreign, endpoint, seat_name, path,
+                launch=secrets.token_hex(8))
     ssh = Path(os.path.realpath(home / '.ssh'))
     if os.path.lexists(home / '.ssh') and not ssh.is_relative_to(Path(os.path.realpath(home))):
         # The home's hiding covers ~/.ssh only where it lies: a link out of the home would leave its keys and sockets
@@ -861,7 +864,7 @@ def relay_folder(jail: Jail) -> Path | None:
     if jail.endpoint is None:
         return None
     from . import endpoint_relay
-    return endpoint_relay.folder_for(jail.seat_folder)
+    return endpoint_relay.folder_for(jail.seat_folder, jail.launch)
 
 
 def relay_binds(jail: Jail) -> list[tuple[str, Path, str]]:

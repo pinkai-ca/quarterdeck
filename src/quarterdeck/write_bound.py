@@ -385,12 +385,12 @@ def groups(ship, jail: Jail, bounds=None) -> list[Group]:
     bounds = {**BOUNDS, **(bounds or {})}
     seat = {str(seat_folder(ship, jail.seat)), os.path.realpath(seat_folder(ship, jail.seat))}
     from . import endpoint_relay, sandbox
-    small = {str(ship.runtime / 'post' / 'drop' / jail.seat), str(sandbox.check_proof_folder(ship.runtime, jail.seat)),
-             str(endpoint_relay.folder_for(seat_folder(ship, jail.seat)))}
+    small = {str(ship.runtime / 'post' / 'drop' / jail.seat), str(sandbox.check_proof_folder(ship.runtime, jail.seat))}
     small |= {os.path.realpath(folder) for folder in small}
     found = {label: Group(label, [], bounds[label]) for label in (SEAT, WORKSPACE, SMALL)}
     for folder in jail.binds:
-        label = SEAT if folder in seat else SMALL if folder in small else WORKSPACE
+        relay = endpoint_relay.of_seat(folder, seat_folder(ship, jail.seat))  # the seat's relay, of whichever launch
+        label = SEAT if folder in seat else SMALL if folder in small or relay else WORKSPACE
         found[label].folders.append(folder)
     return list(found.values())
 
