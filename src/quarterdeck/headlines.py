@@ -16,6 +16,7 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += [line for line in getattr(facts, 'server_recovery', ()) if line.startswith('service stop barrier')]
     if accounting := getattr(facts, 'accounting', None):
         parts.append(accounting)  # keep its time and safe cause even when other alerts overflow
+    parts += getattr(facts, 'operational_notices', ())
     counts = [(facts.waiting, "waiting"), (facts.queued, "queued"), (facts.blind, "blind"),
               (len(facts.needs_human), "need human"), (len(facts.unarmed), "unarmed"),
               (len(facts.held), "held"), (len(facts.pending), "pending"),

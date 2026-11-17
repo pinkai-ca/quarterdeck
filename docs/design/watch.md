@@ -23,6 +23,24 @@ Text the door did not type is left untouched. It waits in the inbox and raises t
 
 `qd watch` prints the crew table; `qd watch <seat>` gives the full reading. `--save-screen` captures a scrubbed fixture for investigation. Screen-only queued evidence is not a receipt. An unreadable/empty saved pointer reports its join reason; a seat that has not yet obtained a record keeps its initial idle reading.
 
+### Operational notices from ship-local tools
+
+A tool may publish one short status line in `runtime/notices/<tool>.json`. The tool chooses a stable name of up to 48 lowercase ASCII letters, digits, underscores or hyphens, starting with a letter. It atomically replaces its file and unlinks it promptly when the condition clears. The directory and files belong to the ship's effective user and must prevent group and other writes. The reader accepts a real directory and regular files opened without following symbolic links.
+
+The file holds one UTF-8 JSON object of at most 2,048 bytes with exactly these fields.
+
+| Field | Value |
+| --- | --- |
+| `format` | Integer `1` |
+| `text` | One printable line, at most 128 UTF-8 bytes, with no surrounding whitespace or tmux directives, escapes or aliases. Ordinary hashes and issue numbers such as `#123` are literal. |
+| `pid` | The live writer's positive Linux process ID |
+| `process_start` | The decimal start time from field 22 of the writer's Linux proc stat, as a string |
+| `wall_ns` | Positive integer Unix time in nanoseconds when the writer observed the condition |
+| `monotonic_ns` | Positive integer monotonic time in nanoseconds from the same observation |
+| `expires_ns` | Positive integer Unix expiry time in nanoseconds |
+
+Expiry must follow observation by at most 120 seconds. Both clocks must place the notice within that lifetime with at most one second of disagreement. The writer must still have the same process start and belong to the ship's effective user. The reader skips invalid entries and treats a missing, unreadable or overfull directory as empty. It examines at most 64 directory entries. Valid text appears by tool name on the status line and survives its overflow summary. A cached status line is reused only while its notice text still matches the current reading.
+
 ### Sign-in failures and recovery
 
 Claude Code 2.1.317's measured root API-error authentication_failed envelope becomes `sign-in failed in the program`; native turn duration remains completion evidence. Quoted login prose, screen text and unsupported forms do not classify it. A standalone recognized error can be displayed without inventing an input/turn. Automatic human-session status uses service-published metadata, never conversation bytes.

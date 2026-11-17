@@ -591,6 +591,7 @@ class Facts:
     record_bounds: list[str] = field(default_factory=list)  # a seat's record near or past its read bound (record_file)
     retirement: str | None = None
     accounting: str | None = None
+    operational_notices: list[str] = field(default_factory=list)
     ledger_recovery: list[str] = field(default_factory=list)
     check_failed: list[str] = field(default_factory=list)
     check_unknown: list[str] = field(default_factory=list)
@@ -607,6 +608,7 @@ class Facts:
         parts += self.ledger_recovery
         if self.accounting:
             parts.append(self.accounting)
+        parts += self.operational_notices
         parts.append(f"{self.waiting} waiting" + (f", oldest {self.oldest}m" if self.waiting else ""))
         if self.queued:
             parts.append(f"{self.queued} queued behind a turn, oldest {self.oldest_queued}m")
@@ -1171,8 +1173,11 @@ def _post_reading(ship, store, attempts, post_held):
 
 
 def _facts(reading: Collection, lists: dict, fields: dict) -> Facts:
+    from . import operational_notices
+
     values = dict(reading.slow)
     values.update(fields)
+    values['operational_notices'] = operational_notices.readings(reading.ship.runtime)
     for name in _SEAT_LISTS:
         if name != 'waiting':
             values[name] = lists[name]

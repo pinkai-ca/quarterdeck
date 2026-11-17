@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import time
 
-from . import copy_state, servicectl, ship as shipmod
+from . import copy_state, operational_notices, servicectl, ship as shipmod
 from .procstat import EXITED
 
 NAME = 'status-line.json'
@@ -79,6 +79,8 @@ def cached_line(folder):
             return None
         if data.get('retirement') != post_retirement.reading(runtime):
             return None
+        if data.get('operational_notices', []) != operational_notices.readings(runtime):
+            return None
         current = accounting_health.reading(runtime)
         if ('accounting' not in data or current == accounting_health.UNKNOWN
                 or data['accounting'] != current):
@@ -101,12 +103,13 @@ def published_reading(folder, *, status_refresh=None):
     """
     folder = Path(folder).expanduser().resolve()
     from . import stop_barrier
-    if stop_barrier.status(folder / 'runtime'):
+    runtime = folder / 'runtime'
+    if stop_barrier.status(runtime):
         return None, None
     line = cached_line(folder)
     if line is not None:
         return line, None
-    lead = service_lead(folder / 'runtime')
+    lead = service_lead(runtime)
     if lead != 'service ok' and not lead.startswith('service busy'):
         return None, None  # a stopped service cannot keep the named waits up to date
     if status_refresh is None:
@@ -117,7 +120,7 @@ def published_reading(folder, *, status_refresh=None):
     plain_ns = round((status_refresh + servicectl.STALE_SECONDS) * 1_000_000_000)
     collect_ns = round(3 * status_refresh * 1_000_000_000)
     try:
-        path = folder / 'runtime' / NAME
+        path = runtime / NAME
         if path.stat().st_size > 65536:
             raise ValueError('publication too large')
         data = json.loads(path.read_text())
@@ -130,6 +133,8 @@ def published_reading(folder, *, status_refresh=None):
                 or type(data['pid']) is not int or data['pid'] <= 0
                 or not isinstance(data['process_start'], str) or not data['process_start']):
             raise ValueError('invalid publication')
+        if data.get('operational_notices', []) != operational_notices.readings(runtime):
+            return None, None
         written = data.get('written')
         age = time.time_ns() - written if written is not None else -1
         if age < 0:
@@ -137,7 +142,7 @@ def published_reading(folder, *, status_refresh=None):
         if age > collect_ns:
             return None, age // 1_000_000_000
         if lead == 'service ok' and 0 <= age <= plain_ns:
-            beat = servicectl.read_heartbeat(folder / 'runtime')
+            beat = servicectl.read_heartbeat(runtime)
             if (beat is not None and beat[0] == data['pid'] and 0 <= beat[1] <= servicectl.STALE_SECONDS
                     and process_start(beat[0]) == data['process_start']
                     and data['ship'] == fingerprint(folder / 'ship.toml')
@@ -210,7 +215,8 @@ def _publish(ship, tmux, framework, store, attempts, kept=None, door_seats=froze
     data = dict(format=1, wall=wall, written=time.time_ns(), monotonic=monotonic, pid=os.getpid(), process_start=start,
                 ship=stamp, framework=framework, line=line, accounting=getattr(facts, 'accounting', None),
                 ledger_recovery=getattr(facts, 'ledger_recovery', []),
-                retirement=getattr(facts, 'retirement', None))
+                retirement=getattr(facts, 'retirement', None),
+                operational_notices=getattr(facts, 'operational_notices', []))
     path = ship.runtime / NAME
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, allow_nan=False) + '\n')

@@ -1,0 +1,201 @@
+import json
+import os
+from pathlib import Path
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from quarterdeck import accounting_health, operational_notices as notices, presentation, service_status
+from quarterdeck import servicectl, ship, watch
+
+
+FIRST = 'backup waiting for local disk'
+SECOND = 'index rebuilding 4 files'
+
+
+def notice(text):
+    pid = os.getpid()
+    wall = time.time_ns()
+    return dict(format=1, text=text, pid=pid, process_start=notices.writer_start(pid),
+                wall_ns=wall, monotonic_ns=time.monotonic_ns(), expires_ns=wall + 60_000_000_000)
+
+
+def put(folder, tool, **data):
+    path = folder / f'{tool}.json'
+    path.write_text(json.dumps(data))
+    path.chmod(0o600)
+    return path
+
+
+@pytest.fixture
+def evidence(tmp_path):
+    (tmp_path / 'ship.toml').write_text('[ship]\nname="synthetic"\ncode="checkout"\n')
+    declaration = ship.load(tmp_path)
+    folder = declaration.runtime / notices.DIRECTORY
+    folder.mkdir(mode=0o700, parents=True)
+    return declaration, folder
+
+
+def foreign_owner(path, monkeypatch):
+    target = path.stat()
+    fstat = os.fstat
+
+    def foreign(fd):
+        info = fstat(fd)
+        if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
+            return info
+        return SimpleNamespace(st_uid=info.st_uid + 1, st_mode=info.st_mode, st_size=info.st_size)
+
+    monkeypatch.setattr(os, 'fstat', foreign)
+
+
+def test_two_tools_keep_lines_on_overflow_and_omit_expired_and_foreign(evidence, monkeypatch):
+    declaration, folder = evidence
+    before = service_status.inputs(declaration)
+    assert str(folder) in dict(before)
+    put(folder, 'index', **notice(SECOND))
+    backup = put(folder, 'backup', **notice(FIRST))
+    expired = notice('outdated')
+    for key in ('wall_ns', 'monotonic_ns', 'expires_ns'):
+        expired[key] -= notices.MAX_TTL_NS
+    put(folder, 'expired', **expired)
+    foreign_owner(put(folder, 'foreign', **notice('foreign file')), monkeypatch)
+    assert service_status.inputs(declaration) != before
+    content, stamp = backup.read_bytes(), backup.stat().st_mtime_ns
+    assert notices.readings(declaration.runtime) == [FIRST, SECOND]
+    assert backup.read_bytes() == content and backup.stat().st_mtime_ns == stamp
+    facts = watch.facts(declaration, SimpleNamespace())
+    assert facts.operational_notices == [FIRST, SECOND]
+    assert f'{FIRST} · {SECOND}' in facts.line()
+    overflow = watch.Facts('ok', 0, 0, 0, operational_notices=[FIRST, SECOND],
+                           needs_human=['worker' * 40]).line()
+    assert f'{FIRST} · {SECOND}' in overflow
+    assert '1 need human' in overflow and 'details: qd status' in overflow
+
+
+@pytest.mark.parametrize('which', ['folder', 'writer'])
+def test_foreign_directory_or_writer_is_omitted(evidence, monkeypatch, which):
+    declaration, folder = evidence
+    data = notice(FIRST)
+    put(folder, 'backup', **data)
+    assert notices.readings(declaration.runtime) == [FIRST]
+    foreign_owner(folder if which == 'folder' else Path(f'/proc/{data["pid"]}'), monkeypatch)
+    assert notices.readings(declaration.runtime) == []
+
+
+@pytest.mark.parametrize('token', ('#[', '#{', '#(', '##', '#}', '#,', '#:', *('#' + c for c in 'DFHIPSTWh')))
+def test_text_rejects_tmux_format_introducers(token):
+    assert not notices._valid_text('index waiting ' + token + ' here')
+
+
+@pytest.mark.parametrize('text', ('issue #123 is waiting', 'hash #b7abc89', 'ticket # and index 92%', '#'))
+def test_text_keeps_literal_hashes_and_issue_numbers(text):
+    assert notices._valid_text(text)
+
+
+@pytest.mark.parametrize('failure', [
+    'future', 'clocks disagree', 'prior process', 'not running', 'boolean pid', 'long lifetime', 'no expiry',
+    'length', 'empty', 'untrimmed', 'multiline', 'control', 'format control', 'tmux styling', 'unexpected field',
+    'malformed', 'duplicate fields', 'oversize file', 'writable file', 'fifo', 'link', 'subdirectory', 'bad name',
+])
+def test_bad_notice_is_omitted_without_discarding_valid_peer(evidence, failure, tmp_path):
+    declaration, folder = evidence
+    put(folder, 'index', **notice(SECOND))
+    data = notice(FIRST)
+    if failure == 'future':
+        data['wall_ns'] += notices.MAX_TTL_NS
+    elif failure == 'clocks disagree':
+        data['monotonic_ns'] -= 2 * notices.CLOCK_SKEW_NS
+    elif failure == 'prior process':
+        data['process_start'] = str(int(data['process_start']) + 1)
+    elif failure == 'not running':
+        data['pid'] = 2**31 - 1
+    elif failure == 'boolean pid':
+        data['pid'] = True
+    elif failure == 'long lifetime':
+        data['expires_ns'] = data['wall_ns'] + notices.MAX_TTL_NS + 1
+    elif failure == 'no expiry':
+        del data['expires_ns']
+    elif failure == 'unexpected field':
+        data['count'] = 4
+    elif failure == 'bad name':
+        put(folder, 'bad.name', **data)
+    elif failure in ('length', 'empty', 'untrimmed', 'multiline', 'control', 'format control', 'tmux styling'):
+        data['text'] = {
+            'length': '界' * 43, 'empty': '', 'untrimmed': ' leading space', 'multiline': 'one\ntwo',
+            'control': 'a\x1bb', 'format control': 'a\u202eb', 'tmux styling': 'a #[reverse]b',
+        }[failure]
+    if failure != 'bad name':
+        path = put(folder, 'backup', **data)
+        if failure == 'fifo':
+            path.unlink()
+            os.mkfifo(path)
+        elif failure == 'link':
+            target = tmp_path / 'outside'
+            path.rename(target)
+            path.symlink_to(target)
+        elif failure == 'subdirectory':
+            path.unlink()
+            path.mkdir()
+        elif failure == 'writable file':
+            path.chmod(0o620)
+        elif failure in ('malformed', 'duplicate fields', 'oversize file'):
+            path.write_text({
+                'malformed': '{', 'duplicate fields': '{"format":1,' + json.dumps(data)[1:],
+                'oversize file': ' ' * (notices.MAX_BYTES + 1),
+            }[failure])
+    assert notices.readings(declaration.runtime) == [SECOND]
+
+
+@pytest.mark.parametrize('which', ['directory link', 'overfull', 'writeable directory', 'absent'])
+def test_unusable_directory_is_empty(evidence, tmp_path, which):
+    declaration, folder = evidence
+    if which == 'absent':
+        folder.rmdir()
+    else:
+        put(folder, 'backup', **notice(FIRST))
+        if which == 'directory link':
+            target = tmp_path / 'outside'
+            folder.rename(target)
+            folder.symlink_to(target, target_is_directory=True)
+        elif which == 'overfull':
+            for number in range(notices.MAX_ENTRIES):
+                (folder / f'.{number}').touch()
+        else:
+            folder.chmod(0o770)
+    assert notices.readings(declaration.runtime) == []
+
+
+@pytest.mark.parametrize('clear', ['remove', 'change', 'expire', 'restart'])
+def test_publication_cannot_repeat_a_superseded_notice(evidence, monkeypatch, clear):
+    declaration, folder = evidence
+    data = notice(FIRST)
+    path = put(folder, 'backup', **data)
+    line = watch.Facts('ok', 0, 0, 0, operational_notices=[FIRST]).line()
+    now = time.time_ns()
+    publication = dict(format=1, wall=now, written=now, monotonic=time.monotonic_ns(),
+                       pid=data['pid'], process_start=data['process_start'], line=line, operational_notices=[FIRST],
+                       ship=presentation.fingerprint(declaration.file), framework=presentation.framework_stamp(),
+                       accounting=None, ledger_recovery=[], retirement=None)
+    (declaration.runtime / presentation.NAME).write_text(json.dumps(publication))
+    monkeypatch.setattr(servicectl, 'read_heartbeat', lambda runtime: (data['pid'], 0))
+    monkeypatch.setattr(servicectl, 'alive', lambda runtime: True)
+    monkeypatch.setattr(accounting_health, 'reading', lambda runtime: None)
+    monkeypatch.setattr(presentation, 'service_lead', lambda runtime: 'service ok')
+    assert presentation.cached_line(declaration.folder) == line
+    monkeypatch.setattr(presentation, 'fresh', lambda *args: False)  # also exercise the longer-lived fallback
+    assert presentation.published_reading(declaration.folder, status_refresh=30) == (line, None)
+    if clear == 'remove':
+        path.unlink()
+    else:
+        if clear == 'change':
+            data['text'] = 'backup rebuilding'
+        elif clear == 'expire':
+            for key in ('wall_ns', 'monotonic_ns', 'expires_ns'):
+                data[key] -= notices.MAX_TTL_NS
+        else:
+            data['process_start'] = str(int(data['process_start']) + 1)
+        put(folder, 'backup', **data)
+    assert presentation.cached_line(declaration.folder) is None
+    assert presentation.published_reading(declaration.folder, status_refresh=30) == (None, None)

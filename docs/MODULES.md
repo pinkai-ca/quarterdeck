@@ -151,6 +151,7 @@ The modules that the framework table does not list, the module of each part amon
 | `post_retirement.py` | finished delivery evidence moved, unchanged, out of the service's working folders into batches that every reader still resolves |
 | `retirement_gate.py` | a completed retirement sweep may wait; its certificate never permits a move |
 | `post_threads.py` | the thread indexes, and a thread read whole for `qd thread` |
+| `operational_notices.py` | read-only status lines from ship-local tools, with bounded data, expiry and writer identity checks |
 | `presentation.py` | published operational text, independent service liveness, stale age and bounded fallback to current facts; never lifecycle, receipt or usage evidence |
 | `procstat.py` | the states `/proc` gives a process that has exited, each read as ended |
 | `program_use.py` | each program's current activity, and its last use bound to saved launch evidence |
