@@ -237,12 +237,16 @@ def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
     if isinstance(seat, UnresolvedSeat):
         return ledger.Count(0, 1)  # retained totals above are usable; guessing a record reader is not
     found = ledger.Count()
-    for item in record_owner.records(seat):
-        try:
-            state, turns = item.read()
-        except OSError:
+    from .harness import json_record
+    # Every record the seat ever owned, read in passing: a sweep the record cache must not keep, or it would push out
+    # the records the seats are reading now (json_record.passing).
+    with json_record.passing():
+        owned = [(item, _read_owned(item)) for item in record_owner.records(seat)]
+    for item, reading in owned:
+        if reading is None:
             found += ledger.Count(0, 1)  # a record that would not read: whatever it holds is not in the figure
             continue
+        state, turns = reading
         for turn in turns:
             when = turn.ended or turn.started
             if when is not None and when.astimezone().date().isoformat() == day:
@@ -250,6 +254,13 @@ def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
         if state.turns is None or state.turn_open is None:
             found += ledger.Count(0, 1)  # the record leaves its own turn count uncertain
     return found
+
+
+def _read_owned(item):
+    try:
+        return item.read()
+    except OSError:
+        return None
 
 
 def accounted_history(book, seat):

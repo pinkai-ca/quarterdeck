@@ -17,6 +17,8 @@ import os
 from pathlib import Path
 import time
 from threading import RLock
+from contextvars import ContextVar
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 from . import reading_scope, record_file
 from ..record_location import resolve
@@ -67,12 +69,18 @@ class _Snapshot:
 
 
 _snapshots = OrderedDict()
-# The cache's bound, in BYTES OF RECORD: a cached entry costs only the reader state it keeps. Measured on 17 November
-# 2026 on a copy of the crew's 11 JSON-lines records (232 MB): this cache held them in 109 MB resident, Claude's
-# records 1 to 2 times their bytes and Codex's almost nothing, against 1,199 MB for the old cache with their text and
-# lines. So 256 MiB of records costs at most about 500 MB, and holds today's whole crew; a record past the bound is
-# read whole each time, as before.
-_CACHE_BYTES = 256 * 1024 * 1024
+# The cache's bound is its COUNT of entries: 96, four times today's 24 seats and the people's records, so the records
+# the seats are reading (18 on 17 November 2026) never push each other out. Record bytes are the wrong unit for it: an
+# entry keeps no text, and its resident cost per byte of record ran from 0.02 (Codex) to 1.94 (Claude), measured on a
+# copy of the crew's records; the two idle Codex records held 109 MB of the old 256 MiB bound and cost 1.7 MB.
+_CACHE_COUNT = 96
+# Record bytes stay only as a SAFETY CEILING, past which the least recent entries go: 768 MiB of record. Today's mix of
+# 326 MB costs about 140 to 280 MB resident; at Claude's worst 1.94 B per byte the ceiling costs about 1.5 GB.
+_CACHE_BYTES_CEILING = 768 * 1024 * 1024
+_CACHE_BYTES = _CACHE_BYTES_CEILING
+# A read in passing (passing()) admits no new entry: a sweep of many records, such as the seat-token fallback reading
+# every record a seat ever owned, is read whole and dropped, so it never pushes the working set out.
+_PASSING = ContextVar('json_record_passing', default=False)
 # Where rows are kept (keep_rows), the bound and count the cache had before, since each entry costs about 5 times its
 # record's bytes there.
 _KEPT_BYTES = 128 * 1024 * 1024
@@ -89,6 +97,16 @@ def keep_rows() -> None:
     with _read_lock:
         _KEEP_ROWS = True
         _snapshots.clear()
+
+
+@contextmanager
+def passing():
+    """Read records without admitting new ones to the cache (_PASSING): an entry already held is used and kept."""
+    token = _PASSING.set(True)
+    try:
+        yield
+    finally:
+        _PASSING.reset(token)
 
 
 def cache_size() -> tuple[int, int]:
@@ -179,12 +197,16 @@ def _decoded(data) -> str:
         raise RecordError("record is not UTF-8 JSON lines") from error
 
 
-def _store(record: Path, entry: _Snapshot) -> None:
+def _store(record: Path, entry: _Snapshot, member: bool) -> None:
+    """Keep ``entry`` as the most recent, then let the least recent go past the count or the ceiling. ``member``: the
+    record was held before this reading; a read in passing (passing()) admits only members."""
+    if _PASSING.get() and not member:
+        return
     bound = _KEPT_BYTES if _KEEP_ROWS else _CACHE_BYTES
+    count = _KEPT_COUNT if _KEEP_ROWS else _CACHE_COUNT
     if entry.stamp[2] <= bound:
         _snapshots[record] = entry
-        while ((_KEEP_ROWS and len(_snapshots) > _KEPT_COUNT)
-               or sum(value.stamp[2] for value in _snapshots.values()) > bound):
+        while len(_snapshots) > count or sum(value.stamp[2] for value in _snapshots.values()) > bound:
             _snapshots.popitem(last=False)
 
 
@@ -206,7 +228,7 @@ def _parse_bytes(source: Path, record: Path, data: bytes, stamp, certified, cach
         raise RecordError("no JSON object lines in this record: not a record this reader can read")
     if reuse and len(data) == cached.total_bytes:  # the same bytes under a new stamp: the same entry, its state kept
         cached.stamp, cached.certified_at = stamp, certified
-        _store(record, cached)
+        _store(record, cached, True)
         return _view(source, cached, data, tail, base)
     complete_end = data.rfind(b'\n') + 1
     complete_chars = text.rfind('\n') + 1
@@ -220,7 +242,7 @@ def _parse_bytes(source: Path, record: Path, data: bytes, stamp, certified, cach
                       ends_newline=data.endswith(b'\n'), line_count=number + len(text.splitlines()))
     if reuse and cached.ends_newline and cached.prefix_bytes == cached.total_bytes and entry.ends_newline:
         _carry(cached, entry, whole, more)
-    _store(record, entry)
+    _store(record, entry, cached is not None)
     return _view(source, entry, data, tail, base)
 
 
@@ -330,7 +352,7 @@ def _parse_text(record: Path, data: bytes, stamp, certified, cached) -> _Snapsho
     raw = _decoded(data)
     if cached is not None and raw == cached.raw:
         cached.stamp, cached.certified_at = stamp, certified
-        _store(record, cached)
+        _store(record, cached, True)
         return cached
     rows, skipped, offset, number = [], [], 0, 0
     if cached is not None:
@@ -354,7 +376,7 @@ def _parse_text(record: Path, data: bytes, stamp, certified, cached) -> _Snapsho
     if cached is not None and cached.complete_end == len(cached.raw) and offset == len(cached.raw) and raw.endswith('\n'):
         result.readers, result.inputs = dict(cached.readers), dict(cached.inputs)
         result.interpreters = dict(cached.interpreters)
-    _store(record, result)
+    _store(record, result, cached is not None)
     return result
 
 

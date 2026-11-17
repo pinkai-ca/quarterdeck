@@ -140,4 +140,4 @@ def test_the_cache_size_is_read_each_pass_and_written_with_the_minutes_timing_li
     (event, data), = logged
     size = record.path.stat().st_size
     assert event == 'service-timing'
-    assert data['parse_cache'] == {'records': 0, 'record_bytes': 0, 'max_record_bytes': size}
+    assert data['parse_cache'] == {'records': 0, 'record_bytes': 0, 'max_record_bytes': size, 'max_records': 1}

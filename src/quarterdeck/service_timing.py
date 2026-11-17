@@ -28,12 +28,14 @@ class Timings:
         self.rows = {}
         self.status_checks = 0
         self.accounting_waits = 0
-        self.parse_cache = None  # the record cache's size, read each pass: {records, record_bytes, max_record_bytes}
+        self.parse_cache = None  # the record cache, read each pass: {records, record_bytes, max_record_bytes, max_records}
 
     def cache_reading(self, records: int, held: int) -> None:
         """The record cache's size after a pass (harness/json_record): the last, and the most bytes in the minute."""
-        most = max(held, (self.parse_cache or {}).get('max_record_bytes', 0))
-        self.parse_cache = dict(records=records, record_bytes=held, max_record_bytes=most)
+        before = self.parse_cache or {}
+        self.parse_cache = dict(records=records, record_bytes=held,
+                                max_record_bytes=max(held, before.get('max_record_bytes', 0)),
+                                max_records=max(records, before.get('max_records', 0)))
 
     @contextmanager
     def measure(self, name):
