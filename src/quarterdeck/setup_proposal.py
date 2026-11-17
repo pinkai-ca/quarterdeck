@@ -99,11 +99,16 @@ def keep_unchanged(c, ship: Ship) -> None:
 
 
 def build(conversation, operations, text: str, orders: str, defaults: dict, available: dict, *, include_desk: bool = True,
-          project_office: Ship | None = None) -> Proposal:
-    """Build/validate in memory. No create, update, readiness or native-version operation is allowed here."""
+          project_office: Ship | None = None, desk_only: Path | None = None) -> Proposal:
+    """Build/validate in memory. No create, update, readiness or native-version operation is allowed here.
+
+    ``desk_only``, the office's folder: the office alone, with no crew. Only the desk's questions are asked (the
+    operator, the office's title, the desk's seat and its program's pool), each as a run with a crew asks it, and none
+    of the crew's (name, workspace, folder, existing, programs, captain, engineer), so ``office_declaration`` gives the
+    same office either way."""
     from . import setup, ship as ships
     c = conversation
-    roles = ROLES if include_desk else tuple(role for role in ROLES if role != "desk")
+    roles = ("desk",) if desk_only else ROLES if include_desk else tuple(role for role in ROLES if role != "desk")
     project = operations.project_folder().resolve()
 
     def ship_folder(value):
@@ -114,16 +119,19 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
                             f"choose {project / 'ships' / 'NAME'} or another folder inside it")
         return folder
 
-    explicit_folder = c.supplied("folder")
+    explicit_folder = MISSING if desk_only else c.supplied("folder")
     existing = None
     if explicit_folder is not MISSING:
         path = ship_folder(explicit_folder)
         if path.exists():
             existing = ships.load(path)
     operator = c.ask("operator", "What should the crew call you?", existing.operator if existing else "Admiral")
-    c.say("Ship name suggestions: aurora, discovery, endeavour.")
-    name = c.ask("name", "Ship name", existing.name if existing else "aurora")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.: -]*", name):
+    if desk_only:
+        name = None
+    else:
+        c.say("Ship name suggestions: aurora, discovery, endeavour.")
+        name = c.ask("name", "Ship name", existing.name if existing else "aurora")
+    if name is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.: -]*", name):
         raise ShipError("answer name must start with a letter or digit and contain a plain ship name")
     saved_office = (project_office.session_of(project_office.seat("desk")).title if project_office else
                     existing.session_of(existing.seat("desk")).title if existing and "desk" in existing.seats else "Office")
@@ -131,43 +139,47 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
     for char in (".", ":"):
         if char in office:
             raise ShipError(f"answer office contains {char!r}; choose a tmux session name without that character")
-    workspace = Path(c.ask("workspace", "Project folder", str(existing.workspace) if existing else operations.workspace_default(),
+    workspace = None if desk_only else Path(c.ask("workspace", "Project folder", str(existing.workspace) if existing else operations.workspace_default(),
                            again=WORKSPACE_AGAIN)).expanduser().resolve()
-    if not workspace.is_dir():
-        raise ShipError("answer workspace is not an existing project folder; choose an existing directory")
-    folder = ship_folder(c.ask("folder", "Folder for this ship", str(project / "ships" / name)))
-    if folder.exists():
-        existing = ships.load(folder)
-        if not existing.is_repository:
-            raise ShipError(f"{folder} is not its own git repository; initialize and commit its declaration yourself before rerunning setup")
-        try:
-            ships._git(folder, "rev-parse", "--verify", "HEAD")
-        except ShipError:
-            raise ShipError(f"{folder} has no first commit; resolve git identity and commit ship.toml, orders.md and .gitignore yourself before rerunning setup") from None
-        mode = c.choice("existing", "Keep this ship, or update it?", ("keep", "update"), "keep")
-        if mode == "keep":
-            if (name, operator, workspace) != (existing.name, existing.operator, existing.workspace):
-                raise ShipError("answer existing=keep conflicts with name/operator/workspace changes; choose update to apply them")
-            keep_unchanged(c, existing)
-            if office != saved_office:
-                raise ShipError("answer office changes a kept ship; choose existing=update")
-            setup.validate_declaration(existing)
-            return Proposal(existing, existing.file.read_text(), orders, [], existing, mode)
-        if office != saved_office:
-            raise ShipError("answer office changes an existing session title; edit the declaration and apply its session change explicitly before rerunning setup; nothing was written")
-        for key in (("office", "bridge") if include_desk else ("bridge",)):
-            if key not in existing.sessions:
-                raise ShipError(f"existing ship has no {key} session; use its own arrangement rather than setup's default crew")
+    if desk_only:
+        folder, mode, text = desk_only, "new", without_tables(text, tuple(f"seats.{role}" for role in ROLES if role != "desk"))
     else:
-        mode = "new"
-        ships_folder = (project / "ships").resolve()
-        if folder.parent != ships_folder:
-            raise ShipError(f"a new ship lives directly under {project / 'ships'}; choose a folder name there")
-        if not ships.valid_name(folder.name):
-            raise ShipError(f"answer folder {folder.name!r} is not a ship folder name; choose a nonhidden folder name under {project / 'ships'}")
-        if not folder.parent.is_dir():
-            raise ShipError("answer folder needs an existing parent; setup creates only its own ship folder")
-    candidates = (setup.program_list(c.ask("programs", "Programs"), available) if c.supplied("programs") is not MISSING
+        if not workspace.is_dir():
+            raise ShipError("answer workspace is not an existing project folder; choose an existing directory")
+        folder = ship_folder(c.ask("folder", "Folder for this ship", str(project / "ships" / name)))
+        if folder.exists():
+            existing = ships.load(folder)
+            if not existing.is_repository:
+                raise ShipError(f"{folder} is not its own git repository; initialize and commit its declaration yourself before rerunning setup")
+            try:
+                ships._git(folder, "rev-parse", "--verify", "HEAD")
+            except ShipError:
+                raise ShipError(f"{folder} has no first commit; resolve git identity and commit ship.toml, orders.md and .gitignore yourself before rerunning setup") from None
+            mode = c.choice("existing", "Keep this ship, or update it?", ("keep", "update"), "keep")
+            if mode == "keep":
+                if (name, operator, workspace) != (existing.name, existing.operator, existing.workspace):
+                    raise ShipError("answer existing=keep conflicts with name/operator/workspace changes; choose update to apply them")
+                keep_unchanged(c, existing)
+                if office != saved_office:
+                    raise ShipError("answer office changes a kept ship; choose existing=update")
+                setup.validate_declaration(existing)
+                return Proposal(existing, existing.file.read_text(), orders, [], existing, mode)
+            if office != saved_office:
+                raise ShipError("answer office changes an existing session title; edit the declaration and apply its session change explicitly before rerunning setup; nothing was written")
+            for key in (("office", "bridge") if include_desk else ("bridge",)):
+                if key not in existing.sessions:
+                    raise ShipError(f"existing ship has no {key} session; use its own arrangement rather than setup's default crew")
+        else:
+            mode = "new"
+            ships_folder = (project / "ships").resolve()
+            if folder.parent != ships_folder:
+                raise ShipError(f"a new ship lives directly under {project / 'ships'}; choose a folder name there")
+            if not ships.valid_name(folder.name):
+                raise ShipError(f"answer folder {folder.name!r} is not a ship folder name; choose a nonhidden folder name under {project / 'ships'}")
+            if not folder.parent.is_dir():
+                raise ShipError("answer folder needs an existing parent; setup creates only its own ship folder")
+    programs = MISSING if desk_only else c.supplied("programs")
+    candidates = (setup.program_list(c.ask("programs", "Programs"), available) if programs is not MISSING
                   else sorted(name for name, row in available.items() if row[0].passed))
     if not candidates:
         raise ShipError("no registered program found on PATH; install a supported program before rerunning setup")
@@ -217,9 +229,10 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
                 continue
             fields.update(c.control(role, field, suggestion))
         seats[role] = fields
-    selected = list(dict.fromkeys([fields["harness"] for fields in seats.values()] + (candidates if c.supplied("programs") is not MISSING else [])))
+    selected = list(dict.fromkeys([fields["harness"] for fields in seats.values()] + (candidates if programs is not MISSING else [])))
     pools, served = setup.pool_answers(c, selected, defaults, operations=operations, existing=existing)
-    names, edits = {}, [("ship", "name", name), ("ship", "operator", operator), ("ship", "workspace", str(workspace))]
+    names, edits = {}, ([("ship", "operator", operator)] if desk_only else
+                        [("ship", "name", name), ("ship", "operator", operator), ("ship", "workspace", str(workspace))])
     if include_desk and not existing and office != "Office":
         edits.append(("sessions.office", "title", office))
     pool_harnesses = {}
@@ -352,8 +365,9 @@ def crew_template(text: str) -> str:
             + "[ship]" + text.split("[ship]", 1)[1])
 
 
-def separate_office(proposal: Proposal, office_folder: Path) -> Proposal:
-    """Move the accepted desk declaration and its pools to the single office."""
+def office_declaration(proposal: Proposal, office_folder: Path) -> tuple[Ship, str]:
+    """The office a proposal's desk makes: its seat, its pools, its operator and its office title, the same whether a
+    crew is proposed with it (``separate_office``) or not (``build(desk_only=...)``)."""
     from . import setup, ship as ships
     raw = tomllib.loads(proposal.text)
     office_text, _, _ = setup.template("office")
@@ -379,6 +393,13 @@ def separate_office(proposal: Proposal, office_folder: Path) -> Proposal:
         office_text = ships.edit(office_text, "seats.desk", "cwd", setup.JAILED_DESK_WORK)
         office = ships._from_text(office_text, office_folder)
     setup.validate_declaration(office)
+    return office, office_text
+
+
+def separate_office(proposal: Proposal, office_folder: Path) -> Proposal:
+    """Move the accepted desk declaration and its pools to the single office."""
+    from . import setup, ship as ships
+    office, office_text = office_declaration(proposal, office_folder)
     crew_text = crew_template(proposal.text)
     used = {pool for name, seat in proposal.ship.seats.items() if name != "desk" for pool in seat.pools}
     crew_text = without_tables(crew_text, tuple(f"pools.{name}" for name in proposal.ship.pools if name not in used))

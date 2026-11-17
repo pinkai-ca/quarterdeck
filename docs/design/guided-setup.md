@@ -32,6 +32,8 @@ After start consent, ordinary up prepares/delegates to the ship's [installed cop
 
 Scalar text keys are operator, name, office, workspace, folder, programs, desk, captain, engineer, existing (keep/update), use_defaults, accept, check, start and wait_for_sign_in (yes/no for consents). Program-keyed objects are payment, subscription_home, provider, key_env, endpoint and model. The seats object has desk/captain/engineering entries with name, harness, model, effort, model_mode, effort_mode and ordered pools. A pool is its name or an object with pool/harness/model/effort and modes. Edits are ordered field/value objects; consents are separate. Flags use hyphens instead of underscores.
 
+While no office exists, an answers file or flags make the office alone unless they hold an answer that only a crew reads (`setup_answers.CREW_SCALARS`: name, workspace, folder, existing, programs, captain, engineer, check and wait_for_sign_in; or a captain or engineering seat); then the office comes first and the crew follows in the same run. The office's own answers (accept, start, use_defaults, operator, office, desk, the desk's seat and its program's program-keyed answers) never ask for a crew, and the office alone applies them, building its desk as a run with a crew does, so the office it writes is the same either way. A program-keyed answer for a program the desk does not run is refused there, never dropped. With none of them, the office is the template's.
+
 ```sh
 qd setup --answers crew-answers.json
 ```

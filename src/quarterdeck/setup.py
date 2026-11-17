@@ -17,7 +17,7 @@ from . import doctor, harness, providers, ship as ships, standing
 from .drill import Check
 from .ship import Ship, ShipError
 from .setup_answers import Conversation, MAPS, SCALARS, ROLES, MISSING, read_answers
-from . import setup_proposal
+from . import setup_answers, setup_proposal
 
 
 def arguments(parser: argparse.ArgumentParser) -> None:
@@ -331,7 +331,7 @@ def first_step(args: argparse.Namespace, *, operations: Operations | None = None
         return run(args, operations=operations, conversation=conversation)
     conversation = conversation or conversation_for(args)
     answers = conversation.answers
-    crew = any(value for key, value in answers.items() if key not in ("accept", "start"))
+    crew = setup_answers.asks_for_crew(answers)
     if conversation.interactive:
         conversation.say("Setup creates your office first. You can stop there or add a ship and its crew in this run.")
         try:
@@ -343,9 +343,24 @@ def first_step(args: argparse.Namespace, *, operations: Operations | None = None
         crew = choice == "yes"
     if crew:
         return run(args, operations=operations, conversation=conversation, initialize_office=True)
-    declaration, _, _ = template("office")
-    office = ships._from_text(declaration, folder)
-    ships._validate(office)
+    if setup_answers.names_office(answers):
+        # The office's own answers are applied, never dropped: its desk is built as a run with a crew builds it.
+        text, orders, defaults = template()
+        available = operations.discover(defaults)
+        for name, (row, sign_in) in available.items():
+            conversation.say(f"{row} · {sign_in}")
+        proposal = setup_proposal.build(conversation, operations, text, orders, defaults, available, desk_only=folder)
+        office, declaration = setup_proposal.office_declaration(proposal, folder)
+        runs = {office.seat("desk").for_pool(pool).harness for pool in office.seat("desk").pools}
+        unused = [f"{name}.{program}" for name in MAPS for program in answers.get(name) or {}
+                  if program not in runs]
+        if unused:
+            raise ShipError(f"answer {', '.join(unused)} names a program the office's desk does not run; drop it, "
+                            "or add a crew answer to set up a crew with it; nothing was written")
+    else:
+        declaration, _, _ = template("office")
+        office = ships._from_text(declaration, folder)
+        ships._validate(office)
     conversation.say(f"Office proposal (not written): {folder}")
     summary = setup_proposal.summary(office, setup_proposal.display_control)
     for line in setup_proposal.render_summary(summary):

@@ -14,6 +14,30 @@ SCALARS = ("programs", "desk", "captain", "engineer", "workspace", "name", "fold
 ROLES = ("desk", "captain", "engineering")
 SEAT_FIELDS = ("name", "harness", "model", "effort", "model_mode", "effort_mode", "pools")
 MISSING = object()
+# What the office alone reads (setup.first_step, setup_proposal.build with desk_only): its two consents, the use of
+# defaults, and the desk's own answers, which a run with a crew carries into the office the same way: the operator, the
+# office's title, the desk's seat (``desk`` is its program) and that program's pool, in the maps keyed by program.
+OFFICE_SCALARS = ("accept", "start", "use_defaults", "operator", "office", "desk")
+OFFICE_SEATS = ("desk",)
+# Every other answer only a crew reads, so only such an answer asks for a crew. Derived, so a new answer counts for the
+# crew unless the office reads it too.
+CREW_SCALARS = tuple(name for name in SCALARS if name not in OFFICE_SCALARS)
+CREW_SEATS = tuple(role for role in ROLES if role not in OFFICE_SEATS)
+
+
+def asks_for_crew(answers: dict) -> bool:
+    """Whether an answer only a crew reads was given: the office alone is set up otherwise."""
+    seats = answers.get("seats")
+    return (any(answers.get(name) for name in CREW_SCALARS)
+            or isinstance(seats, dict) and any(role in CREW_SEATS for role in seats))
+
+
+def names_office(answers: dict) -> bool:
+    """Whether an answer of the office's own declaration was given, beyond its consents and the use of defaults."""
+    seats = answers.get("seats")
+    return (any(answers.get(name) for name in OFFICE_SCALARS if name not in ("accept", "start", "use_defaults"))
+            or isinstance(seats, dict) and any(role in OFFICE_SEATS for role in seats)
+            or any(answers.get(name) for name in MAPS))
 
 
 def field_parts(field: str) -> list[str]:
