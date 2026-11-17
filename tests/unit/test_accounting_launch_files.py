@@ -87,3 +87,18 @@ def test_a_young_launch_file_leaves_its_seat_dirty_not_every_seat(tmp_path):
     assert partitions.meta_dirty(reading(True)) == {ALPHA}
     partitions.record_meta(reading(True), {ALPHA})
     assert partitions.meta_dirty(reading(False)) == {ALPHA}, 'certified at a young reading: read again'
+
+
+def test_an_in_place_rewrite_of_an_earlier_line_that_grows_the_registry_reaches_what_it_names(world):
+    """A rewrite under the same file that does not shrink it is no append: the digest of its first old-size bytes
+    changed, so it reaches every record it names now and named then, not only the lines after the old size."""
+    e = world
+    path = registry(e, BETA)
+    path.write_text(line(e.paths[BETA]))
+    assert e.begin()
+    e.finish()  # certified with beta's registry naming beta's own record
+    inode = path.stat().st_ino
+    with path.open('r+') as stream:  # the earlier line rewritten in place, naming alpha's record: a longer file
+        stream.write(line(e.paths[ALPHA]))
+    assert path.stat().st_ino == inode and path.stat().st_size > len(line(e.paths[BETA]))
+    assert e.gate.allowed(e.service) and e.gate.scope == {ALPHA, BETA}, 'the rewritten line reaches alpha too'

@@ -119,6 +119,17 @@ def named_records(path, offset=0):
     return named
 
 
+def prefix_digest(path, size):
+    """The digest of a registry's first ``size`` bytes: an append leaves it as it was, a rewrite does not."""
+    import hashlib
+    try:
+        with open(path, 'rb') as stream:
+            data = stream.read(size)
+    except OSError:
+        return None
+    return hashlib.sha256(data).hexdigest() if len(data) == size else None
+
+
 def seat_metadata(reading, runtime, seats):
     """These seats' own launch metadata in a reading: the files of their trusted folders and their homes'
     conversations.owned. A seat's identity is these files, so the retry that re-reads the seat whole reads them too."""
@@ -183,13 +194,14 @@ class Partitions:
         # Each known seat's own launch files, seat by seat: their stamps at the reading its last whole read began
         # from (None when one was young there), and the records each registry then named.
         self.runtime, self.meta_seen, self.meta_named = None, {}, {}
+        self.meta_prefix = {}  # each registry's first certified-size bytes, as a digest: an append keeps it
 
     def reject(self, *, keep_pending=False):
         self.baseline = None
         self.marks.clear()
         self.certified, self.dirty_seats = {}, set()
         self.post_seen, self.post_names = None, None
-        self.meta_seen, self.meta_named = {}, {}
+        self.meta_seen, self.meta_named, self.meta_prefix = {}, {}, {}
         if not keep_pending:
             self.pending = None
 
@@ -211,6 +223,8 @@ class Partitions:
             for path in files.get(seat, {}):
                 if Path(path).name in REGISTRIES:
                     self.meta_named[path] = named_records(path) or set()
+                    stamp = files[seat][path]
+                    self.meta_prefix[path] = prefix_digest(path, stamp[3]) if stamp is not None else None
 
     def meta_dirty(self, reading):
         """The seats whose own launch files moved since their last whole read, and the owners of every record a moved
@@ -232,8 +246,10 @@ class Partitions:
                 if Path(path).name not in REGISTRIES or seen.get(path) == now.get(path):
                     continue
                 old, new = seen.get(path), now.get(path)
-                if old is not None and new is not None and old[:2] == new[:2] and new[3] >= old[3]:
-                    named = named_records(path, old[3])
+                if (old is not None and new is not None and old[:2] == new[:2] and new[3] >= old[3]
+                        and self.meta_prefix.get(path) is not None
+                        and prefix_digest(path, old[3]) == self.meta_prefix[path]):
+                    named = named_records(path, old[3])  # an append: what follows the old size is all that moved
                 else:
                     named = (named_records(path) or set()) | self.meta_named.get(path, set())
                 if named is None:
@@ -343,7 +359,7 @@ class Partitions:
             for seat in seats:
                 certified[seat] = scopes.get(seat) if scopes else None
         self.certified, self.post_names = certified, pending['post_names']
-        self.meta_seen, self.meta_named = {}, {}
+        self.meta_seen, self.meta_named, self.meta_prefix = {}, {}, {}
         for before, _, seats, _, _ in readings:
             self.record_meta(before, seats)
         if not self.record_scopes(readings[-1][0], pending['scopes'][-1], set(), runtime):
@@ -443,7 +459,7 @@ class Partitions:
             self.reject()
             return
         if scope is None:
-            self.meta_seen, self.meta_named = {}, {}
+            self.meta_seen, self.meta_named, self.meta_prefix = {}, {}, {}
         self.record_meta(before, self.read if scope is None else scope)
         if scope is None:
             self.marks.clear()
