@@ -417,6 +417,17 @@ def diskstats(project):
     return None
 
 
+# What process_io's write figures count, measured on 17 November 2026: Linux adds a child's I/O counters to its
+# parent's /proc/<pid>/io when the parent waits for it, so this process's figures hold every descendant waited by the
+# time it reads them. pytest and its xdist workers are waited before writes_since reads: a child writing 50 MiB with
+# fsync, a grandchild through its waited parent, and two xdist workers writing 4 x 20 MiB each showed in full, and
+# agreed with getrusage(RUSAGE_CHILDREN).ru_oublock (512-byte units) to the byte.
+PROCESS_SCOPE = ('this runner and every descendant waited before the sample (Linux adds a reaped child\'s I/O to its '
+                 'parent): pytest and its workers included; bytes charged to storage when dirtied, so writes to '
+                 'tmpfs or ramfs count nothing; a descendant still running, never waited, or started outside this '
+                 'tree (a service under systemd) is not counted')
+
+
 def process_io():
     try:
         return {key: int(value) for key, value in
@@ -434,6 +445,7 @@ def writes_since(project, before, io_before):
             'device_scope': 'machine-wide device delta, includes other writers; not run-only attribution',
             'interval': 'scratch setup through retirement; final evidence write after this sample is excluded',
             'process_io_before': io_before, 'process_io_after': io_after,
+            'process_scope': PROCESS_SCOPE,
             'process_write_bytes': io_after.get('write_bytes', 0) - io_before.get('write_bytes', 0),
             'process_cancelled_write_bytes': io_after.get('cancelled_write_bytes', 0) - io_before.get('cancelled_write_bytes', 0)}
 
