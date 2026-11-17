@@ -124,3 +124,47 @@ def test_every_other_program_reads_from_the_nearest_frame_as_before():
         rows = plain.split("\n")
         at = max(y for y, row in enumerate(rows) if row.strip())
         assert acts.region(rows, at) == (rows[TOP + len(DIALOGS["hooks"].split("\n")) + 1:], "the dialog's frame")
+
+
+# -- the footer with the weekly allowance, as FOOTER admits it (security's note on the guard) ----------------------
+
+WEEKLY = json.loads((Path(__file__).parents[1] / "fixtures/grok/1.0.77/idle-weekly-478.json").read_text())["lines"]
+
+
+def weekly(percent: str, dialog: str | None = None) -> str:
+    """The measured 478-column idle frame whose footer carries 'Weekly limit left: N% ·', a dialog drawn above it."""
+    # One border dash gives way to each digit more, so the footer keeps the composer's measured width.
+    wider = len(percent) - len("9%")
+    rows = [row.replace("─" * (1 + wider) + " Weekly limit left: 9%", "─ Weekly limit left: " + percent)
+            for row in WEEKLY]
+    top = grok_screen.composer_rows(screen("\n".join(rows) + "\n").text.split("\n"))[0]
+    if dialog is not None:
+        rows[top:top] = ["  " + row for row in dialog.split("\n")] + [""]
+    return "\n".join(rows) + "\n"
+
+
+@pytest.mark.parametrize("percent", ["9%", "12%"])
+def test_the_weekly_allowance_footer_is_the_composers_own_and_a_plain_line_is_taken(ship, percent):
+    svc, seat, live = ship
+    live["screen"] = weekly(percent)
+    shown = screen(live["screen"])
+    assert shown.box is not None and not shown.box.strip() and shown.unknown is None
+    rows = shown.text.split("\n")
+    top, bottom = grok_screen.composer_rows(rows)
+    assert f"Weekly limit left: {percent} · Grok 4.7 (high) · always-approve" in rows[bottom], \
+        "the allowance is on the frame's own bottom row, left out of the words with it"
+    assert acts._kind(rows[bottom]) is not None, "read as words, that footer would refuse every act"
+    assert acts.guard(shown, line="continue", program="grok") is None
+    line = svc.answer(dict(kind="type", seat="worker", line="continue", caller="systems-seat"))
+    assert ("paste", "continue") in live["sent"], line
+
+
+@pytest.mark.parametrize("name", sorted(DIALOGS))
+def test_a_dialog_above_the_weekly_allowance_footer_is_still_refused(ship, name):
+    svc, seat, live = ship
+    live["screen"] = weekly("12%", DIALOGS[name])
+    shown = screen(live["screen"])
+    assert shown.box is not None and not shown.box.strip()
+    assert acts.guard(shown, line="continue", program="grok") is not None
+    line = svc.answer(dict(kind="type", seat="worker", line="continue", caller="systems-seat"))
+    assert "its screen reads as a question" in line and live["sent"] == [], line
