@@ -839,6 +839,38 @@ class _HeldStore:
         return None
 
 
+class HeldReadings(dict):
+    """The service's native record readings, kept across its status collections (held_readings).
+
+    Each entry is reading_scope's own: a reading, its record's fingerprint (presence, inode, size, mtime, device and
+    change time of the record and its write-ahead log) and the time it was read. reading_scope.read reuses one only
+    while that fingerprint is unchanged and the record was older than its timestamp tick, so a changed or replaced
+    record is always read again. Bounded: after each collection only the readings that collection used remain.
+    Held by the service alone, here and not in a reader's module, so no reader stamp moves."""
+
+    def __init__(self):
+        super().__init__()
+        self.used = set()
+
+    def __setitem__(self, key, value):
+        self.used.add(key)
+        super().__setitem__(key, value)
+
+
+@contextmanager
+def held_readings(memo: HeldReadings):
+    """One status collection whose native readings come from, and go back to, the service's memo."""
+    from .harness import reading_scope
+    memo.used = set()
+    token = reading_scope._READING.set(memo)
+    try:
+        yield memo
+    finally:
+        reading_scope._READING.reset(token)
+        for key in [key for key in memo if key not in memo.used]:
+            del memo[key]
+
+
 def _imports_hold(runtime) -> str | None:
     """A link at imports/, named, or None when that directory is absent or real."""
     import os

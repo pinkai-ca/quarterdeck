@@ -493,7 +493,12 @@ class Service:
         mode, door_seats = getattr(self, 'status_request', ('full', frozenset()))
         self.status_request = ('full', frozenset())  # a request is used once; a direct call collects in full
         kept = getattr(self, 'status_kept', None)
-        with pending_delivery.journal_reading(self.journal_reader):
+        if getattr(self, 'status_readings', None) is None:
+            from .watch import HeldReadings
+            self.status_readings = HeldReadings()
+        from .watch import held_readings
+        # An unchanged native record is read once across collections, not again in each (watch.HeldReadings).
+        with held_readings(self.status_readings), pending_delivery.journal_reading(self.journal_reader):
             if mode == 'post' and kept is not None:
                 written, _ = presentation.publish_collected(self.ship, self.tmux, self.status_framework, self.store,
                                                             self.attempts, kept=kept, door_seats=door_seats)
