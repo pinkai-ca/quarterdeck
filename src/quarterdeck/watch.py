@@ -229,19 +229,27 @@ def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
             except sqlite3.OperationalError:  # a book written by an older service: read the records instead
                 counted = ledger.Count()
             else:
-                if (not counted.known and not counted.unmeasured and not isinstance(seat, UnresolvedSeat)
-                        and accounted_history(book, seat)):
-                    return counted
+                if not counted.known and not counted.unmeasured and not isinstance(seat, UnresolvedSeat):
+                    # A zero is proved by the records it was counted from: only those the Ledger has not accounted
+                    # at their current reader are read, for today's turns. A 0 today means no turn of today is in
+                    # the Ledger, so nothing read here is counted twice.
+                    missing = unaccounted_records(book, seat)
+                    if missing is not None:
+                        return counted + _today_in(missing, day)
         if counted.known or counted.unmeasured:
             return counted
     if isinstance(seat, UnresolvedSeat):
         return ledger.Count(0, 1)  # retained totals above are usable; guessing a record reader is not
-    found = ledger.Count()
+    return _today_in(record_owner.records(seat), day)
+
+
+def _today_in(items, day: str) -> ledger.Count:
+    """Today's tokens in these owned records, read whole, in passing: a sweep the record cache must not keep, or it
+    would push out the records the seats are reading now (json_record.passing)."""
     from .harness import json_record
-    # Every record the seat ever owned, read in passing: a sweep the record cache must not keep, or it would push out
-    # the records the seats are reading now (json_record.passing).
     with json_record.passing():
-        owned = [(item, _read_owned(item)) for item in record_owner.records(seat)]
+        owned = [(item, _read_owned(item)) for item in items]
+    found = ledger.Count()
     for item, reading in owned:
         if reading is None:
             found += ledger.Count(0, 1)  # a record that would not read: whatever it holds is not in the figure
@@ -263,15 +271,18 @@ def _read_owned(item):
         return None
 
 
-def accounted_history(book, seat):
-    """A zero is measured too, but only matching successful certificates prove it."""
+def unaccounted_records(book, seat):
+    """The seat's owned records the Ledger has not accounted at their current reader: a record with no reader, a
+    passing one, one whose reader has no key, or one whose accounting certificate does not match. None when that
+    cannot be told (no accounting at all, or evidence that would not read): the caller then reads every record.
+    A zero is measured too, but only matching successful certificates prove it."""
     from .harness import reader_stamp
     try:
         if not book.db.execute('SELECT 1 FROM record_accounting LIMIT 1').fetchone():
-            return False
+            return None
         owned = record_owner.records(seat, publish=False)
         if not owned:
-            return False
+            return []
         try:
             named = (seat.trusted / trusted_files.RECORD).read_text().strip()
             current = Path(named) if named else None
@@ -279,20 +290,23 @@ def accounted_history(book, seat):
             current = None
         prepared = book.provenance.prepare(seat, current, seat.launched())
         reader_keys = reader_stamp.readers()
+        missing = []
         for item in owned:
             if item.reader is None or item.transient:
-                return False
+                missing.append(item)
+                continue
             stamp = ledger.record_stamp(item)
             key = reader_keys.get(item.name)
             if key is None:
-                return False
+                missing.append(item)
+                continue
             launch = book.provenance.owning_launch(prepared[0], item.path)
             evidence = book.accounting_evidence(seat.name, stamp, item.reason, launch, key)
             if not book.accounted(item.path, evidence):
-                return False
-        return True
+                missing.append(item)
+        return missing
     except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
-        return False  # missing/changed/malformed evidence keeps the ordinary reading path
+        return None  # missing/changed/malformed evidence keeps the ordinary reading path
 
 
 def running_settings(seat: Seat, *, screen=None) -> dict[str, str]:
