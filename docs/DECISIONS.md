@@ -356,9 +356,10 @@ renewal retires the token that every other seat on the pool still holds. The
 service therefore also looks at each linked seat's credential twice a second,
 and acts at once when a link has become a file. A watch that keeps failing logs each
 cause once, by its kind and a fixed reason and never its message, and logs again once it
-runs clean. A temporary seat's home is removed only after its reseed: when that reseed is
-skipped because another holds the lock and the home still holds a detached credential,
-the home is kept, the status line names it as a renewal held in a retired seat's home,
+runs clean; a round skipped on the lock is not a clean one. A temporary seat's home is
+removed only after its reseed: when that reseed is skipped because another holds the lock
+and the home of a seat that may give its pool a sign-in (never a jailed one, nor one on an
+endpoint pool) still holds a detached credential, the home is kept, the status line names it as a renewal held in a retired seat's home,
 and the service's next pass reseeds the pool from it and then removes it. A program that writes its refresh through
 the link would race other seats in the pool's own file, so the seats of that
 program hold a copy instead, brought up to the pool's file on the tick. Putting

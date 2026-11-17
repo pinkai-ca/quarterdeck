@@ -273,21 +273,31 @@ HELD = Path("credentials") / "held"
 
 
 def hold_home(ship: Ship, seat: Seat) -> bool:
-    """After a skipped reseed at a temporary seat's teardown: whether its home must be kept, and if so record it."""
-    found = participants(ship, [seat])
-    if not found or not _due_of(ship, found):
-        return False  # nothing detached (a link is still a link), or never a credential's source: nothing to keep
+    """After a skipped reseed at a temporary seat's teardown: whether its home must be kept, and if so record it.
+
+    Only the seat's own participant counts: present only where ``source_refusal`` lets the seat give its pool a
+    sign-in, and never a usage reader, which ``participants`` adds for the pool beside any seat. A refused seat (a
+    jailed one, or one on an endpoint pool) is no source, so nothing in its home is kept for its pool."""
+    own = [found for found in participants(ship, [seat]) if found.name == seat.name and not found.usage_reader]
+    if not own or not _due_of(ship, own):
+        return False  # never a credential's source, or nothing detached (a link is still a link): nothing to keep
     folder = ship.runtime / HELD
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     record = folder / f"{seat.name}.json"
     temporary = record.with_name(f".{record.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps({"seat": seat.name, "pool": found[0].pool}) + "\n")
+    temporary.write_text(json.dumps({"seat": seat.name, "pool": own[0].pool}) + "\n")
     os.replace(temporary, record)
     return True
 
 
 def _held(ship: Ship) -> list[tuple[Path, str | None, str | None]]:
-    """Each record of a held home: its file, and its seat and pool, both None when it cannot be read as one."""
+    """Each record of a held home: its file, and its seat and pool, both None when it cannot be read as one.
+
+    A record is the teardown's word that the seat passed ``source_refusal`` for that pool: written by the unjailed qd
+    that took the seat down, into runtime/credentials, which no jail sees (the runtime is fenced and ``credentials``
+    is not in ``sandbox.RUNTIME_SHOWN``). The retired seat's declaration is gone with its teardown, so its own
+    ``sandbox`` choice cannot be read again here; what can be is judged again: the name is no declared seat's, and
+    the pool is declared and no endpoint pool, whose seats never give a pool a sign-in."""
     folder = ship.runtime / HELD
     found = []
     for record in sorted(folder.glob("*.json")) if folder.is_dir() else []:
@@ -296,7 +306,7 @@ def _held(ship: Ship) -> list[tuple[Path, str | None, str | None]]:
             name, pool = data["seat"], data["pool"]
             # The name is an rmtree's folder under runtime/seats: a seat folder's own rule, never a hidden or path name.
             valid = (isinstance(name, str) and name == record.stem and valid_name(name) and name not in ship.seats
-                     and pool in ship.pools)
+                     and pool in ship.pools and ship.pools[pool].kind != "endpoint")
         except (OSError, ValueError, KeyError, TypeError):
             valid = False
         found.append((record, name, pool) if valid else (record, None, None))

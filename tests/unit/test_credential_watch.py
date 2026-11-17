@@ -13,6 +13,7 @@ import os
 import shutil
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -222,14 +223,17 @@ def held_lock(service):
     return held
 
 
-def retire_temporary_seat(service, source, *, renewed: bool, monkeypatch):
-    """A temporary seat on the pool taken down by its own teardown while another reseed holds the lock."""
+def retire_temporary_seat(service, source, *, renewed: bool, monkeypatch, sandbox: bool | None = None, plant=None):
+    """A temporary seat on the pool taken down by its own teardown while another reseed holds the lock.
+
+    ``sandbox=True`` makes it a jailed seat; ``plant`` is (name, text), a file its jail left in its home."""
     from contextlib import ExitStack
     from dataclasses import replace
     from quarterdeck import seat as seatmod
 
     ship = service.ship
-    spec = shipmod.SeatSpec(RETIRED, "qd-" + RETIRED, "worker", "claude", ("fake",), cwd=ship.workspace)
+    spec = shipmod.SeatSpec(RETIRED, "qd-" + RETIRED, "worker", "claude", ("fake",), cwd=ship.workspace,
+                            sandbox=sandbox)
     treated = replace(ship, sessions={**ship.sessions, spec.session: shipmod.Session(spec.session, spec.session)},
                       seats={**ship.seats, RETIRED: spec})
     seat = seatmod.Seat(treated, spec, service.tmux)
@@ -238,6 +242,8 @@ def retire_temporary_seat(service, source, *, renewed: bool, monkeypatch):
     name.symlink_to(source)
     if renewed:
         renew_by_replacement(name, fake(RENEWED, 8 * 3600))  # its program renewed: the only live token is here
+    if plant is not None:
+        (seat.home / plant[0]).write_text(plant[1])
     monkeypatch.setattr(credential, "DOWN_WAIT", 0.2)
     held = held_lock(service)
     try:
@@ -349,3 +355,123 @@ def test_a_held_record_naming_a_hidden_or_path_like_seat_is_unreadable_named_and
     assert record.is_file() and read_token(source) == "fake-old", "never acted on"
     words = seatmod.leftover_checks(service.ship)
     assert words == [f"{name}: a held renewal's record is unreadable; inspect runtime/{credential.HELD}"], words
+
+
+GROK_OLD, GROK_PLANTED, GROK_READER = "fake-grok-old-1d2e", "fake-grok-planted-9a8b", "fake-grok-reader-4c5d"
+
+
+def grok_grant(token: str, expires_in: float) -> str:
+    expiry = datetime.fromtimestamp(time.time() + expires_in, timezone.utc).isoformat()
+    return json.dumps({"synthetic-grant": {"refresh_token": token, "expires_at": expiry}})
+
+
+@pytest.fixture
+def usage_reader(crew):
+    """The crew beside a pool whose program keeps a private usage home: a usage reader joins every reseed of the ship,
+    and here its copy differs from the pool's, so it is due."""
+    service, source = crew
+    folder = service.ship.folder
+    grok_pool = folder.parent.parent / "grok-pool"
+    grok_pool.mkdir()
+    text = (folder / "ship.toml").read_text()
+    (folder / "ship.toml").write_text(text + f'\n[pools.grok]\nprovider = "xai"\nconfig_dir = "{grok_pool}"\n'
+                                      '\n[pools.served]\nprovider = "local"\nendpoint = "http://127.0.0.1:9/v1"\n')
+    service.ship = shipmod.load(folder)
+    grok_source = credential.pool_file(service.ship.pools["grok"])
+    grok_source.write_text(grok_grant(GROK_OLD, 3600))
+    reader = credential.usage_home(service.ship, service.ship.pools["grok"])
+    reader.mkdir(parents=True)
+    (reader / grok_source.name).write_text(grok_grant(GROK_READER, 1800))  # older than the pool's: due, never installed
+    assert any(p.usage_reader and p.pool == "grok" for p in credential.participants(service.ship, []))
+    return service, source, grok_source
+
+
+def test_a_jailed_temporary_seat_beside_a_due_usage_reader_has_no_home_kept_and_gives_no_pool_a_sign_in(
+        usage_reader, monkeypatch):
+    service, source, grok_source = usage_reader
+    before = grok_source.read_bytes()
+    planted = (grok_source.name, grok_grant(GROK_PLANTED, 8 * 3600))  # newer than the pool's: what a jail would want in
+    seat = retire_temporary_seat(service, source, renewed=False, monkeypatch=monkeypatch, sandbox=True, plant=planted)
+    assert not (service.ship.runtime / credential.HELD / f"{RETIRED}.json").exists(), "no record for a refused seat"
+    assert not seat.folder.exists(), "its home removed as before"
+    service.credentials()  # the next pass: nothing of the jailed seat's is judged for any pool
+    assert grok_source.read_bytes() == before and read_token(source) == "fake-old", "no pool's file changed"
+    log = service.log_path.read_text() if service.log_path.exists() else ""
+    assert GROK_PLANTED not in log and GROK_OLD not in log and GROK_READER not in log
+
+
+def test_a_source_seat_beside_a_due_usage_reader_records_its_own_pool_and_is_settled(usage_reader, monkeypatch):
+    service, source, grok_source = usage_reader
+    seat = retire_temporary_seat(service, source, renewed=True, monkeypatch=monkeypatch)
+    record = service.ship.runtime / credential.HELD / f"{RETIRED}.json"
+    assert json.loads(record.read_text()) == {"seat": RETIRED, "pool": "fake"}, "its own participant's pool"
+    service.credentials()
+    assert read_token(source) == RENEWED and not seat.folder.exists() and not record.exists()
+    log = service.log_path.read_text()
+    assert RENEWED not in log and GROK_READER not in log
+
+
+def test_a_held_record_naming_an_endpoint_pool_is_unreadable_and_never_acted_on(usage_reader):
+    from quarterdeck import seat as seatmod
+    service, source, grok_source = usage_reader
+    folder = service.ship.runtime / "seats" / RETIRED
+    (folder / "home").mkdir(parents=True)
+    held = service.ship.runtime / credential.HELD
+    held.mkdir(parents=True)
+    (held / f"{RETIRED}.json").write_text(json.dumps({"seat": RETIRED, "pool": "served"}) + "\n")
+    service.credentials()
+    assert folder.is_dir() and (held / f"{RETIRED}.json").is_file()
+    assert seatmod.leftover_checks(service.ship) == [
+        f"{RETIRED}: a held renewal's record is unreadable; inspect runtime/{credential.HELD}"]
+
+
+def test_the_held_records_folder_is_one_no_jail_sees():
+    assert not any(str(credential.HELD).startswith(name) for name in sandbox.RUNTIME_SHOWN)
+
+
+def test_a_round_skipped_on_the_lock_is_not_a_clean_round(crew, monkeypatch):
+    import errno
+    service, source = crew
+    service.credentials()
+    renew_by_replacement(service.ship.runtime / "seats" / "desk" / "home" / source.name, fake(SENTINEL, 8 * 3600))
+    real = credential.reseed
+    calls = []
+    phase = {"now": "fail"}
+
+    def scripted(*args, **kwargs):
+        calls.append(phase["now"])
+        if phase["now"] == "fail":
+            raise OSError(errno.EACCES, "denied")
+        if phase["now"] == "skip":
+            return [f"{credential.SKIPPED} for 2 s; the next round retries"]
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(credential, "reseed", scripted)
+    monkeypatch.setattr(credential, "WATCH_SECONDS", 0.002)
+    stop, thread = watching(service)
+
+    def ticks(name, count):
+        deadline = time.monotonic() + 30
+        while calls.count(name) < count:
+            assert time.monotonic() < deadline, calls.count(name)
+            time.sleep(0.01)
+
+    def cleared():
+        text = service.log_path.read_text() if service.log_path.exists() else ""
+        return [e for e in map(json.loads, text.splitlines()) if e["event"] == "credential-watch-cleared"]
+
+    try:
+        ticks("fail", 10)
+        phase["now"] = "skip"
+        ticks("skip", 20)
+        assert cleared() == [], "a skipped round did no work: the failing set stands and no clearing is logged"
+        phase["now"] = "real"
+        deadline = time.monotonic() + 10
+        while not cleared():
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert len(cleared()) == 1 and cleared()[0]["causes"] == ["PermissionError EACCES"]
+    assert SENTINEL not in service.log_path.read_text()

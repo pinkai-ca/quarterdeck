@@ -2152,7 +2152,7 @@ class Service:
                     failing.add(cause)
                     self.log("error", step="credential-watch", cause=cause)
                 continue
-            if failing:
+            if failing and not skipped:  # a round skipped on the lock did no work: it is not a clean round
                 self.log("credential-watch-cleared", causes=sorted(failing))
                 failing = set()
 
