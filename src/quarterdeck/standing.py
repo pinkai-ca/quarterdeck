@@ -109,16 +109,17 @@ def brief(ship: Ship, seat: SeatSpec) -> Brief:
 def hand_seat_section(ship: Ship, seat: SeatSpec) -> str:
     """The seat lines a hand uses: who it is, its qd command, and how to report, ask and ack."""
     qd = qd_command(ship.folder)
+    folder = ship.cwd_of(seat)  # the hand's own folder: each order's report and question are files of their own there
     return "\n".join([
         "# Your seat",
         "",
-        f"You are seat `{seat.name}`, a hand, on the ship `{ship.name}`.",
+        f"You are seat `{seat.name}`, a hand, on the ship `{ship.name}`. Your own folder is `{folder}`.",
         "",
         f"- Your qd command is `{qd}`. Use this absolute command for every `qd` you run.",
-        f"- Report on your order once, from a file: `{qd} post report --re <id> --body-file $HOME/report.md`. "
-        "Only your report closes your order.",
-        f"- Ask once, from a file: `{qd} post question --re <id> --body-file $HOME/question.md`; then stop until "
-        "the answer arrives in your pane.",
+        f"- Report on your order once, from this order's own file: `{qd} post report --re <id> --body-file "
+        f"{folder}/report-<id>.md`. Only your report closes your order.",
+        f"- Ask once, from this order's own file: `{qd} post question --re <id> --body-file {folder}/question-<id>.md`; "
+        "then stop until the answer arrives in your pane.",
         f"- Say you have started, if your order asks you to: `{qd} post ack --re <id>`; an ack never closes.",
         "- A message that reaches you twice with the same id is one message: read it once and act on it once.",
     ])

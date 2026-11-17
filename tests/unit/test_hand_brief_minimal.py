@@ -83,6 +83,32 @@ def test_a_hand_card_keeps_the_rules_a_hand_must_keep():
         assert rule in card, rule
 
 
+
+def test_a_hands_card_names_one_report_and_one_question_file_per_order_in_its_own_folder():
+    """A hand's home outlives its fresh starts, so a report left there by one order could be posted for the next: each
+    order's report and question are files of their own, named by its id, in the hand's own folder."""
+    card = (standing.FRAMEWORK_DIR / 'roles' / 'hand.md').read_text()
+    lines = card.splitlines()
+    [question] = [line for line in lines if 'qd post question --re <id>' in line]
+    [report] = [line for line in lines if 'qd post report --re <id>' in line]
+    assert '`question-<id>.md`' in question and '--body-file question-<id>.md' in question and 'own folder' in question
+    assert '`report-<id>.md`' in report and '--body-file report-<id>.md' in report and 'own folder' in report
+    assert 'never a file an earlier order left' in report
+    for gone in ('$HOME/report.md', '$HOME/question.md', 'your home for the question', 'own folder and your home'):
+        assert not [line for line in lines if gone in line], gone
+    assert 'Read or write outside your own folder (work/hands/<name>).' in card, 'the exception for the home is gone'
+    assert '- Work only in your own folder; read and write nothing outside your folder.' in card
+
+
+@pytest.mark.parametrize('name', ['helper-pi', 'helper-oc'])
+def test_a_hands_seat_lines_name_the_same_per_order_files_in_its_own_folder(ship, name):
+    """The brief's own seat lines agree with the card: never the home's report or question."""
+    text = standing.brief(ship, ship.seat(name)).text
+    folder = ship.cwd_of(ship.seat(name))
+    assert f'--body-file {folder}/report-<id>.md' in text and f'--body-file {folder}/question-<id>.md' in text
+    assert '$HOME/report.md' not in text and '$HOME/question.md' not in text
+
+
 # law: context-is-cache -- a hand's fresh start carries its brief and the order in hand, whole, and nothing else
 def test_a_hands_fresh_start_carries_the_order_in_hand_whole_and_nothing_else(tmp_path, monkeypatch):
     monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=30))
