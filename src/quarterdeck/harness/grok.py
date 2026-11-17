@@ -336,7 +336,7 @@ class GrokHarness(Harness):
     answers_questions = True  # its first-run training question, answered opt out by the ship's orders
     answer_seconds = 5.0  # measured: the training question was gone within one second of the press
     fresh_versions = frozenset({"1.0.77", "1.0.70"})  # M1 to M3 and M5: the composer after the press, before any turn
-    # Measured 13 November on 1.0.77 (worker5): a home seeded with the acknowledgement starts with no
+    # Measured 13 November on 1.0.77: a home seeded with the acknowledgement starts with no
     # question, straight to that same fresh composer, frame for frame. 1.0.70 was not measured seeded.
     seeded_versions = frozenset({"1.0.77"})
 
