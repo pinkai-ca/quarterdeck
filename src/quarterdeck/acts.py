@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import trusted_files
-from .ship import Ship
+from .ship import Ship, ShipError
 from .tmux import TmuxError
 
 SCREEN_LINES = 60  # the screen as shown, bounded: its last lines, as many characters at most
@@ -521,7 +521,8 @@ def set_aside(service, seat, name: str, caller: str | None) -> str:
             digest = hashlib.sha256(raw).hexdigest()
             message = data.get("message") if data else None
             act = dict(act=uuid.uuid4().hex[:12], verb="set-aside", at=_now(), caller=caller, seat=seat.name,
-                       journal=name, size=len(raw), sha256=digest, message=message, outcome="setting aside")
+                       journal=name, size=len(raw), sha256=digest, message=message, outcome="setting aside",
+                       **_marking(service, seat, message))
             try:
                 write(seat, act)
             except (OSError, seat_files.LinkRefused) as error:
@@ -551,6 +552,13 @@ def set_aside(service, seat, name: str, caller: str | None) -> str:
              + ("could not be read" if data is None else f"rests at {data['phase']!r}") + f"; {which}")
     service.log("set-aside", seat=seat.name, journal=name, sha256=digest, target=str(target.relative_to(runtime)),
                 message=message, caller=caller)
+    if act["mark"]:
+        try:
+            told = _settle_aside(service, seat, act)
+            proof += f"; marked {MARK_RESULT}" + (f", its sender told once ({told})" if told else
+                                                  ", its sender is no seat and is not told")
+        except (ShipError, OSError, ValueError) as error:  # the move stands; each pass completes the rest
+            proof += f"; its mark and notice wait for the next pass ({type(error).__name__})"
     return _aside_finish(seat, act, "set aside", proof)
 
 
@@ -561,3 +569,108 @@ def _aside_finish(seat, act: dict, outcome: str, detail: str) -> str:
     except (OSError, seat_files.LinkRefused) as error:
         kept = f"; its outcome could not be recorded ({error})"
     return f"{seat.name}: {outcome}: {detail} · recorded in {path(seat).relative_to(seat.ship.runtime)}{kept}"
+
+
+# -- the message a set-aside journal held: marked, and its sender told once (law: nothing-waits-silently) ----------
+
+# The result that marks it: one post.HELD names, so the door never types it again. Not one post.UNSETTLED names,
+# whose count on the status line says "after an error": the order allows no status entry beyond the notice and
+# the act's own record.
+MARK_RESULT = "abandoned"
+MARK_DETAIL = "set aside with its journal by a systems seat; never typed again"
+
+
+def _acts(seat) -> dict[str, dict]:
+    """Every act of the seat, its lines merged by id; unreadable lines are skipped, as last() skips them."""
+    try:
+        rows = path(seat).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return {}
+    found: dict[str, dict] = {}
+    for row in rows:
+        try:
+            entry = json.loads(row)
+            key = entry["act"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        found.setdefault(key, {}).update(entry)
+    return found
+
+
+def _marking(service, seat, message: str | None) -> dict:
+    """What the act will do for its message, decided and recorded before the journal moves: mark it, and the one
+    notice to its sender, by a fixed id prepared now, or the one an earlier act of the same message prepared."""
+    from . import post
+    from . import refusal
+    if not message or service.attempts.latest().get(message) not in post.HELD:
+        return dict(mark=False, notice=None)  # never typed, so the door may deliver it; or no message is known
+    earlier = next((a["notice"] for a in _acts(seat).values()
+                    if a.get("verb") == "set-aside" and a.get("message") == message and a.get("notice")), None)
+    if earlier is not None:
+        return dict(mark=True, notice=earlier)
+    try:
+        found = service.store.get(message)
+    except ShipError:
+        return dict(mark=False, notice=None)  # not in the post: held by its attempt all the same, named in the act
+    if not refusal.sender_seat(service.ship, found.sender):
+        return dict(mark=True, notice=None)
+    intent = service.store.prepare("report", post.SHIP, found.sender, "", re=found.id)
+    return dict(mark=True, notice=dict(id=intent.id, at=intent.at.isoformat(), to=found.sender))
+
+
+def _notice(service, seat, act: dict, message) -> "post.Message":
+    """The notice, the same words at every stage, so a republication matches the published one."""
+    from . import post
+    from datetime import datetime
+    body = (f"Your {message.kind} {message.short} to {seat.name} could not be settled: a systems seat set its stuck "
+            f"delivery journal aside. It may not have reached {seat.name}. The ship will not type it to {seat.name} "
+            f"again: if it matters, send it again, or close it.")
+    notice = act["notice"]
+    sender, to = post.SHIP, notice["to"]
+    from .fleet_post import wire_parties  # a seat of another ship is told as the fleet post carries it
+    sender, to = wire_parties(service.ship.runtime, sender, to)
+    return post.Message(notice["id"], "report", sender, to, datetime.fromisoformat(notice["at"]), body,
+                        re=message.id)
+
+
+def _settle_aside(service, seat, act: dict) -> str | None:
+    """Mark the act's message, once, and publish its one notice; both found done are left as they are. Returns the
+    notice's id, or None where its sender is no seat."""
+    from . import post
+    from . import refusal
+    message = service.store.get(act["message"])
+    if not any(a.seat == seat.name and (a.detail or "").startswith(MARK_DETAIL)
+               for a in service.attempts.for_message(message.id)):
+        attempt = service.attempts.open(message, seat.name, None, None, None)
+        service.attempts.close(attempt, MARK_RESULT, f"{MARK_DETAIL} (act {act['act']})")
+    if not act.get("notice"):
+        return None
+    notice = _notice(service, seat, act, message)
+    refusal._publish(service.store, notice)
+    return notice.id
+
+
+def settle_set_asides(service) -> None:
+    """Each pass: the mark and the notice of every journal a set-aside act moved, completed where a cut left them
+    (the act records both before the move). A seat's failure is logged once while it stands."""
+    logged = service.__dict__.setdefault("set_aside_errors", {})
+    for seat in service.resolved_seats():
+        if seat.session.human:
+            continue
+        try:
+            for act in _acts(seat).values():
+                if act.get("verb") != "set-aside" or not act.get("mark"):
+                    continue
+                moved = act.get("outcome") == "set aside" or (
+                    act.get("outcome") == "setting aside"
+                    and (service.ship.runtime / "evidence" / ASIDE / seat.name / f"{act['act']}-{act['journal']}").is_file()
+                    and not (service.ship.runtime / "post" / "pending" / seat.name / act["journal"]).exists())
+                if moved:
+                    _settle_aside(service, seat, act)
+        except (ShipError, OSError, ValueError, KeyError, TypeError) as error:
+            text = f"{type(error).__name__}: {error}"
+            if logged.get(seat.name) != text:
+                logged[seat.name] = text
+                service.log("error", step="set-asides", seat=seat.name, error=text)
+            continue
+        logged.pop(seat.name, None)

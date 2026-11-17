@@ -307,7 +307,7 @@ class Service:
         # under its own name: the drain and the status work between duties too, so neither reads as the duty before.
         self.loop_stamp('drain')
         self._drain_between_duties()
-        for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.deliveries, self.follow, self.requests, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.set_asides, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.deliveries, self.follow, self.requests, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.retire_hand_transcripts, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.loop_stamp(step.__name__)  # a slow duty reads as busy, then stuck, never as ok; the beat thread
             self.heartbeat()  # proves only that the process is alive, never that this loop is moving
@@ -782,6 +782,11 @@ class Service:
         """A crew seat whose provider refused its conversation starts fresh, once, without the refused message."""
         from . import refusal
         refusal.run(self)
+
+    def set_asides(self) -> None:
+        """A message whose journal a systems seat set aside: marked and its sender told once, a cut completed."""
+        from . import acts
+        acts.settle_set_asides(self)
 
     def jailed_watches(self) -> None:
         """A jailed watch's attempts, opened and closed on its behalf; each seat alone, before the deliveries."""
