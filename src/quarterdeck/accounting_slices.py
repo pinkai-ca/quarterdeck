@@ -305,6 +305,7 @@ class Driver:
         self.progress = 0
         self.reset_child = False
         self.changed = False
+        self.announce = True  # the first valid full job after the start, or after a catch-up begins, says caught up
         self.retry_seats = set()
         self.scope = None
         self.watched = set()
@@ -542,8 +543,12 @@ class Driver:
                 service.log('accounting-job-end', job=self.job, seconds=time.monotonic() - self.started,
                             records=len(self.records), counts=dict(self.counts),
                             retry=sorted(self.invalid), pending=service.ledger.catching_up())
-                if self.scope is None and self.changed and not self.invalid:
-                    service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
+                if (self.scope is None and not self.invalid and self.announce
+                        and not service.ledger.catching_up()):
+                    # Caught up when the ledger is, whether or not this job wrote: a full job that found everything
+                    # current says so too. Once, until a catch-up begins anew.
+                    service.log('accounting-caught-up', seconds=time.monotonic() - self.started, wrote=self.changed)
+                    self.announce = False
                 self.gate.finish(service, self.step_changes, full=self.scope is None and not self.invalid
                                  and not service.ledger.catching_up(),
                                  committed=not self.invalid and not service.ledger.catching_up(),
@@ -597,6 +602,8 @@ class Driver:
                 self.active = True
                 self.started = None
                 self.changed = False
+                if service.ledger.catching_up():
+                    self.announce = True  # a catch-up begun anew: an epoch change, or a failure's forced restart
                 self.invalid = set()
                 self.continuing = continuation
                 self.scope = (set(self.retry_seats) if continuation is not None else
