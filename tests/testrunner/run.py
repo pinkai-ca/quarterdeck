@@ -24,7 +24,7 @@ import sys
 import time
 
 from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, services, sessions, socket_paths, socket_roots, usersite
-from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, Slot, git_environment, identity, reserve_run_id, write_json
+from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, Slot, git_environment, identity, remove_empty_run, reserve_run_id, write_json
 
 GRACE = 15.0
 SETUP_SECONDS = 600.0  # setup's own bound, the slot wait not counted; --timeout bounds pytest alone
@@ -266,6 +266,7 @@ class Runner:
             raise Refused(str(error)) from error
         root = slot = None
         self.run_guard = None
+        begun = False  # until the run's work begins, a refusal or timeout removes its results folder if still empty
         self.bound(SETUP_SECONDS, f'time limit of setup, {SETUP_SECONDS:g} s')
         try:
             with self.time_limit():
@@ -314,14 +315,17 @@ class Runner:
                 self.run_guard = RunGuard(root, self.run, create=True)
                 self.run_guard.acquire()
                 if change:
-                    clean.register(root, target, self.run)  # a refusal here leaves nothing made
+                    clean.register(root, target, self.run)
             self.storage = (storage.prepare(root, self.run, memory_required=True) if self.ci_layout
                             else storage.prepare(root, self.run))
+            begun = True
             return self.within(root, target, targets, change)
         except Stop as stopped:
             print(f'testrun: timeout before test setup: {stopped}; no test result claimed', file=sys.stderr)
             return EXIT['timeout']
         finally:
+            if not begun and root is not None and self.run is not None:
+                remove_empty_run(root, self.run, self.run_guard)
             if self.run_guard is not None:
                 self.run_guard.release()
             if slot is not None:

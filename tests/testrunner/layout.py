@@ -335,12 +335,32 @@ class Slot:
             self.fds, self.selected, self.held = [], None, []
 
 
+def _flock_inodes() -> set[int]:
+    """The inodes that hold a flock now, from /proc/locks; a waiter's line ('->') holds nothing. Raises OSError."""
+    held = set()
+    with open('/proc/locks', encoding='ascii', errors='replace') as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) >= 6 and fields[1] == 'FLOCK':
+                try:
+                    held.add(int(fields[5].rsplit(':', 1)[1]))
+                except (IndexError, ValueError):
+                    continue
+    return held
+
+
 def run_holds_slot(root: Root, run: str) -> bool:
-    """An older tool may not hold the new result-directory guard yet."""
+    """An older tool may not hold the new result-directory guard yet.
+
+    Asked without taking any slot's lock, so a run starting at that very moment is never refused because of the
+    question: a slot's note is read first, and only a note naming this run is asked about, by its inode in
+    /proc/locks (Linux, as the rest of this tool's process evidence). Where /proc/locks cannot be read, that one slot
+    is probed by its lock as before; a free slot whose note still names this run is one a crashed run left, and the
+    probe holds it for no longer than a non-blocking lock and its release."""
     for index in range(SLOT_COUNT):
         name = SLOT if index == 0 else f'slot-{index + 1}.lock'
         try:
-            fd = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root.fd)
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root.fd)
         except FileNotFoundError:
             continue
         try:
@@ -348,14 +368,27 @@ def run_holds_slot(root: Root, run: str) -> bool:
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
                 raise Refused(f'{root.path / name}: not this user\'s regular slot file')
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                try:
-                    data = json.loads(os.pread(fd, 4096, 0))
-                except ValueError:
-                    continue
-                if isinstance(data, dict) and data.get('verb') == 'run' and data.get('run') == run:
+                data = json.loads(os.pread(fd, 4096, 0))
+            except ValueError:
+                continue  # empty (a free slot, or one being described) or partly written: names no run
+            if not (isinstance(data, dict) and data.get('verb') == 'run' and data.get('run') == run):
+                continue
+            try:
+                if info.st_ino in _flock_inodes():
                     return True
+                continue
+            except OSError:
+                pass
+            probe = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root.fd)
+            try:
+                if os.fstat(probe).st_ino != info.st_ino:
+                    continue  # replaced while read: not the slot whose note was read
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return True
+            finally:
+                os.close(probe)
         finally:
             os.close(fd)
     return False
@@ -383,6 +416,31 @@ class RunGuard:
 
     def release(self) -> None:
         os.close(self.fd)
+
+
+def remove_empty_run(root: Root, run: str, guard: 'RunGuard | None') -> bool:
+    """A run refused or timed out before its work began leaves no empty results folder: removed only while it is empty
+    (rmdir refuses anything else) and, where the run holds its guard, still the very folder the guard holds."""
+    try:
+        parent = root.child(RESULTS, create=False)
+    except (FileNotFoundError, Refused):
+        return False
+    try:
+        if guard is not None:
+            try:
+                if identity(os.stat(run, dir_fd=parent, follow_symlinks=False)) != identity(os.fstat(guard.fd)):
+                    return False
+            except FileNotFoundError:
+                return False
+        try:
+            os.rmdir(run, dir_fd=parent)
+        except OSError as error:
+            if error.errno in (errno.ENOTEMPTY, errno.EEXIST, errno.ENOENT, errno.ENOTDIR):
+                return False
+            raise
+        return True
+    finally:
+        os.close(parent)
 
 
 def run_active(root: Root, run: str) -> bool:

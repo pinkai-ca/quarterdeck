@@ -182,7 +182,8 @@ def pending(root, *, errors=None):
         try:
             data = record(root, name)
         except (Refused, OSError) as error:
-            message = f'{root.path / RESULTS / name / RECORD}: invalid or unreadable storage record ({error}); retained'
+            message = (f'{root.path / RESULTS / name / RECORD}: invalid or unreadable storage record ({error}); '
+                       + CLEAR.format(run=name))
             if errors is not None:
                 errors[name] = message
             else:
@@ -192,6 +193,13 @@ def pending(root, *, errors=None):
             if data is not None:
                 found.append(name)
     return sorted(found)
+
+
+# A record no reader can trust may still promise memory a run is using, so every new run is refused while it stands
+# (failing closed, never promising memory twice); nothing clears it by itself, and this says how.
+CLEAR = ('every new run is refused while it stands, since it may promise memory still in use; to clear it, read it, '
+         'make sure run {run} is not running (no process of it is left), then move that one file out of .testruns; '
+         'no command removes it')
 
 
 def disk_fallback(root, run, reason):
@@ -227,7 +235,7 @@ def reserved(root, device):
         if data['identity'][0] == device:
             bound = data.get('bound_bytes', BOUND)  # older reservations used the fixed bound
             if type(bound) is not int or bound <= 0:
-                raise Refused(f'{root.path / RESULTS / run / RECORD}: invalid reservation bound; held')
+                raise Refused(f'{root.path / RESULTS / run / RECORD}: invalid reservation bound; ' + CLEAR.format(run=run))
             total += bound
     return total
 
