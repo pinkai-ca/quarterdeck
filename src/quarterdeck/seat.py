@@ -41,6 +41,7 @@ from .tmux import Pane, Tmux, check_private_folder
 PROCESS_END_SECONDS = 10.0  # how long down watches a closed pane's program end before it leaves the rest to the tick
 RELAUNCH_END_SECONDS = 60.0  # a relaunch (restart, fresh, a pool move) watches a program end this long in all
 RETIRING = trusted_files.RETIRING
+TEMPORARY = 'temporary.json'  # in a temporary seat's trusted folder: its raising, for qd down if it is left behind
 REFUSED_RELAUNCH = trusted_files.REFUSED_RELAUNCH  # a relaunch refused while the old program was ending, until up succeeds
 
 
@@ -1602,6 +1603,9 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
             raise ShipError(f"{seat.name}: temporary seat/session/history already exists; retry {purpose}")
         seat.folder.mkdir(parents=True, exist_ok=False)
         trusted_files.make(ship.runtime, seat.name)
+        # Written before anything of it runs: a seat this run leaves behind is named, and qd down takes it, by this.
+        durable.replace_file(seat.trusted / TEMPORARY, json.dumps(
+            {"purpose": purpose, "harness": spec.harness, "pool": spec.pools[0], "human": human}) + "\n")
         session_id = None
         # Cleanup is registered before publication can fail, and runs before the
         # outer lease retires. The transient lock remains held around both.
@@ -1626,7 +1630,10 @@ def _teardown(cleanup: ExitStack, treated: Ship, seat: Seat, tmux: Tmux, orders:
 
     def retire() -> None:
         nonlocal retired, launched
-        launched = seat.launched()  # the program to prove ended before the home goes
+        try:
+            launched = seat.launched()  # the program to prove ended before the home goes
+        except (LaunchUnreadable, OSError):
+            launched = None  # its launch.json stands, so the home stays; the status line names the seat
         pending.abandon(treated.runtime, seat.name, f"{purpose} ended; submission unconfirmed and never resent")
         retired = True
 
@@ -1678,73 +1685,128 @@ def _teardown(cleanup: ExitStack, treated: Ship, seat: Seat, tmux: Tmux, orders:
 TEARDOWN_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 
-# -- a check's seat that outlived its check ----------------------------------------------------
+# -- a temporary seat that outlived its run --------------------------------------------------
 
+# A check's seat raised before temporary seats recorded their raising: read from its name alone.
 CHECK_SEAT = re.compile(r"check-(?:wake-)?[a-z][a-z0-9]*(?:-[a-z0-9]+)*-[0-9a-f]{4}")
+UNREADABLE = "unreadable"
 
 
-def _leftover(ship: Ship, name: str) -> dict | None:
-    """The launch a check's seat left, when no running check owns the seat; None otherwise."""
-    if name in ship.seats or not CHECK_SEAT.fullmatch(name):
+def _temporary(ship: Ship, name: str) -> dict | str | None:
+    """What temporary_seat recorded of a seat it raised whose home is still here: purpose, harness, pool and human;
+    UNREADABLE when that record cannot be used; None when the name is no temporary seat's home."""
+    folder = ship.runtime / "seats" / name
+    if name in ship.seats or not shipmod.valid_name(name) or not folder.is_dir():
+        return None
+    try:
+        record = json.loads(trusted_files.path(ship.runtime, name, TEMPORARY).read_text())
+    except FileNotFoundError:
+        if not CHECK_SEAT.fullmatch(name):
+            return None
+        return {"purpose": "qd check", "harness": name.removeprefix("check-").removeprefix("wake-").rsplit("-", 1)[0],
+                "pool": None, "human": name.startswith("check-wake-")}
+    except (OSError, ValueError):
+        return UNREADABLE
+    valid = (isinstance(record, dict) and isinstance(record.get("purpose"), str) and record["purpose"].isprintable()
+             and record.get("harness") in harnesses.NAMES and isinstance(record.get("pool"), str)
+             and isinstance(record.get("human"), bool))
+    return record if valid else UNREADABLE
+
+
+def _held_for_renewal(ship: Ship, name: str) -> bool:
+    """A home its teardown kept for a renewal: the service's pass settles it, and the status line names it so."""
+    from . import credential
+    return (ship.runtime / credential.HELD / f"{name}.json").exists()
+
+
+def _unreadable_launch(name: str) -> str:
+    return (f"its launch is unreadable: end its program, move runtime/trusted/{name}/{trusted_files.LAUNCH} "
+            f"aside, then qd down {name}")
+
+
+def _leftover(ship: Ship, name: str) -> tuple[dict | str, dict | None] | None:
+    """A temporary seat's record and the launch it left, when no live run owns the seat; None otherwise."""
+    record = _temporary(ship, name)
+    if record is None or _held_for_renewal(ship, name):
         return None
     try:
         launch = json.loads(trusted_files.path(ship.runtime, name, trusted_files.LAUNCH).read_text())
     except FileNotFoundError:
-        return None  # no launch: nothing of it can be running
+        launch = None  # its program was proved ended: only its home is left
     except (OSError, ValueError):
         launch = {}
     with pending.transient_lock(ship.runtime, name) as unowned:
         if not unowned:
-            return None  # its check is running and owns it; it takes its own seat down
-    return launch if isinstance(launch, dict) else {}
+            return None  # its run is live and owns it; it takes its own seat down
+    return record, (launch if isinstance(launch, dict) or launch is None else {})
 
 
-def leftover_checks(ship: Ship) -> list[str]:
-    """Plain words for every check's seat that outlived its check, for the status line, until it is gone; and for
+def leftover_seats(ship: Ship) -> list[str]:
+    """Plain words for every temporary seat that outlived its run, for the status line, until it is gone; and for
     every retired seat's home kept for a renewal its reseed did not take, until the service's pass settles it."""
     from . import credential
     folder = ship.runtime / "seats"
     words = credential.held_words(ship)
-    for path in sorted(folder.glob("check-*")) if folder.is_dir() else []:
-        launch = _leftover(ship, path.name)
-        if launch is None:
+    for path in sorted(folder.iterdir()) if folder.is_dir() else []:
+        found = _leftover(ship, path.name)
+        if found is None:
             continue
-        pid, start = launch.get("pid"), launch.get("start")
-        state = ("its program still runs" if isinstance(pid, int) and process_alive(pid, start)
-                 else "its program has ended" if isinstance(pid, int) else "its launch is unreadable")
-        words.append(f"{path.name} outlived its check: {state}; qd down {path.name}")  # law: nothing-waits-silently
+        record, launch = found
+        if record == UNREADABLE:
+            words.append(f"{path.name}: a temporary seat's record is unreadable; inspect "
+                         f"runtime/trusted/{path.name}/{TEMPORARY}")  # law: nothing-waits-silently
+            continue
+        pid, start = (launch or {}).get("pid"), (launch or {}).get("start")
+        pool = (launch or {}).get("pool") or record["pool"]
+        if launch is not None and not isinstance(pid, int):
+            state = _unreadable_launch(path.name)
+        elif pool is not None and pool not in ship.pools:
+            state = f"its pool {pool} is not declared: declare it again, then qd down {path.name}"
+        else:
+            running = launch is not None and process_alive(pid, start)
+            state = f"its program {'still runs' if running else 'has ended'}; qd down {path.name}"
+        words.append(f"{path.name} outlived its {record['purpose']}: {state}")  # law: nothing-waits-silently
     return words
 
 
-def down_leftover_check(ship: Ship, tmux: Tmux, name: str) -> str:
-    """qd down check-<program>-<run>: take down a check's seat that its check left, by the check's own teardown."""
+def is_leftover(ship: Ship, name: str) -> bool:
+    """qd down takes this name as a temporary seat left behind (refused while its run is live), not a declared seat."""
+    return _temporary(ship, name) is not None
+
+
+def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
+    """qd down <temporary seat>: take down a seat its run left, by that run's own teardown."""
     folder = ship.runtime / "seats" / name
-    if not CHECK_SEAT.fullmatch(name) or name in ship.seats or not folder.is_dir():
-        raise ShipError(f"{name}: no seat of this ship, and no check's seat left behind by that name")
+    record = _temporary(ship, name)
+    if record is None:
+        raise ShipError(f"{name}: no seat of this ship, and no temporary seat left behind by that name")
+    if record == UNREADABLE:
+        raise ShipError(f"{name}: its record is unreadable; inspect runtime/trusted/{name}/{TEMPORARY}")
+    if _held_for_renewal(ship, name):
+        raise ShipError(f"{name}: its home is held for a renewal; the service reseeds its pool from it, then removes it")
     with pending.transient_lock(ship.runtime, name) as owned:
         if not owned:
-            raise ShipError(f"{name}: its check is still running and takes its own seat down; nothing done")
+            raise ShipError(f"{name}: its {record['purpose']} is still running and takes its own seat down; nothing done")
         try:
             launch = json.loads(trusted_files.path(ship.runtime, name, trusted_files.LAUNCH).read_text())
         except FileNotFoundError:
             launch = None
-        except (OSError, ValueError) as error:
-            raise ShipError(f"{name}: its launch is unreadable ({error}); retained for inspection") from None
-        harness_name = (launch or {}).get("harness") or name.removeprefix("check-").removeprefix("wake-").rsplit("-", 1)[0]
-        pool = (launch or {}).get("pool") or next(
+        except (OSError, ValueError):
+            raise ShipError(f"{name}: {_unreadable_launch(name)}") from None
+        harness_name = (launch or {}).get("harness") or record["harness"]
+        pool = (launch or {}).get("pool") or record["pool"] or next(
             (p.name for p in ship.pools.values() if harnesses.get(harness_name).accepts(p) is None), None)
         if pool not in ship.pools:
-            raise ShipError(f"{name}: its pool {pool!r} is not declared; retained for inspection")
-        human = name.startswith("check-wake-")
+            raise ShipError(f"{name}: its pool {pool!r} is not declared: declare it again, then qd down {name}")
         title = "qd-" + name
         spec = SeatSpec(name, title, "worker", harness_name, (pool,), cwd=ship.workspace)
-        session = shipmod.Session(title, title, human=human)
+        session = shipmod.Session(title, title, human=record["human"])
         treated = replace(ship, sessions={**ship.sessions, title: session}, seats={**ship.seats, name: spec})
         seat = Seat(treated, spec, tmux)
         orders = post.Store(ship.runtime).open_for(name)
         downed: list[str] = []
         with ExitStack() as cleanup:
-            _teardown(cleanup, treated, seat, tmux, orders, "qd down of a check's seat left behind",
+            _teardown(cleanup, treated, seat, tmux, orders, "qd down of a temporary seat left behind",
                       lambda: tmux.kill_session(title) if tmux.has_session(title) else None,
                       down=lambda: downed.append(seat.down()))
         _, marker = pending._check_paths(ship.runtime, name)

@@ -41,8 +41,8 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += getattr(facts, 'brief_git', ())
     # A stray sandbox the sweep ended keeps its seat, its pid and its time for the day.
     parts += getattr(facts, 'jail_sweeps', ())
-    # A check's seat that outlived its check keeps its name and its cure until it is gone.
-    parts += getattr(facts, 'leftover_checks', ())
+    # A temporary seat that outlived its run keeps its name and its cure until it is gone.
+    parts += getattr(facts, 'leftover_seats', ())
     # A sign-in failure must still name its seat and failed cure when categories overflow.
     parts += getattr(facts, 'sign_in_failures', ())
     # A short pane's delivery obstruction must retain its seat and remedy on overflow.

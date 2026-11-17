@@ -113,7 +113,7 @@ def no_seat_left(ship, server):
     assert server.sessions == {} and server.panes == {}
     assert not list((ship.runtime / "seats").glob("check-*")), "no check seat's home is left"
     assert all(program.poll() is not None for program, _ in server.programs.values()), "every program ended"
-    assert seatmod.leftover_checks(ship) == []
+    assert seatmod.leftover_seats(ship) == []
 
 
 STEPS = ["launch", "door", "paste", "task", "turn read", "model"]
@@ -190,16 +190,16 @@ def leaked(ship, server, *, stubborn=False):
 def test_a_seat_a_killed_check_left_is_named_in_the_status_line_and_qd_down_removes_it(world, monkeypatch):
     ship, server = world
     name, program = leaked(ship, server)
-    words = seatmod.leftover_checks(ship)
-    assert words == [f"{name} outlived its check: its program still runs; qd down {name}"]
+    words = seatmod.leftover_seats(ship)
+    assert words == [f"{name} outlived its qd check: its program still runs; qd down {name}"]
     facts = watch.facts(ship, server, walls=[], login=[])
-    assert facts.leftover_checks == words and f"qd down {name}" in facts.line()
+    assert facts.leftover_seats == words and f"qd down {name}" in facts.line()
     table = watch.render_table({"service": "up", "facts": facts, "seats": [], "usage": [], "open_orders": [],
                                 "requests": [], "programs": [], "programs_error": None,
                                 "check_outcomes": [], "check_outcome_errors": []})
     assert table[1] == words[0], "qd status names it at the head of its table"
     from quarterdeck import headlines
-    crowded = watch.Facts("up", 0, 0, 0, leftover_checks=words, pending=["synthetic " * 30] * 3)
+    crowded = watch.Facts("up", 0, 0, 0, leftover_seats=words, pending=["synthetic " * 30] * 3)
     assert f"qd down {name}" in headlines.status_line(crowded, ["x" * 200]), "kept when the line overflows"
 
     monkeypatch.setattr(cli.Tmux, "for_ship", classmethod(lambda cls, ship: server))
@@ -217,13 +217,13 @@ def test_a_program_that_outlives_qd_down_keeps_its_home_and_its_name_until_it_ha
     # length: shortened for this test alone. What is proved, still ending and the launch kept, does not depend on it.
     monkeypatch.setattr(seatmod, "PROCESS_END_SECONDS", 0.2)
     name, program = leaked(ship, server, stubborn=True)
-    proof = seatmod.down_leftover_check(ship, server, name)
+    proof = seatmod.down_leftover(ship, server, name)
     assert "still ending" in proof and f"qd down {name} again" in proof
     assert (ship.runtime / "trusted" / name / "launch.json").exists(), "nothing proved its end: the launch stays"
-    assert seatmod.leftover_checks(ship) == [f"{name} outlived its check: its program still runs; qd down {name}"]
+    assert seatmod.leftover_seats(ship) == [f"{name} outlived its qd check: its program still runs; qd down {name}"]
     stop(program)
-    assert seatmod.leftover_checks(ship) == [f"{name} outlived its check: its program has ended; qd down {name}"]
-    assert "home removed" in seatmod.down_leftover_check(ship, server, name)
+    assert seatmod.leftover_seats(ship) == [f"{name} outlived its qd check: its program has ended; qd down {name}"]
+    assert "home removed" in seatmod.down_leftover(ship, server, name)
     no_seat_left(ship, server)
 
 
@@ -233,9 +233,9 @@ def test_a_running_checks_seat_is_neither_named_nor_taken_down(world, monkeypatc
 
     def probe(checked_ship, seat, orders=None, **kwargs):
         launch(seat, server)
-        seen["line"] = seatmod.leftover_checks(ship)
-        with pytest.raises(ShipError, match="its check is still running"):
-            seatmod.down_leftover_check(ship, server, seat.name)
+        seen["line"] = seatmod.leftover_seats(ship)
+        with pytest.raises(ShipError, match="its qd check is still running"):
+            seatmod.down_leftover(ship, server, seat.name)
         return [Check("synthetic", True)]
 
     monkeypatch.setattr(check, "probe", probe)
@@ -247,5 +247,90 @@ def test_a_running_checks_seat_is_neither_named_nor_taken_down(world, monkeypatc
 @pytest.mark.parametrize("name", ["check-fake-zzzz", "checker", "survivor-1234"])
 def test_qd_down_takes_by_name_only_a_check_seat_left_behind(world, name):
     ship, server = world
-    with pytest.raises(ShipError, match="no check's seat left behind"):
-        seatmod.down_leftover_check(ship, server, name)
+    with pytest.raises(ShipError, match="no temporary seat left behind"):
+        seatmod.down_leftover(ship, server, name)
+
+
+# -- every temporary seat, by the record temporary_seat writes: a doctor's as much as a check's -------------------
+
+def stuck_down(monkeypatch):
+    """A down that cannot close the seat's window, so nothing proves its program ended."""
+    def stuck(self, launched):
+        raise ShipError("synthetic: the window would not close")
+    monkeypatch.setattr(seatmod.Seat, "_retire_window", stuck)
+
+
+def raised(ship, server, name, purpose, monkeypatch, *, inside=None, stubborn=True):
+    """A temporary seat raised as its run raises it, launched, and left behind by a down that fails."""
+    spec = seatmod.SeatSpec(name, "qd-" + name, "engineering", "fake", ("fake",), cwd=ship.folder)
+    with monkeypatch.context() as patch:
+        with pytest.raises(ShipError):
+            with seatmod.temporary_seat(ship, server, spec, [], purpose) as seat:
+                program = launch(seat, server, stubborn=stubborn)
+                if inside is not None:
+                    inside(seat)
+                stuck_down(patch)
+    return seat, program
+
+
+def test_a_doctor_seat_left_behind_is_named_and_qd_down_takes_it_by_its_own_teardown(world, monkeypatch):
+    ship, server = world
+    name = "doctor-1a2b"
+    seat, program = raised(ship, server, name, "qd doctor", monkeypatch)
+    assert seat.folder.is_dir(), "nothing proved its program ended: the home stays"
+    words = seatmod.leftover_seats(ship)
+    assert words == [f"{name} outlived its qd doctor: its program still runs; qd down {name}"]
+    assert f"qd down {name}" in watch.facts(ship, server, walls=[], login=[]).line()
+    monkeypatch.setattr(cli.Tmux, "for_ship", classmethod(lambda cls, ship: server))
+    monkeypatch.setattr(cli, "load_ship", lambda args: ship)
+    stop(program)
+    proof = cli.cmd_down(argparse.Namespace(ship=None, seat=name))
+    assert proof.startswith(f"{name} down: ") and "home removed" in proof
+    assert not seat.folder.exists() and not seat.trusted.exists()
+    assert seatmod.leftover_seats(ship) == []
+
+
+def test_a_live_doctor_runs_seat_is_neither_named_nor_taken_down(world):
+    ship, server = world
+    spec = seatmod.SeatSpec("doctor-3c4d", "qd-doctor-3c4d", "engineering", "fake", ("fake",), cwd=ship.folder)
+    with seatmod.temporary_seat(ship, server, spec, [], "qd doctor") as seat:
+        launch(seat, server)
+        assert seatmod.leftover_seats(ship) == []
+        assert seatmod.is_leftover(ship, seat.name), "qd down takes the name, to refuse it"
+        with pytest.raises(ShipError, match="its qd doctor is still running"):
+            seatmod.down_leftover(ship, server, seat.name)
+    assert not seat.folder.exists() and seatmod.leftover_seats(ship) == []
+
+
+def test_a_declared_seat_or_an_unrecorded_home_is_no_temporary_seat(world):
+    ship, server = world
+    (ship.runtime / "seats" / "doctor-5e6f" / "home").mkdir(parents=True)  # no record of a raising: not ours to take
+    assert seatmod.leftover_seats(ship) == [] and not seatmod.is_leftover(ship, "doctor-5e6f")
+    with pytest.raises(ShipError, match="no temporary seat left behind"):
+        seatmod.down_leftover(ship, server, "doctor-5e6f")
+    assert (ship.runtime / "seats" / "doctor-5e6f" / "home").is_dir()
+
+
+def test_an_unreadable_launch_still_retires_transport_and_its_line_says_what_the_person_does(world, monkeypatch):
+    ship, server = world
+    name = "doctor-7a8b"
+    abandoned = []
+    real_abandon = pending.abandon
+    monkeypatch.setattr(pending, "abandon", lambda runtime, seat, reason, **kw: (
+        abandoned.append(seat), real_abandon(runtime, seat, reason, **kw))[1])
+    launch_file = ship.runtime / "trusted" / name / "launch.json"
+    seat, program = raised(ship, server, name, "qd doctor", monkeypatch,
+                           inside=lambda seat: launch_file.write_text("{not json"), stubborn=False)
+    assert abandoned == [name], "its transport was retired although its launch could not be read"
+    assert seat.folder.is_dir() and launch_file.exists(), "nothing proved its program ended: the home stays"
+    cure = (f"its launch is unreadable: end its program, move runtime/trusted/{name}/launch.json aside, "
+            f"then qd down {name}")
+    assert seatmod.leftover_seats(ship) == [f"{name} outlived its qd doctor: {cure}"]
+    with pytest.raises(ShipError) as refused:
+        seatmod.down_leftover(ship, server, name)
+    assert str(refused.value) == f"{name}: {cure}", "qd down says the same as the line"
+    assert program.poll() is not None  # its session ended with its run: the person ends it where it did not
+    launch_file.rename(launch_file.with_name("launch.json.aside"))  # the line's own step
+    assert seatmod.leftover_seats(ship) == [f"{name} outlived its qd doctor: its program has ended; qd down {name}"]
+    assert "home removed" in seatmod.down_leftover(ship, server, name)
+    assert not seat.folder.exists() and seatmod.leftover_seats(ship) == []

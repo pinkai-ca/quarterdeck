@@ -264,12 +264,15 @@ def test_a_skipped_reseed_keeps_a_renewal_in_a_retired_seats_home_names_it_and_a
     assert read_token(source) == "fake-old", "the skipped reseed installed nothing"
     record = service.ship.runtime / credential.HELD / f"{RETIRED}.json"
     assert record.is_file()
-    words = seatmod.leftover_checks(service.ship)
+    words = seatmod.leftover_seats(service.ship)
     assert any(RETIRED in line and "a renewal held in a retired seat's home" in line for line in words), words
+    assert [line for line in words if RETIRED in line] == [words[0]], "named once, by its renewal, not as a seat left behind"
+    with pytest.raises(shipmod.ShipError, match="held for a renewal"):
+        seatmod.down_leftover(service.ship, service.tmux, RETIRED)  # the service's pass settles it, not qd down
     service.credentials()  # the service's next pass, with the lock free
     assert read_token(source) == RENEWED, "the pool takes the renewal from the kept home"
     assert not seat.folder.exists() and not seat.trusted.exists() and not record.exists()
-    assert seatmod.leftover_checks(service.ship) == []
+    assert seatmod.leftover_seats(service.ship) == []
     log = service.log_path.read_text()
     events = [json.loads(line) for line in log.splitlines()]
     assert any(e["event"] == "credential" and e.get("by") == "held" and f"reseeded from {RETIRED}" in e["proof"]
@@ -283,7 +286,7 @@ def test_a_skipped_reseed_with_no_renewal_still_removes_the_home(crew, monkeypat
     seat = retire_temporary_seat(service, source, renewed=False, monkeypatch=monkeypatch)
     assert not seat.folder.exists(), "a link left as a link holds nothing to keep"
     assert not (service.ship.runtime / credential.HELD / f"{RETIRED}.json").exists()
-    assert seatmod.leftover_checks(service.ship) == []
+    assert seatmod.leftover_seats(service.ship) == []
     assert read_token(source) == "fake-old"
 
 
@@ -353,7 +356,7 @@ def test_a_held_record_naming_a_hidden_or_path_like_seat_is_unreadable_named_and
     service.credentials()  # the pass that would settle a readable record
     assert folder.is_dir() and read_token(folder / "home" / source.name) == RENEWED, "nothing of it removed"
     assert record.is_file() and read_token(source) == "fake-old", "never acted on"
-    words = seatmod.leftover_checks(service.ship)
+    words = seatmod.leftover_seats(service.ship)
     assert words == [f"{name}: a held renewal's record is unreadable; inspect runtime/{credential.HELD}"], words
 
 
@@ -421,7 +424,7 @@ def test_a_held_record_naming_an_endpoint_pool_is_unreadable_and_never_acted_on(
     (held / f"{RETIRED}.json").write_text(json.dumps({"seat": RETIRED, "pool": "served"}) + "\n")
     service.credentials()
     assert folder.is_dir() and (held / f"{RETIRED}.json").is_file()
-    assert seatmod.leftover_checks(service.ship) == [
+    assert seatmod.leftover_seats(service.ship) == [
         f"{RETIRED}: a held renewal's record is unreadable; inspect runtime/{credential.HELD}"]
 
 

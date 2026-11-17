@@ -145,8 +145,8 @@ def test_a_temporary_home_whose_seat_would_not_go_down_keeps_its_refresh_until_q
                 patch.setattr(Seat, "_retire_window", stuck)
     # Nothing proved its program ended: its home, and the refresh in it, stay; the status line names it.
     assert token(link) == "newer" and token(ship.source) == "older"
-    assert seatmod.leftover_checks(ship.ship)[0].startswith("check-claude-0001 outlived its check")
-    proof = seatmod.down_leftover_check(ship.ship, ship.tmux, "check-claude-0001")
+    assert seatmod.leftover_seats(ship.ship)[0].startswith("check-claude-0001 outlived its qd check")
+    proof = seatmod.down_leftover(ship.ship, ship.tmux, "check-claude-0001")
     assert "home removed" in proof and not seat.folder.exists()
     assert token(ship.source) == "newer", "removing the home reseeded the pool first"
 

@@ -24,7 +24,7 @@ from .door import Door, Reading
 from .harness.capabilities import selection_label
 from .harness import reading_scope
 from .harness.base import record_fingerprint
-from .seat import SEAT_HOLDS, Seat, UnresolvedSeat, launch_pool_refusal, leftover_checks, seats
+from .seat import SEAT_HOLDS, Seat, UnresolvedSeat, launch_pool_refusal, leftover_seats, seats
 from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
 from .tmux import Tmux
@@ -356,7 +356,7 @@ def render_table(data: dict) -> list[str]:
     state = data["service"]
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
     recovery_lines = list(getattr(data.get("facts"), "server_recovery", None) or [])  # law: nothing-waits-silently
-    recovery_lines += list(getattr(data.get("facts"), "leftover_checks", None) or [])  # a check's seat left running
+    recovery_lines += list(getattr(data.get("facts"), "leftover_seats", None) or [])  # a temporary seat left behind
     recovery_lines += list(getattr(data.get("facts"), "post_waits", None) or [])
     recovery_lines += list(getattr(data.get("facts"), "pool_forecasts", None) or [])
     rows = [head, *recovery_lines, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
@@ -551,7 +551,7 @@ class Facts:
     manual_fresh: list[str] = field(default_factory=list)  # no systems recipient: retain names on overflow
     move_holds: list[str] = field(default_factory=list)
     ending: list[str] = field(default_factory=list)  # a seat down because its program is still ending: names kept
-    leftover_checks: list[str] = field(default_factory=list)  # a check's seat that outlived its check, until it is gone
+    leftover_seats: list[str] = field(default_factory=list)  # a temporary seat that outlived its run, until it is gone
     raises: list[str] = field(default_factory=list)  # a crew qd raise started, until the desk reports on its order
     sign_in_failures: list[str] = field(default_factory=list)  # retain seat and fixed failure on overflow
     request_waits: list[str] = field(default_factory=list)
@@ -616,7 +616,7 @@ class Facts:
         parts += [f"{name} held at limit" for name in self.held]
         parts += self.move_holds
         parts += self.ending
-        parts += self.leftover_checks
+        parts += self.leftover_seats
         parts += self.raises
         parts += self.request_waits
         parts += self.server_recovery
@@ -1197,7 +1197,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         model_mismatches=model_mismatch.unrouted(ship, readable, pending_model=request_queue.pending_model),
         held=held,
         move_holds=move_reasons,
-        leftover_checks=leftover_checks(ship),
+        leftover_seats=leftover_seats(ship),
         raises=raise_notice.unseen(ship.runtime, store),
         request_waits=[request_queue.headline(row) for row in
                        (request_queue.pending(ship.runtime) if request_rows is None else request_rows)],
