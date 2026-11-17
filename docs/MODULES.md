@@ -147,7 +147,7 @@ The modules that the framework table does not list, the module of each part amon
 | `post.py` | Post: orders, reports, questions, answers and acknowledgments as immutable files; the store, the inbox, the attempts and the watch |
 | `post_dir.py` | every path under `runtime/post` opened folder by folder, so that a link is refused by name and never followed |
 | `post_message.py` | a message's immutable identity, its JSON and the envelope the message is typed in |
-| `post_reads.py` | the bodies a seat has read whole through `qd thread`, kept as `thread-reads.json` in its own writable folder; a read is recorded only after the thread's complete output, and settles a read notice without changing any attempt's verdict |
+| `post_reads.py` | the bodies a seat has read whole through `qd thread`: claimed as `thread-reads.json` in its own writable folder only after the thread's complete output, then taken by an unjailed qd (the service's pass, a launch) into a receipt in its trusted folder, dated no later than the take; a receipt settles a read notice without changing any attempt's verdict |
 | `post_retirement.py` | finished delivery evidence moved, unchanged, out of the service's working folders into batches that every reader still resolves |
 | `retirement_gate.py` | a completed retirement sweep may wait; its certificate never permits a move |
 | `post_threads.py` | the thread indexes, and a thread read whole for `qd thread` |

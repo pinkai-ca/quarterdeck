@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, post, post_reads, post_threads, ship as shipmod
+from quarterdeck import cli, post, post_reads, post_threads, ship as shipmod, trusted_files
 from quarterdeck.seat import Seat
 from quarterdeck.ship import ShipError
 
@@ -36,6 +36,7 @@ model="fake-1"
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv('QD_SEAT', 'builder')
     ship = shipmod.load(tmp_path)
+    trusted_files.make(ship.runtime, 'builder')  # a launched seat's trusted folder, where its receipts are kept
     return SimpleNamespace(ship=ship, seat=Seat(ship, ship.seat('builder'), SimpleNamespace()),
                            store=post.Store(ship.runtime), attempts=post.Attempts(ship.runtime))
 
@@ -65,8 +66,11 @@ def test_indexed_notice_read_by_its_seat_leaves_the_next_fresh_index(world, caps
     assert notice.body in printed
     if json_output:
         assert json.loads(printed)['root'] == notice.id
+    assert notice.id in post_reads.claimed(world.ship.runtime, 'builder'), 'qd thread claims it'
+    assert notice.id not in post_reads.read(world.ship.runtime, 'builder'), 'a claim alone is no receipt'
+    assert notice.id not in rows(world), 'the index takes the claim first'
     assert notice.id in post_reads.read(world.ship.runtime, 'builder')
-    assert notice.id not in rows(world)
+    assert not post_reads.path(world.ship.runtime, 'builder').exists(), 'the claim is spent'
     assert world.seat.first_message() == (None, [])
     assert attempt.path.read_bytes() == before
     assert world.attempts.latest()[notice.id] == 'launch'
@@ -186,7 +190,7 @@ def test_concurrent_read_receipts_merge_without_losing_either(world):
                 for identifier in ('synthetic-first', 'synthetic-second')]
         for job in jobs:
             job.result()
-    assert post_reads.read(world.ship.runtime, 'builder') == {'synthetic-first', 'synthetic-second'}
+    assert post_reads.claimed(world.ship.runtime, 'builder') == {'synthetic-first', 'synthetic-second'}
 
 
 def test_unreadable_receipt_never_suppresses_work_or_gets_overwritten(world):

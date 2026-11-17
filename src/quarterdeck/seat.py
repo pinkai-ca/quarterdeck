@@ -1166,7 +1166,7 @@ class Seat:
         history. Answers below this recipient's reported order are settled too;
         other unread answers and reports still arrive as before.
         """
-        from . import refusal, thread_context, post_threads
+        from . import post_reads, refusal, thread_context, post_threads
         from .pr_screen import held as screening
 
         if screening(self.ship.runtime, self.name):
@@ -1177,6 +1177,10 @@ class Seat:
             return carriagemod.Carriage(None, [])  # no first message at all: the native brief still loads
         store, attempts = post.Store(self.ship.runtime), post.Attempts(self.ship.runtime)
         with post.admission(self.ship.runtime, self.name):
+            # law: context-is-cache -- what the seat printed whole with qd thread is receipted here, by this unjailed
+            # qd, before the index is built, so a reading made before this launch is dated before it.
+            post_reads.take(self.ship.runtime, self.name, lambda: (
+                message.id for message in store.all() if self.name in (message.sender, message.to)))
             try:
                 refused = refusal.excluded(self.ship.runtime, self.name)
             except refusal.JournalError as error:
@@ -1190,7 +1194,14 @@ class Seat:
                 return message.kind not in ('order', 'question') or store.is_open(message)
 
             extra = [message for message in (*unread, *queued) if outstanding(message)]
-            consumed = self._consumed_messages(store, attempts, resume_id, refused) | store.read_ids(self.name)
+            # A message a launch carried as an index line alone leaves the index once the seat has printed it whole
+            # after that launch: a reading before it belongs to a conversation this one does not hold.
+            indexed: dict = {}
+            for attempt in history:
+                if attempt.result == 'launch':
+                    indexed[attempt.message] = max(indexed.get(attempt.message, attempt.when), attempt.when)
+            consumed = (self._consumed_messages(store, attempts, resume_id, refused)
+                        | store.read_ids(self.name, after=indexed))
             settled = store.settled_notices(self.name, brief_at=brief_at)
             consumed |= settled.keys()
             from .pr_screen import spent_instructions  # a screen's instruction never comes back at a launch

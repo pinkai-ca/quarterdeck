@@ -542,19 +542,27 @@ class Store:
     def open_for(self, seat: str) -> list[Message]:
         return [m for m in self.for_seat(seat) if self.is_open(m)]
 
-    def read_ids(self, seat: str) -> frozenset[str]:
-        """Non-obligations this recipient read whole or reported on; openness has its own rule."""
+    def read_ids(self, seat: str, *, after: dict[str, datetime] | None = None) -> frozenset[str]:
+        """Non-obligations this recipient read whole or reported on; openness has its own rule.
+
+        ``after``: a moment per message, the latest launch that carried it as an index line alone. A reading
+        receipted at or before that moment does not count for it: the conversation that read it is not the one
+        that launch began. A report on it counts whenever it was sent."""
         from . import post_reads
 
         def read():
-            seen = post_reads.read(self.dir.parent.parent, seat)
+            seen = post_reads.read_times(self.dir.parent.parent, seat)
             messages, replies = self._loaded()
-            return frozenset(message.id for message in messages
-                             if message.to == seat and not message.obligation and message.kind != 'ack'
-                             and (message.id in seen or any(reply.kind == 'report' and reply.sender == seat
-                                                           for reply in replies.get(message.id, ()))))
+            reported = frozenset(message.id for message in messages
+                                 if any(reply.kind == 'report' and reply.sender == seat
+                                        for reply in replies.get(message.id, ())))
+            return tuple((message.id, seen.get(message.id), message.id in reported) for message in messages
+                         if message.to == seat and not message.obligation and message.kind != 'ack'
+                         and (message.id in seen or message.id in reported))
 
-        return reading_value('body-read', (self.dir.absolute(), seat), read)
+        found = reading_value('body-read', (self.dir.absolute(), seat), read)
+        return frozenset(identifier for identifier, moment, reported in found
+                         if reported or after is None or identifier not in after or moment > after[identifier])
 
     def settled_notices(self, seat: str, *, brief_at=None) -> dict[str, str]:
         """Informational history, independent of actual read receipts and obligations."""

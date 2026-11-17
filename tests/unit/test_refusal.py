@@ -382,6 +382,7 @@ def test_the_unsettled_count_counts_every_kind_until_it_reaches_its_addressee(wo
     world.svc.attempts.close(attempt, unsettled, 'synthetic unsettled')
     assert watch._unsettled(world.svc.store, {report.id: unsettled}) == 1, 'a report not yet delivered counts'
     post_reads.record(world.svc.runtime, 'worker', [report.id])  # the seat read it whole: it has reached the seat
+    world.svc.file_drops()  # the service's pass receipts the seat's claim
     assert watch._unsettled(post.Store(world.svc.runtime), {report.id: unsettled}) == 0
     assert watch._unsettled(world.svc.store, {report.id: 'delivered'}) == 0, 'a later delivery settles it'
     order = world.order('worker', 'An invented order whose delivery was left unsettled.')
