@@ -6,8 +6,10 @@ status line. A second request while one is in hand is refused, naming the first.
 
 The file holds the code's function keys (module, function, line), call counts and times, and nothing else: it is built
 from pstats' own function keys and numbers alone, never from the repr of anything, so no argument, value, record's
-content or path can reach it. A module is named by its place in this package or the standard library, and any other
-file by a fixed word; a function name outside a narrow alphabet is replaced. The file goes to
+content or path can reach it. A module is named by its place in this package or the standard library, folders
+included, and any other file by a fixed word; a function name outside a narrow alphabet is replaced. Each function's
+callers are kept the same way: code locations, call counts and times. The service's other threads appear in the rows
+(cProfile on sys.monitoring sees every thread), and the file says so; its CPU is the collecting thread's own. The file goes to
 ``runtime/status-profiles/``, a folder no jail is shown (sandbox.RUNTIME_SHOWN does not name it), and holds at most
 KEEP files of at most MAX_BYTES each.
 """
@@ -29,6 +31,11 @@ TOP = 300  # functions kept, by cumulative time
 MAX_BYTES = 256 * 1024
 KEEP = 5  # newest profiles kept; older ones are removed by their exact names
 NAME = re.compile(r"[A-Za-z0-9_<>.,' -]{1,120}")
+SEGMENT = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,80}')  # one plain folder or file name: no '..', no leading dot
+CALLERS = 8  # callers kept per function, by calls
+NOTE = ("Other threads of the service appear in these rows: on Python 3.12 and later cProfile is built on "
+        "sys.monitoring, which records every thread of the interpreter, and this tool cannot exclude them. "
+        "collection.cpu_seconds is the collecting thread's own CPU (time.thread_time); wall_seconds its wall time.")
 FILE = re.compile(r'\d{8}T\d{6}Z\.json')
 _PACKAGE = Path(__file__).parent
 _STDLIB = tuple({Path(sysconfig.get_paths()[key]) for key in ('stdlib', 'platstdlib')})
@@ -76,7 +83,7 @@ def ask(service, caller: str | None) -> str:
 def run(service, profile: dict, collect):
     """Run ``collect`` (the full collection) under cProfile and write its profile; the request is used either way."""
     profiler = cProfile.Profile()
-    began = time.process_time(), time.perf_counter()
+    began = time.thread_time(), time.perf_counter()  # the collecting thread's own CPU, not the whole process's
     try:
         profiler.enable()
     except ValueError:  # another profiler holds this thread: the collection runs unprofiled
@@ -88,7 +95,7 @@ def run(service, profile: dict, collect):
             profiler.disable()
         service.status_profile = None
         try:
-            write(profile['path'], profiler, time.process_time() - began[0], time.perf_counter() - began[1])
+            write(profile['path'], profiler, time.thread_time() - began[0], time.perf_counter() - began[1])
         except OSError as error:
             service.log('error', step='status_profile', error=type(error).__name__)
 
@@ -105,30 +112,51 @@ def module_of(filename: str) -> str:
             relative = path.relative_to(base).as_posix()
         except ValueError:
             continue
-        return f'{label}/{relative}' if NAME.fullmatch(relative) else label
+        parts = relative.split('/')
+        if len(parts) <= 8 and all(SEGMENT.fullmatch(part) for part in parts):
+            return f'{label}/{relative}'
+        return label
     return 'other'
 
 
+def location(key) -> tuple[str, int, str]:
+    """A pstats function key as a code location only: module_of's name, the line, a plain function name or '?'."""
+    filename, line, function = key
+    return (module_of(str(filename)), int(line), function if isinstance(function, str) and NAME.fullmatch(function) else '?')
+
+
 def rows(profiler) -> tuple[list[dict], int]:
-    """The profile's functions as rows of their keys and numbers; how many functions it held."""
+    return rows_of(pstats.Stats(profiler).stats)
+
+
+def rows_of(stats: dict) -> tuple[list[dict], int]:
+    """pstats' stats as rows of code locations and numbers, each with its callers as the same; how many functions."""
     merged: dict[tuple, list] = {}
-    for (filename, line, function), (primitive, calls, own, cumulative, _callers) in pstats.Stats(profiler).stats.items():
-        key = (module_of(str(filename)), int(line), function if isinstance(function, str) and NAME.fullmatch(function) else '?')
-        entry = merged.setdefault(key, [0, 0, 0.0, 0.0])
+    for key, (primitive, calls, own, cumulative, callers) in stats.items():
+        entry = merged.setdefault(location(key), [0, 0, 0.0, 0.0, {}])
         entry[0] += int(primitive)
         entry[1] += int(calls)
         entry[2] += float(own)
         entry[3] += float(cumulative)
+        for caller, numbers in callers.items():
+            # pstats keeps (primitive, calls, own, cumulative) per caller; only the count and the time are kept
+            seen = entry[4].setdefault(location(caller), [0, 0.0])
+            seen[0] += int(numbers[1])
+            seen[1] += float(numbers[3])
     ordered = sorted(merged.items(), key=lambda item: -item[1][3])
     return ([{'module': module, 'line': line, 'function': function, 'calls': calls, 'primitive_calls': primitive,
-              'own_seconds': round(own, 6), 'cumulative_seconds': round(cumulative, 6)}
-             for (module, line, function), (primitive, calls, own, cumulative) in ordered[:TOP]], len(merged))
+              'own_seconds': round(own, 6), 'cumulative_seconds': round(cumulative, 6),
+              'callers': [{'module': c_module, 'line': c_line, 'function': c_function, 'calls': c_calls,
+                           'cumulative_seconds': round(c_cumulative, 6)}
+                          for (c_module, c_line, c_function), (c_calls, c_cumulative)
+                          in sorted(callers.items(), key=lambda item: (-item[1][0], item[0]))[:CALLERS]]}
+             for (module, line, function), (primitive, calls, own, cumulative, callers) in ordered[:TOP]], len(merged))
 
 
 def write(path: Path, profiler, cpu: float, wall: float) -> None:
     from . import durable
-    data = {'format': 1, 'written': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-            'collection': {'cpu_seconds': round(cpu, 6), 'wall_seconds': round(wall, 6)}}
+    data = {'format': 2, 'written': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'note': NOTE,
+            'collection': {'cpu_seconds': round(cpu, 6), 'cpu_clock': 'thread_time', 'wall_seconds': round(wall, 6)}}
     if profiler is None:
         data['profiled'] = False  # another profiler held the service's thread
         listed = []

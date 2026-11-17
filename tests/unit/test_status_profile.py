@@ -110,11 +110,14 @@ def test_a_profile_holds_the_code_and_nothing_of_a_record_a_screen_or_a_message(
         assert planted.lower().encode() not in raw.lower(), planted
     data = json.loads(raw)
     assert data['profiled'] is True and data['rows']
-    assert set(data) == {'format', 'written', 'collection', 'profiled', 'functions', 'rows'}
+    assert set(data) == {'format', 'written', 'note', 'collection', 'profiled', 'functions', 'rows'}
     for row in data['rows']:
         assert set(row) == {'module', 'line', 'function', 'calls', 'primitive_calls', 'own_seconds',
-                            'cumulative_seconds'}
+                            'cumulative_seconds', 'callers'}
         assert not row['module'].startswith('/'), row
+        for caller in row['callers']:
+            assert set(caller) == {'module', 'line', 'function', 'calls', 'cumulative_seconds'}
+            assert not caller['module'].startswith('/'), caller
     assert any(row['module'] == 'quarterdeck/watch.py' and row['function'] == 'collect' for row in data['rows'])
 
 
@@ -193,3 +196,51 @@ def test_the_profile_is_bounded_in_size_and_in_number(ship, monkeypatch):
 def test_a_code_file_is_named_by_its_place_never_its_path(filename, module):
     assert status_profile.module_of(filename) == module
     assert status_profile.module_of(status_profile.__file__) == 'quarterdeck/status_profile.py'
+
+
+def test_a_harness_module_and_a_stdlib_subpackage_are_named_whole():
+    import json.decoder
+    from quarterdeck.harness import json_record
+    assert status_profile.module_of(json_record.__file__) == 'quarterdeck/harness/json_record.py'
+    assert status_profile.module_of(json.decoder.__file__) == 'stdlib/json/decoder.py'
+    assert status_profile.module_of(str(Path(json_record.__file__).parent / '..' / 'x.py')) in ('other', 'quarterdeck')
+
+
+def synthetic_stats():
+    """pstats' own shape: {(file, line, function): (primitive, calls, own, cumulative, {caller key: numbers})}."""
+    harness = Path(status_profile.__file__).parent / 'harness'
+    planted = f'/srv/{PLANTED[3]}/{PLANTED[0]}.py'
+    caller = (planted, 7, f"value {PLANTED[2]}!")  # a key no code location would have: it must name nothing
+    known = (str(Path(status_profile.__file__).parent / 'watch.py'), 174, 'reading')
+    return {(str(harness / 'base.py'), 451, 'state'): (2, 2, 0.1, 0.5, {known: (2, 2, 0.1, 0.5)}),
+            (str(harness / 'claude_background.py'), 451, 'state'): (3, 3, 0.2, 0.7, {caller: (3, 3, 0.2, 0.7)}),
+            known: (1, 1, 0.0, 1.2, {})}
+
+
+def test_two_files_with_the_same_line_and_function_stay_two_rows():
+    listed, total = status_profile.rows_of(synthetic_stats())
+    states = sorted(row['module'] for row in listed if row['function'] == 'state')
+    assert states == ['quarterdeck/harness/base.py', 'quarterdeck/harness/claude_background.py']
+    assert total == 3
+
+
+def test_callers_are_code_locations_and_numbers_only():
+    listed, _ = status_profile.rows_of(synthetic_stats())
+    by = {row['module']: row for row in listed}
+    assert by['quarterdeck/harness/base.py']['callers'] == [
+        {'module': 'quarterdeck/watch.py', 'line': 174, 'function': 'reading', 'calls': 2, 'cumulative_seconds': 0.5}]
+    assert by['quarterdeck/harness/claude_background.py']['callers'] == [
+        {'module': 'other', 'line': 7, 'function': '?', 'calls': 3, 'cumulative_seconds': 0.7}]
+    text = json.dumps(listed)
+    for planted in PLANTED:
+        assert planted not in text
+
+
+def test_the_file_says_other_threads_appear_and_counts_the_collecting_threads_cpu(ship):
+    svc, record = ship
+    path = profiled(svc)
+    svc._status_due()
+    data = json.loads(path.read_bytes())
+    assert 'other threads' in data['note'].lower() and 'sys.monitoring' in data['note']
+    assert data['collection']['cpu_clock'] == 'thread_time'
+    assert any(row.get('callers') for row in data['rows'])
