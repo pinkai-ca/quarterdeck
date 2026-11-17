@@ -186,20 +186,28 @@ class Task:
     undated_evidence: bool = False  # a row about it the reader could not date: it may be from after any launch
 
 
+def ship_watch_commands(record: Path | None) -> frozenset[str]:
+    """The inbox watch as a seat may run it: the bare 'qd inbox --wait', and the brief's own absolute command for
+    the ship the record belongs to.
+
+    A Claude record belongs to home/projects/<slug>/<record>.jsonl. Only the framework's fixed seat-home layout,
+    runtime/seats/<seat>/home/..., supplies its ship: the record's place, never its text. Neither the caller's
+    environment nor text inside a command chooses which qd may be a watch."""
+    commands = {'qd inbox --wait'}
+    if record is not None:
+        record = Path(record)
+        home = record.parent.parent.parent
+        runtime = home.parent.parent.parent
+        if (record.is_absolute() and record.parent.parent.name == 'projects'
+                and home.name == 'home' and home.parent.parent.name == 'seats'
+                and runtime.name == 'runtime'):
+            commands.add(qd_command(runtime.parent, 'inbox', '--wait'))
+    return frozenset(commands)
+
+
 class BackgroundBash:
     def __init__(self, record: Path | None = None):
-        self.watch_commands = {'qd inbox --wait'}
-        # A Claude record belongs to home/projects/<slug>/<record>.jsonl. Only the
-        # framework's fixed seat-home layout supplies its ship; neither the caller's
-        # environment nor text inside the command chooses which qd may be a watch.
-        if record is not None:
-            record = Path(record)
-            home = record.parent.parent.parent
-            runtime = home.parent.parent.parent
-            if (record.is_absolute() and record.parent.parent.name == 'projects'
-                    and home.name == 'home' and home.parent.parent.name == 'seats'
-                    and runtime.name == 'runtime'):
-                self.watch_commands.add(qd_command(runtime.parent, 'inbox', '--wait'))
+        self.watch_commands = set(ship_watch_commands(record))
         self.calls = {}
         self.tasks = {}  # includes terminal identities so later duplicate carriers can be joined
         self.task_calls = {}

@@ -31,6 +31,9 @@ def text(value):
 
 
 def inputs(record):
+    from .claude_background import ship_watch_commands
+    # The watch by the bare 'qd' or by this ship's own absolute qd (the brief's), word for word; no other path.
+    watches = {tuple(words(command)) for command in ship_watch_commands(record)}
     calls, called_at, ambiguous, results = {}, {}, set(), []
     for row in entries(record):
         if row.get('isSidechain'):
@@ -57,7 +60,7 @@ def inputs(record):
         call = calls.get(key, {})
         data = call.get('input', {})
         if (key not in ambiguous and at is not None and key in called_at and called_at[key] <= at and call.get('name') == 'Bash' and isinstance(data, dict)
-                and words(data.get('command')) == ['qd', 'inbox', '--wait']):
+                and tuple(words(data.get('command'))) in watches):
             match = BACKGROUND.match(text(block.get('content')))
             if match:
                 if at is not None:
@@ -72,7 +75,7 @@ def inputs(record):
             continue
         raw = text(block.get('content'))
         command = words(data.get('command'))
-        direct = call.get('name') == 'Bash' and command == ['qd', 'inbox', '--wait']
+        direct = call.get('name') == 'Bash' and tuple(command) in watches
         path = command[1] if call.get('name') == 'Bash' and len(command) == 2 and command[0] == 'cat' else None
         numbered = call.get('name') == 'Read' and not (data.get('offset') or data.get('limit'))
         if numbered:
