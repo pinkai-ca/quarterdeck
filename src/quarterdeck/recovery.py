@@ -287,6 +287,14 @@ def run(service):
                         _save(proof, error='fresh recovery evidence unavailable: ' + str(error))
 
 
+def _unproved(service, seat, detail):
+    """Log once while a seat's launch stays unproved for its recovery, as a delivery's refused reservation is named."""
+    logged = service.__dict__.setdefault('recovery_unproved', set())
+    if seat.name not in logged:
+        logged.add(seat.name)
+        service.log('thinking-recovery', seat=seat.name, result='withheld', detail=detail)
+
+
 def _seat(service, seat, pending):
     proofs, errors = pending.journals(seat)
     if errors or seat.session.human:
@@ -314,8 +322,18 @@ def _seat(service, seat, pending):
     notice = post.Message(service.store._new_id('report', post.SHIP, at), 'report', post.SHIP, seat.name, at, client.continuation,
                           re=service.store.claimed(seat.name, at))
     launch = seat.launched()
+    bound = pending.current_identity(seat)
+    if bound is None or (bound['pane'], bound['pid'], bound['launch']) != (launch.pane, launch.pid, launch.at):
+        _unproved(service, seat, 'current pane/process/launch unproved; no recovery attempt opened')
+        return  # nothing opened: the next pass reads the seat again
     attempt = service.attempts.open(notice, seat.name, launch.pane, launch.pid, launch.at)
-    proof = pending.Proof.begin(seat, attempt, post.typed([notice]))
+    try:
+        proof = pending.Proof.begin(seat, attempt, post.typed([notice]))
+    except pending.NoCurrentLaunch as error:  # the launch changed between the proof above and the journal
+        service.attempts.close(attempt, 'withheld', 'launch changed before reservation; no input typed')
+        _unproved(service, seat, str(error))
+        return  # this seat only: the tick goes on to the next seat's recovery
+    service.__dict__.setdefault('recovery_unproved', set()).discard(seat.name)
     _save_initial = dict(format=1, source=asdict(candidate), client=client.signature, evidence=launch.recovery, mode='claimed',
                          post=notice.id, recovery_input=None, error=None)
     validate(_save_initial)
