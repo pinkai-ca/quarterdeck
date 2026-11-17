@@ -126,7 +126,7 @@ def test_the_attribution_measures_copy_leaves_out_the_people(source, tmp_path):
     no_record_of_people(copy)
     held = files(copy)
     assert f'post/store/{INTERNAL[0]}.json' not in held and f'post/store/{TO_CREW[0]}.json' in held
-    assert counts['left_out_messages'] == 1 and counts['left_out_post_files'] == 1
+    assert counts['left_out_messages'] == 1 and counts['left_out_post_files'] == 2  # its store file and its attempt
     assert counts['left_out_seats'] == ['desk', 'writer'] and counts['left_out_records'] == 2
     db = sqlite3.connect(copy / 'ledger.sqlite')
     assert [row[0] for row in db.execute('SELECT seat FROM turns')] == ['builder'], 'their rows leave the copy too'
@@ -214,3 +214,16 @@ def test_the_status_measures_freeze_copies_no_native_record_at_all(source, tmp_p
     result = measure_status_service.frozen_copy(source, frozen)
     assert result['native_records'] == 0
     assert not [path for path in files(frozen) if 'sessions/record.jsonl' in path]
+
+
+def test_the_copy_carries_the_crews_delivery_attempts_and_no_one_elses(source, tmp_path):
+    attempts = source / 'runtime' / 'post' / 'attempts'
+    (attempts / 'desk.json').write_text('{"a file named for a person": true}\n')
+    copy = tmp_path / 'copy' / 'ship' / 'runtime'
+    measure_attribution_catchup.copied_runtime(source / 'runtime', copy)
+    held = files(copy)
+    assert f'post/attempts/{CREW[0]}-1.json' in held, "a crew message's attempt is copied"
+    assert f'post/attempts/{TO_CREW[0]}-1.json' in held, "a person's message to the crew: its attempt is copied too"
+    assert f'post/attempts/{INTERNAL[0]}-1.json' not in held, "no attempt of an office-internal message"
+    assert 'post/attempts/desk.json' not in held, "no file named for a person's seat"
+    assert 'attempts' in runtime_copy.POST_FAMILIES

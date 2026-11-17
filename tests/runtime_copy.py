@@ -112,6 +112,23 @@ def of_message(name, ids) -> bool:
     return stem in ids or any(stem.startswith(identifier + '-') for identifier in ids)
 
 
+# The post's families a copy takes, attempts included: the delivery attempts are what tells a waiting message from a
+# delivered one, so a copy without them reads every message as undelivered.
+POST_FAMILIES = ('store', 'imports', 'forwarded', 'addressed', 'attempts')
+
+
+def copy_posts(source, destination, names, internal) -> int:
+    """Every family of POST_FAMILIES from runtime ``source`` to runtime ``destination``, by copy_post's rule: the
+    people's seat-named files and every file of an office-internal message left out, an attempt of one included
+    (of_message). The number of files left out."""
+    left = 0
+    for name in POST_FAMILIES:
+        old = Path(source) / 'post' / name
+        if old.exists():
+            left += copy_post(old, Path(destination) / 'post' / name, names, internal)
+    return left
+
+
 def copy_post(old, new, names, internal):
     """Copy one post family (store, imports, forwarded, addressed), leaving out the people's seat-named files and
     every file of an office-internal message. The number of files left out."""

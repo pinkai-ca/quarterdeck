@@ -86,11 +86,7 @@ def copied_runtime(source, destination):
     # Preserve the actual store's local projections/import provenance too, less the people's: every file of an
     # office-internal message, read for its sender and recipient alone (tests/runtime_copy.py).
     internal = runtime_copy.office_internal(source / 'post' / 'store', Path(source).parent, people)
-    left_post = 0
-    for name in ('store', 'imports', 'forwarded', 'addressed'):
-        old = source / 'post' / name
-        if old.exists():
-            left_post += runtime_copy.copy_post(old, destination / 'post' / name, people, internal)
+    left_post = runtime_copy.copy_posts(source, destination, people, internal)  # the attempts too
     shutil.copy2(source.parent / 'ship.toml', destination.parent / 'ship.toml')
     return dict(ledger_records=len(records) - len(dropped), copied_files=copied, copied_bytes=size,
                 left_out_seats=sorted(people), left_out_records=len(dropped),
