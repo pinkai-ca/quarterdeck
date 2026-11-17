@@ -49,8 +49,8 @@ def heartbeat_path(runtime: Path) -> Path:
     launch-time beat for ever, and a replace during bwrap's mount of the file stopped the launch.
 
     runtime/heartbeat is shown to every jail, so nothing but the service's two beats (this one, from a thread of
-    its own, and the main loop's pass stamp, pass_path), and their temporary files while one is written, may ever be
-    written there."""
+    its own, and the main loop's pass stamp, pass_path), and each one's own hidden temporary while it is written
+    (post_dir.temporary_name), may ever be written there."""
     return runtime / HEARTBEAT_FOLDER / "service.heartbeat"
 
 
@@ -65,11 +65,16 @@ EARLIER_HEARTBEAT = "service.heartbeat"
 
 
 def remove_heartbeat(runtime: Path) -> None:
-    """The beat, with a temporary file a beat cut short may have left, and what a copy that also beat at the earlier
-    place left there."""
+    """The beat and the pass stamp, with any temporary a write cut short left (each writer's own, named after its
+    target; and the one temporary the earlier code shared), and what a copy that also beat at the earlier place left
+    there. A service's start and a stop both run it, so a temporary a crash left never outlives the next start."""
     for path in (heartbeat_path(runtime), pass_path(runtime), runtime / EARLIER_HEARTBEAT):
         path.unlink(missing_ok=True)
         path.with_suffix(".tmp").unlink(missing_ok=True)
+    folder = heartbeat_path(runtime).parent
+    for name in (heartbeat_path(runtime).name, pass_path(runtime).name):
+        for leftover in folder.glob(f".{name}.*.tmp"):
+            leftover.unlink(missing_ok=True)
 
 
 def lock_path(runtime: Path) -> Path:
@@ -95,7 +100,8 @@ def write_pass(runtime: Path, duty: str, *, now: datetime | None = None, pid: in
     """The main loop's stamp, whole by rename: its pid, the time it began this duty, and the duty's name."""
     path = pass_path(runtime)
     path.parent.mkdir(exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    from .post_dir import temporary_name
+    tmp = path.with_name(temporary_name(path.name))  # its own: the beat thread writes beside it at any moment
     moment = (now or datetime.now(timezone.utc)).isoformat()
     tmp.write_text(json.dumps(dict(pid=pid or os.getpid(), at=moment, duty=duty)) + "\n")
     os.replace(tmp, path)
@@ -116,7 +122,8 @@ def read_pass(runtime: Path, *, now: datetime | None = None) -> tuple[int, float
 
 
 def _beat(path: Path) -> None:
-    tmp = path.with_suffix(".tmp")
+    from .post_dir import temporary_name
+    tmp = path.with_name(temporary_name(path.name))  # its own: the main loop stamps its pass beside it at any moment
     tmp.write_text(f"{os.getpid()} {datetime.now(timezone.utc).isoformat()}\n")
     os.replace(tmp, path)
 
