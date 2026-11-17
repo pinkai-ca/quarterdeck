@@ -286,7 +286,12 @@ def test_completed_native_turn_precedes_commit_when_planning_child_is_paused(tmp
     try:
         turns = seat.harness.turns(record)
         assert len(turns) == 1 and turns[0].ended is not None
-        driver.step(svc)
+        # Step until the child exists, the event this test needs: a step bounded by the small budget may end
+        # before Driver.start on a busy machine. The bound is a safety stop far above any stall, not a timing.
+        until = time.monotonic() + 60
+        while driver.process is None and time.monotonic() < until:
+            driver.step(svc)
+        assert driver.process is not None, 'the planning child never started'
         assert driver.active and not svc.accounting_health.checked
         assert svc.ledger.rollup('seat') == []
         # Releasing exactly this child, rather than sleeping, makes the same
