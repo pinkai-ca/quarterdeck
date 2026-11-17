@@ -332,7 +332,15 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
         # wherever that place is shown.
         raise ShipError(f"{seat_name}: sandboxed, and the operator's ~/.ssh leads outside the home ({ssh}); the jail "
                         "hides ~/.ssh only as part of the home. Keep ~/.ssh a folder in the home, or run the seat open")
-    for folder in (*jail.read_only, jail.workspace, *jail.writable):
+    if covered := covering(jail):
+        what, folder = covered
+        raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
+                        "contains it; bound inside the jail it would show the hidden home again, so it jails nothing. "
+                        f"Keep {what} out of the home's own path: below the home, or elsewhere")
+    # Every path the command shows inside, read from the very places it binds from (shown): the ship folder, the seat
+    # folder, the runtime's shown files and the post view as much as the programs, PATH and working directory. After
+    # the home's own cover: a folder that holds the home is refused first, for what it is.
+    for folder in shown(jail):
         real = Path(os.path.realpath(folder))
         if ssh.is_relative_to(real):
             raise ShipError(f"{seat_name}: sandboxed, and {folder} ({real}) holds the operator's ~/.ssh ({ssh}); no "
@@ -343,11 +351,6 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
             raise ShipError(f"{seat_name}: sandboxed, and {folder} is the operator's ~/.ssh or lies inside it "
                             f"({real}); no jail binds it, since its sockets and keys reach the operator's servers. "
                             "Keep the seat's programs, PATH and working directory out of ~/.ssh")
-    if covered := covering(jail):
-        what, folder = covered
-        raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
-                        "contains it; bound inside the jail it would show the hidden home again, so it jails nothing. "
-                        f"Keep {what} out of the home's own path: below the home, or elsewhere")
     for folder in fleet:
         fence_point(seat_name, folder)
     return jail
@@ -853,31 +856,28 @@ def sockets_masked(jail: Jail) -> list[str]:
     return args
 
 
-def command(jail: Jail, argv: list[str], environment: dict[str, str] | None = None) -> list[str]:
-    """The ``bwrap`` command line around a program's own, behind the launcher that starts it from nothing.
+def relay_folder(jail: Jail) -> Path | None:
+    """The endpoint relay's folder outside the jail, when the jail has an endpoint."""
+    if jail.endpoint is None:
+        return None
+    from . import endpoint_relay
+    return endpoint_relay.folder_for(jail.seat_folder)
 
-    The jail starts from ``--clearenv``: inside, only jail_environment's allowlist is set, the pane's kept values
-    copied in by the launcher, and ``environment``, the variables the seat's harness declares for its program. A
-    declared name that looks secret refuses the launch: nothing secret-named enters a jail, whatever names it.
-    """
-    environment = jail_environment.without_refused(environment or {})  # dropped, whatever declares them
-    if secret := sorted(name for name in environment if jail_environment.looks_secret(name)):
-        why = (" (a keyed endpoint's key: give the pool an endpoint that takes none, or run the seat open with "
-               "sandbox = false)" if endpoint_key_variable() in secret else '')
-        raise ShipError(f"{jail.seat or 'a jailed seat'}: sandboxed, and its program's environment names "
-                        f"{', '.join(secret)}, which looks secret{why}; nothing secret-named enters a jail, so nothing "
-                        "was started")
-    args = [PROGRAM, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
-            "--size", str(TMP_BYTES), "--tmpfs", "/tmp"]
-    args += session_hidden()
-    relay = None
-    if jail.endpoint is not None:
-        from . import endpoint_relay
 
-        relay = endpoint_relay.folder_for(jail.seat_folder)
-        # The relay's folder, made by the relay before the jail starts, inside the jail's own /run; and its hosts file.
-        args += ["--bind", str(relay), endpoint_relay.INSIDE_FOLDER,
-                 "--ro-bind", str(relay / endpoint_relay.HOSTS), "/etc/hosts"]
+def relay_binds(jail: Jail) -> list[tuple[str, Path, str]]:
+    """The relay's binds: its folder, made by the relay before the jail starts, inside the jail's own /run; and its
+    hosts file over /etc/hosts. Each is (flag, source outside, target inside)."""
+    relay = relay_folder(jail)
+    if relay is None:
+        return []
+    from . import endpoint_relay
+    return [("--bind", relay, endpoint_relay.INSIDE_FOLDER),
+            ("--ro-bind", relay / endpoint_relay.HOSTS, "/etc/hosts")]
+
+
+def jail_mounts(jail: Jail) -> list[tuple[str, Path]]:
+    """Every mount the command makes below its root, the one list command() takes them from: the operator's home as
+    an empty tmpfs, and every folder bound back, fenced or hidden. shown() reads the same list."""
     # The operator's home is an empty tmpfs placed in depth order like every other mount: after any folder that
     # contains it, which it then covers again, and before the folders inside it that are bound back.
     mounts: list[tuple[str, Path]] = [("--tmpfs", jail.home)]
@@ -908,6 +908,54 @@ def command(jail: Jail, argv: list[str], environment: dict[str, str] | None = No
     mounts += [("--bind-try", folder) for folder in jail.writable]
     mounts += [("--declaration", file) for file in getattr(jail, 'declarations', ())]
     mounts += [("--tmpfs", runtime) for runtime in getattr(jail, 'foreign_runtimes', ())]
+    return mounts
+
+
+# The mount flags that show something from outside inside the jail; every other flag shows only an empty fence or tmpfs.
+SHOWING = frozenset(("--ro-bind-try", "--ro-bind", "--bind", "--bind-try", "--workspace", "--view", "--declaration"))
+
+
+BIND_FLAGS = ("--bind", "--ro-bind", "--bind-try", "--ro-bind-try")
+
+
+def bound_sources(args: list[str]) -> list[Path]:
+    """The source of every bind in a run of bwrap arguments."""
+    return [Path(args[i + 1]) for i, word in enumerate(args[:-1]) if word in BIND_FLAGS]
+
+
+def shown(jail: Jail) -> list[Path]:
+    """Every path outside the jail that its command shows inside, read from the very places command() takes its binds
+    from: each showing mount of jail_mounts(), the relay's binds, and the binds of session_hidden() and
+    sockets_masked(). A bind added to any of them is shown here, and checked, by construction. The root's own
+    read-only bind is not here: the operator's home is hidden over it, and plan() refuses a ~/.ssh that leads outside
+    the home."""
+    return ([folder for flag, folder in jail_mounts(jail) if flag in SHOWING]
+            + [source for _, source, _ in relay_binds(jail)]
+            + bound_sources(session_hidden()) + bound_sources(sockets_masked(jail)))
+
+
+def command(jail: Jail, argv: list[str], environment: dict[str, str] | None = None) -> list[str]:
+    """The ``bwrap`` command line around a program's own, behind the launcher that starts it from nothing.
+
+    The jail starts from ``--clearenv``: inside, only jail_environment's allowlist is set, the pane's kept values
+    copied in by the launcher, and ``environment``, the variables the seat's harness declares for its program. A
+    declared name that looks secret refuses the launch: nothing secret-named enters a jail, whatever names it.
+    """
+    environment = jail_environment.without_refused(environment or {})  # dropped, whatever declares them
+    if secret := sorted(name for name in environment if jail_environment.looks_secret(name)):
+        why = (" (a keyed endpoint's key: give the pool an endpoint that takes none, or run the seat open with "
+               "sandbox = false)" if endpoint_key_variable() in secret else '')
+        raise ShipError(f"{jail.seat or 'a jailed seat'}: sandboxed, and its program's environment names "
+                        f"{', '.join(secret)}, which looks secret{why}; nothing secret-named enters a jail, so nothing "
+                        "was started")
+    args = [PROGRAM, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+            "--size", str(TMP_BYTES), "--tmpfs", "/tmp"]
+    args += session_hidden()
+    relay = relay_folder(jail)
+    for flag, source, target in relay_binds(jail):
+        args += [flag, str(source), target]
+    mounts = jail_mounts(jail)
+    fleet_folders = fleet_roots(jail.ship_folder)
 
     def mount_key(mount):
         flag, folder = mount

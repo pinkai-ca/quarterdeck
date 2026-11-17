@@ -890,3 +890,49 @@ def test_an_office_given_through_a_link_of_another_name_is_ruled_by_its_real_pat
                                         f"checkout {project.resolve()}"), caught.value
     jail = plan_seat(linked, 'desk', tmp_path / 'operator-home')
     assert jail.workspace == (project / 'office' / 'work' / 'desk').resolve()
+
+
+def ship_below_home(tmp_path: Path):
+    """A throwaway home in the test's own folder, with the ship folder and the workspace below it: a ~/.ssh that
+    leads into either stays inside the home, so only the check of what the jail binds can refuse it."""
+    home = tmp_path / "home"
+    folder = home / "dev" / "ship"
+    folder.mkdir(parents=True)
+    (home / "work").mkdir()
+    ship = shipmod.Ship(folder, 'synthetic', 'operator', home / "work", {}, {}, {})
+    return ship, home, ship.runtime / "seats" / "worker"
+
+
+@pytest.mark.parametrize("inside", ["ship folder", "seat folder"])
+def test_plan_refuses_an_ssh_folder_whose_target_lies_inside_the_ship_or_seat_folder(tmp_path: Path, monkeypatch, inside):
+    """The ship folder and the seat's own folder are bound too: a ~/.ssh whose real path lies inside either would be
+    shown inside the jail, keys and all, so it is refused with the same reason as any other bound folder."""
+    ship, home, own = ship_below_home(tmp_path)
+    target = {"ship folder": ship.folder / "keys", "seat folder": own / "keys"}[inside]
+    target.mkdir(parents=True)
+    (home / ".ssh").symlink_to(target)
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    with pytest.raises(ShipError, match=r"holds the operator's ~/.ssh"):
+        sandbox.plan(ship, "worker", own, own / "home", home / "work", "/usr/bin/python3", "/usr/bin", home=home)
+
+
+@pytest.mark.parametrize("endpoint", [None, "http://127.0.0.1:8000/v1"])
+def test_every_bind_the_command_makes_is_in_the_checked_set(tmp_path: Path, monkeypatch, endpoint):
+    """The ~/.ssh check reads shown(), from the one list the command binds from. Compared with the command's own bind
+    arguments, every source it binds (but the root's own, which the home's tmpfs and the outside-home rule cover) is
+    checked: a bind added to the command and left out of the check fails here."""
+    import dataclasses
+    ship, home, own = ship_below_home(tmp_path)
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    jail = sandbox.plan(ship, "worker", own, own / "home", home / "work", "/usr/bin/python3", "/usr/bin", home=home)
+    if endpoint is not None:
+        jail = dataclasses.replace(jail, endpoint=endpoint)
+    args = sandbox.command(jail, ["true"])
+    bound = {args[i + 1] for i, word in enumerate(args[:-1])
+             if word in ("--bind", "--ro-bind", "--bind-try", "--ro-bind-try")} - {"/"}
+    checked = {str(path) for path in sandbox.shown(jail)}
+    missing = bound - checked
+    assert not missing, f"bound by the command but never checked for ~/.ssh: {sorted(missing)}"
+    assert str(jail.ship_folder) in checked and str(jail.seat_folder) in checked
+    if endpoint is not None:
+        assert any("/etc/hosts" == args[i + 2] for i, word in enumerate(args[:-2]) if word == "--ro-bind")
