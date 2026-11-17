@@ -9,7 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .json_record import _parsed, _read_lock
+from .json_record import _parsed, _read_lock, snapshot_bytes
 from .types import State
 
 
@@ -64,7 +64,7 @@ def read(record: Path, interpret, reader) -> Compactions:
             parsed = _parsed(record)
             if reader in parsed.compactions:
                 return parsed.compactions[reader]
-            raw = parsed.raw.encode('utf-8')
+            raw = snapshot_bytes(parsed)  # whole: a changed record is digested and interpreted whole (see json_record)
             if not raw or not raw.endswith(b'\n') or parsed.skipped:
                 raise ValueError('incomplete or malformed native history')
             history = interpret([row for _, row in parsed.rows])

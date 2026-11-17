@@ -144,6 +144,8 @@ def held_packet(service, seat, record):
 def worker():
     """No provider calls, native launches, source writes or operational ledger writes."""
     os.nice(10)
+    from .harness import json_record
+    json_record.keep_rows()  # a job reads one record's lines through several readers: keep them, as before
     if sys.platform == 'linux':
         import ctypes
         parent = int(sys.argv[-1])

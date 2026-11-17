@@ -28,6 +28,12 @@ class Timings:
         self.rows = {}
         self.status_checks = 0
         self.accounting_waits = 0
+        self.parse_cache = None  # the record cache's size, read each pass: {records, record_bytes, max_record_bytes}
+
+    def cache_reading(self, records: int, held: int) -> None:
+        """The record cache's size after a pass (harness/json_record): the last, and the most bytes in the minute."""
+        most = max(held, (self.parse_cache or {}).get('max_record_bytes', 0))
+        self.parse_cache = dict(records=records, record_bytes=held, max_record_bytes=most)
 
     @contextmanager
     def measure(self, name):
@@ -69,10 +75,12 @@ class Timings:
             # Count-only row: its time is already included in the account duty.
             duties['accounting_waits'] = dict(calls=self.accounting_waits, wall=0.0, cpu=0.0,
                                               max_wall=0.0, max_cpu=0.0)
+        extra = {} if self.parse_cache is None else {'parse_cache': self.parse_cache}
         log('service-timing', seconds=now - self.since,
             passes=self.rows.get('pass', {}).get('calls', 0), status_checks=self.status_checks,
-            duties=duties)
+            duties=duties, **extra)
         self.rows.clear()
+        self.parse_cache = None
         self.status_checks = 0
         self.accounting_waits = 0
         self.since = now

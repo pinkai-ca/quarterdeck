@@ -301,6 +301,14 @@ class Service:
             self._accounting_tick = False
             self.loop_stamp('pass_end')
             self.structure_passes.finish()
+            self.log_parse_cache()
+
+    def log_parse_cache(self) -> None:
+        """The record cache's size, read once a pass, so its bound is seen live (harness/json_record). It is written
+        with the minute's service-timing line, not a line of its own: an idle pass writes nothing to the log."""
+        from .harness import json_record
+        records, held = json_record.cache_size()
+        self.timings().cache_reading(records, held)
 
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice. Every stretch of the loop is stamped
