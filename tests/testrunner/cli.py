@@ -70,6 +70,8 @@ def main(argv: list[str] | None, runner_files: list[Path]) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
             return 2 if any(entry['reason'] != 'project-present' for entry in result['kept']) else 0
         if args.verb == 'run':
+            if args.jail and args.ci_layout:
+                raise Refused('choose either --jail or --ci-layout. Jailed runs lack the markers needed to verify the CI layout')
             if not math.isfinite(args.timeout) or args.timeout <= 0:
                 raise Refused('--timeout must be finite and greater than zero')
             return run.Runner(args, runner_files).main()

@@ -62,9 +62,13 @@ Every ship service a run's tests start is stopped before anything of the run is 
 
 `--jail` runs venv/install/import/compile/pytest steps in bubblewrap with a cleared allowlisted environment, no external network, read-only system/test tools/Git, writable owned scratch and checkout admin, and no operator home, agent, bus or live tmux socket. A tool inside its own target refuses. Because project Git is visible, credential helpers, extraheaders and credential-bearing URLs in included config refuse by key/file without values. The invoked tool supplies the jail and is named in evidence; ordinary crew runs are unjailed unless requested.
 
+Choose either `--jail` or `--ci-layout`. A jailed run lacks the environment markers required to verify the CI layout, so the test tool refuses the pair before resolving a target or taking any resources.
+
 Shared installation fixtures build per-worker wheels/prefixes once per session, fingerprint them read-only and give upgrade cases writable copies with rebound script/RECORD prefixes. No cache survives a run. Layout, first-install-failure and distribution-build cases retain their own fresh installs.
 
 ### CI layout
+
+Run `--ci-layout` separately from `--jail`. The test tool requires CI environment markers as evidence, and jailed runs omit them.
 
 CI mode checks out exact HEAD/tree with complete reachable local history into an independent repository with a real `.git`, no hooks, remote config, borrowed alternates, hardlinked objects or network fetch. It verifies history count/hash and source origins. Shallow sources refuse. It needs a real memory reservation and never falls back to disk; nested CI tests skip with that named refusal where memory is unavailable.
 

@@ -1,13 +1,39 @@
-"""Ordinary independent-repository retirement and retained layout evidence, without provider programs."""
+"""CI layout selection, independent-repository retirement and retained layout evidence."""
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
 import subprocess
+from unittest.mock import patch
 
-from tests.testrunner import clean, evidence, owned, report
+import pytest
+
+from tests.testrunner import clean, cli, evidence, owned, report
 from tests.testrunner.layout import RESULTS, RUNS, Root, identity
+
+
+def test_jail_and_ci_layout_are_refused_before_constructing_a_runner(tmp_path, capsys):
+    target = tmp_path / 'missing-target'
+    with patch.object(cli.run, 'Runner') as runner:
+        assert cli.main(['run', '--jail', '--ci-layout', '--target', str(target)], []) == 2
+        runner.assert_not_called()
+
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert 'choose either --jail or --ci-layout' in output.err
+    assert 'markers needed to verify the CI layout' in output.err
+
+
+@pytest.mark.parametrize('flag, jail, ci_layout', [('--jail', True, False), ('--ci-layout', False, True)])
+def test_each_layout_option_is_forwarded_to_the_runner_alone(flag, jail, ci_layout):
+    with patch.object(cli.run, 'Runner') as runner:
+        runner.return_value.main.return_value = 0
+        assert cli.main(['run', flag], []) == 0
+        runner.assert_called_once()
+        args, _ = runner.call_args.args
+        assert (args.jail, args.ci_layout) == (jail, ci_layout)
+        runner.return_value.main.assert_called_once_with()
 
 
 def test_independent_repository_retirement_keeps_result_and_leaves_no_git_admin(tmp_path):
