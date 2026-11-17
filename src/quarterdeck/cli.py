@@ -608,10 +608,12 @@ def adopt(ship: shipmod.Ship, seat: seatmod.Seat) -> list[str]:
     if seat.spec.pool_choices:
         raise ShipError("inline pool choices: --adopt is unavailable; edit each choice's model and effort in ship.toml")
     running = watch.running_settings(seat)
-    if not running:
+    # Model and effort alone: the reading also carries what the program says on screen (a selection warning).
+    settings = [(key, running[key]) for key in ("model", "effort") if running.get(key)]
+    if not settings:
         raise ShipError(f"{seat.name}: nothing to adopt; its record and screen show no model or effort yet")
     edits = []
-    for key, value in running.items():
+    for key, value in settings:
         edits.append((f"seats.{seat.name}", key, value))
         if getattr(seat.spec, f'{key}_mode') is not None:
             edits.append((f"seats.{seat.name}", f'{key}_mode', 'named'))
