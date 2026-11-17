@@ -822,7 +822,19 @@ def waiting(ship, store=None):
     from . import post
     store = store or post.Store(ship.runtime)
     fleet, pending = peers(ship), {}
-    for message in store.all():
+    # Only what export's worklist keeps can have an offer: an imported message, a report not proved local, '@' in the
+    # sender or the addressee, a declared or recorded forward. Every other local message is skipped unread, so a
+    # store's size costs the status line nothing. Uncertainty keeps a message, as export keeps it.
+    worklist, candidates = ExportWorklist(), []
+    with _LocalReports(ship) as reports:
+        for message in store.all():
+            try:
+                keep = worklist.retained(ship, message, provenance(ship.runtime, message.id), reports)
+            except (OSError, ValueError, KeyError, TypeError, ShipError):
+                keep = True
+            if keep:
+                candidates.append(message)
+    for message in candidates:
         imported = provenance(ship.runtime, message.id)
         if imported:
             raw, _ = _source(ship, message.id)
