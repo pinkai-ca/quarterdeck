@@ -139,9 +139,10 @@ def rows_of(stats: dict) -> tuple[list[dict], int]:
         entry[2] += float(own)
         entry[3] += float(cumulative)
         for caller, numbers in callers.items():
-            # pstats keeps (primitive, calls, own, cumulative) per caller; only the count and the time are kept
+            # pstats keeps (calls, primitive, own, cumulative) per caller, the count first, unlike a function's own
+            # numbers; only every call and the time are kept, so a recursive edge counts its calls whole
             seen = entry[4].setdefault(location(caller), [0, 0.0])
-            seen[0] += int(numbers[1])
+            seen[0] += int(numbers[0])
             seen[1] += float(numbers[3])
     ordered = sorted(merged.items(), key=lambda item: -item[1][3])
     return ([{'module': module, 'line': line, 'function': function, 'calls': calls, 'primitive_calls': primitive,

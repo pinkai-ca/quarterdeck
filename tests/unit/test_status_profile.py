@@ -244,3 +244,28 @@ def test_the_file_says_other_threads_appear_and_counts_the_collecting_threads_cp
     assert 'other threads' in data['note'].lower() and 'sys.monitoring' in data['note']
     assert data['collection']['cpu_clock'] == 'thread_time'
     assert any(row.get('callers') for row in data['rows'])
+
+
+def recurse(depth):
+    if depth:
+        recurse(depth - 1)
+
+
+def start_recursion():
+    recurse(5)
+
+
+def test_a_recursive_callers_edge_counts_its_calls_whole():
+    """pstats keeps a function's own numbers as (primitive, calls, ...) but each caller's as (calls, primitive, ...):
+    the caller edge shows every call, the primitive count is the row's own alone."""
+    import cProfile
+    import pstats
+    profiler = cProfile.Profile()
+    profiler.enable()
+    start_recursion()
+    profiler.disable()
+    listed, _ = status_profile.rows_of(pstats.Stats(profiler).stats)
+    [row] = [row for row in listed if row['function'] == 'recurse']
+    assert (row['calls'], row['primitive_calls']) == (6, 1), 'its own: six calls, one of them primitive'
+    callers = {caller['function']: caller['calls'] for caller in row['callers']}
+    assert callers == {'recurse': 5, 'start_recursion': 1}, 'each edge counts its calls whole, not its primitive ones'
