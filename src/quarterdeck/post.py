@@ -591,6 +591,12 @@ DROP_STALLED_REASON = "drop filing window made no progress"
 DROP_BACKLOG_ROUNDS = 3
 DROP_MAX_BYTES = 1024 * 1024
 DROP_SIZE_REASON = "drop exceeds size limit"
+# A seat's publish writes its drop whole into a temporary beside the name (post_dir.temporary_name) and renames it in.
+# The temporary holds at most DROP_MAX_BYTES, written in one loop with no storage sync and no lock to wait for, so it
+# lives for milliseconds, seconds on a machine stalled under load or swap. A pass that lists it meanwhile skips it. One
+# older than five minutes is no publish in flight but a writer that died mid-publish, and is held under its own reason.
+DROP_TEMPORARY_SECONDS = 300.0
+DROP_TEMPORARY_REASON = "drop temporary left unfinished"
 DROP_HOLD_REASONS = (
     "from names another seat",
     "not a regular file",
@@ -614,6 +620,7 @@ DROP_HOLD_REASONS = (
     DROP_SIZE_REASON,
     DROP_COUNT_REASON,
     DROP_STALLED_REASON,
+    DROP_TEMPORARY_REASON,
     ID_SPACE_REASON,
 )
 
@@ -1150,6 +1157,15 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
             path = root / name / file
             if not stat.S_ISREG(kind):
                 hold(folder, "not a regular file")
+                continue
+            if post_dir.is_temporary(file):  # a publish not yet renamed in: never read as a message
+                try:
+                    info = post_dir.metadata(path)
+                except (OSError, ShipError):
+                    hold(folder, "drop unreadable")
+                    continue
+                if info is not None and time.time() - info.st_mtime > DROP_TEMPORARY_SECONDS:
+                    hold(folder, DROP_TEMPORARY_REASON)  # its writer died mid-publish: named, never filed nor removed
                 continue
             try:
                 intent = _mode(path.with_name(f"{path.stem}.group.json"))

@@ -18,6 +18,7 @@ import locale
 from itertools import islice
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
 
@@ -297,10 +298,16 @@ def mode(path) -> int | None:
     A link at the final name is reported as a link, not held, so a caller can hold it by
     its own reason. A link on the way to it is a hold, as everywhere under runtime/post.
     """
+    info = metadata(path)
+    return None if info is None else info.st_mode
+
+
+def metadata(path) -> os.stat_result | None:
+    """The final name's own metadata, as ``mode`` walks to it; None when missing."""
     path = Path(path)
     if not under_post(path):
         try:
-            return path.lstat().st_mode
+            return path.lstat()
         except FileNotFoundError:
             return None
     try:
@@ -309,7 +316,7 @@ def mode(path) -> int | None:
         return None
     try:
         try:
-            return os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode
+            return os.stat(name, dir_fd=parent, follow_symlinks=False)
         except FileNotFoundError:
             return None
     finally:
@@ -468,6 +475,20 @@ def _replace_law_bytes(path, data: bytes) -> None:
     _replace_bytes(path, data, law_record=True, mode=0o666)
 
 
+TEMPORARY_BYTES = 4
+_TEMPORARY = re.compile(r'\.(.+)\.[0-9a-f]{%d}\.tmp' % (2 * TEMPORARY_BYTES), re.DOTALL)
+
+
+def temporary_name(name: str) -> str:
+    """The whole-file publish's temporary beside ``name``: hidden, random, and never a reader's suffix."""
+    return f'.{name}.{secrets.token_hex(TEMPORARY_BYTES)}.tmp'
+
+
+def is_temporary(name: str) -> bool:
+    """Whether a listed name is exactly what ``temporary_name`` writes: one publish still in flight, or cut short."""
+    return _TEMPORARY.fullmatch(name) is not None
+
+
 def _replace_bytes(path, data: bytes, *, law_record: bool, mode: int) -> None:
     """Put data at path through a random exclusive temporary in the held parent directory.
 
@@ -477,7 +498,7 @@ def _replace_bytes(path, data: bytes, *, law_record: bool, mode: int) -> None:
     path = Path(path)
     if not under_post(path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f'.{path.name}.{secrets.token_hex(4)}.tmp')
+        temporary = path.with_name(temporary_name(path.name))
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, mode)
         try:
             try:
@@ -504,7 +525,7 @@ def _replace_bytes(path, data: bytes, *, law_record: bool, mode: int) -> None:
             info = None
         if info is not None and stat.S_ISLNK(info.st_mode):
             _link_held(path)
-        temporary = f'.{name}.{secrets.token_hex(4)}.tmp'
+        temporary = temporary_name(name)
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                              mode, dir_fd=parent)
         try:
