@@ -303,7 +303,8 @@ def running_settings(seat: Seat, *, screen=None) -> dict[str, str]:
 
 
 def service_state(runtime: Path, *, now=None) -> str:
-    """``ok``; ``busy <age> in <duty>`` while its main loop has made no new stamp lately, with ``main loop stuck``
+    """``ok``; ``busy <age> in <duty>`` while its main loop has made no new stamp for servicectl.BUSY_SECONDS, with
+    ``main loop stuck``
     once that passes servicectl.LOOP_STUCK_SECONDS; or ``down`` when no process holds the lock.
 
     The beat, written from a thread of its own, proves only that the process is alive. The main loop's pass stamp,
@@ -321,7 +322,7 @@ def service_state(runtime: Path, *, now=None) -> str:
     pid, age, duty = loop
     if age > service.LOOP_STUCK_SECONDS:
         return f"busy {int(age)}s in {duty}: main loop stuck, nothing is delivered"
-    return f"busy {int(age)}s in {duty}" if age > STALE_SECONDS else "ok"
+    return f"busy {int(age)}s in {duty}" if age > service.BUSY_SECONDS else "ok"
 
 
 @post.reading_pass()

@@ -218,6 +218,7 @@ class Service:
                     self.loop_stamp('drain_accounting')
                     with self.timings().measure('drain_accounting'):
                         self.drain_accounting()
+                    self.loop_stamp('arrivals')
                     arrivals.refresh(self.ship.seats)
                     self.loop_stamp('rest')
                     with self.timings().measure('sleep'):
@@ -298,10 +299,13 @@ class Service:
             self._tick_steps()
         finally:
             self._accounting_tick = False
+            self.loop_stamp('pass_end')
             self.structure_passes.finish()
 
     def _tick_steps(self):
-        # Operational duties keep their order and never wait behind the slice.
+        # Operational duties keep their order and never wait behind the slice. Every stretch of the loop is stamped
+        # under its own name: the drain and the status work between duties too, so neither reads as the duty before.
+        self.loop_stamp('drain')
         self._drain_between_duties()
         for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.deliveries, self.follow, self.requests, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.retire_hand_transcripts, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
@@ -312,7 +316,9 @@ class Service:
                     step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
+            self.loop_stamp('drain')
             self._drain_between_duties()
+            self.loop_stamp('status')
             self.status_due()
             self.timings().publish(self.log)
 

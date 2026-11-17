@@ -42,9 +42,9 @@ def test_a_loop_held_in_one_duty_past_the_bound_reads_busy_and_alerts_once(runti
 
 def test_a_slow_duty_under_the_bound_reads_busy_without_the_alert(runtime):
     beat(runtime, NOW)
-    stamp(runtime, 'deliveries', NOW - timedelta(seconds=servicectl.STALE_SECONDS + 3))
+    stamp(runtime, 'deliveries', NOW - timedelta(seconds=servicectl.BUSY_SECONDS + 3))
     state = watch.service_state(runtime, now=NOW)
-    assert state == f'busy {int(servicectl.STALE_SECONDS) + 3}s in deliveries', state
+    assert state == f'busy {int(servicectl.BUSY_SECONDS) + 3}s in deliveries', state
 
 
 def test_a_pass_that_completes_clears_it(runtime):
@@ -113,3 +113,35 @@ def test_failing_accounting_that_recovers_logs_recovered_once_on_the_production_
     recovered = [fields for event, fields in logged if event == 'accounting-recovered']
     assert len(recovered) == 1 and recovered[0]['failures'] == accounting_health.BOUND, logged
     assert recovered[0]['since'] == '2030-01-01T00:00:00+00:00'
+
+
+def test_routine_status_work_reads_ok_and_names_status_only_past_the_busy_line(runtime):
+    beat(runtime, NOW)
+    stamp(runtime, 'status', NOW - timedelta(seconds=16))  # the status work's usual long run: 14 to 16 s
+    assert watch.service_state(runtime, now=NOW) == 'ok'
+    stamp(runtime, 'status', NOW - timedelta(seconds=servicectl.BUSY_SECONDS + 1))
+    assert watch.service_state(runtime, now=NOW) == f'busy {int(servicectl.BUSY_SECONDS) + 1}s in status'
+
+
+def test_the_work_between_duties_is_named_as_itself_and_the_next_duty_by_its_own_name(tmp_path, monkeypatch):
+    from .test_accounting_slices import world
+    svc, _, _, _ = world(tmp_path, monkeypatch)
+    order = []
+    def duty(name):
+        def run():
+            order.append((name, servicectl.read_pass(svc.runtime)[2]))
+        run.__name__ = name
+        return run
+    for name in ('server_recovery', 'relaunch_intents', 'reconcile', 'file_drops', 'groups', 'cascades', 'fleet_post',
+                 'inboxes', 'views', 'recoveries', 'refusals', 'answers', 'looks', 'jailed_watches',
+                 'write_bound_floor', 'deliveries', 'follow', 'requests', 'compactions', 'output_limits',
+                 'person_quiet', 'fresh_after_order', 'rebrief', 'push_reminders', 'credentials', 'authentications',
+                 'model_differences', 'failover', 'retire_hand_transcripts', 'account', 'refresh_usage',
+                 'pool_forecasts', 'retire_post'):
+        monkeypatch.setattr(svc, name, duty(name))
+    monkeypatch.setattr(svc, '_drain_between_duties', lambda: order.append(('drain', servicectl.read_pass(svc.runtime)[2])))
+    monkeypatch.setattr(svc, 'status_due', lambda: order.append(('status', servicectl.read_pass(svc.runtime)[2])))
+    svc._tick_steps()
+    assert all(seen == name for name, seen in order), [row for row in order if row[0] != row[1]]
+    assert order[:4] == [('drain', 'drain'), ('server_recovery', 'server_recovery'), ('drain', 'drain'),
+                         ('status', 'status')]

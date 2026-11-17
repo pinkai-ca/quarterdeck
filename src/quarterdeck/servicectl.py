@@ -28,6 +28,11 @@ STALE_SECONDS = 10.0  # a tick longer than this reads as busy
 # service log's timings, deliveries at 56.8 s (and the longest whole pass, 184.7 s, is a run of many duties, each
 # stamped as it begins), by a margin of five times.
 LOOP_STUCK_SECONDS = 300.0
+# The main loop's stamp reads busy only past this. The routine status work between duties, the longest stretch a
+# healthy loop stamps, ran a median 4.5 s a call, 12.7 s at the 90th percentile and 17.6 s at the 99th, over 2,699
+# timing rows of 15 to 17 November (its longest call 35.7 s): 30 s sits above the routine run, so an ordinary pass reads
+# ok and only an unusual one reads busy, by its own name. The beat's own staleness stays STALE_SECONDS.
+BUSY_SECONDS = 30.0
 JAILED_HEARTBEAT_SECONDS = 120.0  # inside a jail, which cannot see the lock: a service that ticked this recently is up
 ANSWER_SECONDS = 8.0
 EXIT_SETTLE = 2.0  # after the lock frees, how long stop waits for the kernel to mark the process gone
