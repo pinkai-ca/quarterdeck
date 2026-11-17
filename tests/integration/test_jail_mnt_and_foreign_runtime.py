@@ -356,3 +356,47 @@ print(json.dumps(dict(alpha=listing(os.path.join(project, 'ships', 'alpha', 'run
 """
     seen = run_probe(jail, probe, str(project), path=path)
     assert seen == dict(alpha=None, office=None), seen
+
+
+def test_a_runtime_and_a_test_run_under_this_ships_own_work_folder_keep_their_covers(drydock: Path, tmp_path: Path):
+    """This ship's own folder is not fenced: it is bound back whole, with a workspace in its own work/ bound writable
+    inside it. So a nested ship's runtime and a .testruns there each keep an empty tmpfs of their own, in the planned
+    jail and in the real one, while a peer's runtime inside the fenced ships/ still gets none: the fence hides it."""
+    project = tmp_path / 'project'
+    own_folder = project / 'ships' / 'own'
+    shutil.copytree(drydock, own_folder)
+    workspace = own_folder / 'work' / 'x'
+    nested = workspace / 'nested'
+    (nested / 'runtime' / 'post').mkdir(parents=True)
+    (nested / 'ship.toml').write_text('[ship]\nname = "nested"\n')
+    (nested / 'runtime' / 'post' / 'secret.json').write_text("a nested ship's post")
+    runs = workspace / '.testruns'
+    (runs / 'r').mkdir(parents=True)
+    (runs / 'r' / 'secret.txt').write_text("a test run's scratch")
+    alpha = project / 'ships' / 'alpha'
+    (alpha / 'runtime' / 'post').mkdir(parents=True)
+    (alpha / 'ship.toml').write_text('[ship]\nname = "alpha"\n')
+    (alpha / 'runtime' / 'post' / 'secret.json').write_text("another ship's post")
+    ship = shipmod.load(own_folder)
+    shipmod.fence(ship)
+    own = own_seat(ship)
+    path = os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+    jail = sandbox.plan(ship, 'worker-1', own, own / 'home', workspace, sys.executable, path, home=HOME)
+    covers = {Path(os.path.realpath(cover)) for cover in jail.foreign_runtimes}
+    assert {(nested / 'runtime').resolve(), runs.resolve()} <= covers, jail.foreign_runtimes
+    assert not any(cover.is_relative_to(alpha.resolve()) for cover in covers), 'the fence hides a peer: no cover'
+    argv = sandbox.command(jail, [sys.executable, '-c', 'pass'])
+    tmpfs = {Path(os.path.realpath(argv[i + 1])) for i in range(len(argv) - 1) if argv[i] == '--tmpfs'}
+    assert {(nested / 'runtime').resolve(), runs.resolve()} <= tmpfs
+    probe = r"""
+import json, os, sys
+def listing(path):
+    return sorted(os.listdir(path)) if os.path.isdir(path) else None
+print(json.dumps(dict(nested=listing(sys.argv[1]), runs=listing(sys.argv[2]), alpha=listing(sys.argv[3]),
+                      work=listing(sys.argv[4]))))
+"""
+    seen = run_probe(jail, probe, str(nested / 'runtime'), str(runs), str(alpha / 'runtime'), str(workspace),
+                     path=path)
+    assert seen['nested'] == [] and seen['runs'] == [], 'each is an empty tmpfs inside: nothing of it shows'
+    assert seen['alpha'] is None, "a peer's runtime is absent inside the fence"
+    assert {'nested', '.testruns'} <= set(seen['work']), 'the workspace itself shows'

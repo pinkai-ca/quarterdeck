@@ -299,9 +299,16 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     covered |= {runs for folder in (*folders, workspace) for runs in held_test_runs(folder)}
     # Inside a fenced fleet folder (ships/, office/) another ship's runtime is already absent: the fence is an empty
     # tmpfs holding only this ship's folder and the peers' ship files, read-only once they are in. A cover there would
-    # need a mount point made in that read-only fence, and stop the launch; so it gets none. Only a runtime or a test
-    # run reached through a bound folder that is not fenced gets its own tmpfs.
-    covered = {path for path in covered if not any(path == root or path.is_relative_to(root) for root in fleet)}
+    # need a mount point made in that read-only fence, and stop the launch; so it gets none. This ship's own folder is
+    # not fenced: it is bound back whole, read-only, with a workspace in its own work/ bound writable inside it, so a
+    # runtime or a test run under it keeps its cover, as one reached through any other bound folder does.
+    own = (Path(os.path.normpath(ship.folder)), Path(os.path.realpath(ship.folder)))
+
+    def fenced(path: Path) -> bool:
+        def under(roots) -> bool:
+            return any(path == root or path.is_relative_to(root) for root in roots)
+        return under(fleet) and not under(own)
+    covered = {path for path in covered if not fenced(path)}
     foreign = tuple(sorted(covered, key=lambda r: (len(r.parts), str(r))))
     drop = ship.runtime / "post" / "drop" / seat_name
     post_dir.ensure_directory(drop)  # the one writable post folder, so it must exist before the launch
