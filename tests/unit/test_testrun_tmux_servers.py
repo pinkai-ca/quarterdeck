@@ -30,8 +30,11 @@ def clean_env(tmpdir: Path) -> dict:
     return env
 
 
+SAFETY = 30.0  # seconds a server has to end after SIGTERM before SIGKILL: far above any stall of a busy machine
+
+
 class Servers:
-    """Private servers this test starts, each ended in the end by its own socket (or its kept pid)."""
+    """Private servers this test starts, each ended in the end by the pid it kept (close)."""
 
     def __init__(self):
         self.started = []
@@ -48,18 +51,38 @@ class Servers:
         self.started.append(server)
         return server
 
-    def close(self):
+    def close(self) -> list[str]:
+        """End each server this test started by the pid it kept, never through its socket, which a busy machine may not
+        have made again in time. A pid is signalled only while it is still that server: the same pid with the same
+        start time (procs.alive, which also reads a zombie as ended), read again just before each signal, so a reused
+        pid is never touched, and no other server is. SIGCONT (a stopped one wakes), SIGTERM, a wait on its exit; past
+        SAFETY, SIGKILL. Returns what it did, one line a server, and fails loudly if any is still alive."""
+        done = []
         for server in self.started:
-            if not procs.alive({server['pid']: server['start']}):
+            pid, identity = server['pid'], {server['pid']: server['start']}
+            if not procs.alive(identity):
+                done.append(f'{pid}: already gone')
                 continue
-            os.kill(server['pid'], signal.SIGCONT)
-            os.kill(server['pid'], signal.SIGUSR1)  # a server makes its socket again on SIGUSR1
-            deadline = time.monotonic() + 5
-            while not Path(server['socket']).exists() and time.monotonic() < deadline:
+            for sig in (signal.SIGCONT, signal.SIGTERM):
+                if procs.alive(identity):
+                    os.kill(pid, sig)
+            deadline = time.monotonic() + SAFETY
+            while procs.alive(identity) and time.monotonic() < deadline:
                 time.sleep(0.02)
-            subprocess.run(['tmux', '-S', server['socket'], 'if-shell', '-F', '#{==:#{pid},%d}' % server['pid'],
-                            'kill-server'], env=clean_env(Path('/tmp')), capture_output=True, timeout=5)
+            if not procs.alive(identity):
+                done.append(f'{pid}: ended by SIGTERM')
+                continue
+            os.kill(pid, signal.SIGKILL)
+            for _ in range(250):  # a fixed count, not the clock: SIGKILL cannot be refused, only take a moment
+                if not procs.alive(identity):
+                    break
+                time.sleep(0.02)
+            done.append(f'{pid}: killed past {SAFETY:g}s')
         shutil.rmtree(self.folder, ignore_errors=True)
+        left = [server['pid'] for server in self.started if procs.alive({server['pid']: server['start']})]
+        if left:
+            raise AssertionError(f'test tmux servers still alive after SIGKILL: {left}')
+        return done
 
 
 @pytest.fixture
@@ -182,3 +205,56 @@ def test_a_held_server_holds_the_cleanup_by_name(tmp_path, monkeypatch):
     cleanup = clean._retire_run(root, -1, 'run-synthetic', {})
     assert cleanup['outcome'] == 'held' and 'tmux server' in cleanup['reason'] and removed == []
     assert cleanup['services']['servers'][0]['socket'] == '/tmp/x/s', 'named in the cleanup'
+
+
+# Servers.close() itself: it ends each server by the pid it kept, while that pid is still the same process.
+
+def test_close_ends_a_server_whose_socket_never_reappears(tmp_path):
+    """The socket is gone and cannot be made again (its folder read-only), so the socket route finds nothing: the
+    server must still end, by its own kept pid."""
+    owned = Servers()
+    server = owned.start('lost', tmp_path)
+    try:
+        os.unlink(server['socket'])
+        owned.folder.chmod(0o500)  # SIGUSR1 cannot remake the socket here
+        report = owned.close()
+        assert gone(server), 'a server whose socket never came back outlived its test'
+        assert report == [f"{server['pid']}: ended by SIGTERM"], report
+    finally:
+        owned.folder.chmod(0o700) if owned.folder.exists() else None
+        if not gone(server):
+            os.kill(server['pid'], signal.SIGKILL)
+        shutil.rmtree(owned.folder, ignore_errors=True)
+
+
+def test_close_kills_at_the_safety_bound_a_server_that_does_not_answer(tmp_path, monkeypatch):
+    """A server that never answers SIGTERM (here the SIGTERM is dropped) is killed once the safety bound passes; the
+    stalled clock passes it at once, so there is no real waiting."""
+    from tests.stalled_clock import stall
+    import tests.unit.test_testrun_tmux_servers as module
+    owned = Servers()
+    server = owned.start('deaf', tmp_path)
+    real = os.kill
+    monkeypatch.setattr(module.os, 'kill', lambda pid, sig: None if sig == signal.SIGTERM else real(pid, sig))
+    import time as clock  # the real clock: the module's own is the stalled one
+    stall(monkeypatch, module, reads=4, seconds=module.SAFETY)
+    began = clock.monotonic()
+    try:
+        report = owned.close()
+        assert clock.monotonic() - began < 5, 'no real waiting for the safety bound'
+        assert gone(server) and report == [f"{server['pid']}: killed past {module.SAFETY:g}s"], report
+    finally:
+        monkeypatch.undo()
+        if not gone(server):
+            os.kill(server['pid'], signal.SIGKILL)
+
+
+def test_close_never_signals_a_pid_that_is_now_another_process(monkeypatch):
+    """The kept pid names this test's own process with another start time: a reused pid. Nothing is signalled."""
+    owned = Servers()
+    owned.started.append({'pid': os.getpid(), 'start': 'not-this-start', 'socket': str(owned.folder / 'x')})
+    sent = []
+    import tests.unit.test_testrun_tmux_servers as module
+    monkeypatch.setattr(module.os, 'kill', lambda pid, sig: sent.append((pid, sig)))
+    assert owned.close() == [f'{os.getpid()}: already gone']
+    assert sent == []
