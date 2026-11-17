@@ -553,6 +553,7 @@ class Driver:
     def step(self, service, *, seconds=None, wait=True):
         deadline = time.monotonic() + (BUDGET if seconds is None else seconds)
         before = service.accounting_health.shown()
+        was_active, failed = self.active, False
         self.step_changes = service.ledger.db.total_changes
         try:
             self.reap()  # even a gated step retires the previous pass's exiting child
@@ -704,11 +705,15 @@ class Driver:
                 service.ledger.begin_catchup(service.accounting_epoch, force=True)
             except Exception:
                 pass  # retain the original failure and the last committed progress
+            failed = True
             if service.accounting_health.failed(accounting_health.cause(error), post.now()):
                 service.log('accounting-failing', cause=service.accounting_health.current)
         finally:
             self.gate.own(self.step_changes, service.ledger.db.total_changes)
-            service.publish_accounting_health(force=True)
+            # Written at once only when what the health shows changed, or a job ended or failed in this step; else
+            # the publisher's own once-a-pass rule (service.publish_accounting_health), however many drains step a job.
+            ended = was_active and not self.active
+            service.publish_accounting_health(force=failed or ended or service.accounting_health.shown() != before)
             service.accounting_shown_changed(before)
 
 
