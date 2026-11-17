@@ -4,7 +4,7 @@ No persistent configuration or native parsing. A missing/young/uncertain reading
 grants no reuse. The monotonic backstop also covers inputs metadata cannot see.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from collections import Counter
 import os
 from pathlib import Path
@@ -141,7 +141,8 @@ def admit(service, before, records):
     names = {path for path, _ in added}
     files = tuple(sorted((*before.inputs[0], *added), key=lambda item: Path(item[0])))  # capture's own order
     classes = (*before.classes, *(item for item in fresh.classes if item[0] in names))
-    return Reading((files, *before.inputs[1:]), before.sql, before.checked_at, classes, before.young, before.began)
+    # Every field of 'before' is kept, the non-accounting count included: only its files and their classes grow.
+    return replace(before, inputs=(files, *before.inputs[1:]), classes=classes)
 
 
 def differences(before, after):

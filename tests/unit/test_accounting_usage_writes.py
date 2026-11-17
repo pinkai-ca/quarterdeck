@@ -91,3 +91,28 @@ def test_a_write_to_an_accounting_table_in_the_usage_duty_still_breaks_the_certi
         e.db.execute("INSERT INTO turns VALUES ('ordinary-unowned-record', 'ordinary-alpha')")
         e.db.commit()
     assert e.gate.allowed(e.service) and e.gate.scope is None, 'an accounting table written: the barrier holds'
+
+
+def test_admitting_a_new_record_keeps_the_non_accounting_count_and_the_job_certifies(world):
+    """confirm() admits a record first found while collecting into 'before' (accounting_gate.admit). The reading it
+    gives keeps every field of 'before', the non-accounting count included: with usage rows counted before the job and
+    one more during it, the job still certifies, and no other writer is read where there was none."""
+    from .test_accounting_scoped_jobs import scopes_of
+    e = world
+    e.service.non_accounting_writes = 7  # usage rows the service counted apart before this job
+    alpha = e.inventory[0]
+    new = e.paths['ordinary-alpha'].with_name('ordinary-new-record')
+    new.write_text('Ordinary synthetic native input.\n')
+    alpha['sources'].append((str(new), 'fake', None, False))
+    e.clock.mono += 10_000  # past the backstop: a full job
+    assert e.gate.allowed(e.service) and e.gate.scope is None
+    sources = [path for item in e.inventory for path, *_ in item['sources']]
+    e.gate.configure(e.service, e.inventory, None)
+    e.gate.begin(e.service)  # 'before' is read before collection: the new record is not yet watched
+    assert e.gate.confirm(e.service, sources)
+    assert str(new) in dict(e.gate.started.inputs[0]), 'admitted into before'
+    assert e.gate.started.foreign == 7, 'every field of before kept, the non-accounting count included'
+    usage_write(e, counted=True)
+    e.gate.finish(e.service, e.db.total_changes, full=True, scopes=scopes_of(e.gate))
+    assert e.gate.completed is not None and e.gate.partitions.baseline is not None, 'the job certifies'
+    assert not e.gate.allowed(e.service)
