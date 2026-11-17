@@ -120,61 +120,65 @@ def prompt_text(entry: dict) -> str | None:
 def compactions(record: Path):
     from .compactions import History, read
 
-    def interpret(rows):
-        history, seen = History(), {}
-        native_turn = None
-        for row in rows:
-            if 'isSidechain' in row and type(row['isSidechain']) is not bool:
-                raise ValueError('unknown root history identity')
-            if row.get('isSidechain'):
-                continue
-            kind = row.get('type')
-            if kind == 'ai-title' and not ai_title(row):
-                raise ValueError('unknown title bookkeeping')
-            if kind not in (*_Reader.kinds, *INPUT_IGNORED):
-                raise ValueError('unknown native history')
-            key = row.get('uuid')
-            if key is not None:
-                if not isinstance(key, str) or key in seen:
-                    raise ValueError('duplicate native history identity')
-                parent = row.get('logicalParentUuid') or row.get('parentUuid')
-                if parent is not None and parent not in seen:
-                    raise ValueError('missing native parent history')
-                if history.conversation is None:
-                    if kind != 'user' or prompt_text(row) is None or 'parentUuid' not in row or row['parentUuid'] is not None:
-                        raise ValueError('native origin missing')
-                    history.conversation = row['sessionId']
-                    history.origin = when(row.get('timestamp'))
-                    if not isinstance(history.conversation, str) or not history.conversation:
-                        raise ValueError('native identity missing')
-                if row.get('sessionId') != history.conversation:
-                    raise ValueError('mixed native conversation')
-                seen[key] = parent
-            elif kind in ('user', 'assistant') or row.get('subtype') == 'compact_boundary':
-                raise ValueError('native identity missing')
-            if kind == 'system' and row.get('subtype') == 'compact_boundary':
-                metadata = row.get('compactMetadata')
-                if not isinstance(metadata, dict) or metadata.get('trigger') not in ('auto', 'manual'):
-                    raise ValueError('unknown compaction boundary')
-                history.count += 1
-                history.work(row)
-            elif kind == 'system' and row.get('subtype') == 'turn_duration':
-                ancestor = key
-                while ancestor is not None and ancestor != native_turn:
-                    ancestor = seen.get(ancestor)
-                history.complete = native_turn is not None and ancestor == native_turn
-            elif kind == 'user' and prompt_text(row) is not None:
-                history.work(row, turn=True)
-                native_turn = key
-            elif kind == 'queue-operation' and row.get('operation') == 'enqueue':
-                history.work(row)
-            elif kind == 'assistant':
-                for block in row.get('message', {}).get('content', []):
-                    if block.get('type') == 'tool_use':
-                        history.work(dict(row=key, call=block), call=block.get('id'))
-        return history
+    class Interpret:
+        """The compaction history, fed rows in turn and kept with the record, so an append feeds only its new
+        rows (compactions.read); a row it refuses refuses the history, which then stays refused."""
 
-    return read(record, interpret, _Reader)
+        def __init__(self):
+            self.history, self.seen, self.native_turn = History(), {}, None
+
+        def feed(self, rows):
+            for row in rows:
+                if 'isSidechain' in row and type(row['isSidechain']) is not bool:
+                    raise ValueError('unknown root history identity')
+                if row.get('isSidechain'):
+                    continue
+                kind = row.get('type')
+                if kind == 'ai-title' and not ai_title(row):
+                    raise ValueError('unknown title bookkeeping')
+                if kind not in (*_Reader.kinds, *INPUT_IGNORED):
+                    raise ValueError('unknown native history')
+                key = row.get('uuid')
+                if key is not None:
+                    if not isinstance(key, str) or key in self.seen:
+                        raise ValueError('duplicate native history identity')
+                    parent = row.get('logicalParentUuid') or row.get('parentUuid')
+                    if parent is not None and parent not in self.seen:
+                        raise ValueError('missing native parent history')
+                    if self.history.conversation is None:
+                        if kind != 'user' or prompt_text(row) is None or 'parentUuid' not in row or row['parentUuid'] is not None:
+                            raise ValueError('native origin missing')
+                        self.history.conversation = row['sessionId']
+                        self.history.origin = when(row.get('timestamp'))
+                        if not isinstance(self.history.conversation, str) or not self.history.conversation:
+                            raise ValueError('native identity missing')
+                    if row.get('sessionId') != self.history.conversation:
+                        raise ValueError('mixed native conversation')
+                    self.seen[key] = parent
+                elif kind in ('user', 'assistant') or row.get('subtype') == 'compact_boundary':
+                    raise ValueError('native identity missing')
+                if kind == 'system' and row.get('subtype') == 'compact_boundary':
+                    metadata = row.get('compactMetadata')
+                    if not isinstance(metadata, dict) or metadata.get('trigger') not in ('auto', 'manual'):
+                        raise ValueError('unknown compaction boundary')
+                    self.history.count += 1
+                    self.history.work(row)
+                elif kind == 'system' and row.get('subtype') == 'turn_duration':
+                    ancestor = key
+                    while ancestor is not None and ancestor != self.native_turn:
+                        ancestor = self.seen.get(ancestor)
+                    self.history.complete = self.native_turn is not None and ancestor == self.native_turn
+                elif kind == 'user' and prompt_text(row) is not None:
+                    self.history.work(row, turn=True)
+                    self.native_turn = key
+                elif kind == 'queue-operation' and row.get('operation') == 'enqueue':
+                    self.history.work(row)
+                elif kind == 'assistant':
+                    for block in row.get('message', {}).get('content', []):
+                        if block.get('type') == 'tool_use':
+                            self.history.work(dict(row=key, call=block), call=block.get('id'))
+
+    return read(record, Interpret, _Reader)
 
 
 class _TextlessDequeue:

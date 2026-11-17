@@ -52,6 +52,7 @@ class _Snapshot:
     readers: dict = field(default_factory=dict)
     inputs: dict = field(default_factory=dict)
     compactions: dict = field(default_factory=dict)
+    interpreters: dict = field(default_factory=dict)  # each reader's compaction history: (interpreter, rows, refusal)
     prefix_bytes: int = 0  # bytes up to the last newline
     prefix_sha256: object = None  # a sha256 over those bytes: its digest proves a later prefix, its copy extends it
     total_bytes: int = 0
@@ -234,6 +235,15 @@ def _carry(cached: _Snapshot, entry: _Snapshot, added: list, skipped: list) -> N
             reader.tools_known = False  # as read_snapshot does for a newly skipped line
         reader.take_rows(row for _, row in added)
         entry.readers[cls] = reader, entry.row_count, len(entry.skipped)
+    for reader, (interpreter, count, refused) in cached.interpreters.items():
+        if count != cached.row_count:
+            continue
+        if refused is None and not skipped:
+            try:
+                interpreter.feed(row for _, row in added)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                refused = 'native compaction history unreadable or incomplete'
+        entry.interpreters[reader] = interpreter, entry.row_count, refused or ('skipped lines' if skipped else None)
     for read, (result, count, seen, relevant) in cached.inputs.items():
         if (count == cached.row_count and seen == len(cached.skipped) and not skipped
                 and not any(relevant(row) for _, row in added)):
@@ -343,6 +353,7 @@ def _parse_text(record: Path, data: bytes, stamp, certified, cached) -> _Snapsho
                        last_row=rows[-1] if rows else None)
     if cached is not None and cached.complete_end == len(cached.raw) and offset == len(cached.raw) and raw.endswith('\n'):
         result.readers, result.inputs = dict(cached.readers), dict(cached.inputs)
+        result.interpreters = dict(cached.interpreters)
     _store(record, result)
     return result
 

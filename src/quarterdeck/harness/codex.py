@@ -78,47 +78,52 @@ class EditorBox(Box):
 def compactions(record: Path):
     from .compactions import History, identity, read
 
-    def interpret(rows):
-        history, checkpoints = History(), set()
-        native_turn = None
-        for index, row in enumerate(rows):
-            kind, payload = row.get('type'), row.get('payload')
-            if not isinstance(payload, dict):
-                raise ValueError('unknown native history')
-            sub = payload.get('type')
-            if kind == 'session_meta':
-                if index != 0 or any(payload.get(key) is not None for key in
-                                     ('forked_from_id', 'history_base', 'parent_thread_id', 'subagent_history_start_ordinal')):
-                    raise ValueError('native origin not complete')
-                history.conversation = payload['id']
-                history.origin = when(row.get('timestamp'))
-                if not isinstance(history.conversation, str) or payload.get('session_id', history.conversation) != history.conversation:
-                    raise ValueError('native identity missing')
-            elif history.conversation is None:
-                raise ValueError('native header missing')
-            elif kind == 'compacted':
-                key = identity(row)
-                if not isinstance(payload.get('message'), str) or key in checkpoints:
-                    raise ValueError('ambiguous checkpoint')
-                checkpoints.add(key)
-                history.count += 1
-                history.work(row)
-            elif kind == 'event_msg' and sub == 'task_started':
-                history.work(row, turn=True)
-                native_turn = payload.get('turn_id')
-            elif kind == 'event_msg' and sub == 'task_complete':
-                history.complete = isinstance(native_turn, str) and bool(native_turn) and payload.get('turn_id') == native_turn
-            elif kind == 'event_msg' and sub in ENDS_TURN:
-                history.work(row)  # an abort invalidates readiness; it is not the promised completion
-            elif kind == 'response_item' and sub in CALLS:
-                history.work(row, call=payload.get('call_id'))
-            elif kind == 'response_item' and sub == 'message' and payload.get('role') == 'user':
-                history.work(row)
-            elif kind not in ('response_item', 'event_msg', 'turn_context', *INPUT_IGNORED):
-                raise ValueError('unknown native history')
-        return history
+    class Interpret:
+        """The compaction history, fed rows in turn and kept with the record, so an append feeds only its new
+        rows (compactions.read); a row it refuses refuses the history, which then stays refused."""
 
-    return read(record, interpret, _Reader)
+        def __init__(self):
+            self.history, self.checkpoints, self.native_turn, self.index = History(), set(), None, 0
+
+        def feed(self, rows):
+            for row in rows:
+                index, self.index = self.index, self.index + 1
+                kind, payload = row.get('type'), row.get('payload')
+                if not isinstance(payload, dict):
+                    raise ValueError('unknown native history')
+                sub = payload.get('type')
+                if kind == 'session_meta':
+                    if index != 0 or any(payload.get(key) is not None for key in
+                                         ('forked_from_id', 'history_base', 'parent_thread_id', 'subagent_history_start_ordinal')):
+                        raise ValueError('native origin not complete')
+                    self.history.conversation = payload['id']
+                    self.history.origin = when(row.get('timestamp'))
+                    if not isinstance(self.history.conversation, str) or payload.get('session_id', self.history.conversation) != self.history.conversation:
+                        raise ValueError('native identity missing')
+                elif self.history.conversation is None:
+                    raise ValueError('native header missing')
+                elif kind == 'compacted':
+                    key = identity(row)
+                    if not isinstance(payload.get('message'), str) or key in self.checkpoints:
+                        raise ValueError('ambiguous checkpoint')
+                    self.checkpoints.add(key)
+                    self.history.count += 1
+                    self.history.work(row)
+                elif kind == 'event_msg' and sub == 'task_started':
+                    self.history.work(row, turn=True)
+                    self.native_turn = payload.get('turn_id')
+                elif kind == 'event_msg' and sub == 'task_complete':
+                    self.history.complete = isinstance(self.native_turn, str) and bool(self.native_turn) and payload.get('turn_id') == self.native_turn
+                elif kind == 'event_msg' and sub in ENDS_TURN:
+                    self.history.work(row)  # an abort invalidates readiness; it is not the promised completion
+                elif kind == 'response_item' and sub in CALLS:
+                    self.history.work(row, call=payload.get('call_id'))
+                elif kind == 'response_item' and sub == 'message' and payload.get('role') == 'user':
+                    self.history.work(row)
+                elif kind not in ('response_item', 'event_msg', 'turn_context', *INPUT_IGNORED):
+                    raise ValueError('unknown native history')
+
+    return read(record, Interpret, _Reader)
 
 
 def records(home: Path) -> list[Path]:

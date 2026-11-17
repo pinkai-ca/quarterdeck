@@ -9,7 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .json_record import _parsed, _read_lock, snapshot_bytes
+from .json_record import _entry, _parsed, _read_lock, _snapshots, snapshot_bytes
 from .types import State
 
 
@@ -58,16 +58,32 @@ class History:
             self.last_call = call
 
 
-def read(record: Path, interpret, reader) -> Compactions:
+def read(record: Path, interpreter, reader) -> Compactions:
+    """The record's compaction reading. ``interpreter()`` makes the adapter's history, fed rows in turn; it is kept
+    with the record (json_record's ``interpreters``) and fed only the rows an append adds, so a changed record is not
+    interpreted whole again. A history it refused stays refused until the record is rewritten."""
     try:
         with _read_lock:
             parsed = _parsed(record)
             if reader in parsed.compactions:
                 return parsed.compactions[reader]
-            raw = snapshot_bytes(parsed)  # whole: a changed record is digested and interpreted whole (see json_record)
+            raw = snapshot_bytes(parsed)  # this reading's bytes, in hand: digested whole, never parsed for it
             if not raw or not raw.endswith(b'\n') or parsed.skipped:
                 raise ValueError('incomplete or malformed native history')
-            history = interpret([row for _, row in parsed.rows])
+            kept = parsed.interpreters.get(reader)
+            if kept is None or kept[1] > len(parsed.rows):
+                kept = interpreter(), 0, None
+            interpret, count, refused = kept
+            if refused is None:
+                try:
+                    interpret.feed(row for _, row in parsed.rows[count:])
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    refused = 'native compaction history unreadable or incomplete'
+            if _snapshots.get(Path(record)) is _entry(parsed) and parsed.ends_newline:
+                parsed.interpreters[reader] = interpret, len(parsed.rows), refused
+            if refused is not None:
+                raise ValueError(refused)
+            history = interpret.history
             if not history.conversation or not history.turn or history.origin is None:
                 raise ValueError('native conversation origin not proved')
             state, _ = reader.read_snapshot(record, parsed)
