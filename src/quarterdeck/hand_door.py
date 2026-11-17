@@ -23,11 +23,21 @@ def order_in_hand(store: post.Store, name: str, refused=None) -> post.Message | 
     """The hand's oldest open order or question, less those its provider refused; None when nothing is open."""
     if refused is None:
         from . import refusal
-        refused = refusal.excluded(store.dir.parent.parent, name)
-    open_ = sorted((message for message in store.for_seat(name)
-                    if message.obligation and message.id not in refused and store.is_open(message)),
-                   key=lambda message: (message.at, message.id))
-    return open_[0] if open_ else None
+        refused = post.reading_value('hand-refused', (store.dir.absolute(), name),
+                                     lambda: refusal.excluded(store.dir.parent.parent, name))
+
+    def read():
+        open_ = sorted((message for message in store.for_seat(name)
+                        if message.obligation and message.id not in refused and store.is_open(message)),
+                       key=lambda message: (message.at, message.id))
+        return open_[0] if open_ else None
+    # Once per seat within one reading pass (a status collection), as for_seat is; read afresh outside one.
+    return post.reading_value('hand-order', (store.dir.absolute(), name, frozenset(refused)), read)
+
+
+def _by_id(store: post.Store) -> dict[str, post.Message]:
+    """The store's messages by id: once per reading pass, not once per message held."""
+    return post.reading_value('hand-by-id', store.dir.absolute(), lambda: {each.id: each for each in store.all()})
 
 
 def belongs(message: post.Message, order: post.Message, by_id: dict[str, post.Message]) -> bool:
@@ -50,7 +60,7 @@ def held(seat, store: post.Store, attempts: post.Attempts, message: post.Message
     order = order_in_hand(store, seat.name)
     if order is None:
         return None
-    by_id = {each.id: each for each in store.all()}
+    by_id = _by_id(store)
     if not belongs(message, order, by_id):
         return f'waits: its order in hand {order.short} is open' if message.obligation else None
     launched = seat.launched()
