@@ -852,6 +852,10 @@ def _post_listing(ship, store):
     extra = _imports_hold(ship.runtime)
     if extra and extra not in holds:
         holds.append(extra)
+    from . import pane_obstruction
+    for line in pane_obstruction.held_links(ship.runtime):
+        if line not in holds:
+            holds.append(line)
     return store, holds
 
 

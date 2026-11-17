@@ -325,6 +325,10 @@ class Door:
                 return reason if pane is not None else f"last failed paste: {reason}"
         except (OSError, ValueError, KeyError, TypeError, AttributeError, TmuxError):
             pass  # optional diagnostic unknown; the ordinary admission reading is unchanged
+        except ShipError as error:
+            if not pane_obstruction.link_held(error):
+                raise
+            # a link at the marker: unknown, as above; the status line names it (pane_obstruction.held_links)
         return None
 
     def human_obstruction(self) -> tuple[Reading, str | None]:

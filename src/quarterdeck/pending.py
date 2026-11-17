@@ -171,6 +171,10 @@ class Proof:
                 pane_obstruction.transitioned(self.path, merged)
             except OSError:
                 pass  # optional reason cleanup can neither block nor settle this journal
+            except ShipError as error:
+                if not pane_obstruction.link_held(error):
+                    raise
+                # a link at the marker: left as it is, never followed or removed; the status line names it
 
     @classmethod
     def begin(cls, seat: Seat, attempt: post.Attempt, text: str, *, before_paste: bool = False,

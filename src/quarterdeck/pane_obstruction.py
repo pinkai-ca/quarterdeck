@@ -19,6 +19,51 @@ def marker_path(journal: Path) -> Path:
     return journal.parent / NAME  # not a journal's .json suffix
 
 
+def link_held(error: BaseException) -> bool:
+    """Whether a refusal is the post folder's link hold, and that refusal only. At the marker, the door's optional
+    diagnostic, it reads as unknown: a planted link neither breaks a reading nor escapes a written journal. The link
+    is named on the status line (held_links), never followed or removed."""
+    return isinstance(error, ShipError) and str(error).startswith(post_dir.LINK_HELD)
+
+
+def held_links(runtime: Path) -> list[str]:
+    """Each seat's marker that is a link, named as the post folder names a link. Read-only and no-follow: a seat's
+    pending folder that is itself a link is named the same way. The pending walk lists only journals, so without
+    this a link at a marker would be named nowhere."""
+    names = []
+    try:
+        root = post_dir.open_directory(runtime / 'post' / 'pending', create=False)
+    except FileNotFoundError:
+        return names
+    except ShipError as error:
+        return [str(error)] if link_held(error) else names
+    except OSError:
+        return names
+    try:
+        seats = sorted(os.listdir(root))
+    finally:
+        os.close(root)
+    for seat in seats:
+        folder = runtime / 'post' / 'pending' / seat
+        try:
+            descriptor = post_dir.open_directory(folder, create=False)
+        except ShipError as error:
+            if link_held(error):
+                names.append(str(error))
+            continue
+        except OSError:
+            continue  # a journal file at this level, or a folder gone: not a marker's place
+        try:
+            info = os.stat(NAME, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                names.append(f'{post_dir.LINK_HELD}{folder / NAME}')
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
+    return names
+
+
 def _read(path: Path, limit: int | None = None):
     if not post_dir.under_post(path):
         try:
