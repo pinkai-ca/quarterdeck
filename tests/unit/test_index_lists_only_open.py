@@ -6,6 +6,8 @@ place a jail lets it write; the receipt is what an unjailed qd takes from it int
 """
 
 import json
+
+import pytest
 from datetime import datetime, timedelta
 
 from quarterdeck import post, post_reads, post_threads, trusted_files
@@ -126,3 +128,92 @@ def test_the_service_pass_receipts_a_claim_into_the_trusted_folder(world):
     assert post_reads.receipts_path(world.ship.runtime, 'builder').parent == trusted_files.folder(
         world.ship.runtime, 'builder')
     assert not post_reads.path(world.ship.runtime, 'builder').exists()
+
+
+# -- a claim that cannot be taken never stops a launch or a pass, and is logged once while it stands ---------------
+
+def logged(world):
+    log = world.ship.runtime / 'log' / 'service.jsonl'
+    lines = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    return [line for line in lines if line.get('step') == 'thread-reads']
+
+
+def a_pass(world):
+    from quarterdeck.service import Service
+    service = type('Pass', (), {})()
+    service.ship, service.runtime, service.store = world.ship, world.ship.runtime, world.store
+    service.log = lambda event, **data: logged_by_service.append((event, data))
+    logged_by_service = []
+    Service._take_thread_reads(service)
+    Service._take_thread_reads(service)
+    return logged_by_service
+
+
+def plant(world, kind, monkeypatch):
+    """What a jailed seat can put at its claim's name: a link, a FIFO, an oversize file."""
+    import os
+    claim = post_reads.path(world.ship.runtime, 'builder')
+    claim.parent.mkdir(parents=True, exist_ok=True)
+    if kind == 'link':
+        elsewhere = world.ship.runtime.parent / 'elsewhere.json'
+        elsewhere.write_text(json.dumps(dict(format=1, seat='builder', read={})))
+        claim.symlink_to(elsewhere)
+    elif kind == 'fifo':
+        os.mkfifo(claim)
+    else:
+        monkeypatch.setattr(post_reads, 'LIMIT', 256)  # the bound, made small: the same refusal as a 17 MiB claim
+        claim.write_text(json.dumps(dict(format=1, seat='builder', read={'x' * 300: 'synthetic'})))
+    return claim, os.lstat(claim)
+
+
+@pytest.mark.parametrize('kind', ['link', 'fifo', 'oversize'])
+def test_a_claim_that_cannot_be_read_is_left_and_logged_once_and_never_stops_a_launch(world, kind, monkeypatch):
+    import os
+    answer, _ = indexed(world, 'answer')
+    claim, before = plant(world, kind, monkeypatch)
+    assert answer.id in rows(world), "the launch's index is built, without the claim"
+    assert answer.id in rows(world)
+    assert a_pass(world) == [], 'the take refused it itself: no error escaped to the pass'
+    assert not post_reads.receipts_path(world.ship.runtime, 'builder').exists(), 'nothing receipted'
+    after = os.lstat(claim)
+    assert (after.st_mode, after.st_ino) == (before.st_mode, before.st_ino), 'the claim is left in place'
+    [line] = logged(world)
+    assert line['seat'] == 'builder' and 'left in place' in line['error'], 'logged once while it stands'
+
+
+def test_a_claim_replaced_by_a_folder_before_its_removal_receipts_nothing(world, monkeypatch, capsys):
+    answer, _ = indexed(world, 'answer')
+    assert command(world, answer.id) == 0
+    capsys.readouterr()
+    claim = post_reads.path(world.ship.runtime, 'builder')
+    real = post_reads._load
+
+    def swapped(target, seat):
+        data = real(target, seat)
+        if target == claim:
+            claim.unlink()
+            claim.mkdir()  # the seat swaps its claim for a folder between the reading and the removal
+        return data
+    monkeypatch.setattr(post_reads, '_load', swapped)
+    assert answer.id in rows(world), 'the launch is built; the reading is not receipted'
+    monkeypatch.setattr(post_reads, '_load', real)
+    assert a_pass(world) == []
+    assert not post_reads.receipts_path(world.ship.runtime, 'builder').exists()
+    assert claim.is_dir(), 'left where it is'
+    [line] = logged(world)
+    assert 'cannot be removed' in line['error']
+    claim.rmdir()  # the seat mends its folder: the refusal is settled, and a new one would be logged again
+    rows(world)
+    assert not (world.ship.runtime / 'trusted' / 'builder' / post_reads.REFUSED).exists()
+
+
+def test_a_take_that_fails_outright_never_stops_a_launch_and_a_pass_logs_it_once(world, monkeypatch):
+    answer, _ = indexed(world, 'answer')
+
+    def broken(*args, **kwargs):
+        raise RuntimeError('synthetic take failure')
+    monkeypatch.setattr(post_reads, 'take', broken)
+    assert answer.id in rows(world) and answer.id in rows(world), 'the launch is built without it'
+    assert len(logged(world)) == 1, "the launch's guard logs it once"
+    assert [event for event, data in a_pass(world) if data['seat'] == 'builder'] == ['error'], \
+        'two passes, one line while it stands'

@@ -1179,8 +1179,11 @@ class Seat:
         with post.admission(self.ship.runtime, self.name):
             # law: context-is-cache -- what the seat printed whole with qd thread is receipted here, by this unjailed
             # qd, before the index is built, so a reading made before this launch is dated before it.
-            post_reads.take(self.ship.runtime, self.name, lambda: (
-                message.id for message in store.all() if self.name in (message.sender, message.to)))
+            try:
+                post_reads.take(self.ship.runtime, self.name, lambda: (
+                    message.id for message in store.all() if self.name in (message.sender, message.to)))
+            except Exception as error:  # a claim never stops a launch: the index is built without it
+                post_reads.refused(self.ship.runtime, self.name, f'taking its claim failed ({error!r})')
             try:
                 refused = refusal.excluded(self.ship.runtime, self.name)
             except refusal.JournalError as error:

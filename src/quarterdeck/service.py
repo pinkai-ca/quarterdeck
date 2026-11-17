@@ -1196,14 +1196,20 @@ class Service:
 
     def _take_thread_reads(self) -> None:
         """Receipt what each seat's qd thread claims it printed whole: the service, unjailed, writes the receipt into
-        the seat's trusted folder, which no jail sees. A seat with no claim costs one lstat."""
+        the seat's trusted folder, which no jail sees. A seat with no claim costs one lstat. A claim that cannot be
+        taken is logged once while it stands (post_reads.refused); so is an error of the take itself, here."""
         from . import post_reads
+        logged = self.__dict__.setdefault("thread_read_errors", {})
         for name in self.ship.seats:
             try:
                 post_reads.take(self.runtime, name, lambda name=name: (
                     message.id for message in self.store.all() if name in (message.sender, message.to)))
-            except Exception as error:  # one seat's claim never stops the filing of another's
-                self.log("error", step="thread-reads", seat=name, error=repr(error))
+            except Exception as error:  # one seat's claim never stops the filing of another's; logged once
+                if logged.get(name) != repr(error):
+                    logged[name] = repr(error)
+                    self.log("error", step="thread-reads", seat=name, error=repr(error))
+                continue
+            logged.pop(name, None)
 
     def _drop_names(self, seat: str) -> set[str]:
         """The names in a seat's drop, by the post folder's no-follow listing, bounded as the filing's own window is,

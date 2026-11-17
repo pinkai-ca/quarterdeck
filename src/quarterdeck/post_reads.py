@@ -133,36 +133,73 @@ def record(runtime: Path, seat: str, identifiers) -> None:
 
 
 TAKE_WAIT = 0.5  # the seat's own processes can hold its lock: a take that cannot have it waits for the next pass
+REFUSED = 'thread-reads-refused.txt'  # in the trusted folder: a refusal is logged, until a take settles the claim
+
+
+def refused(runtime: Path, seat: str, reason: str) -> None:
+    """Log one seat's claim that could not be taken, once while it stands, from the service or a launch alike.
+
+    The claim lies in a folder the seat's jail writes: what is there is the seat's to mend, and nothing of it stops
+    a launch or a pass. The words go to the service's log, as the service writes its own."""
+    marker = trusted_files.path(runtime, seat, REFUSED)
+    if marker.exists():
+        return  # logged already, in the words it first had: a claim's next refusal is the same fault until a take settles
+    log = Path(runtime) / 'log' / 'service.jsonl'
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open('a') as stream:
+            stream.write(json.dumps({'at': datetime.now().astimezone().isoformat(timespec='seconds'), 'event': 'error',
+                                     'step': 'thread-reads', 'seat': seat, 'error': reason}) + '\n')
+        durable.replace_file(marker, reason)
+    except OSError:
+        pass  # an unwritable log or marker costs a repeated line, never the launch or the pass
+
+
+def _settled(runtime: Path, seat: str) -> None:
+    try:
+        trusted_files.path(runtime, seat, REFUSED).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def take(runtime: Path, seat: str, party) -> int:
     """Move the seat's claim into its receipts; the number of messages receipted. Run only by an unjailed qd.
 
     ``party()`` gives the messages the seat sent or received, read only when there is a claim to take: a claimed id
-    outside them is dropped. Each receipt is
-    stamped with the claimed moment, never later than now; a later reading of the same message moves its stamp on.
-    Nothing is taken where the seat's trusted folder is absent: a jail shows an empty one in its place, so a take
-    made inside a jail would write where no reader looks. An unreadable claim is left as it is, and qd thread names
-    it at its next reading; an unreadable receipts file is left as it is, and counts for nothing."""
+    outside them is dropped. Each receipt is stamped with the claimed moment, never later than now; a later reading
+    of the same message moves its stamp on. Nothing is taken where the seat's trusted folder is absent: a jail shows
+    an empty one in its place, so a take made inside a jail would write where no reader looks.
+
+    A claim that cannot be taken (a link, a FIFO, a folder or an oversize file at its name, unreadable contents, a
+    lock held past the wait, or one replaced before it is removed) is left where it is, receipts nothing and returns
+    0; it is logged once while it stands (``refused``). The claim is removed before its receipts are written, so a
+    claim that cannot be removed receipts nothing."""
     target, receipts = path(runtime, seat), receipts_path(runtime, seat)
     if not receipts.parent.is_dir():
         return 0
     try:
         os.lstat(target)
     except FileNotFoundError:
+        _settled(runtime, seat)
+        return 0
+    except OSError as error:
+        refused(runtime, seat, f'its claim cannot be read ({type(error).__name__}); left in place')
         return 0
     try:
         descriptor = _locked(target, TAKE_WAIT)
-    except (ShipError, OSError):
+    except (ShipError, OSError) as error:
+        refused(runtime, seat, f"its claim's lock cannot be taken ({type(error).__name__}); left in place")
         return 0
     try:
         try:
             claim = _load(target, seat)
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, ShipError) as error:
+            refused(runtime, seat, f'its claim is unreadable ({type(error).__name__}: {error}); left in place')
             return 0
         try:
             kept = _load(receipts, seat)
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, ShipError) as error:
+            refused(runtime, seat, f'its receipts are unreadable ({type(error).__name__}); its claim is left in place')
             return 0
         now = datetime.now().astimezone()
         party = frozenset(party())
@@ -181,8 +218,17 @@ def take(runtime: Path, seat: str, party) -> int:
                     pass
             kept[identifier] = moment.isoformat()
             taken += 1
-        _write(receipts, seat, kept)
-        os.unlink(target)  # the claim is spent; the lock beside it stays the seat's
+        try:
+            os.unlink(target)  # spent first; the lock beside it stays the seat's
+        except (OSError, ShipError) as error:
+            refused(runtime, seat, f'its claim cannot be removed ({type(error).__name__}); left in place, nothing receipted')
+            return 0
+        try:
+            _write(receipts, seat, kept)
+        except (OSError, ShipError) as error:
+            refused(runtime, seat, f'its receipts cannot be written ({type(error).__name__}); that reading is not receipted')
+            return 0
+        _settled(runtime, seat)
         return taken
     finally:
         os.close(descriptor)
