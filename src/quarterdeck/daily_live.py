@@ -8,6 +8,7 @@ a check costs about 3% of its week, and the Admiral decides.
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sqlite3
@@ -17,7 +18,7 @@ import stat
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from . import check_capacity, durable, harness as harnesses, post, program_use, ship as shipmod
@@ -29,6 +30,7 @@ MUSE_LINE = (
     "Muse was skipped: a check costs it about 3% of its week, so the Admiral decides about Muse"
 )
 WHEN = "23:00:00"  # the civil day is the one ending; the machine's zone, never a named zone
+REPORTED = "daily-live-reported"  # in the ship's runtime: the latest civil day whose report is filed
 OUTPUT_LIMIT = 2000
 
 TIMER = f"""\
@@ -121,6 +123,36 @@ def _aware(moment: datetime) -> datetime:
     if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
         raise ShipError("the daily live clock needs a timezone")
     return moment
+
+
+def covered_day(moment: datetime) -> datetime:
+    """The latest civil day whose 23:00 has passed, at its 23:00 in ``moment``'s zone.
+
+    The timer is persistent, so a 23:00 the machine missed runs on its next start, after
+    midnight: that catch-up covers the day that ended, never the day just begun.
+    """
+    moment = _aware(moment)
+    hour, minute, second = (int(part) for part in WHEN.split(":"))
+    day = moment.date()
+    if moment.time().replace(tzinfo=None) < time(hour, minute, second):
+        day -= timedelta(days=1)
+    return datetime.combine(day, time(hour, minute, second), tzinfo=moment.tzinfo)
+
+
+def last_reported(ship: Ship) -> tuple[date, str] | None:
+    """The latest civil day this ship's daily live test has filed a report for, and that report's id."""
+    path = ship.runtime / REPORTED
+    try:
+        data = json.loads(path.read_text())
+        day, report = date.fromisoformat(data["day"]), data["report"]
+        if not isinstance(report, str):
+            raise ValueError
+        return day, report
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError, KeyError):
+        raise ShipError(f"{path}: the daily live test's record of its last reported day is unreadable; "
+                        "nothing was run, so no day is reported twice") from None
 
 
 def classify(row: dict, *, history_known: bool, day: datetime) -> str:
@@ -373,9 +405,16 @@ def desk_name(ship: Ship) -> str:
 
 def run(ship: Ship, *, now: datetime | None = None, readings=None, history_error: str | None = None,
         runner=None, scratch: Path | None = None, qd: str | None = None):
-    """Check what the day did not show as used, then one report to the desk. Returns the message and whether any check failed."""
-    moment = _aware(now if now is not None else current_time())
+    """Check what the covered day did not show as used, then one report to the desk.
+
+    The day is ``covered_day``. A day already reported is not run again: nothing is checked
+    or filed, and the message is None. Returns the message and whether any check failed.
+    """
+    moment = covered_day(now if now is not None else current_time())
     to = desk_name(ship)
+    reported = last_reported(ship)
+    if reported is not None and reported[0] >= moment.date():
+        return None, False
     if readings is None:
         from .seat import seats
         readings, history_error = program_use.collect(ship, seats(ship, Tmux.for_ship(ship), False))
@@ -411,6 +450,9 @@ def run(ship: Ship, *, now: datetime | None = None, readings=None, history_error
         report_body(moment, choices, results, history_error),
         subject="Daily live test",
     )
+    # Recorded once the report is filed: a cut between the two can repeat a report, never lose one.
+    durable.replace_file(ship.runtime / REPORTED,
+                         json.dumps({"day": moment.date().isoformat(), "report": message.id}) + "\n")
     failed = any((item.exit_code != 0 or item.retained) and not item.not_tested for item in results.values())
     return message, failed
 

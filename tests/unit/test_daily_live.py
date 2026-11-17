@@ -286,3 +286,108 @@ def test_the_live_checks_last_place_is_the_systems_tmp_whatever_tmpdir_says(monk
     assert daily_live.open_private(blocked / 'ship-parent') == 'server'
     assert tried[-1] == Path('/tmp') / f'qd-live-tmux-{os.getuid()}'
     assert not any(bound in (place, *place.parents) for place in tried)
+
+
+# A persistent timer runs a missed 23:00 on the machine's next start, after midnight.
+CATCH_UP = datetime(2026, 11, 15, 7, 0, tzinfo=ZONE)
+LATE_YESTERDAY = datetime(2026, 11, 14, 22, 30, tzinfo=ZONE).isoformat()  # the day that ended
+EARLY_TODAY = datetime(2026, 11, 15, 6, 0, tzinfo=ZONE).isoformat()  # after midnight, before the run
+
+
+def counting():
+    calls = []
+
+    def runner(origin, program, root, qd):
+        calls.append(program)
+        return daily_live.CheckRun(program, 0, "stood in")
+    return calls, runner
+
+
+def no_readings(*args, **kwargs):
+    raise AssertionError("a day already reported reads nothing")
+
+
+@pytest.mark.parametrize("moment, day", [
+    (datetime(2026, 11, 15, 7, 0, tzinfo=ZONE), "2026-11-14"),
+    (datetime(2026, 11, 15, 0, 0, tzinfo=ZONE), "2026-11-14"),
+    (datetime(2026, 11, 15, 22, 59, 59, 999999, tzinfo=ZONE), "2026-11-14"),
+    (datetime(2026, 11, 15, 23, 0, tzinfo=ZONE), "2026-11-15"),
+    (datetime(2026, 11, 15, 23, 59, tzinfo=ZONE), "2026-11-15"),
+])
+def test_the_covered_day_is_the_latest_whose_23_00_has_passed(moment, day):
+    covered = daily_live.covered_day(moment)
+    assert covered.date().isoformat() == day
+    assert (covered.hour, covered.minute, covered.tzinfo) == (23, 0, ZONE)
+
+
+def test_a_catch_up_after_midnight_covers_the_day_that_ended_by_that_days_use(tmp_path):
+    origin = ship(tmp_path / "daily")
+    calls, runner = counting()
+    message, failed = daily_live.run(
+        origin, now=CATCH_UP, runner=runner, scratch=tmp_path / "scratch",
+        readings=[reading("claude", ended=LATE_YESTERDAY), reading("codex", ended=EARLY_TODAY)])
+    assert failed is False
+    assert message.body.startswith("Daily live test for 2026-11-14.\n")
+    # Used before midnight: not checked. Used only after midnight: not used that day, so checked.
+    assert calls == ["codex"]
+    assert "claude: used that day; not checked" in message.body
+    assert "codex: not used that day; check passed" in message.body
+    assert daily_live.last_reported(origin) == (datetime(2026, 11, 14).date(), message.id)
+    assert json.loads((origin.runtime / daily_live.REPORTED).read_text()) == {
+        "day": "2026-11-14", "report": message.id}
+
+
+def test_a_second_run_the_same_day_does_nothing(tmp_path, monkeypatch):
+    origin = ship(tmp_path / "daily")
+    calls, runner = counting()
+    first, _ = daily_live.run(origin, now=CATCH_UP, runner=runner, scratch=tmp_path / "scratch",
+                              readings=[reading("codex", ended=EARLY_TODAY)])
+    assert calls == ["codex"]
+    record = (origin.runtime / daily_live.REPORTED).read_bytes()
+    monkeypatch.setattr(daily_live.program_use, "collect", no_readings)
+    for later in (CATCH_UP + timedelta(minutes=30), datetime(2026, 11, 15, 22, 59, tzinfo=ZONE)):
+        assert daily_live.run(origin, now=later, runner=runner, scratch=tmp_path / "scratch") == (None, False)
+    assert calls == ["codex"]
+    assert [item.id for item in post.Store(origin.runtime).all()] == [first.id]
+    assert (origin.runtime / daily_live.REPORTED).read_bytes() == record
+
+
+def test_a_run_at_23_05_covers_that_day_after_a_catch_up_for_the_day_before(tmp_path):
+    origin = ship(tmp_path / "daily")
+    calls, runner = counting()
+    daily_live.run(origin, now=CATCH_UP, runner=runner, scratch=tmp_path / "scratch",
+                   readings=[reading("codex", ended=EARLY_TODAY)])
+    tonight, failed = daily_live.run(
+        origin, now=datetime(2026, 11, 15, 23, 5, tzinfo=ZONE), runner=runner, scratch=tmp_path / "scratch",
+        readings=[reading("codex", ended=EARLY_TODAY), reading("grok", ended=LATE_YESTERDAY)])
+    assert tonight.body.startswith("Daily live test for 2026-11-15.\n")
+    assert "codex: used that day; not checked" in tonight.body
+    assert calls == ["codex", "grok"]
+    assert daily_live.last_reported(origin) == (datetime(2026, 11, 15).date(), tonight.id)
+
+
+def test_a_run_before_23_00_with_yesterday_reported_does_nothing(tmp_path, monkeypatch):
+    origin = ship(tmp_path / "daily")
+    calls, runner = counting()
+    yesterday, _ = daily_live.run(origin, now=datetime(2026, 11, 15, 23, 0, tzinfo=ZONE), runner=runner,
+                                  scratch=tmp_path / "scratch", readings=[reading("codex")])
+    monkeypatch.setattr(daily_live.program_use, "collect", no_readings)
+    assert daily_live.run(origin, now=datetime(2026, 11, 16, 22, 0, tzinfo=ZONE), runner=runner) == (None, False)
+    assert calls == ["codex"]
+    assert [item.id for item in post.Store(origin.runtime).all()] == [yesterday.id]
+    monkeypatch.setattr(cli, "load_ship", lambda args: origin)
+    monkeypatch.setattr(cli.daily_live, "current_time", lambda: datetime(2026, 11, 16, 22, 0, tzinfo=ZONE))
+    args = cli.build_parser().parse_args(["daily-live"])
+    assert cli.cmd_daily_live(args) == [f"daily live test: 2026-11-15 is already reported ({yesterday.id}); nothing run"]
+
+
+@pytest.mark.parametrize("text", ["", "{", "[]", '{"day": "2026-11-14"}', '{"day": "2026-11-14", "report": 7}', '{"day": "yesterday", "report": "x"}'])
+def test_an_unreadable_record_runs_nothing(tmp_path, text):
+    origin = ship(tmp_path / "daily")
+    origin.runtime.mkdir(parents=True, exist_ok=True)
+    (origin.runtime / daily_live.REPORTED).write_text(text)
+    calls, runner = counting()
+    with pytest.raises(ShipError, match="unreadable; nothing was run"):
+        daily_live.run(origin, now=CATCH_UP, runner=runner, readings=[reading("codex")])
+    assert calls == []
+    assert not (origin.runtime / "post" / "store").exists() or not post.Store(origin.runtime).all()

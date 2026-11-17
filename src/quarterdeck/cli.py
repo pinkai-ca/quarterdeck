@@ -1049,6 +1049,9 @@ def cmd_daily_live(args: argparse.Namespace) -> list[str]:
     if args.units:
         return daily_live.units(daily_live.installed_qd(ship), ship.folder).splitlines()
     message, _failed = daily_live.run(ship)
+    if message is None:
+        day, report = daily_live.last_reported(ship)
+        return [f"daily live test: {day.isoformat()} is already reported ({report}); nothing run"]
     # A filed failure is the daily job's result, not a failed reporting job.
     # Failure to finish or file the report still follows main's error path.
     args.exit_code = 0
