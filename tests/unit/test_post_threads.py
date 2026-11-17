@@ -188,3 +188,41 @@ def test_a_reply_to_the_root_counts_only_where_the_root_is_itself_open(tmp_path)
     store.write(later)
     [row] = post_threads.index_rows(store, (later,), (), frozenset(), seat='builder')
     assert row.amendments == (), 'the root is not open here: a reply to it is the thread history, not an amendment'
+
+
+def view_posts(tmp_path, messages):
+    """A seat's view of the post as the service writes it: its own messages, its shorts and its account of refusals."""
+    from quarterdeck import post_view
+    store = store_posts(tmp_path, messages)
+    (store.dir.parent / post_view.SHORTS).write_text('')
+    (store.dir.parent / post_view.REFUSED).write_text('{"journal": "read", "withheld": [], "told": [], "senders": {}}')
+    return store
+
+
+def test_a_view_prints_the_seats_part_under_an_ancestor_it_lacks_and_names_that_ancestor_by_id(tmp_path):
+    # law: context-is-cache -- in a jailed view, as far as the seat sent or received it, never a refusal
+    graded = message('order-graded', parent='order-unseen-root', moment=1)
+    ack = message('ack-taken', parent=graded.id, moment=2, sender='builder', to='lead', kind='ack')
+    sibling = message('order-sibling', parent='order-unseen-root', moment=3)
+    store = view_posts(tmp_path, [graded, ack, sibling, message('order-unrelated', moment=4)])
+    for reference in (graded.id, ack.id, sibling.id):
+        reading = post_threads.whole(store, reference, 'builder')
+        assert reading.root == 'order-unseen-root' and reading.unshown == ('order-unseen-root',)
+        assert [item.id for item in reading.messages] == [graded.id, ack.id, sibling.id] and reading.others == ()
+        rendered = post_threads.render(reading)
+        assert f'qd > order-unseen-root {post_threads.NOT_SHOWN}\n' in rendered
+        assert all(rendered.count(item.body) == 1 for item in (graded, ack, sibling))
+        assert 'order-unrelated' not in rendered and rendered.endswith('qd > end of thread order-unseen-root\n')
+
+
+def test_outside_a_view_the_same_missing_ancestor_is_still_refused(tmp_path):
+    store = store_posts(tmp_path, [message('order-graded', parent='order-unseen-root')])
+    with pytest.raises(ShipError, match='thread ancestry is incomplete: missing order-unseen-root'):
+        post_threads.whole(store, 'order-graded', 'builder')
+
+
+def test_a_view_still_refuses_a_cycle(tmp_path):
+    store = view_posts(tmp_path, [message('order-one', parent='answer-two'),
+                                  message('answer-two', parent='order-one', kind='answer')])
+    with pytest.raises(ShipError, match='thread ancestry has a cycle'):
+        post_threads.whole(store, 'order-one', 'builder')

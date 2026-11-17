@@ -11,6 +11,7 @@ from .ship import ShipError
 INDEXED_LAUNCH_DETAIL = 'indexed at launch; body not confirmed read'
 # law: context-is-cache -- a thread is printed whole as far as the reader sent or received it
 NOT_YOURS = 'in this thread; you neither sent nor received it, so its words are not shown'
+NOT_SHOWN = 'an ancestor in this thread that your view of the post does not hold: not shown, named by its id alone'
 CONTINUATION_LABEL = ('a recovery continuation for an earlier conversation of this seat; '
                       'it is not addressed to this conversation')
 
@@ -25,6 +26,7 @@ class Thread:
     forwards: tuple[str, ...] = ()
     readable: tuple[str, ...] = ()  # incoming non-obligations whose complete bodies this snapshot contains
     settled: tuple[tuple[str, str], ...] = ()  # immutable notice history, never a read receipt
+    unshown: tuple[str, ...] = ()  # in a jailed view, the ancestor the view lacks: named by id, nothing more
 
 
 def party(message: post.Message, seat: str) -> bool:
@@ -145,25 +147,37 @@ def index_rows(store: post.Store, roots: tuple[post.Message, ...],
 
 
 def whole(store: post.Store, reference: str, reader: str) -> Thread:
-    """One read-only snapshot; missing ancestry or a cycle is explicit, never omitted."""
+    """One read-only snapshot; missing ancestry or a cycle is explicit, never omitted.
+
+    Inside a jailed seat's view of the post, the store holds only the messages the seat sent or received, so an
+    ancestor it was never party to is not there: the thread is then printed from the messages under the nearest
+    ancestor the view lacks, and that ancestor is named as not shown, by its id alone. Outside a view a missing
+    ancestor is still refused."""
     requested = store.get(reference)
     messages = store.all()
     by_id = {message.id: message for message in messages}
     root = requested
     visited: set[str] = set()
+    unshown: tuple[str, ...] = ()
     while root.re:
         if root.id in visited:
             raise ShipError('thread ancestry has a cycle; inspect the immutable posts')
         visited.add(root.id)
         if root.re not in by_id:
-            raise ShipError(f'thread ancestry is incomplete: missing {root.re}; inspect the immutable posts')
+            if post._in_view(store) is None:
+                raise ShipError(f'thread ancestry is incomplete: missing {root.re}; inspect the immutable posts')
+            unshown = (root.re,)  # law: context-is-cache -- as far as the seat sent or received it
+            break
         root = by_id[root.re]
     children: dict[str, list[str]] = {}
     for message in messages:
         if message.re:
             children.setdefault(message.re, []).append(message.id)
     included, ordered = set(), []
-    waiting = [(root.at, root.id)]
+    # Under an ancestor the view lacks, every message of the seat's that answers it directly starts the thread.
+    starts = [by_id[child] for child in children.get(unshown[0], ())] if unshown else [root]
+    waiting = [(message.at, message.id) for message in starts]
+    heapq.heapify(waiting)
     while waiting:
         _, identifier = heapq.heappop(waiting)
         if identifier not in included:
@@ -187,9 +201,9 @@ def whole(store: post.Store, reference: str, reader: str) -> Thread:
     readable = tuple(message.id for message in visible
                      if message.to == reader and not message.obligation and message.kind != 'ack')
     settled = store.settled_notices(reader)
-    return Thread(root.id, requested.id, shown, others, delivered_continuations(store, reader, visible),
-                  tuple(forwards), readable, tuple((message.id, settled[message.id])
-                                                  for message in mine if message.id in settled))
+    return Thread(unshown[0] if unshown else root.id, requested.id, shown, others,
+                  delivered_continuations(store, reader, visible), tuple(forwards), readable,
+                  tuple((message.id, settled[message.id]) for message in mine if message.id in settled), unshown)
 
 
 def render(thread: Thread) -> str:
@@ -198,6 +212,7 @@ def render(thread: Thread) -> str:
     if thread.others:
         head += f'; {len(thread.others)} more in it, named below by id only'
     parts = [head + '\n']
+    parts += [f'qd > {ancestor} {NOT_SHOWN}\n' for ancestor in thread.unshown]
     parts += [f'qd > {route}\n' for route in thread.forwards]
     settled = dict(thread.settled)
     for message in thread.messages:
