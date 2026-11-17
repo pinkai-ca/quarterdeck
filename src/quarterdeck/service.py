@@ -434,7 +434,8 @@ class Service:
         try:
             sessions = [session.title for session in self.ship.sessions.values()]
             demand = self.tmux.clients_attached(sessions) if hasattr(self.tmux, 'clients_attached') else None
-            if demand is False:
+            profile = getattr(self, 'status_profile', None)  # an asked profile collects whether or not anyone watches
+            if demand is False and profile is None:
                 from . import status_snapshot
                 if not status_snapshot.requested(self.ship):
                     return
@@ -466,7 +467,11 @@ class Service:
             self.heartbeat()
             self.status_request, self.status_done = request, None
             with self.timings().measure('status' if request[0] == 'full' else 'status_post'):
-                published = self.publish_status()
+                if profile is not None and request[0] == 'full':
+                    from . import status_profile
+                    published = status_profile.run(self, profile, self.publish_status)
+                else:
+                    published = self.publish_status()
             if published is False:
                 return
             # Remember the observation BEFORE collection: a change during it remains owed. No read or failed
@@ -1450,6 +1455,9 @@ class Service:
 
     def answer(self, data: dict) -> str | None:
         kind = data["kind"]
+        if kind == "profile-status":  # one full status collection of its own, profiled (status_profile)
+            from . import status_profile
+            return status_profile.ask(self, data.get("caller"))
         if kind == "cascade":
             from . import cascade
             return cascade.start(self, data["question"], data["caller"], data.get("efforts"))

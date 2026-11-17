@@ -171,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("type", cmd_type, "systems only: type one line into a stalled seat's empty box and submit it, recorded first")
     p.add_argument("seat", help="the stalled seat")
     p.add_argument("line", help="the one line to type")
+    verb("profile-status", cmd_profile_status,
+         "systems or engineering only: the service profiles its next full status collection; names the file")
     p = verb("set-aside", cmd_set_aside,
              "systems only: move one named, provably stuck delivery journal of a seat into the runtime's evidence")
     p.add_argument("seat", help="the seat whose pending folder holds the journal")
@@ -516,6 +518,16 @@ def cmd_press(args: argparse.Namespace) -> str:
 
 def cmd_type(args: argparse.Namespace) -> str:
     return _act(args, "type", line=args.line)
+
+
+def cmd_profile_status(args: argparse.Namespace) -> str:
+    """Refused here first when the caller may not ask; then the service decides and names the file."""
+    from . import status_profile
+    ship = load_ship(args)
+    caller = os.environ.get("QD_SEAT") or None
+    if reason := status_profile.authority(ship, caller):
+        raise ShipError(reason)
+    return service.request(ship.runtime, "profile-status", caller=caller)
 
 
 def cmd_set_aside(args: argparse.Namespace) -> str:
