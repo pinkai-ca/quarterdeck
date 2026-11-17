@@ -272,3 +272,81 @@ def test_ledger_detail_exposes_rate_and_observation_span(book, monkeypatch):
     result, = data['usage_forecasts']
     assert result.rate_per_hour == pytest.approx(.4)
     assert any('40.0%/h' in line for line in render_pools(data))
+
+
+# The provider's reset time jitters below the second from read to read: the recorded shape is a reset at the same
+# minute whose fraction of a second differs on every reading. Synthetic values, that shape only.
+JITTER = (.258, .143, .331, .297, .973, .477)
+
+
+def record_jittered(book, points, *, base=RESET, pool='sample'):
+    for (hours, used), fraction in zip(points, JITTER * 4):
+        at = AT + timedelta(hours=hours)
+        book.record_usage(pool, Usage((Window('7d', used, base + timedelta(seconds=fraction)),), at))
+
+
+def test_a_reset_that_jitters_below_the_second_is_one_week_and_gives_a_forecast(book):
+    record_jittered(book, [(0, .1), (.5, .2), (1, .3), (2, .5), (3, .7)])
+    result, = forecast.collect(book, AT + timedelta(hours=3))
+    assert result.samples == 5 and result.first_at == AT
+    assert result.rate_per_hour == pytest.approx(.2)
+    assert result.warning and forecast.same_reset(result.resets_at, RESET)
+
+
+def test_a_reset_that_truly_moves_starts_a_new_run(book):
+    record(book, [(0, .1), (.5, .2), (1, .3)])
+    record(book, [(1.5, .4), (2, .5)], reset=RESET + forecast.RESET_TOLERANCE + timedelta(seconds=1))
+    assert forecast.collect(book, AT + timedelta(hours=2)) == []  # two points of the moved reset, not five
+    assert forecast.same_reset(RESET, RESET + forecast.RESET_TOLERANCE)
+    assert not forecast.same_reset(RESET, RESET + forecast.RESET_TOLERANCE + timedelta(microseconds=1))
+    assert not forecast.same_reset(None, RESET) and not forecast.same_reset(RESET, None)
+
+
+def test_one_alarm_per_week_though_every_reading_names_its_reset_a_little_differently(book, monkeypatch):
+    service = make_service(book)
+    clock = AT + timedelta(hours=1)
+    monkeypatch.setattr(post, 'now', lambda: clock)
+    record_jittered(book, [(0, .1), (.5, .3), (1, .5)])
+    forecast.notify(service)
+    for step, hours in enumerate((1.25, 1.5, 1.75, 2)):
+        book.record_usage('sample', Usage((Window('7d', .5 + .1 * (step + 1), RESET + timedelta(seconds=JITTER[step + 1])),),
+                                          AT + timedelta(hours=hours)))
+        clock = AT + timedelta(hours=hours)
+        forecast.notify(make_service(book))
+    first, = service.store.all()
+    journal = json.loads((book.path.parent / 'pool-forecast-alerts.json').read_text())
+    assert len(journal['periods']) == 1
+    # The next week, its reset jittering too, has its own one alarm.
+    clock = AT + timedelta(days=7, hours=1)
+    record_jittered(book, [(168, .1), (168.5, .3), (169, .5)], base=RESET + timedelta(days=7))
+    forecast.notify(make_service(book))
+    clock = AT + timedelta(days=7, hours=1.5)
+    book.record_usage('sample', Usage((Window('7d', .7, RESET + timedelta(days=7, seconds=.9)),), AT + timedelta(days=7, hours=1.5)))
+    forecast.notify(make_service(book))
+    assert len(service.store.all()) == 2
+
+
+def record_two(book, early_reset, later_reset):
+    """One pool read with two weekly windows each time, as a provider reports them together. The family window
+    spends faster and so runs out soonest (at 2.25h); the plain one runs out at 4.5h."""
+    for hours, fast, slow in ((0, .1, .1), (.5, .3, .2), (1, .5, .3)):
+        book.record_usage('sample', Usage((Window('family / 7d', fast, early_reset, group='family'),
+                                           Window('7d', slow, later_reset)), AT + timedelta(hours=hours)))
+
+
+def test_a_window_that_warns_is_shown_over_an_earlier_one_that_does_not(book):
+    # The family window runs out soonest, but only after its own reset at 2h: no warning. The plain one runs out
+    # later, at 4.5h, but before its reset: the real warning, which must not be hidden.
+    record_two(book, AT + timedelta(hours=2), RESET)
+    forecasts = [forecast.estimate(reading, book.db.execute(
+        'SELECT read_at,used,resets_at,group_name,bucket FROM usage_samples WHERE window=? ORDER BY read_at',
+        (reading.window,)).fetchall(), AT + timedelta(hours=1)) for reading in book.usage.rows()]
+    assert sorted((f.window, f.warning) for f in forecasts) == [('7d', True), ('family / 7d', False)]
+    result, = forecast.collect(book, AT + timedelta(hours=1))
+    assert result.window == '7d' and result.warning and result.spent_at == AT + timedelta(hours=4.5)
+
+
+def test_with_no_window_warning_the_earliest_exhaustion_is_still_the_detail(book):
+    record_two(book, AT + timedelta(hours=2), AT + timedelta(hours=3))
+    result, = forecast.collect(book, AT + timedelta(hours=1))
+    assert not result.warning and result.window == 'family / 7d' and result.spent_at == AT + timedelta(hours=2.25)

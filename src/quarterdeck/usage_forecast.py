@@ -20,6 +20,11 @@ LOOKBACK = timedelta(hours=3)
 MIN_SPAN = timedelta(hours=1)
 MAX_GAP = timedelta(hours=1)
 RETENTION = timedelta(days=1)
+# Two readings name the same week when their resets lie within a minute. A provider's reset time jitters below the
+# second from read to read (one subscription's resets read .143 to .973 past the same second), so exact equality
+# broke every run at its second point and no forecast was ever made. A real reset moves by a week, and the shortest
+# window that resets is hours long, so a minute is far above the jitter and far below any true move.
+RESET_TOLERANCE = timedelta(minutes=1)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_samples (
     pool TEXT NOT NULL, window TEXT NOT NULL, read_at TEXT NOT NULL,
@@ -27,6 +32,12 @@ CREATE TABLE IF NOT EXISTS usage_samples (
     PRIMARY KEY (pool, window, read_at)
 );
 """
+
+
+def same_reset(first, second):
+    """Whether two reset times name the same week: within RESET_TOLERANCE. The one rule for both the forecast's run
+    and the once-per-reset report, so neither breaks nor repeats on the jitter."""
+    return first is not None and second is not None and abs(first - second) <= RESET_TOLERANCE
 
 
 def weekly(window):
@@ -89,7 +100,7 @@ def estimate(reading, rows, now):
             return None
         if at < latest - LOOKBACK:
             break
-        if invalid(used, reset, at) or (reset, group, bucket) != identity:
+        if invalid(used, reset, at) or not same_reset(reset, identity[0]) or (group, bucket) != identity[1:]:
             break
         if points and (points[-1][0] - at > MAX_GAP or used > points[-1][1]):
             break
@@ -111,7 +122,9 @@ def estimate(reading, rows, now):
 
 
 def collect(book, now, pools=None):
-    """One earliest weekly exhaustion estimate per pool; older books have none."""
+    """One weekly exhaustion estimate per pool: the earliest among the windows that warn, so a window that runs out
+    only after its own earlier reset cannot hide another's real warning; the earliest overall where none warns.
+    Older books have none."""
     if not book.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_samples'").fetchone():
         return []
     found = {}
@@ -125,7 +138,8 @@ def collect(book, now, pools=None):
             (reading.pool, reading.window,
              (now - LOOKBACK - timedelta(seconds=MAX_AGE)).astimezone(timezone.utc).isoformat())).fetchall()
         forecast = estimate(reading, rows, now)
-        if forecast is not None and (reading.pool not in found or forecast.spent_at < found[reading.pool].spent_at):
+        rank = lambda item: (not item.warning, item.spent_at)
+        if forecast is not None and (reading.pool not in found or rank(forecast) < rank(found[reading.pool])):
             found[reading.pool] = forecast
     return [found[pool] for pool in sorted(found)]
 
@@ -168,10 +182,11 @@ def notify(service):
                 raise ShipError('pool forecast alarm intent unsupported')
     # Publish saved alarms even after the reading cleared or the service restarted.
     recipients = sorted(spec.name for spec in service.ship.seats.values() if spec.role == 'systems')
-    known = {(period['pool'], parse(period['reset'])) for period in journal['periods']}
+    known = [(period['pool'], parse(period['reset'])) for period in journal['periods']]
     for forecast in readings(service.ship, now):
-        if not forecast.warning or not recipients or (forecast.pool, forecast.resets_at) in known:
-            continue
+        if (not forecast.warning or not recipients
+                or any(pool == forecast.pool and same_reset(reset, forecast.resets_at) for pool, reset in known)):
+            continue  # one report per pool and week, though each reading names its reset a little differently
         reports, planned = [], set()
         for name in recipients:
             while True:
@@ -181,7 +196,7 @@ def notify(service):
             reports.append(message.to_json())
             planned.add(message.short)
         journal['periods'].append(dict(pool=forecast.pool, reset=forecast.resets_at.isoformat(), reports=reports))
-        known.add((forecast.pool, forecast.resets_at))
+        known.append((forecast.pool, forecast.resets_at))
     if not journal['periods']:
         return
     text = json.dumps(journal, sort_keys=True) + '\n'
