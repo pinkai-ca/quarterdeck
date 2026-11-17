@@ -1073,9 +1073,9 @@ class Service:
                 if carried_head:
                     # The one look types again exactly what the first typing carried, head included; the brief it
                     # told of was marked told then, and a later change waits for the next message.
-                    text, changed = carried_head + text, None
+                    text, changed = post.line_ends(carried_head) + text, None
                 elif changed := brief_change.head(self.runtime, seat.name):
-                    text = changed[0] + text
+                    text = post.line_ends(changed[0]) + text  # typed as the message is: no line ends in a space
                 try:
                     proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True, attempt_history=history)
                 except pending_delivery.NoCurrentLaunch as error:

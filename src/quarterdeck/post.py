@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import durable, post_dir, ship_locks
 from .ship import ShipError
-from .post_message import KINDS, REPLY_VERB, SECOND, Message, delivered_forms, short_of, typed
+from .post_message import KINDS, REPLY_VERB, SECOND, Message, delivered_forms, line_ends, short_of, typed
 
 SPEEDS = ("now", "interrupt")
 SHIP = "ship"  # the sender of the ship's own notices, and an inbox a seat may answer to

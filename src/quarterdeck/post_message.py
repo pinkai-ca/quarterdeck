@@ -59,17 +59,27 @@ class Message:
 SECOND = "qd > second delivery of {id}; you may have it already: act on it once"
 
 
+def line_ends(text: str) -> str:
+    """The text with each line's end spaces taken off, as the door types it.
+
+    No program's box can show whether a line ends in a space: a composer that paints its padding (two adapters'
+    composers do, measured) shows spaces past every line, and the door's box comparison refuses a payload whose
+    line ends in one rather than guess (harness.types._box_matches). Typed without them, such a message is
+    confirmed like any other; the stored file keeps them, and qd thread prints it whole."""
+    return '\n'.join(line.rstrip(' ') for line in text.split('\n'))
+
+
 def typed(messages: list[Message], *, second: Collection[str] = (), whole: bool = False) -> str:
     """Messages under their envelopes; whole preserves the exact thread body.
 
-    A second delivery keeps its explicit line before the unchanged envelope. Ordinary delivery
-    retains its existing trailing-space projection; thread reading can request the whole body.
+    A second delivery keeps its explicit line before the unchanged envelope. Ordinary delivery types the body
+    without its end spaces, and each line without its own (``line_ends``); thread reading can request the whole body.
     """
     return _typed(messages, second=second, whole=whole)
 
 
 def _typed(messages: list[Message], *, second: Collection[str] = (), whole: bool = False,
-           legacy: bool = False) -> str:
+           legacy: bool = False, ends: bool = True) -> str:
     parts = []
     for message in messages:
         header = f"qd > {message.kind} from {message.sender} · {message.short}"
@@ -88,11 +98,15 @@ def _typed(messages: list[Message], *, second: Collection[str] = (), whole: bool
                 footer += f" · inbox: post/inbox/{message.to}.md"
         again = SECOND.format(id=message.id) + "\n" if message.id in second else ""
         body = message.body if whole else message.body.rstrip()
-        parts.append(f"{again}{header}\n{body}{footer}")
+        part = f"{again}{header}\n{body}{footer}"
+        parts.append(line_ends(part) if ends and not whole else part)
     return "\n".join(parts) + "\n"
 
 
 def delivered_forms(message: Message) -> tuple[str, ...]:
-    """Current first/second deliveries, then their legacy inbox-footer forms for old receipts."""
-    return (typed([message]), typed([message], second=(message.id,)),
-            _typed([message], legacy=True), _typed([message], second=(message.id,), legacy=True))
+    """Current first/second deliveries; then the same as typed before their line ends were taken off, for a delivery
+    typed before that; then their legacy inbox-footer forms, for old receipts."""
+    forms = (typed([message]), typed([message], second=(message.id,)),
+             _typed([message], ends=False), _typed([message], second=(message.id,), ends=False),
+             _typed([message], legacy=True, ends=False), _typed([message], second=(message.id,), legacy=True, ends=False))
+    return tuple(dict.fromkeys(forms))

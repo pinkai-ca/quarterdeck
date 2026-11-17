@@ -95,3 +95,13 @@ five cells and retains its measured ASCII word/hyphen wrapping. For comparison
 alone it excludes ASCII padding beyond the text area, bounded by the actual pane;
 `Screen.box` remains the native observation. An unrecognised rule supplies no
 measured width and falls back to the old declaration, never a guessed cap.
+
+**Line ends.** No program's box can show whether a line ends in a space: a composer
+that paints its padding (Grok Build's to its border and OpenCode's to the pane's
+width, both measured) shows spaces past every line, so the comparison refuses a
+payload with a line-end space rather than guess. The door therefore types every
+message with each line's end spaces taken off, its header included, and so the
+standing-orders head it carries (`post_message.line_ends`). The stored message
+keeps them, and `qd thread` prints it whole. A delivery typed before this is
+still found in the record by its old form, which `delivered_forms` keeps. A
+launch's opening is the program's argument, not a paste, and is not changed.
