@@ -400,8 +400,16 @@ def control_continuation(path, data=None, meta=None):
     return state
 
 
+# How long a queued model change suppresses the difference it is to settle. It waits for its seat's turn to end:
+# of the crew's 16,547 turns from 10 to 17 November 2026 in the ledger, half ended within 28 s, 95% within 8.2 min and
+# 99% within 26.3 min. Thirty minutes passes 99% of turns; a request queued longer is stuck, and the difference is told.
+QUEUED_MODEL_SECONDS = 1800
+
+
 def pending_model(seat, expected):
-    """Read-only suppression, exclusively from a well-formed current request-owner continuation."""
+    """Read-only suppression of a declared-against-running model difference while a change to it is pending: a
+    well-formed current request-owner continuation, or a well-formed model request for this seat and this value still
+    queued, for QUEUED_MODEL_SECONDS from its arrival. Unknown state never suppresses."""
     from . import post
     for path in sorted((seat.ship.runtime / 'requests').glob('*.json')):
         try:
@@ -413,9 +421,28 @@ def pending_model(seat, expected):
                     and state.origin.get('declaration') == [seat.harness.name, seat.spec.model_mode, seat.spec.model]
                     and datetime.fromisoformat(state.started) <= post.now() < datetime.fromisoformat(state.deadline)):
                 return True
+            if state is None and _queued_model(seat, path, expected, post.now()):
+                return True
         except (OSError, ValueError, TypeError, ShipError):
             continue  # unknown state never suppresses a difference
     return False
+
+
+def _queued_model(seat, path, expected, now):
+    """A model request for this seat, whose value is the declared model, waiting unclaimed and unsettled, and younger
+    than QUEUED_MODEL_SECONDS. Its arrival is the request's own (created), the same for every reader and across a
+    service's restart."""
+    data = load(path)
+    if (data.get('kind') != 'control' or data.get('name') != 'model' or data.get('seat') != seat.name
+            or not isinstance(data.get('value'), str) or not data['value']):
+        return False
+    if claimed(path) is not False or 'terminal' in metadata(path):
+        return False  # claimed (being applied, or its outcome unknown), settled, or its claim unreadable
+    launched = seat.launched()
+    if seat.harness.model_identity(data['value'], version=launched.version if launched else None) != expected:
+        return False
+    arrived = datetime.fromisoformat(created(path, data))
+    return arrived <= now and (now - arrived).total_seconds() < QUEUED_MODEL_SECONDS
 
 
 def view(path, data=None):
