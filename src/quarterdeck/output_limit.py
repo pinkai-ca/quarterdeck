@@ -8,11 +8,12 @@ seat: a systems seat nudges it or starts it fresh (law: one-door).
 
 The alarm to the systems seats waits for the thinking recovery, which runs earlier in the same pass and takes such a
 stop itself where it can (``recovery``). It goes, once, when the recovery has declined the stop: no recovery for the
-seat, no capped turn it reads, one it does not take, or a mode it does not take; or when its proof is held. A stop
-the recovery is claiming says nothing. One whose continuation it delivered says nothing for WAIT_SECONDS after the
-paste, and then goes if the stop still stands: the continuation never started, or it stopped there again with the
-one recovery that turn allows already spent. One the recovery would take but has not claimed waits as long from the
-pass that first saw it, then goes.
+seat, no capped turn it reads, one it does not take, or a mode it does not take; or when its proof is held. One whose
+continuation it delivered says nothing for WAIT_SECONDS after the paste, and then goes if the stop still stands: the
+continuation never started, or it stopped there again with the one recovery that turn allows already spent. One the
+recovery would take but has not claimed, or is claiming, waits as long from the pass that first saw it, then goes if
+the stop still stands: a claim whose door delivery was interrupted stays at 'off' and is never advanced. A service
+restart starts that wait again.
 
 A seat in a human's session is not read here: an automatic reading never opens the person's conversation.
 """
@@ -113,14 +114,14 @@ def _waits(service, seat, key, state) -> bool:
     except Exception:  # what the recovery's reading cannot say is not in its hand: the alarm goes as before
         verdict, since = 'declined', None
     now = post.now()
-    if verdict == 'pending':
+    if verdict in ('pending', 'claiming'):
+        # Both wait WAIT_SECONDS from the pass that first saw this stop: a claim whose door delivery was interrupted
+        # stays at 'off' before 'delivered', and the recovery never advances it, so it would otherwise wait for good.
         first = pending_since.get(seat.name)
         if first is None or first[0] != key:
             pending_since[seat.name] = first = (key, now)
         return (now - first[1]).total_seconds() < WAIT_SECONDS
     pending_since.pop(seat.name, None)
-    if verdict == 'claiming':
-        return True
     if verdict == 'delivered':
         return (now - since).total_seconds() < WAIT_SECONDS
     return False  # declined, or held
