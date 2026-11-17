@@ -117,3 +117,97 @@ def test_project_identity_is_used_for_both_new_repositories(project):
     for folder in (project / 'office', project / 'ships' / 'crew'):
         assert ship._git(folder, 'log', '-1', '--format=%an|%ae') == 'Synthetic Local|local@example.invalid'
         assert ship._git(folder, 'status', '--porcelain') == ''
+
+
+# -- update mode: an identity only where a commit follows ---------------------------------------------------------
+
+def rerun(project, **changes):
+    """Setup run again on the crew, in update mode, with the first run's answers and ``changes``."""
+    answers = dict(folder=str(project / 'ships' / 'crew'), name='example', workspace=str(project),
+                   programs='codex', payment={'codex': 'subscription'},
+                   subscription_home={'codex': str(project / 'synthetic-sign-in')},
+                   use_defaults='yes', accept='yes', start='no', check='no', existing='update', **changes)
+    return setup.first_step(SimpleNamespace(json=False), operations=CrewOperations(),
+                            conversation=setup.Conversation(answers, interactive=False, write=lambda _: None))
+
+
+@pytest.fixture
+def crew_without_identity(project):
+    """The office and crew made with the project's own identity, which is then taken away: the throwaway HOME has
+    none either, so Git can resolve no identity anywhere."""
+    (project / 'ships').mkdir()
+    ship._git(project, 'config', 'user.name', 'Synthetic Local')
+    ship._git(project, 'config', 'user.email', 'local@example.invalid')
+    crew(project)
+    ship._git(project, 'config', '--unset', 'user.name')
+    ship._git(project, 'config', '--unset', 'user.email')
+    folder = project / 'ships' / 'crew'
+    with pytest.raises(ship.ShipError, match='Git needs your name and email'):
+        setup.git_identity(folder)
+    return folder
+
+
+def test_an_update_that_changes_nothing_needs_no_identity(crew_without_identity):
+    folder = crew_without_identity
+    before = (folder / 'ship.toml').read_bytes(), ship._git(folder, 'rev-parse', 'HEAD')
+    result = rerun(folder.parent.parent)
+    assert any('live checks declined' in line for line in result)
+    assert ((folder / 'ship.toml').read_bytes(), ship._git(folder, 'rev-parse', 'HEAD')) == before
+
+
+def test_an_update_that_will_commit_refuses_without_an_identity_before_writing(crew_without_identity, capsys):
+    folder = crew_without_identity
+    before = snapshot(folder.parent.parent)
+    head = ship._git(folder, 'rev-parse', 'HEAD')
+    with pytest.raises(ship.ShipError) as caught:
+        rerun(folder.parent.parent, operator='Synthetic Operator')
+    assert 'Git needs your name and email before setup can write files' in str(caught.value)
+    assert ('git config --global user.name "Your Name" && git config --global user.email "you@example.com"'
+            in str(caught.value))
+    assert snapshot(folder.parent.parent) == before and ship._git(folder, 'rev-parse', 'HEAD') == head
+
+
+def test_an_update_that_will_commit_commits_with_the_identity_git_resolves(crew_without_identity):
+    folder = crew_without_identity
+    ship._git(folder.parent.parent, 'config', '--global', 'user.name', 'Synthetic Global')
+    ship._git(folder.parent.parent, 'config', '--global', 'user.email', 'global@example.invalid')
+    head = ship._git(folder, 'rev-parse', 'HEAD')
+    rerun(folder.parent.parent, operator='Synthetic Operator')
+    assert ship.load(folder).operator == 'Synthetic Operator'
+    assert ship._git(folder, 'rev-parse', 'HEAD^') == head
+    assert ship._git(folder, 'log', '-1', '--format=%an|%ae') == 'Synthetic Global|global@example.invalid'
+
+
+def test_a_ship_that_is_no_repository_is_refused_for_that_reason_before_any_identity(crew_without_identity):
+    """Setup updates only a ship that is its own repository; a ship that is not is refused for that reason, as it
+    always was, whatever the identity: the identity is never what stops it."""
+    import shutil
+    folder = crew_without_identity
+    shutil.rmtree(folder / '.git')
+    before = snapshot(folder.parent.parent)
+    for changes in ({}, dict(operator='Synthetic Operator')):
+        with pytest.raises(ship.ShipError, match='is not its own git repository') as caught:
+            rerun(folder.parent.parent, **changes)
+        assert 'Git needs your name' not in str(caught.value)
+    assert snapshot(folder.parent.parent) == before
+
+
+@pytest.mark.parametrize('repository', [True, False])
+@pytest.mark.parametrize('effective', [True, False])
+def test_commits_is_the_rule_set_values_commits_by(crew_without_identity, repository, effective):
+    """ship.commits answers, without writing, what set_values then does: a commit only for an edit that changes the
+    ship file of a ship that is its own repository."""
+    import shutil
+    folder = crew_without_identity
+    project = folder.parent.parent
+    ship._git(project, 'config', '--global', 'user.name', 'Synthetic Global')
+    ship._git(project, 'config', '--global', 'user.email', 'global@example.invalid')
+    if not repository:
+        shutil.rmtree(folder / '.git')
+    current = ship.load(folder)
+    edits = [('ship', 'operator', 'Synthetic Operator' if effective else current.operator)]
+    before = (folder / 'ship.toml').read_bytes()
+    predicted = ship.commits(current, edits)
+    assert (folder / 'ship.toml').read_bytes() == before, 'asking writes nothing'
+    [proof] = ship.set_values(current, edits)
+    assert predicted is (' · committed ' in proof) is (repository and effective), proof

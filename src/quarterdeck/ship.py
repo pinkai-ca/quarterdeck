@@ -773,12 +773,9 @@ def set_value(ship: Ship, table: str, key: str, value: object) -> str:
     return set_values(ship, [(table, key, value)])[0]
 
 
-def set_values(ship: Ship, edits: list[tuple[str, str, object]]) -> list[str]:
-    """Write several lines of the ship file as one edit: validated together, written once, committed once.
-
-    A change that is only valid whole, such as a seat's program with its pool, is never half written.
-    Returns one proof line per edit.
-    """
+def _edited(ship: Ship, edits: list[tuple[str, str, object]]) -> tuple[str, str, list, list]:
+    """The ship file's text after ``edits``, its text before, a proof line for each edit with whether it changed the
+    text, and the changes as the commit names them."""
     text = original = ship.file.read_text()
     lines, changed = [], []
     for table, key, value in edits:
@@ -787,11 +784,33 @@ def set_values(ship: Ship, edits: list[tuple[str, str, object]]) -> list[str]:
         if edited != text:
             changed.append(f"{table}.{key} = {literal(value)}")
         text = edited
+    return text, original, lines, changed
+
+
+def _commit_follows(ship: Ship, text: str, original: str) -> bool:
+    """The rule set_values commits by: the edits change the ship file, and the ship is a repository of its own."""
+    return text != original and ship.is_repository
+
+
+def commits(ship: Ship, edits: list[tuple[str, str, object]]) -> bool:
+    """Whether set_values would commit ``edits``, by its own rule, without writing anything: so a caller asks for a
+    Git identity only where a commit follows."""
+    text, original, _, _ = _edited(ship, edits)
+    return _commit_follows(ship, text, original)
+
+
+def set_values(ship: Ship, edits: list[tuple[str, str, object]]) -> list[str]:
+    """Write several lines of the ship file as one edit: validated together, written once, committed once.
+
+    A change that is only valid whole, such as a seat's program with its pool, is never half written.
+    Returns one proof line per edit.
+    """
+    text, original, lines, changed = _edited(ship, edits)
     if text == original:
         return [f"{line} already" for line, _ in lines]
     _validate(_from_text(text, ship.folder))  # the file never holds a declaration qd cannot load
     _write_atomically(ship.file, text)
-    if ship.is_repository:
+    if _commit_follows(ship, text, original):
         import os
         caller = os.environ.get("QD_SEAT")
         # The seat that runs qd set is named in its commit, so the change to the briefs is not carried back to it

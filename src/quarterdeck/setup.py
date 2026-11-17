@@ -634,7 +634,9 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
     if not accepted:
         return finish(["Setup stopped before acceptance; no ship changes were written."])
     identity = git_identity(operations.project_folder()) if proposal.mode == "new" else None
-    if proposal.mode == "update":
+    if proposal.mode == "update" and ships.commits(proposal.existing, proposal.edits):
+        # Only where the update will commit, by the rule its writes commit by (ship.set_values): an update that
+        # changes nothing commits nothing, and needs no identity.
         git_identity(proposal.ship.folder)
     if initialize_office:
         start_office = conversation.choice("start", "Start the office and crew? Opening briefs may spend turns. yes or no",
