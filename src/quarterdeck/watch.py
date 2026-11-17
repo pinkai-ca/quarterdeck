@@ -808,6 +808,8 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
 class _HeldStore:
     """No messages, once a link hold has already stopped the real listing."""
 
+    held = True  # its readers may say so, rather than read its refusals as their own data unreadable
+
     def __init__(self, store):
         self.dir = store.dir
 

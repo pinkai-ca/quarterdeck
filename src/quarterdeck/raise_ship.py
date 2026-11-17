@@ -200,14 +200,20 @@ def tell_desk(office: ships.Ship, draft: "Proposal", answer: Path | None) -> str
     desks = sorted(name for name, spec in office.seats.items() if spec.role == "desk")
     if len(desks) != 1:
         raise ShipError(f"the office needs one desk to tell of a raise; found {len(desks)}; no crew started")
+    store = post.Store(office.runtime)
+    if (earlier := raise_notice.told(office.runtime, draft.name, answer, store=store, desk=desks[0],
+                                     ship_folder=draft.folder)) is not None:
+        return earlier  # one notice per ship and yes: a rerun resuming on the same yes posts no second order
     saved = json.loads(answer.read_text()) if answer is not None else {}
     terminal = saved.get("terminal", "a terminal not recorded")
-    body = (f"Ship {draft.name} was raised at {draft.folder} and its crew is starting, on a yes from "
-            f"{terminal} (answer record {answer}). If {office.operator or 'the person'} did not raise it, stop it with "
+    yes = (f"a yes from {terminal}" if "terminal" in saved  # a hand-written record has none: said outright
+           else "a yes with no terminal recorded: this yes did not pass the terminal check")
+    body = (f"Ship {draft.name} was raised at {draft.folder} and its crew is starting, on {yes} "
+            f"(answer record {answer}). If {office.operator or 'the person'} did not raise it, stop it with "
             f"qd --ship {draft.folder} down and tell them. Report on this order once it is seen; "
             "that clears it from the status line.")
-    message = post.Store(office.runtime).new("order", post.SHIP, desks[0], body, subject=raise_notice.SUBJECT)
-    raise_notice.record(office.runtime, draft.name, message.id, terminal)
+    message = store.new("order", post.SHIP, desks[0], body, subject=raise_notice.SUBJECT)
+    raise_notice.record(office.runtime, draft.name, message.id, terminal, answer)
     return message.id
 
 
