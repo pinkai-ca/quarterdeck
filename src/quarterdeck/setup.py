@@ -220,8 +220,8 @@ def office_folder(project: Path) -> Path:
     return folder
 
 
-def refuse_embedded_office(project: Path) -> None:
-    """An existing person's desk is moved explicitly, never by first-time setup."""
+def embedded_office(project: Path) -> str | None:
+    """The ship that still holds the person's desk in a human session, or None. An unreadable ship refuses."""
     for name in ships.candidates(project):
         folder = project / "ships" / name
         try:
@@ -231,9 +231,23 @@ def refuse_embedded_office(project: Path) -> None:
                             "resolve its declaration before creating an office") from None
         if any(seat.role == "desk" and current.session_of(seat).human
                for seat in current.seats.values()):
-            raise ShipError(f"the office still lives in ship {name} at {folder}; "
-                            "moving it is the person's step once forwarding is proven; "
-                            "init and setup leave that ship untouched and create no second office")
+            return name
+    return None
+
+
+def refuse_embedded_office(project: Path) -> None:
+    """An existing person's desk is moved explicitly, never by first-time setup."""
+    if (name := embedded_office(project)) is not None:
+        raise ShipError(f"the office still lives in ship {name} at {project / 'ships' / name}; "
+                        "moving it is the person's step once forwarding is proven; "
+                        "init and setup leave that ship untouched and create no second office")
+
+
+def _names_existing_ship(answers: dict) -> bool:
+    """A run that keeps or updates a ship already there: --ship (or its folder) and --existing keep or update."""
+    folder = answers.get("folder")
+    return (answers.get("existing") in ("keep", "update") and isinstance(folder, str) and bool(folder)
+            and (Path(folder).expanduser() / "ship.toml").is_file())
 
 
 def git_identity(project: Path) -> dict[str, str]:
@@ -331,6 +345,11 @@ def first_step(args: argparse.Namespace, *, operations: Operations | None = None
         return run(args, operations=operations, conversation=conversation)
     conversation = conversation or conversation_for(args)
     answers = conversation.answers
+    if _names_existing_ship(answers) and embedded_office(operations.project_folder().resolve()) is not None:
+        # The office still lives in a ship and has no folder of its own (SHIPS.md: it stays there until the person
+        # moves it). Keeping or updating an existing ship runs the crew wizard on it, as before offices existed: no
+        # office is made and nothing is moved. Any other run still goes toward an office, and is refused, naming it.
+        return run(args, operations=operations, conversation=conversation)
     crew = setup_answers.asks_for_crew(answers)
     if conversation.interactive:
         conversation.say("Setup creates your office first. You can stop there or add a ship and its crew in this run.")

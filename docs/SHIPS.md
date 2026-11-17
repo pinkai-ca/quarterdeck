@@ -28,7 +28,7 @@ The office is saved before the desk starts. After you edit `office/ship.toml`, o
 
 The office is always `office/`: a real folder, never a link, with no other place and no other name.
 
-Where one of your ships under `ships/` already has a desk in a session with `human = true`, your office lives in that ship. `qd init` and the first `qd setup` then name that ship, make no second office, and leave that ship's declaration and records untouched. Moving the office out of that ship is your step, once forwarding is proven: `qd init`, `qd setup` and `qd raise` move no office seat and no message out of an existing ship.
+Where one of your ships under `ships/` already has a desk in a session with `human = true`, your office lives in that ship. `qd init` and the first `qd setup` then name that ship, make no second office, and leave that ship's declaration and records untouched. Until you move it, `qd --ship <a ship> setup --existing keep` or `--existing update` still keeps or updates an existing ship, as before offices existed, and makes no office. Moving the office out of that ship is your step, once forwarding is proven: `qd init`, `qd setup` and `qd raise` move no office seat and no message out of an existing ship.
 
 Further office seats are yours to declare. Add each seat to `office/ship.toml` with a role such as counsel or communications, in a session with `human = true`, then bring each seat up with `.venv/bin/qd --ship office up <seat>`. `qd init`, run again, starts the desk alone, even with other office seats marked up.
 
