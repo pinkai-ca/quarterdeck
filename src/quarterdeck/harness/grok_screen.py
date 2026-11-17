@@ -255,6 +255,19 @@ def scrolled_composer(body: list[tuple[str, list[Style]]], right: int) -> bool:
     return marked
 
 
+COMPOSER_TOP = re.compile(r"  ╭─+╮ *")  # the top of Grok's own composer frame, as read() finds it
+
+
+def composer_rows(rows: list[str]) -> tuple[int, int] | None:
+    """The rows of Grok's own composer frame, its top to its footer border, found as read() finds them: the last
+    footer, and the nearest such top above it. None where no footer is drawn, or no such top stands above it."""
+    footer_at = next((i for i in range(len(rows) - 1, -1, -1) if FOOTER.fullmatch(rows[i])), None)
+    if footer_at is None:
+        return None
+    top = next((i for i in range(footer_at - 1, -1, -1) if COMPOSER_TOP.fullmatch(rows[i])), None)
+    return None if top is None else (top, footer_at)
+
+
 def read(text: str) -> Screen:
     decoded = characters(text)
     if decoded is None:
@@ -279,7 +292,7 @@ def read(text: str) -> Screen:
     if any("┌" in row or "└" in row for row in rows[:footer_at]):
         return Screen(plain, box=None, unknown="unmeasured Grok modal", shows=shows)
     top = next((i for i in range(footer_at - 1, -1, -1)
-                if re.fullmatch(r"  ╭─+╮ *", rows[i])), None)
+                if COMPOSER_TOP.fullmatch(rows[i])), None)
     if top is None or footer_at - top < 2:
         return Screen(plain, box=None, unknown="Grok composer boundary incomplete", shows=shows)
     right = rows[top].index("╮")

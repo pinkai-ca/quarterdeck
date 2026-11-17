@@ -105,13 +105,30 @@ def _kind(text: str) -> tuple[str, str] | None:
     return None
 
 
-def region(rows: list[str], at: int) -> tuple[list[str], str]:
-    """The dialog's words: from its top frame above row ``at`` where one can be measured, else the whole screen."""
-    top = next((y for y in range(min(at, len(rows) - 1), -1, -1) if TOP_FRAME.match(rows[y])), None)
-    return (rows[top:], "the dialog's frame") if top is not None else (rows, "the whole screen")
+def own_frame(program: str | None, rows: list[str]) -> tuple[int, int] | None:
+    """The rows of the program's own composer frame, its top to its bottom border, as its adapter's screen reader
+    names them (harness/composer_frames.py); None where the adapter names none."""
+    from .harness.composer_frames import own_composer
+    return own_composer(program, rows)
 
 
-def guard(screen, choice: str | None = None, line: str | None = None) -> str | None:
+def region(rows: list[str], at: int, own: tuple[int, int] | None = None, read_as_own: bool = False
+           ) -> tuple[list[str], str]:
+    """The dialog's words: from its top frame above row ``at`` where one can be measured, else the whole screen.
+
+    ``own`` is the program's own composer frame, top to bottom border: never a dialog's frame, so its top is passed
+    over and the frame above it, or else the whole screen, is where the words start. Its rows are left out of the
+    words only where the adapter read them as its composer (``read_as_own``: the screen's box was read from them),
+    so they hold only the program's own box and status. Passing its top over only moves the start up, and every
+    row outside that frame is read to the screen's end: no word outside the program's own frame is read less."""
+    skip = own[0] if own else None
+    top = next((y for y in range(min(at, len(rows) - 1), -1, -1) if TOP_FRAME.match(rows[y]) and y != skip), None)
+    start, where = (top, "the dialog's frame") if top is not None else (0, "the whole screen")
+    mine = range(own[0], own[1] + 1) if own and read_as_own else range(0)
+    return [row for y, row in enumerate(rows) if y >= start and y not in mine], where
+
+
+def guard(screen, choice: str | None = None, line: str | None = None, program: str | None = None) -> str | None:
     """Why this act is the desk's and not a systems seat's, or None: by the screen's measured form, then the
     choice or the line itself, then the dialog's words. A screen that cannot be classified is refused."""
     from .harness.types import ControlInterruption, _cells
@@ -141,7 +158,7 @@ def guard(screen, choice: str | None = None, line: str | None = None) -> str | N
     at = next((y for y, row in enumerate(rows) if choice and choice in row), None) if choice else None
     if at is None:
         at = next((y for y in range(len(rows) - 1, -1, -1) if rows[y].strip()), 0)
-    read, where = region(rows, at)
+    read, where = region(rows, at, own_frame(program, rows), read_as_own=screen.box is not None)
     if not any(row.strip() for row in read) or any(_cells(row) is None for row in read):
         return "its screen cannot be classified (blank, or characters the reader cannot measure)"
     if found := _kind("\n".join(read)):
@@ -317,7 +334,7 @@ def press(service, seat, choice: str, caller: str | None) -> str:
         return f"refused: the place of {choice!r} on {seat.name}'s screen cannot be measured; nothing is pressed"
     if screen.box is not None and screen.box.strip():
         return f"refused: {seat.name}'s box holds text; a key pressed now could submit it; nothing is pressed"
-    if reason := guard(screen, choice=choice):
+    if reason := guard(screen, choice=choice, program=seat.harness.name):
         told = tell_desk(service, seat, launched, caller, f"press {choice!r}", reason, screen)
         return f"refused: {reason}; that is the desk's to answer, never a systems seat's; nothing is pressed; {told}"
     key = label_key(screen.text, choice) if screen.box is None else None  # a key into a drawn box would be typed
@@ -378,7 +395,7 @@ def type_line(service, seat, line: str, caller: str | None) -> str:
     if screen.box.strip():
         shown = screen.box if len(screen.box) <= 80 else screen.box[:77] + "..."
         return f"refused: {seat.name}'s box is not empty, it shows {shown!r}; nothing is typed"
-    if reason := guard(screen, line=line):
+    if reason := guard(screen, line=line, program=seat.harness.name):
         told = tell_desk(service, seat, launched, caller, f"type {line!r}", reason, screen)
         return f"refused: {reason}; that is the desk's to answer, never a systems seat's; nothing is typed; {told}"
     pane, screen = _settled(door, screen)

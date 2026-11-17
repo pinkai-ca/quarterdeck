@@ -61,6 +61,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `antigravity_record.py` | the Antigravity record decoded from its snapshot |
 | `antigravity_wire.py` | the Antigravity record's wire format |
 | `capabilities.py` | what each adapter declares of its harness's efforts and defaults, the checks of a seat's `model` and `effort` against that, and the words for a program's own default |
+| `composer_frames.py` | a program's own composer frame, as its adapter's screen reader names it, so the systems seat's guard never takes it for a dialog's frame and reads the question above it |
 | `costs.py` | an endpoint program's step costs: what its record states, what stated rates prove, and what stays unpriced |
 | `failures.py` | a recorded error's bounded first words |
 | `held_reading.py` | until when a record's unknown turn state holds only for a time, as its reader says, so that the accounting pass reads the record again once it has passed; the service's alone, in no reader's stamp set |
