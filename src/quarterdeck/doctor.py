@@ -18,7 +18,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import copy_state, credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, watch
+from . import copy_state, credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, shutdown, watch
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, key_environment, program_version, program_where
 from .harness.capabilities import validate_selection
@@ -72,6 +72,8 @@ def checks(ship: Ship) -> list[Check]:
         found.append(Check("runtime fence", fenced, "runtime/ is its own repository" if fenced else "runtime/ is not fenced; qd up fences it"))
         alive = servicectl.alive(ship.runtime)
         found.append(Check("service", alive, "alive" if alive else "down; qd up starts it"))
+        if not alive and (reason := shutdown.startup_diagnosis(ship.runtime)):
+            found.append(Check("delivery startup", False, reason))
     low = watch.disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())])
     found.append(Check("disk", not low, "room on every filesystem the ship writes to" if not low
                        else "nearly full: " + ", ".join(f"{mount} {pct}%" for mount, pct in low)))

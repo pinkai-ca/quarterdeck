@@ -105,50 +105,154 @@ def wake_token(data: dict) -> str:
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
 
 
-def confined(runtime: Path, path: Path, *, missing=False) -> bool:
+def _journal_location(runtime: Path, path: Path) -> str:
     try:
         relative = path.relative_to(runtime)
         if journal_kind(runtime, path) is None:
-            return False
+            return 'unreadable'
         current = runtime
         if current.is_symlink():
-            return False
+            return 'unreadable'
         for index, part in enumerate(relative.parts):
             current /= part
             try:
                 info = current.lstat()
             except FileNotFoundError:
-                return missing and index == len(relative.parts) - 1
+                return 'missing leaf' if index == len(relative.parts) - 1 else 'missing parent'
             if stat.S_ISLNK(info.st_mode):
-                return False
+                return 'unreadable'
             if index < len(relative.parts) - 1 and not stat.S_ISDIR(info.st_mode):
-                return False
-        return stat.S_ISREG(info.st_mode)
+                return 'unreadable'
+        return 'regular' if stat.S_ISREG(info.st_mode) else 'unreadable'
     except (OSError, ValueError):
-        return False
+        return 'unreadable'
 
 
-def inflight(runtime: Path, expected: dict | None) -> dict | None:
+def confined(runtime: Path, path: Path, *, missing=False) -> bool:
+    location = _journal_location(runtime, path)
+    return location == 'regular' or missing and location == 'missing leaf'
+
+
+def _pointer_data(runtime: Path) -> dict | None:
     read = _read(pointer_path(runtime), 4096)
-    if expected is None or read is None:
+    if read is None:
         return None
     data, _ = read
-    if (not isinstance(data, dict) or data.get("version") != 1 or data.get("owner") != expected
+    if (not isinstance(data, dict) or data.get("version") != 1
             or not isinstance(data.get("token"), str) or not data["token"]
             or type(data.get("before_paste")) is not bool or not isinstance(data.get("journal"), str)):
         return None
     relative = Path(data["journal"])
-    if (relative.is_absolute() or not confined(runtime, runtime / relative)
-            or data.get('kind', 'pending') != journal_kind(runtime, runtime / relative)):
+    if relative.is_absolute() or data.get('kind', 'pending') != journal_kind(runtime, runtime / relative):
         return None
     if data.get('kind') == 'attempt' and not data['before_paste']:
         return None
     return data
 
 
+def inflight(runtime: Path, expected: dict | None) -> dict | None:
+    if expected is None or (data := _pointer_data(runtime)) is None or data.get("owner") != expected:
+        return None
+    return data if confined(runtime, runtime / data["journal"]) else None
+
+
 def never_pasted(data: dict) -> bool:
     return (data.get("paste_boundary") == BEFORE_PASTE and data.get("phase") == "prepared"
             and data.get("shown") is None and not data.get("paste_clear") and not data.get("recovery"))
+
+
+_JOURNAL_STOP_REASONS = {
+    'read': "delivery journal unreadable or too large for bounded stop annotation; left unchanged",
+    'attempt': "delivery attempt unreadable; left unchanged",
+    'shape': "delivery journal identity unknown; left unchanged",
+    'identity': "delivery journal identity unknown; left unchanged",
+    'boundary': "delivery journal boundary unknown; left unchanged",
+}
+
+
+def _journal_check(path: Path, pointer: dict, expected: dict) -> tuple[dict | None, str | None]:
+    """Read and validate the saved delivery evidence without annotating it."""
+    read = _read(path, MAX_JOURNAL_BYTES)
+    if read is None:
+        return None, 'read'
+    journal, _ = read
+    if pointer.get('kind') == 'attempt':
+        from .post import Attempt
+        try:
+            Attempt(**journal, path=path)
+        except (TypeError, ValueError):
+            return None, 'attempt'
+        return journal, None
+    if not isinstance(journal, dict):
+        return None, 'shape'
+    from .pending import validate
+
+    try:
+        if pointer.get('kind') == 'human wake':
+            from .human_wake import validate as validate_wake
+            validate_wake(journal, path.parent.name)
+            matched = wake_token(journal) == pointer['token']
+        else:
+            validate(journal, path.parent.name)
+            matched = journal.get('service_owner') == expected and journal.get('delivery_token') == pointer['token']
+        if not matched:
+            return None, 'identity'
+    except (ValueError, TypeError, KeyError):
+        return None, 'boundary'
+    return journal, None
+
+
+def _service_unowned(runtime: Path) -> bool:
+    from . import lock_holders, servicectl
+
+    locks = (servicectl.lock_path(runtime), servicectl.legacy_lock_path(runtime))
+    return all((reading := lock_holders.reading(path)) is not None and reading[0] is not True for path in locks)
+
+
+def _startup_problem(runtime: Path) -> str | None:
+    expected = owner(runtime)
+    if expected is None:
+        return 'unknown service owner stamp'
+    if not process_gone(expected):
+        return None
+    pointer = _pointer_data(runtime)
+    if pointer is None:
+        return 'unreadable delivery pointer'
+    if pointer.get('owner') != expected:
+        return 'saved delivery identity mismatch'
+    path = runtime / pointer['journal']
+    location = _journal_location(runtime, path)
+    if location in ('missing leaf', 'missing parent'):
+        return 'displaced delivery journal'
+    if location != 'regular':
+        return 'unreadable delivery journal'
+    _, problem = _journal_check(path, pointer, expected)
+    if problem is not None:
+        return 'saved delivery identity mismatch' if problem == 'identity' else 'unreadable delivery journal'
+    return None
+
+
+def _pointer_stamp(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    return info.st_dev, info.st_ino, info.st_size, info.st_ctime_ns
+
+
+def startup_diagnosis(runtime: Path) -> str | None:
+    """One fixed status line for unresolved startup evidence. Never takes a service lock."""
+    pointer = pointer_path(runtime)
+    stamp = _pointer_stamp(pointer)
+    if stamp is None or not _service_unowned(runtime):
+        return None
+    try:
+        problem = _startup_problem(runtime)
+    except (OverflowError, RecursionError):
+        problem = 'unreadable delivery evidence'
+    if problem is not None and _service_unowned(runtime) and _pointer_stamp(pointer) == stamp:
+        return f'startup held by service.delivery: {problem}'
+    return None
 
 
 def finish(runtime: Path, expected: dict | None, *, forced: bool | None) -> str:
@@ -162,37 +266,17 @@ def finish(runtime: Path, expected: dict | None, *, forced: bool | None) -> str:
     if data is None:
         return "delivery boundary unknown; journal left unchanged"
     path = runtime / data["journal"]
-    read = _read(path, MAX_JOURNAL_BYTES)
-    if read is None:
-        return "delivery journal unreadable or too large for bounded stop annotation; left unchanged"
-    journal, _ = read
+    journal, problem = _journal_check(path, data, expected)
+    if problem is not None:
+        return _JOURNAL_STOP_REASONS[problem]
     if data.get('kind') == 'attempt':
         # This grants stop grace, never a delivery receipt or permission to resend.
         # A process crash here leaves the ordinary unjournaled-attempt rules in charge.
-        from .post import Attempt
-        try:
-            Attempt(**journal, path=path)
-        except (TypeError, ValueError):
-            return "delivery attempt unreadable; left unchanged"
         pointer_path(runtime).unlink()
         return "delivery stopped before journal; attempt retained for receipt reconciliation"
     wake = data.get('kind') == 'human wake'
-    if not isinstance(journal, dict):
-        return "delivery journal identity unknown; left unchanged"
-    from .pending import Proof, validate
+    from .pending import Proof
 
-    try:
-        if wake:
-            from .human_wake import validate as validate_wake
-            validate_wake(journal, path.parent.name)
-            matched = wake_token(journal) == data['token']
-        else:
-            validate(journal, path.parent.name)
-            matched = journal.get('service_owner') == expected and journal.get('delivery_token') == data['token']
-        if not matched:
-            return "delivery journal identity unknown; left unchanged"
-    except (ValueError, TypeError, KeyError):
-        return "delivery journal boundary unknown; left unchanged"
     phase = journal["phase"]
     fields = {}
     if wake and phase == 'prepared':

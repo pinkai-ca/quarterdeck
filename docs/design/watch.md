@@ -8,6 +8,8 @@ Watch answers two questions independently: what the record says a seat is doing,
 
 The delivery pass names unreadable alarm evidence for the affected seat, including when a human-owned seat is down. The seat's hold survives status overflow and clears after a successful reading. Version 1 unconfirmed-delivery alarm journals can lack a saved body. The next matching standing observation supplies the words for new reports while retaining saved report identities and existing posts.
 
+Status and doctor share a read-only diagnosis of a leftover `service.delivery` pointer when the service is down. It names a displaced or unreadable journal, a saved identity mismatch or an unknown service owner stamp with fixed words. Active deliveries and evidence normal startup can resolve stay quiet. The reading keeps the pointer, journal and receipt bytes unchanged.
+
 ### Activity and door
 
 | Activity | Evidence |

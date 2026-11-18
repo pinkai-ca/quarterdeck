@@ -34,6 +34,8 @@ def _abbreviated_status(facts) -> str:
     parts += [line for line in getattr(facts, 'server_recovery', ()) if line.startswith('service stop barrier')]
     if accounting := getattr(facts, 'accounting', None):
         parts.append(accounting)  # keep its time and safe cause even when other alerts overflow
+    if startup_delivery := getattr(facts, 'startup_delivery', None):
+        parts.append(startup_delivery)
     counts = [(facts.waiting, "waiting"), (facts.queued, "queued"), (facts.blind, "blind"),
               (len(facts.needs_human), "need human"), (len(facts.unarmed), "unarmed"),
               (len(facts.held), "held"), (len(facts.pending), "pending"),

@@ -383,6 +383,8 @@ def render_table(data: dict) -> list[str]:
     state = data["service"]
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
     recovery_lines = list(getattr(data.get("facts"), "server_recovery", None) or [])  # law: nothing-waits-silently
+    if startup_delivery := getattr(data.get("facts"), "startup_delivery", None):
+        recovery_lines.append(startup_delivery)
     recovery_lines += list(getattr(data.get("facts"), "leftover_seats", None) or [])  # a temporary seat left behind
     recovery_lines += list(getattr(data.get("facts"), "post_waits", None) or [])
     recovery_lines += list(getattr(data.get("facts"), "pool_forecasts", None) or [])
@@ -581,6 +583,7 @@ class Facts:
     request_waits: list[str] = field(default_factory=list)
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
+    startup_delivery: str | None = None
     seat_holds: list[str] = field(default_factory=list)  # one seat held alone by a bad file or a refused record
     screening: list[str] = field(default_factory=list)  # a hand screening a pull request: its posts are held (pr_screen)
     brief_git: list[str] = field(default_factory=list)  # the ship folder's git unanswered past its passes (brief_change)
@@ -607,6 +610,8 @@ class Facts:
         parts += self.ledger_recovery
         if self.accounting:
             parts.append(self.accounting)
+        if self.startup_delivery:
+            parts.append(self.startup_delivery)
         parts.append(f"{self.waiting} waiting" + (f", oldest {self.oldest}m" if self.waiting else ""))
         if self.queued:
             parts.append(f"{self.queued} queued behind a turn, oldest {self.oldest_queued}m")
@@ -1180,11 +1185,13 @@ def _post_reading(ship, store, attempts, post_held):
 
 
 def _facts(reading: Collection, lists: dict, fields: dict) -> Facts:
-    from . import operational_notices
+    from . import operational_notices, shutdown
 
     values = dict(reading.slow)
     values.update(fields)
     values['operational_notices'] = operational_notices.readings(reading.ship.runtime)
+    if values['service'] == 'down':
+        values['startup_delivery'] = shutdown.startup_diagnosis(reading.ship.runtime)
     for name in _SEAT_LISTS:
         if name != 'waiting':
             values[name] = lists[name]

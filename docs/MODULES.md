@@ -177,7 +177,7 @@ The modules that the framework table does not list, the module of each part amon
 | `setup_answers.py` | one answer resolver for setup's conversation, flags, file and summary edits |
 | `setup_proposal.py` | read-only setup discovery, and the one renderer of a proposed ship |
 | `ship.py` | the Ship: `ship.toml` read and checked, with its kind, sessions, pools, seats, groups and cascade; the line editor that `qd set` writes with; the runtime's fence |
-| `shutdown.py` | the service's stop at a durable delivery boundary, held as well through a relaunch section (`relaunch_intent.py`) |
+| `shutdown.py` | the service's stop at a durable delivery boundary, held through a relaunch section (`relaunch_intent.py`), and read-only diagnosis of unresolved startup delivery evidence |
 | `stop_barrier.py` | a service stop's process identities, retained until every exit is confirmed |
 | `barrier_settle.py` | `qd service --settle-barrier`: an unreadable stop barrier moved aside unchanged, only when no service, scope member or QD_SHIP carrier of the ship runs |
 | `standing.py` | standing orders: the laws, the ship's orders, the cards and the brief every seat reads |
