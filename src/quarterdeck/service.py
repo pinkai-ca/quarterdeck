@@ -331,10 +331,10 @@ class Service:
             self.timings().publish(self.log)
 
     # The duties whose ledger rows may be counted apart from the accounting gate's other writers, and the tables
-    # those rows may touch: the usage refresh writes pools, usage_samples and usage_reads, and no accounting step reads
-    # any of them. A duty's rows are counted apart only when every table it wrote, triggers included, is one of these.
+    # those rows may touch: usage refresh writes its cache, pacing and receipt tables. No record accounting reads
+    # them. A duty's rows are counted apart only when every table it wrote, triggers included, is one of these.
     NON_ACCOUNTING_DUTIES = frozenset(('refresh_usage',))
-    NON_ACCOUNTING_TABLES = frozenset(('pools', 'usage_samples', 'usage_reads'))
+    NON_ACCOUNTING_TABLES = frozenset(('pools', 'usage_samples', 'usage_reads', 'usage_commit'))
 
     @contextmanager
     def non_accounting(self, name):
@@ -2249,10 +2249,7 @@ class Service:
         try:
             observations, notices, human_readings = self.account_records()
         except Exception as error:
-            if self.accounting_health.failed(accounting_health.cause(error), post.now()):
-                self.log('accounting-failing', since=self.accounting_health.since,
-                         cause=self.accounting_health.current, failures=self.accounting_health.failures,
-                         causes=dict(self.accounting_health.causes))
+            accounting_health.report_failure(self, error, post.now())
             self.publish_accounting_health(force=True)
             self.accounting_shown_changed(before)
             return  # no per-pass raw exception log; the bounded operational alarm owns this failure
@@ -2293,8 +2290,7 @@ class Service:
     def account_records(self, *, source_records=None, source_screens=None, source_walls=None,
                         replay=True, process_table=None, source_reader_keys=None):
         """Prepare and commit the pass; callers handle only its accounting outcome."""
-        # A usage write whose commit was refused is completed first, never rolled back, so that no
-        # record is read while its transaction stands; if it fails again the pass fails and is counted.
+        # Settle a standalone usage write before reading records. A failed settlement counts as a failed pass.
         self.ledger.prepare_usage()
         table = machine.processes() if process_table is None else process_table
         observations, notices, human_readings = [], [], []

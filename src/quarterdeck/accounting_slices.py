@@ -122,7 +122,8 @@ def planning_book(path, send):
     memory.deserialize(data)
     book = Ledger.__new__(Ledger)
     book.path, book.db = path, PlanningDB(memory, send)
-    book._record_active = book._usage_staging = book._usage_commit_pending = False
+    book._record_active = book._usage_staging = False
+    book._usage_commit_pending = None
     book.attributions = Attribution(book.db, create=False)
     book.costs = CostEvidence(book.db, create=False)
     book.provenance = Provenance(book.db, create=False)
@@ -564,8 +565,12 @@ class Driver:
         deadline = time.monotonic() + (BUDGET if seconds is None else seconds)
         before = service.accounting_health.shown()
         was_active, failed = self.active, False
+        prepared = False
         self.step_changes = service.ledger.db.total_changes
         try:
+            if getattr(service.ledger, 'usage_commit_pending', False):
+                service.ledger.prepare_usage()  # settle even when an idle certificate would skip accounting
+            prepared = True
             self.reap()  # even a gated step retires the previous pass's exiting child
             if (self.active and self.scope is not None
                     and self.continuing is None
@@ -713,13 +718,13 @@ class Driver:
             self.outgoing.clear()
             self.ready.clear()
             self.events.clear()
-            try:
-                service.ledger.begin_catchup(service.accounting_epoch, force=True)
-            except Exception:
-                pass  # retain the original failure and the last committed progress
+            if prepared:
+                try:
+                    service.ledger.begin_catchup(service.accounting_epoch, force=True)
+                except Exception:
+                    pass  # retain the original failure and the last committed progress
             failed = True
-            if service.accounting_health.failed(accounting_health.cause(error), post.now()):
-                service.log('accounting-failing', cause=service.accounting_health.current)
+            accounting_health.report_failure(service, error, post.now())
         finally:
             self.gate.own(self.step_changes, service.ledger.db.total_changes)
             # Written at once only when what the health shows changed, or a job ended or failed in this step; else

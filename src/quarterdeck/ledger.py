@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import secrets
 from contextlib import contextmanager
 from copy import copy
 from dataclasses import asdict, dataclass, replace
@@ -96,6 +97,9 @@ CREATE TABLE IF NOT EXISTS unread_spans (
 CREATE TABLE IF NOT EXISTS accounting_progress (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL, pending INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS usage_commit (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1), attempt TEXT NOT NULL
+);
 """
 # Columns added since a table was first written; an older file gains them when the service opens it.
 ADDED_COLUMNS = {
@@ -165,6 +169,14 @@ def figure(value, flagged: int, form: str = "") -> str:
     return f"{value:{form}}" + ("+" if flagged else "")
 
 
+class UsageCommitUnproved(RuntimeError):
+    """The closed standalone usage transaction's receipt could not be read."""
+
+
+class UsageCommitRolledBack(RuntimeError):
+    """A previously unreadable receipt now proves the standalone usage transaction rolled back."""
+
+
 class Ledger:
     """The book. The service opens it to write; a reading opens it read-only with ``Ledger.reading``."""
 
@@ -172,7 +184,7 @@ class Ledger:
         self.path = path
         self._record_active = False
         self._usage_staging = False
-        self._usage_commit_pending = False
+        self._usage_commit_pending: str | None = None
         if readonly:
             self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
             self.attributions = Attribution(self.db, create=False)
@@ -234,17 +246,42 @@ class Ledger:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    @property
+    def usage_commit_pending(self) -> bool:
+        return self._usage_commit_pending is not None
+
     def prepare_usage(self):
         """Only a completed standalone usage writer authorizes an entry commit."""
         if self._record_active or self._usage_staging:
             raise RuntimeError("ledger writer already active")
-        if self._usage_commit_pending:
-            if not self.db.in_transaction:
-                raise RuntimeError("standalone usage commit outcome unknown")
-            self.db.commit()  # failure retains both the intended transaction and its owner
-            self._usage_commit_pending = False
+        if self.usage_commit_pending:
+            self._finish_usage_commit()
         if self.db.in_transaction:
             raise RuntimeError("unclassified ledger transaction remains open")
+
+    def _settle_usage_commit(self) -> bool:
+        """Read the attempt's receipt after SQLite has left its transaction."""
+        try:
+            row = self.db.execute('SELECT attempt FROM usage_commit WHERE singleton=1').fetchone()
+        except (sqlite3.Error, OSError):
+            raise UsageCommitUnproved('standalone usage commit outcome unreadable') from None
+        committed = row == (self._usage_commit_pending,)
+        self._usage_commit_pending = None
+        return committed
+
+    def _finish_usage_commit(self) -> None:
+        if not self.db.in_transaction:
+            if not self._settle_usage_commit():
+                raise UsageCommitRolledBack('standalone usage commit rolled back')
+            return
+        try:
+            self.db.commit()
+        except Exception:
+            # An open transaction can see its own receipt. Only retry its COMMIT.
+            if self.db.in_transaction or not self._settle_usage_commit():
+                raise
+        else:
+            self._usage_commit_pending = None
 
     def _commit_usage_attempt(self, write, *, commit=True):
         if not commit:
@@ -252,18 +289,19 @@ class Ledger:
                 raise RuntimeError("usage staging requires its standalone owner")
             return write()
         self.prepare_usage()
+        attempt = secrets.token_hex(16)
         self._usage_staging = True
         try:
             try:
                 write()  # all cache and pacing DML must succeed before completion is marked
+                self.db.execute('INSERT OR REPLACE INTO usage_commit VALUES (1,?)', (attempt,))
             except BaseException:
                 self.db.rollback()  # incomplete DML, never a completed writer's failed commit
                 raise
         finally:
             self._usage_staging = False
-        self._usage_commit_pending = True
-        self.db.commit()  # deliberately outside the incomplete-DML rollback handler
-        self._usage_commit_pending = False
+        self._usage_commit_pending = attempt
+        self._finish_usage_commit()  # outside the incomplete-DML rollback handler
 
     @contextmanager
     def record_pass(self):
@@ -271,8 +309,8 @@ class Ledger:
 
         Record writers inside this boundary explicitly use commit=False. Usage
         attempts own separate transactions and must run outside this boundary.
-        A standalone writer whose commit failed keeps its intended transaction:
-        finish that commit before starting record accounting, never roll it back.
+        A standalone writer whose commit failed is settled before accounting.
+        Only an open transaction with that owner may retry its COMMIT.
         """
         self.prepare_usage()
         staged = copy(self)

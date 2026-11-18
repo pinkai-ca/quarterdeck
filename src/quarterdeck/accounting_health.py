@@ -15,37 +15,74 @@ from . import presentation, servicectl
 BOUND = 3
 NAME = 'accounting-health.json'
 UNKNOWN = 'accounting health unknown'
-SQL_CAUSES = {
-    sqlite3.SQLITE_BUSY: 'database busy', sqlite3.SQLITE_LOCKED: 'database locked',
-    sqlite3.SQLITE_FULL: 'database full', sqlite3.SQLITE_READONLY: 'database read only',
-    sqlite3.SQLITE_IOERR: 'database I/O error', sqlite3.SQLITE_CORRUPT: 'database corrupt',
-    sqlite3.SQLITE_CANTOPEN: 'database unavailable',
+SQL_DIAGNOSTICS = {
+    sqlite3.SQLITE_BUSY: ('database busy', 'SQLITE_BUSY'),
+    sqlite3.SQLITE_LOCKED: ('database locked', 'SQLITE_LOCKED'),
+    sqlite3.SQLITE_FULL: ('database full', 'SQLITE_FULL'),
+    sqlite3.SQLITE_READONLY: ('database read only', 'SQLITE_READONLY'),
+    sqlite3.SQLITE_IOERR: ('database I/O error', 'SQLITE_IOERR'),
+    sqlite3.SQLITE_CORRUPT: ('database corrupt', 'SQLITE_CORRUPT'),
+    sqlite3.SQLITE_CANTOPEN: ('database unavailable', 'SQLITE_CANTOPEN'),
 }
 FILE_CAUSES = {
     errno.ENOSPC: 'storage full', errno.EACCES: 'file permission denied',
     errno.EPERM: 'file permission denied', errno.ENOENT: 'source unavailable',
 }
-CAUSES = frozenset(SQL_CAUSES.values()) | frozenset(FILE_CAUSES.values()) | {
+USAGE_UNPROVED = 'standalone usage commit outcome unreadable'
+USAGE_ROLLED_BACK = 'standalone usage commit rolled back'
+CAUSES = frozenset(reason for reason, _ in SQL_DIAGNOSTICS.values()) | frozenset(FILE_CAUSES.values()) | {
     'database error', 'file I/O error', 'invalid accounting evidence', 'accounting exception',
-    'record past the read bound', 'record refused',
+    'record past the read bound', 'record refused', USAGE_UNPROVED, USAGE_ROLLED_BACK,
 }
+
+
+def sql_diagnostic(error):
+    code = getattr(error, 'sqlite_errorcode', None)
+    return SQL_DIAGNOSTICS.get(code & 255, ('database error', None)) if type(code) is int else ('database error', None)
 
 
 def cause(error):
     """Fixed labels only: exception messages and supplied class names are content."""
     if isinstance(error, sqlite3.Error):
-        code = getattr(error, 'sqlite_errorcode', None)
-        return SQL_CAUSES.get(code & 255, 'database error') if type(code) is int else 'database error'
+        return sql_diagnostic(error)[0]
+    from .ledger import UsageCommitUnproved, UsageCommitRolledBack
+    if isinstance(error, UsageCommitUnproved):
+        return USAGE_UNPROVED
+    if isinstance(error, UsageCommitRolledBack):
+        return USAGE_ROLLED_BACK
     from .harness import record_file
     if isinstance(error, record_file.PastBound):
         return 'record past the read bound'  # its turns are not read: the status line names the seat and its size
     if isinstance(error, record_file.Refused):
         return 'record refused'  # a link, another's file or not a regular one: never read
     if isinstance(error, OSError):
-        return FILE_CAUSES.get(error.errno, 'file I/O error')
+        return FILE_CAUSES.get(error.errno, 'file I/O error') if type(error.errno) is int else 'file I/O error'
     if isinstance(error, (ValueError, TypeError, KeyError)):
         return 'invalid accounting evidence'
     return 'accounting exception'
+
+
+def report_failure(service, error, at):
+    """Log one onset with a known exception type and a fixed, bounded message."""
+    reason = cause(error)
+    health = service.accounting_health
+    if not health.failed(reason, at):
+        return
+    from .harness import record_file
+    from .ledger import UsageCommitUnproved, UsageCommitRolledBack
+    known = (sqlite3.Error, sqlite3.InterfaceError, sqlite3.DatabaseError, sqlite3.DataError, sqlite3.OperationalError,
+             sqlite3.IntegrityError, sqlite3.InternalError, sqlite3.ProgrammingError, sqlite3.NotSupportedError,
+             OSError, FileNotFoundError, PermissionError, RuntimeError, ValueError, TypeError, KeyError,
+             record_file.PastBound, record_file.Refused, UsageCommitUnproved, UsageCommitRolledBack)
+    kind = next((cls.__name__ for cls in known if type(error) is cls), 'Exception')
+    diagnostic = None
+    if isinstance(error, sqlite3.Error):
+        _, diagnostic = sql_diagnostic(error)
+    elif isinstance(error, OSError) and type(error.errno) is int:
+        diagnostic = errno.errorcode.get(error.errno)
+    message = f'{reason} ({diagnostic})' if diagnostic else reason
+    service.log('accounting-failing', since=health.since, cause=health.current, failures=health.failures,
+                causes=dict(health.causes), error_type=kind, message=message)
 
 
 @dataclass
