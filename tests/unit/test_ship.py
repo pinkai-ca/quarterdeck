@@ -44,6 +44,29 @@ def test_the_drydock_loads_and_runs_anywhere(drydock: Path):
     assert ship.seat("captain").persona == "Picard" and ship.seat("desk").persona == "Maeve"
 
 
+def test_ship_loading_derives_untitled_sessions_and_keeps_an_explicit_title(tmp_path: Path):
+    (tmp_path / "ship.toml").write_text(
+        '[ship]\nname = "Synthetic"\n'
+        '[sessions.surveyTeam]\n'
+        '[sessions.quietRoom]\nhuman = true\n'
+        '[sessions.radio]\ntitle = "Radio Control"\n'
+    )
+    ship = shipmod.load(tmp_path)
+    assert {key: (session.title, session.human) for key, session in ship.sessions.items()} == {
+        "surveyTeam": ("Synthetic SurveyTeam", False),
+        "quietRoom": ("QuietRoom", True),
+        "radio": ("Radio Control", False),
+    }
+
+
+@pytest.mark.parametrize("character", [".", ":"], ids=["dot", "colon"])
+def test_cannot_derive_a_session_title_from_a_ship_name_with_dot_or_colon(tmp_path: Path, character: str):
+    (tmp_path / "ship.toml").write_text(f'[ship]\nname = "Synthetic{character}Ship"\n[sessions.crew]\n')
+    with pytest.raises(ShipError, match="cannot derive") as refusal:
+        shipmod.load(tmp_path)
+    assert f"ship name contains {character!r}" in str(refusal.value)
+
+
 def test_the_default_ship_is_the_smallest_crew_on_real_programs():
     folder = FIXTURES.parent.parent / "ships" / "default"
     ship = shipmod.load(folder)
@@ -51,6 +74,10 @@ def test_the_default_ship_is_the_smallest_crew_on_real_programs():
     assert [(s.name, s.role, s.harness, s.persona) for s in ship.seats.values()] == [
         ("desk", "desk", "claude", "Maeve"), ("captain", "captain", "codex", "Picard"), ("engineering", "engineering", "codex", "Geordi")]
     assert {p.provider for p in ship.pools.values()} == {"anthropic", "openai"}
+    assert {key: (session.title, session.human) for key, session in ship.sessions.items()} == {
+        "bridge": ("default Bridge", False),
+        "office": ("Office", True),
+    }
     assert ship.session_of(ship.seat("desk")).human and not ship.session_of(ship.seat("captain")).human
     assert "the desk lands it" in (folder / "orders.md").read_text()
 
