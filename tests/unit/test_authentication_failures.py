@@ -26,8 +26,7 @@ def environment(tmp_path, monkeypatch, *, human=False):
                            record=Mock(return_value=tmp_path / 'synthetic-record'),
                            harness=SimpleNamespace(state=Mock(return_value=state)))
     monkeypatch.setattr(auth_failure.credential, 'pool_file', Mock(return_value=source))
-    monkeypatch.setattr(auth_failure.credential, 'freshness', Mock(return_value=(now.timestamp() + 3600, source.stat().st_mtime)))
-    monkeypatch.setattr(auth_failure.credential, 'grant_expiry', Mock(return_value=now + timedelta(days=7)))
+    monkeypatch.setattr(auth_failure.credential, 'sign_in_status', Mock(return_value='valid'))
     service = SimpleNamespace(resolved_seats=lambda: [seat], relaunch=Mock(return_value='synthetic resumed proof'),
                               log=Mock(), needs_human=Mock())
     return now, source, seat, state, service
@@ -67,27 +66,23 @@ def test_changed_generation_retries_after_spacing_across_service_restart(tmp_pat
     assert auth_failure.waiting(auth_failure.status(seat))
 
 
-@pytest.mark.parametrize('case', ['expired-access', 'expired-grant', 'unknown', 'older', 'same-time', 'missing-launch', 'nonfinite', 'changing'])
+@pytest.mark.parametrize('case', ['expired-grant', 'unknown', 'older', 'same-time', 'missing-launch', 'changing'])
 def test_ineligible_local_evidence_holds_without_consuming_attempt(tmp_path, monkeypatch, case):
     now, source, seat, state, service = environment(tmp_path, monkeypatch)
-    if case == 'expired-access':
-        auth_failure.credential.freshness.return_value = (now.timestamp() - 1, source.stat().st_mtime)
-    elif case == 'expired-grant':
-        auth_failure.credential.grant_expiry.return_value = now - timedelta(seconds=1)
+    if case == 'expired-grant':
+        auth_failure.credential.sign_in_status.return_value = 'expired'
     elif case == 'unknown':
-        auth_failure.credential.freshness.return_value = None
+        auth_failure.credential.sign_in_status.return_value = 'unknown'
     elif case in ('older', 'same-time'):
         at = datetime.fromisoformat(seat.launched().at).timestamp()
         os.utime(source, (at, at if case == 'same-time' else at - 1))
     elif case == 'missing-launch':
         seat.launched.return_value = None
     elif case == 'changing':
-        def refresh_during_observation(pool, path):
+        def refresh_during_observation(pool, path, observed_at):
             path.write_text('synthetic metadata changed during observation, a different size')
-            return now.timestamp() + 3600, path.stat().st_mtime
-        auth_failure.credential.freshness.side_effect = refresh_during_observation
-    else:
-        auth_failure.credential.freshness.return_value = (float('inf'), source.stat().st_mtime)
+            return 'valid'
+        auth_failure.credential.sign_in_status.side_effect = refresh_during_observation
     auth_failure.run(service)
     service.relaunch.assert_not_called()
     assert not auth_failure._path(seat).exists()
@@ -350,7 +345,7 @@ def test_changed_but_unproved_generation_needs_attention_without_retry(tmp_path,
     auth_failure.run(service)
     source.write_text('synthetic changed generation')
     clock(monkeypatch, now + timedelta(seconds=60))
-    auth_failure.credential.freshness.return_value = None if validity == 'unknown' else (now.timestamp() - 1, source.stat().st_mtime)
+    auth_failure.credential.sign_in_status.return_value = validity
     auth_failure.run(service)
     service.relaunch.assert_called_once()
     service.needs_human.assert_called_once_with(seat)
@@ -380,7 +375,7 @@ def test_down_seat_keeps_attention_instead_of_waiting_forever(tmp_path, monkeypa
 def test_expired_before_first_attempt_calls_person_immediately(tmp_path, monkeypatch):
     now, source, seat, state, service = environment(tmp_path, monkeypatch)
     clock(monkeypatch, now)
-    auth_failure.credential.freshness.return_value = (now.timestamp() - 1, source.stat().st_mtime)
+    auth_failure.credential.sign_in_status.return_value = 'expired'
     auth_failure.run(service)
     service.needs_human.assert_called_once_with(seat)
     service.relaunch.assert_not_called()
@@ -395,7 +390,7 @@ def test_unknown_between_attempts_calls_person_immediately(tmp_path, monkeypatch
     clock(monkeypatch, now)
     auth_failure.run(service)
     before = auth_failure._path(seat).read_bytes()
-    auth_failure.credential.freshness.return_value = None
+    auth_failure.credential.sign_in_status.return_value = 'unknown'
     clock(monkeypatch, now + timedelta(seconds=1))
     auth_failure.run(service)
     service.relaunch.assert_called_once_with(seat, True)

@@ -1,6 +1,6 @@
 """Recorded sign-in failures: the next delivery first, then bounded guarded resumes per failed episode.
 
-While the pool's sign-in reads valid, a crew seat whose latest turn alone failed at sign-in takes its next
+While the pool's sign-in is usable or can renew on use, a crew seat whose latest turn alone failed at sign-in takes its next
 message through the door as usual: the measured program reads its sign-in file again for a new request (its
 refused-request handler drops its cached sign-in and reads the store again, and a changed file is adopted by
 its modification time). The failed turn's input stays in the conversation it sends. Only a second sign-in
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-import math
 import stat
 
 from . import credential, durable, post_dir, turn_failure
@@ -27,6 +26,10 @@ WINDOW_SECONDS = 15 * 60
 WAITING = 'sign-in: waiting for the renewed pass'
 DELIVERING = 'pool sign-in valid; its next message is delivered'
 HUMAN_WAKING = 'pool sign-in valid; the waking line goes once'
+RENEWABLE = 'pool access can renew on use'
+RENEWABLE_DELIVERY = RENEWABLE + '; its next message is delivered'
+RENEWABLE_WAKE = RENEWABLE + '; the waking line goes once'
+USABLE = ('valid', 'renewable')
 
 
 def failed_in_a_row(state) -> int:
@@ -40,9 +43,9 @@ def failed_in_a_row(state) -> int:
     return count
 
 
-def first_failure(seat, state=None, now=None) -> bool:
+def first_failure(seat, state=None, now=None, *, observation=None) -> bool:
     """A crew seat whose latest turn alone failed at sign-in, within the renewal window, while its pool's sign-in
-    reads valid: the door delivers its next message as usual instead of holding it. The failed turn's own input
+    is usable or can renew on use: the door delivers its next message as usual instead of holding it. The failed turn's own input
     stays in the conversation the program sends with that request. Past the window, with no message having come,
     the guarded resume decides as before, so nothing waits silently."""
     if seat.session.human or not seat.is_up:
@@ -60,20 +63,20 @@ def first_failure(seat, state=None, now=None) -> bool:
     at = failure.at
     if at is None or at.tzinfo is None or not 0 <= (now - at).total_seconds() < WINDOW_SECONDS:
         return False
-    return pool_observation(seat, now)[0] == 'valid'
+    return (observation or pool_observation(seat, now))[0] in USABLE
 
 
 def wakeable(seat, state, now=None) -> bool:
     """For the waking line, from the record the wake already reads: the latest turn alone failed at sign-in inside
-    the program while the pool's sign-in reads valid. Any other failure, or a second in a row, keeps the hold."""
+    the program while the pool's sign-in is usable or can renew on use. Any other failure, or a second in a row, keeps the hold."""
     failure = getattr(state, 'failure', None)
     return (failure is not None and failure.kind == AUTHENTICATION and failed_in_a_row(state) == 1
-            and pool_observation(seat, now)[0] == 'valid')
+            and pool_observation(seat, now)[0] in USABLE)
 
 
-def human_wakeable(seat, now=None) -> bool:
+def human_wakeable(seat, now=None, *, observation=None) -> bool:
     """A seat in the person's session whose latest failure, by the service's published metadata and never its
-    conversation, is a sign-in failure while its pool's sign-in reads valid, and into which no waking line went
+    conversation, is a sign-in failure while its pool's sign-in is usable or can renew on use, and into which no waking line went
     before that failure: the fixed waking line may go to it once, on today's terms (human_wake decides the rest).
     A waking line typed before the failure means the waking turn itself failed: it is named, and nothing more."""
     if not seat.session.human or not seat.is_up:
@@ -88,7 +91,7 @@ def human_wakeable(seat, now=None) -> bool:
             return False
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return False  # unknown wake evidence keeps the hold
-    return pool_observation(seat, now)[0] == 'valid'
+    return (observation or pool_observation(seat, now))[0] in USABLE
 
 
 def current(seat):
@@ -97,7 +100,7 @@ def current(seat):
 
 
 def pool_observation(seat, now=None):
-    """Local metadata only: valid, expired or unknown, plus stable generation/newer fact."""
+    """Local metadata only: valid, renewable, expired or unknown, plus stable generation/newer fact."""
     now = now or datetime.now(timezone.utc)
     try:
         launched = seat.launched()
@@ -106,35 +109,31 @@ def pool_observation(seat, now=None):
         if source is None:
             return 'unknown', None, False
         before = source.stat()
-        fresh = credential.freshness(pool, source)
-        grant = credential.grant_expiry(pool)
+        status = credential.sign_in_status(pool, source, now)
         after = source.stat()
         def generation(info):
             return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
         stamp = generation(before)
-        if stamp != generation(after) or not stat.S_ISREG(after.st_mode) or fresh is None:
+        if stamp != generation(after) or not stat.S_ISREG(after.st_mode) or status == 'unknown':
             return 'unknown', None, False
-        expiry = fresh[0]
-        if type(expiry) not in (int, float) or not math.isfinite(expiry):
-            return 'unknown', None, False
-        if expiry <= now.timestamp() or grant is not None and grant <= now:
+        if status == 'expired':
             return 'expired', stamp, False
         at = datetime.fromisoformat(launched.at)
         if at.tzinfo is None:
             return 'unknown', None, False
-        return 'valid', stamp, after.st_mtime > at.timestamp()
+        return status, stamp, after.st_mtime > at.timestamp()
     except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
         return 'unknown', None, False
 
 
 def _decision(seat, failure, attempt, observation, now):
     validity, stamp, newer = observation
-    if not seat.is_up or validity != 'valid':
+    if not seat.is_up or validity not in USABLE:
         return 'attention'
     if attempt is not None and failed(attempt):
         return 'attention'  # its relaunch was held or raised: failed, never the wait for the renewed pass
     if attempt is None:
-        if validity == 'valid' and newer:
+        if newer:
             return 'retry'
         # Before the first attempt, give a recorded failure one bounded renewal wait.
         at = failure.at if failure is not None else None
@@ -150,7 +149,7 @@ def _decision(seat, failure, attempt, observation, now):
         # The old failure can remain visible while the last resume starts its next turn.
         return ('wait' if failure is not None and failure.at is not None
                 and failure.at <= last else 'attention')
-    if validity == 'valid' and stamp != attempt['credential'] and since >= RETRY_SECONDS:
+    if stamp != attempt['credential'] and since >= RETRY_SECONDS:
         return 'retry'
     return 'wait'
 
@@ -161,24 +160,24 @@ def detail(seat, failure=None):
     state, _, newer = observation
     pool_note = ('login needed; pool sign-in expired' if state == 'expired' else
                  'pool sign-in validity unknown; needs attention' if state == 'unknown' else
-                 'pool sign-in valid')
+                 RENEWABLE if state == 'renewable' else 'pool sign-in valid')
     if seat.session.human:
-        if state == 'valid' and human_wakeable(seat, now):
-            return HUMAN_WAKING
+        if state in USABLE and human_wakeable(seat, now, observation=observation):
+            return HUMAN_WAKING if state == 'valid' else RENEWABLE_WAKE
         return pool_note + '; human session needs attention; no automatic relaunch'
-    if first_failure(seat, now=now):
-        return DELIVERING
+    if first_failure(seat, now=now, observation=observation):
+        return DELIVERING if state == 'valid' else RENEWABLE_DELIVERY
     try:
         attempt = _attempt(seat)
         if _decision(seat, failure, attempt, observation, now) != 'attention':
-            return WAITING
+            return WAITING if state == 'valid' else f'{RENEWABLE}; {WAITING}'
         if attempt is not None and failed(attempt):
             return f'sign-in resume {failed(attempt)}; needs attention' + ('; ' + pool_note if state != 'valid' else '')
         if attempt is not None:
             return 'relaunch did not cure it; needs attention' + ('; ' + pool_note if state != 'valid' else '')
     except (OSError, ValueError, TypeError, AttributeError):
         return 'resume attempt unknown; needs attention'
-    if state != 'valid':
+    if state not in USABLE:
         return pool_note
     return pool_note + (' and newer than launch; needs attention' if newer else
                         '; renewal newer than launch not proved; needs attention')
@@ -186,7 +185,9 @@ def detail(seat, failure=None):
 
 def waiting(reason):
     """A fixed operational reading, shared by status and alarm routing only."""
-    return reason in (f'{AUTHENTICATION}; {WAITING}', f'{AUTHENTICATION}; {DELIVERING}', f'{AUTHENTICATION}; {HUMAN_WAKING}')
+    return reason in tuple(f'{AUTHENTICATION}; {reading}' for reading in
+                           (WAITING, DELIVERING, HUMAN_WAKING, f'{RENEWABLE}; {WAITING}',
+                            RENEWABLE_DELIVERY, RENEWABLE_WAKE))
 
 
 def status(seat):
@@ -263,9 +264,9 @@ def run(service):
                 continue
             now = datetime.now(timezone.utc)
             step = "the pool's sign-in reading"
-            if first_failure(seat, state, now):
-                continue  # the next delivery comes first; a second sign-in failure brings the resume
             observation = pool_observation(seat, now)
+            if first_failure(seat, state, now, observation=observation):
+                continue  # the next delivery comes first; a second sign-in failure brings the resume
             decision = _decision(seat, failure, attempt, observation, now)
             if decision == 'attention':
                 service.needs_human(seat)
@@ -292,8 +293,9 @@ def run(service):
                 service.needs_human(seat)
             else:
                 step = 'the relaunch log'  # the relaunch started: what fails from here is not the relaunch
+                sign_in = RENEWABLE if observation[0] == 'renewable' else 'renewed pool sign-in'
                 service.log('authentication', seat=seat.name,
-                            proof=f'{seat.name}: renewed pool sign-in; relaunch with resume ({len(attempts)}/{MAX_ATTEMPTS}) · {proof}')
+                            proof=f'{seat.name}: {sign_in}; relaunch with resume ({len(attempts)}/{MAX_ATTEMPTS}) · {proof}')
         except (OSError, ValueError, TypeError, AttributeError, ShipError) as error:
             # Do not report raw credential/record/state contents as an alarm or proof: the check and the error's kind only.
             service.log('authentication', seat=seat.name,

@@ -57,9 +57,8 @@ def world(tmp_path, monkeypatch):
                            session=SimpleNamespace(human=False), launched=Mock(return_value=launched), is_up=True,
                            record=Mock(return_value=record), harness=SimpleNamespace(state=claude.state, name='claude'))
     monkeypatch.setattr(auth_failure.credential, 'pool_file', Mock(return_value=grant))
-    validity = SimpleNamespace(expires=now.timestamp() + 3600)
-    monkeypatch.setattr(auth_failure.credential, 'freshness', lambda pool, path: (validity.expires, path.stat().st_mtime))
-    monkeypatch.setattr(auth_failure.credential, 'grant_expiry', Mock(return_value=now + timedelta(days=7)))
+    validity = SimpleNamespace(state='valid')
+    monkeypatch.setattr(auth_failure.credential, 'sign_in_status', lambda *_: validity.state)
     store, attempts = post.Store(runtime), post.Attempts(runtime)
     service = SimpleNamespace(resolved_seats=lambda: [seat], relaunch=Mock(return_value='synthetic resumed proof'),
                               log=Mock(), needs_human=Mock(), store=store, attempts=attempts, request_wait=None)
@@ -151,14 +150,23 @@ def test_a_recovery_error_names_the_step_that_held_it(world):
     assert 'synthetic unreadable record' not in proof, 'never the error text'
 
 
+def test_lapsed_access_with_a_renewal_grant_keeps_the_next_delivery_path(world):
+    world.validity.state = 'renewable'
+    world.order('Synthetic open order.')
+    world.write(failed('Synthetic task.', world.at(0)))
+    assert turn_failure.obstruction(world.seat, world.store) is None
+    status = auth_failure.status(world.seat)
+    assert auth_failure.waiting(status) and status.endswith(auth_failure.RENEWABLE_DELIVERY)
+    auth_failure.run(world.service)
+    world.service.relaunch.assert_not_called()
+    world.service.needs_human.assert_not_called()
+
+
 @pytest.mark.parametrize('pool', ['expired', 'unknown'])
 def test_without_a_valid_sign_in_a_first_failure_still_holds_the_door(world, monkeypatch, pool):
     world.order('Synthetic open order.')
     world.write(failed('Synthetic task.', world.at(0)))
-    if pool == 'expired':
-        world.validity.expires = world.now.timestamp() - 1
-    else:
-        monkeypatch.setattr(auth_failure.credential, 'freshness', lambda pool, path: None)
+    world.validity.state = pool
     assert turn_failure.obstruction(world.seat, world.store) == auth_failure.AUTHENTICATION
     assert not auth_failure.first_failure(world.seat)
     assert not auth_failure.status(world.seat).endswith(auth_failure.DELIVERING)

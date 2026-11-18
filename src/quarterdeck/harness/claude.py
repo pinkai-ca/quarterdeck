@@ -16,6 +16,7 @@ import copy
 import email.utils
 import hashlib
 import json
+import math
 import re
 import shlex
 import sys
@@ -1377,12 +1378,32 @@ class ClaudeHarness(Harness):
         from .claude_watch import inputs as watch_inputs
         return self.inputs(record) + watch_inputs(record)
 
+    @staticmethod
+    def _access_expiry(value: int | float) -> float:
+        return float(value) / 1000 if value > 1e11 else float(value)
+
+    def sign_in_metadata(self, path: Path) -> tuple[float, bool, datetime | None] | None:
+        """The access deadline, refresh-key presence and optional end, from one metadata reading."""
+        try:
+            oauth = json.loads(path.read_text()).get("claudeAiOauth")
+            if not isinstance(oauth, dict):
+                return None
+            access = oauth.get("expiresAt")
+            end = oauth.get("refreshTokenExpiresAt")
+            if (type(access) not in (int, float) or not math.isfinite(access)
+                    or end is not None and (type(end) not in (int, float) or not math.isfinite(end))):
+                return None
+            return self._access_expiry(access), "refreshToken" in oauth, (
+                datetime.fromtimestamp(end / 1000, timezone.utc) if end is not None else None)
+        except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+            return None
+
     def freshness(self, path: Path) -> tuple[float, float] | None:
         try:
             oauth = json.loads(path.read_text()).get("claudeAiOauth")
             if isinstance(oauth, dict) and oauth.get("refreshToken"):
                 expiry = oauth.get("expiresAt") or 0
-                return (float(expiry) / 1000 if expiry > 1e11 else float(expiry), path.stat().st_mtime)
+                return self._access_expiry(expiry), path.stat().st_mtime
         except (OSError, ValueError, TypeError, AttributeError):
             pass
         return None

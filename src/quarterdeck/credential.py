@@ -30,6 +30,7 @@ import ctypes
 import errno
 import fcntl
 import json
+import math
 import os
 import stat
 import time
@@ -448,6 +449,47 @@ def _shown(when: datetime) -> str:
     return when.astimezone().strftime("%m-%d %H:%M")
 
 
+def _renewal_evidence(adapter, source: Path) -> tuple[datetime | None, bool]:
+    if adapter.grant_kind == "fixed":
+        return adapter.grant_expiry(source), False
+    if adapter.grant_kind == "self-renewing":
+        return adapter.renewal_end(source), adapter.renewal_failed(source) is True
+    return None, False
+
+
+def renewal_status(pool: Pool, source: Path, now: datetime) -> str:
+    """Read the renewal deadline when freshness has already established the grant's presence."""
+    adapter = harnesses.native_for(pool.provider)
+    end, failed = _renewal_evidence(adapter, source)
+    if failed or end is not None and end <= now:
+        return 'expired'
+    if end is not None or adapter.grant_kind == 'self-renewing':
+        return 'renewable'
+    return 'unknown'
+
+
+def sign_in_status(pool: Pool, source: Path, now: datetime) -> str:
+    """Whether recorded failure recovery has access, can renew it, or needs better evidence."""
+    adapter = harnesses.native_for(pool.provider)
+    if read := getattr(adapter, 'sign_in_metadata', None):
+        metadata = read(source)
+        if metadata is None:
+            return 'unknown'
+        expiry, has_refresh, end = metadata
+        if not has_refresh:
+            return 'expired' if expiry <= now.timestamp() else 'unknown'
+        renewal = 'expired' if end is not None and end <= now else 'renewable'
+    else:
+        fresh = freshness(pool, source)
+        if fresh is None or type(fresh[0]) not in (int, float) or not math.isfinite(fresh[0]):
+            return 'unknown'
+        expiry = fresh[0]
+        renewal = renewal_status(pool, source, now)
+    if renewal == 'expired' or expiry <= now.timestamp():
+        return renewal
+    return 'valid'
+
+
 def login_needed(ship: Ship, now: datetime | None = None) -> list[tuple[str, str]]:
     """Pools that only a login cures, with the local time it is needed by.
 
@@ -463,14 +505,9 @@ def login_needed(ship: Ship, now: datetime | None = None) -> list[tuple[str, str
         if source is None:
             continue
         adapter = harnesses.native_for(pool.provider)
-        if adapter.grant_kind == "fixed":
-            expiry = adapter.grant_expiry(source)
-        elif adapter.grant_kind == "self-renewing":
-            if adapter.renewal_failed(source) is True:
-                found.append((pool.name, RENEWAL_FAILED))
-                continue
-            expiry = adapter.renewal_end(source)
-        else:
+        expiry, failed = _renewal_evidence(adapter, source)
+        if failed:
+            found.append((pool.name, RENEWAL_FAILED))
             continue
         if expiry is not None and expiry - now <= WARN_AHEAD:
             found.append((pool.name, _shown(expiry)))

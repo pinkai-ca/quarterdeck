@@ -84,6 +84,19 @@ def test_a_readable_renewing_grant_near_its_end_is_a_login_needed(tmp_path, monk
     assert credential.login_needed(ship) == []
 
 
+def test_self_renewal_observation_uses_the_renewal_deadline_and_failed_evidence(tmp_path, monkeypatch):
+    now = datetime.now(timezone.utc)
+    _, pool = grok_pool(tmp_path, now - timedelta(hours=1))
+    source = credential.pool_file(pool)
+    assert credential.freshness(pool, source)[0] < now.timestamp()
+    assert credential.sign_in_status(pool, source, now) == 'renewable'
+    monkeypatch.setattr(GrokHarness, "renewal_end", lambda self, path: now)
+    assert credential.sign_in_status(pool, source, now) == 'expired'
+    monkeypatch.setattr(GrokHarness, "renewal_end", lambda self, path: now + timedelta(days=1))
+    monkeypatch.setattr(GrokHarness, "renewal_failed", lambda self, path: True)
+    assert credential.sign_in_status(pool, source, now) == 'expired'
+
+
 def test_a_fixed_grant_near_its_end_is_a_login_needed(tmp_path):
     soon = datetime.now(timezone.utc) + timedelta(hours=30)
     ship, pool = claude_pool(tmp_path, soon)
