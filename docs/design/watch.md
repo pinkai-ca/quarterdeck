@@ -39,7 +39,7 @@ The file holds one UTF-8 JSON object of at most 2,048 bytes with exactly these f
 | `monotonic_ns` | Positive integer monotonic time in nanoseconds from the same observation |
 | `expires_ns` | Positive integer Unix expiry time in nanoseconds |
 
-Expiry must follow observation by at most 120 seconds. Both clocks must place the notice within that lifetime with at most one second of disagreement. The writer must still have the same process start and belong to the ship's effective user. The reader skips invalid entries and treats a missing, unreadable or overfull directory as empty. It examines at most 64 directory entries. Valid text appears by tool name on the status line and survives its overflow summary. A cached status line is reused only while its notice text still matches the current reading.
+Expiry must follow observation by at most 120 seconds. Both clocks must place the notice within that lifetime with at most one second of disagreement. The writer must still have the same process start and belong to the ship's effective user. The reader skips invalid entries and treats a missing, unreadable or overfull directory as empty. It examines at most 64 directory entries. The status line sorts notice text by file name and displays the text without a file or tool label. Notices share the space left after the required alerts in the first 160 display columns. If the notice text is too wide, the line shows a notice count when there is room for it. A cached status line is reused only while its notice text still matches the current reading.
 
 ### Sign-in failures and recovery
 

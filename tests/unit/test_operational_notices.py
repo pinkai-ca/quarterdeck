@@ -1,5 +1,6 @@
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 import time
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 
 from quarterdeck import accounting_health, operational_notices as notices, presentation, service_status
 from quarterdeck import servicectl, ship, watch
+from quarterdeck.tmux import Tmux
 
 
 FIRST = 'backup waiting for local disk'
@@ -72,6 +74,46 @@ def test_two_tools_keep_lines_on_overflow_and_omit_expired_and_foreign(evidence,
                            needs_human=['worker' * 40]).line()
     assert f'{FIRST} · {SECOND}' in overflow
     assert '1 need human' in overflow and 'details: qd status' in overflow
+
+
+def test_maximum_notices_share_one_display_budget_after_required_alerts():
+    facts = watch.Facts('ok', 2, 1, 1, needs_human=['ops'], held=['worker'],
+                        pending=['post withheld'], disks=[('data', 95)])
+    required = facts.line()
+    line = replace(facts, operational_notices=['a' * notices.MAX_TEXT_BYTES, 'b' * notices.MAX_TEXT_BYTES]).line()
+    assert line == required + ' · 2 tool notices'
+    window = line[:160]
+    for alert in ('service ok', 'ops needs a human', 'post withheld', '1 blind', 'worker held at limit',
+                  'disk: data 95%', '2 tool notices'):
+        assert alert in window
+
+
+def test_notices_follow_required_categories_in_ordinary_overflow():
+    facts = watch.Facts('down', 1, 2, 1, needs_human=['ops' * 60], held=['worker'],
+                        pending=['post withheld'], disks=[('data', 95)])
+    line = replace(facts, operational_notices=['a' * notices.MAX_TEXT_BYTES, 'b' * notices.MAX_TEXT_BYTES]).line()
+    assert line == facts.line() + ' · 2 tool notices'
+    assert line[:160].split(' · ') == [
+        'SERVICE DOWN', '1 waiting', '1 blind', '1 need human', '1 held', '1 pending',
+        '1 disk alerts', 'details: qd status', '2 tool notices',
+    ]
+
+
+def test_long_overflow_detail_is_preserved_when_notice_does_not_fit():
+    facts = watch.Facts('down', 1, 2, 1, needs_human=['ops'], held=['worker'],
+                        pending=['post withheld'], disks=[('data', 95)], ledger_recovery=['ledger ' + 'x' * 160])
+    line = replace(facts, operational_notices=[FIRST]).line()
+    assert line == facts.line()
+    assert facts.ledger_recovery[0] in line and 'details: qd status' in line
+
+
+def test_single_notice_uses_display_columns_and_keeps_literal_text_when_it_fits():
+    facts = watch.Facts('ok', 0, 0, 0, needs_human=['worker-' + 'x' * 55])
+    required = facts.line()
+    assert replace(facts, operational_notices=[FIRST]).line() == required + ' · ' + FIRST
+    wide = '界' * 42
+    assert len(required + ' · ' + wide) < 160 < len(required + ' · ') + 2 * len(wide)
+    assert replace(facts, operational_notices=[wide]).line() == required + ' · 1 tool notice'
 
 
 @pytest.mark.parametrize('which', ['folder', 'writer'])
@@ -168,7 +210,8 @@ def test_unusable_directory_is_empty(evidence, tmp_path, which):
 
 
 @pytest.mark.parametrize('clear', ['remove', 'change', 'expire', 'restart'])
-def test_publication_cannot_repeat_a_superseded_notice(evidence, monkeypatch, clear):
+@pytest.mark.parametrize('published_age', [0, 91])
+def test_publication_cannot_repeat_a_superseded_notice(evidence, monkeypatch, clear, published_age):
     declaration, folder = evidence
     data = notice(FIRST)
     path = put(folder, 'backup', **data)
@@ -198,4 +241,13 @@ def test_publication_cannot_repeat_a_superseded_notice(evidence, monkeypatch, cl
             data['process_start'] = str(int(data['process_start']) + 1)
         put(folder, 'backup', **data)
     assert presentation.cached_line(declaration.folder) is None
-    assert presentation.published_reading(declaration.folder, status_refresh=30) == (None, None)
+    publication['written'] = now - published_age * 1_000_000_000
+    (declaration.runtime / presentation.NAME).write_text(json.dumps(publication))
+    monkeypatch.setattr(presentation.time, 'time_ns', lambda: now)
+    assert presentation.published_reading(declaration.folder, status_refresh=30) == (None, published_age or None)
+    monkeypatch.setattr(Tmux, 'for_ship', classmethod(lambda cls, ship: SimpleNamespace()))
+    text = presentation.command_line(['--ship', str(declaration.folder), 'status', '--line'])
+    assert FIRST not in text
+    assert ('publication 91s old, collected here' in text) == bool(published_age)
+    if clear == 'change':
+        assert 'backup rebuilding' in text

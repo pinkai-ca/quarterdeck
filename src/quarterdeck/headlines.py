@@ -1,14 +1,32 @@
 """Operational status-line text with category counts when alert names exceed the budget."""
 
+from unicodedata import east_asian_width
+
 WIDTH = 160
 SEPARATOR = " · "
+
+
+def _columns(text: str) -> int:
+    """Budget conservatively for wide characters and combining sequences."""
+    return sum(2 if east_asian_width(char) in ('W', 'F') else 1 for char in text)
 
 
 def status_line(facts, alerts: list[str]) -> str:
     """Preserve every operational category when the detailed alert text overflows."""
     text = SEPARATOR.join(alerts)
-    if len(text) <= WIDTH:
+    if _columns(text) > WIDTH:
+        text = _abbreviated_status(facts)
+    notices = getattr(facts, 'operational_notices', ())
+    if not notices:
         return text
+    room = WIDTH - _columns(text) - _columns(SEPARATOR)
+    notice_text = SEPARATOR.join(notices)
+    if _columns(notice_text) > room:
+        notice_text = '1 tool notice' if len(notices) == 1 else f'{len(notices)} tool notices'
+    return text + SEPARATOR + notice_text if _columns(notice_text) <= room else text
+
+
+def _abbreviated_status(facts) -> str:
     parts = ["SERVICE DOWN" if facts.service == "down" else f"service {facts.service}"]
     if retirement := getattr(facts, 'retirement', None):
         parts.append(retirement)
@@ -16,7 +34,6 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += [line for line in getattr(facts, 'server_recovery', ()) if line.startswith('service stop barrier')]
     if accounting := getattr(facts, 'accounting', None):
         parts.append(accounting)  # keep its time and safe cause even when other alerts overflow
-    parts += getattr(facts, 'operational_notices', ())
     counts = [(facts.waiting, "waiting"), (facts.queued, "queued"), (facts.blind, "blind"),
               (len(facts.needs_human), "need human"), (len(facts.unarmed), "unarmed"),
               (len(facts.held), "held"), (len(facts.pending), "pending"),

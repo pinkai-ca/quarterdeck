@@ -133,14 +133,14 @@ def published_reading(folder, *, status_refresh=None):
                 or type(data['pid']) is not int or data['pid'] <= 0
                 or not isinstance(data['process_start'], str) or not data['process_start']):
             raise ValueError('invalid publication')
-        if data.get('operational_notices', []) != operational_notices.readings(runtime):
-            return None, None
         written = data.get('written')
         age = time.time_ns() - written if written is not None else -1
         if age < 0:
             return None, None  # an undated/reversed clock cannot bound reuse
         if age > collect_ns:
             return None, age // 1_000_000_000
+        if data.get('operational_notices', []) != operational_notices.readings(runtime):
+            return None, None
         if lead == 'service ok' and 0 <= age <= plain_ns:
             beat = servicectl.read_heartbeat(runtime)
             if (beat is not None and beat[0] == data['pid'] and 0 <= beat[1] <= servicectl.STALE_SECONDS
