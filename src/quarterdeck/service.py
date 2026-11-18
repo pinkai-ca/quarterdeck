@@ -318,7 +318,7 @@ class Service:
         self.loop_stamp('drain')
         self._drain_between_duties()
         for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.set_asides, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.deliveries, self.follow, self.requests, self.fresh_handoffs, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
-                     self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.retire_hand_transcripts, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
+                     self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.retire_hand_transcripts, self.account, self.refresh_usage, self.pool_forecasts, self.record_growth, self.retire_post):
             self.loop_stamp(step.__name__)  # a slow duty reads as busy, then stuck, never as ok; the beat thread
             self.heartbeat()  # proves only that the process is alive, never that this loop is moving
             try:
@@ -414,6 +414,10 @@ class Service:
     def pool_forecasts(self) -> None:
         from . import usage_forecast
         usage_forecast.notify(self)
+
+    def record_growth(self) -> None:
+        from . import record_growth
+        record_growth.notify(self)
 
     def retire_hand_transcripts(self) -> None:
         if getattr(self, 'ledger', None) is None:

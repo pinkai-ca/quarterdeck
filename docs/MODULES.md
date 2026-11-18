@@ -53,6 +53,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `output_limit.py` | a seat whose last turn stopped at its output limit with an order open: its status line and its one alarm to the systems seats, cleared when a new turn starts or the order closes |
 | `usage_cache.py` | the latest real reading of each usage window, and its last attempt |
 | `usage_forecast.py` | bounded weekly usage history, three-hour spending rates, exhaustion forecasts and once-per-period systems notifications |
+| `record_growth.py` | owned-pointer size sampling and once-per-record forecasts of an approaching read bound |
 
 ## Under `harness/`
 

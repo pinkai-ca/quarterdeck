@@ -36,6 +36,8 @@ def _abbreviated_status(facts) -> str:
         parts.append(accounting)  # keep its time and safe cause even when other alerts overflow
     if startup_delivery := getattr(facts, 'startup_delivery', None):
         parts.append(startup_delivery)
+    # Keep named size warnings ahead of the summarized counts and move decisions on overflow.
+    parts += getattr(facts, 'record_bounds', ())
     counts = [(facts.waiting, "waiting"), (facts.queued, "queued"), (facts.blind, "blind"),
               (len(facts.needs_human), "need human"), (len(facts.unarmed), "unarmed"),
               (len(facts.held), "held"), (len(facts.pending), "pending"),
