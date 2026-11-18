@@ -698,6 +698,8 @@ def config_text(config: dict) -> str:
 
 
 class CodexHarness(Harness):
+    """Read Codex rollout JSONL and the terminal composer."""
+
     box_geometry_known = True  # box_columns below declares the established text area
     # 0.166.0: after paste, the composer shows the bottom rows. Its up-arrow
     # occupies the first visible row's one reserved right cell, outside the text.
@@ -713,8 +715,6 @@ class CodexHarness(Harness):
     def check_tool_evidence(self, record: Path) -> dict:
         from .check_evidence import json_tools, codex_tools
         return json_tools(record, codex_tools)
-
-    """Codex, proven on 0.166.0. Model and effort change only at launch: ``/model`` opens a picker."""
 
     compactions = staticmethod(compactions)
 

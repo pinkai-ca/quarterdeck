@@ -389,14 +389,14 @@ STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
 
 
 class PiHarness(EndpointHarness):
+    """Read Pi session JSONL and the terminal editor."""
+
     box_geometry_known = True  # box_columns below declares the established text area
     minimum_pane_heights = {"0.79.0": 5}  # OPEN native idle pane, 52/80/120/256 columns, both resize directions
 
     def check_tool_evidence(self, record: Path) -> dict:
         from .check_evidence import json_tools, pi_tools
         return json_tools(record, pi_tools)
-
-    """pi, proven on 0.74.2. Runs on an endpoint pool; model and thinking level change only at launch."""
 
     human_tool_policy = "The enumerated core tools have no question tool; launch disables extensions. Custom tools are not classified."
 
