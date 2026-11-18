@@ -3,6 +3,7 @@ exact manifests of a checkout's tracked and untracked or ignored contents, by ha
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -12,10 +13,12 @@ import subprocess
 from .layout import Refused, git_environment
 
 MAIN = 'refs/heads/main'
+# Overrides on the tool's own git. Not a substitute for a git dir the jail cannot write.
+PINNED_CONFIG = ('-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.untrackedCache=false')
 
 
-def git(cwd: Path, *args: str, check: bool = True, env: dict | None = None) -> str:
-    done = subprocess.run(['git', '-C', str(cwd), *args], capture_output=True,
+def git(cwd: Path, *args: str, check: bool = True, env: dict | None = None, config: tuple = ()) -> str:
+    done = subprocess.run(['git', *config, '-C', str(cwd), *args], capture_output=True,
                           env=git_environment() if env is None else env)
     if check and done.returncode:
         raise Refused(f'git {" ".join(args)} in {cwd}: {done.stderr.decode(errors="replace").strip()}')
@@ -81,9 +84,56 @@ def resolve(path: Path) -> Target:
     return Target(top, project, head, tree, branch)
 
 
-def status(top: Path) -> list[tuple[str, str]]:
+def file_fingerprint(path: Path) -> str:
+    """Identity of one file's own bytes, or of a symlink itself. Never a Git read."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return 'missing'
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            return 'link:' + hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()
+        return f'unreadable:{error.errno}'
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return 'not-a-file'
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(fd, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def pinned_environment(git_dir, common_dir, work_tree, index: Path | None = None) -> dict:
+    """Git environment for an outer call: the tool's recorded directories, set after the caller's are stripped."""
+    env = git_environment()
+    env['GIT_DIR'] = str(git_dir)
+    env['GIT_COMMON_DIR'] = str(common_dir)
+    env['GIT_WORK_TREE'] = str(work_tree)
+    if index is not None:
+        env['GIT_INDEX_FILE'] = str(index)
+    return env
+
+
+def private_index_environment(git_dir, common_dir, work_tree, index: Path, commit: str) -> dict:
+    """An index the tool builds outside the checkout's git directory, holding ``commit`` and nothing else."""
+    index.parent.mkdir(parents=True, exist_ok=True)
+    if index.is_symlink() or index.exists():
+        index.unlink()
+    env = pinned_environment(git_dir, common_dir, work_tree, index)
+    git(Path(work_tree), 'read-tree', commit, env=env, config=PINNED_CONFIG)
+    return env
+
+
+def status(top: Path, *, env: dict | None = None, config: tuple = ()) -> list[tuple[str, str]]:
     """Every entry Git reports, ignored ones included: (two-letter code, path)."""
-    raw = git(top, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching')
+    raw = git(top, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching',
+              env=env, config=config)
     entries, parts = [], raw.split('\0')
     index = 0
     while index < len(parts):
@@ -118,8 +168,8 @@ def disk_entry(path: Path) -> tuple[str, str] | None:
     return 'other', ''
 
 
-def committed(top: Path, commit: str) -> dict[str, tuple[str, str]]:
-    raw = git(top, 'ls-tree', '-r', '-z', '--full-tree', commit)
+def committed(top: Path, commit: str, *, env: dict | None = None, config: tuple = ()) -> dict[str, tuple[str, str]]:
+    raw = git(top, 'ls-tree', '-r', '-z', '--full-tree', commit, env=env, config=config)
     entries = {}
     for item in raw.split('\0'):
         if item:
@@ -130,9 +180,13 @@ def committed(top: Path, commit: str) -> dict[str, tuple[str, str]]:
     return entries
 
 
-def tracked_manifest(top: Path, commit: str) -> dict:
-    """The commit's tracked files compared with what is on disk: the files that differ, by hash."""
-    expected = committed(top, commit)
+def tracked_manifest(top: Path, commit: str, *, git_at: Path | None = None, env: dict | None = None,
+                     config: tuple = ()) -> dict:
+    """The commit's tracked files compared with what is on disk: the files that differ, by hash.
+
+    ``git_at`` chooses where ``commit`` is read. Disk is always ``top``.
+    """
+    expected = committed(git_at or top, commit, env=env, config=config)
     differ = {}
     for name, entry in expected.items():
         actual = disk_entry(top / name)
@@ -142,10 +196,10 @@ def tracked_manifest(top: Path, commit: str) -> dict:
     return {'commit': commit, 'files': len(expected), 'digest': digest, 'differ': differ}
 
 
-def extra_manifest(top: Path) -> dict:
+def extra_manifest(top: Path, *, env: dict | None = None, config: tuple = ()) -> dict:
     """Untracked and ignored entries as Git lists them, each with its type, size and identity stamps."""
     entries = {}
-    for code, name in status(top):
+    for code, name in status(top, env=env, config=config):
         if code not in ('??', '!!'):
             continue
         try:

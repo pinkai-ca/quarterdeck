@@ -32,8 +32,8 @@ FINALIZATION_SECONDS = 60.0
 EMERGENCY_SECONDS = 5.0
 FINALIZATION_EXIT = 7
 EXIT = {'passed': 0, 'failed': 1, 'refused': 2, 'timeout': 3, 'interrupted': 4, 'incomplete': 5, 'abandoned': 5,
-        'no-tests': 5}
-CLEANUP_HELD = 6
+        'no-tests': 5, 'held': 6}
+CLEANUP_HELD = EXIT['held']
 PREFLIGHT = r'''
 import importlib.util, json, sys, sysconfig
 # Match pytest's checkout-root import path while still requiring project code to resolve under src.
@@ -121,6 +121,8 @@ class Runner:
         self.monitor = None
         self.storage_refused = False
         self.listed = None  # what the jail holds, once the run checkout exists
+        self.pin = None  # recorded git directories for outer git after the first target-code step
+        self.common_dir = None  # the project's git common directory, taken at worktree add
 
     def jailed(self, argv, cwd):
         """A step that runs the target's code: inside the jail when --jail was given, else as it is."""
@@ -394,7 +396,11 @@ class Runner:
                 settings['fixed']['TMUX_TMPDIR'] = env['TMUX_TMPDIR']
                 env[resources.MEMORY_ENV] = str(args.memory_mib)
                 self.env = env
-                result['jail'] = {'jailed': False}
+                if getattr(args, 'jail', False):
+                    result['jail'] = {'jailed': True, 'built': False,
+                                      'reason': 'failed before the checkout existed'}
+                else:
+                    result['jail'] = {'jailed': False}
                 result['environment'] = {**settings, 'workers': args.workers, 'timeout': args.timeout,
                                          'memory_mib': args.memory_mib, 'memory_resource': 'RLIMIT_AS',
                                          'memory_soft_and_hard': True, 'open_files': self.open_files,
@@ -443,8 +449,17 @@ class Runner:
         result['evidence'] = {key: value for key, value in found.items() if key != 'failures'}
         result['failures'] = report.write_failures(results_fd, found['failures'])
         result['manifests'] = {'target': manifests_target(target, target_before) if target_before else {}}
+        changed = self.changed_git_files()
+        if changed is not None:
+            result['git_guard'] = {'changed': changed}
+            if changed and status == 'passed':
+                status = 'held'
+            if changed:
+                named = ', '.join(changed)
+                note = f'{note}; git guard: {named}' if note else f'git guard: {named}'
         if getattr(self, 'checkout_before', None) is not None and checkout.is_dir():
-            result['manifests']['checkout'] = manifests_checkout(checkout, target.head, self.checkout_before)
+            result['manifests']['checkout'] = manifests_checkout(checkout, target.head, self.checkout_before,
+                                                                 read=self.read_checkout_manifest)
         result['ended'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
         result['seconds'] = round(time.time() - self.started, 1)
         result['outcome'] = {'status': status, 'wrapper_exit': EXIT[status], 'pytest_exit': pytest_exit,
@@ -569,6 +584,8 @@ class Runner:
                 write_json(self.scratch_fd, 'state.json', self.state)
                 clean.record(self.root, self.run, self.state)
                 raise Refused(f'run checkout admin {actual} differs from intended {admin}; retained')
+            # Kept in memory from this moment. Later outer git uses this string, never a commondir read back.
+            self.common_dir = gitops.git(checkout, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()
             self.state.update(checkout_identity=identity(os.lstat(checkout)))
             write_json(self.scratch_fd, 'state.json', self.state)
             clean.record(self.root, self.run, self.state)
@@ -577,10 +594,20 @@ class Runner:
         head = gitops.git(checkout, 'rev-parse', 'HEAD', **verify_options).strip()
         result['checkout'] = {'path': str(checkout), 'head': head, 'tree': tree, 'admin': str(admin), **repository}
         if getattr(self.args, 'jail', False):
+            copy = jail.stage_admin(Path(admin), scratch)
             self.listed = jail.binds(scratch, user_site=self.user['site'] if self.user['exists'] else None,
-                                     git_dir=target.project / '.git', admin=Path(admin))
+                                     git_dir=target.project / '.git', admin=Path(admin), admin_copy=copy)
             result['jail'] = jail.statement(listed=self.listed, env=self.env, timeout=self.args.timeout,
                                             memory_mib=self.args.memory_mib, tool=result['runner'])
+            self.arm_pin('pinned', git_dir=str(admin), common_dir=self.common_dir,
+                         watch=(checkout / '.git', copy / 'commondir', Path(admin) / 'commondir'))
+        elif self.ci_layout:
+            source_git = gitops.git(target.top, 'rev-parse', '--absolute-git-dir').strip()
+            source_common = gitops.git(target.top, 'rev-parse', '--path-format=absolute',
+                                       '--git-common-dir').strip()
+            self.arm_pin('ci', git_dir=source_git, common_dir=source_common, source=str(target.top),
+                         index=str(scratch / 'manifest.index'),
+                         watch=(checkout / '.git' / 'config', checkout / '.git' / 'commondir'))
         if tree != target.tree or head != target.head:
             raise Refused('run checkout HEAD/tree differs from the exact target')
         python = self.python
@@ -672,8 +699,8 @@ class Runner:
             os.chmod(folder, 0o555)
             readonly += 1
         result['checkout']['readonly_package_dirs'] = readonly
-        self.checkout_before = {'tracked': gitops.tracked_manifest(checkout, target.head),
-                                'extra': gitops.extra_manifest(checkout)}
+        tracked, extra = self.read_checkout_manifest(checkout, target.head)
+        self.checkout_before = {'tracked': tracked, 'extra': extra}
         argv = pytest_argv(vpython, scratch, self.args.workers, targets, ci_layout=self.ci_layout)
         result['argv'] = [str(part) for part in argv]
         if self.ci_layout:
@@ -691,6 +718,44 @@ class Runner:
         self.bound(self.args.timeout, f'time limit of {self.args.timeout} s')  # pytest's own, from its start
         self.user_before = usersite.stamps(user['site']) if user['exists'] else None
         return self.execute(argv, env=env, cwd=checkout, title='pytest', jailed=True)
+
+    def arm_pin(self, mode: str, *, git_dir: str, common_dir: str, watch, source: str | None = None,
+                index: str | None = None) -> None:
+        """Record the git directories outer git may use, and the bytes the jail can change, before it runs."""
+        self.pin = {'mode': mode, 'git_dir': git_dir, 'common_dir': common_dir, 'source': source,
+                    'index': index, 'watch': [str(path) for path in watch]}
+        self.pin['before'] = {path: gitops.file_fingerprint(Path(path)) for path in self.pin['watch']}
+
+    def changed_git_files(self) -> list[str] | None:
+        """Paths whose bytes changed since the pin. None when this run does not pin git."""
+        if self.pin is None:
+            return None
+        changed = []
+        for path, before in self.pin['before'].items():
+            if gitops.file_fingerprint(Path(path)) != before:
+                changed.append(path)
+        return changed
+
+    def read_checkout_manifest(self, checkout: Path, head: str) -> tuple[dict, dict]:
+        """Tracked and extra manifests. After target code starts, never by discovering the checkout's git."""
+        pin = self.pin
+        if pin is None:
+            return gitops.tracked_manifest(checkout, head), gitops.extra_manifest(checkout)
+        if pin['mode'] == 'pinned':
+            env = gitops.pinned_environment(pin['git_dir'], pin['common_dir'], checkout)
+            config = gitops.PINNED_CONFIG
+            return (gitops.tracked_manifest(checkout, head, env=env, config=config),
+                    gitops.extra_manifest(checkout, env=env, config=config))
+        index = Path(pin['index'])
+        env = gitops.private_index_environment(pin['git_dir'], pin['common_dir'], checkout, index, head)
+        try:
+            # The committed tree is the target's. Disk is the checkout. The checkout's git directory is not read.
+            tracked = gitops.tracked_manifest(checkout, head, git_at=Path(pin['source']))
+            extra = gitops.extra_manifest(checkout, env=env, config=gitops.PINNED_CONFIG)
+            return tracked, extra
+        finally:
+            if index.is_symlink() or index.exists():
+                index.unlink()
 
 
 def pytest_argv(vpython: Path, scratch: Path, workers: int, targets: list[str], *, ci_layout: bool = False) -> list:
@@ -775,9 +840,8 @@ def manifests_target(target, before: dict) -> dict:
             'unchanged': (head == target.head and tracked == before['tracked'] and extra == before['extra'])}
 
 
-def manifests_checkout(checkout: Path, head: str, before: dict) -> dict:
-    tracked = gitops.tracked_manifest(checkout, head)
-    extra = gitops.extra_manifest(checkout)
+def manifests_checkout(checkout: Path, head: str, before: dict, *, read) -> dict:
+    tracked, extra = read(checkout, head)
     return {'tracked_before': before['tracked'], 'tracked_after': tracked,
             'extra_before': {'count': before['extra']['count'], 'digest': before['extra']['digest']},
             'extra_after': {'count': extra['count'], 'digest': extra['digest']},

@@ -65,12 +65,22 @@ PLUGIN_1 = ('Read under evidence plugin version 1, which does not mark a complet
 
 
 def jail_line(jail: dict | None) -> str:
-    if not jail or not jail.get('jailed'):
+    if not jail or jail.get('jailed') is not True:
         return '- jailed: no'
+    if 'bubblewrap' not in jail:
+        reason = jail.get('reason') or 'failed before the checkout existed'
+        return f'- jailed: yes, failed early: {reason}'
     tool = jail.get('tool') or {}
     return (f'- jailed: yes, by the tool at `{tool.get("checkout")}` HEAD `{tool.get("head")}` (files match HEAD: '
             f'{tool.get("matches_head")}) · {jail.get("bubblewrap")} · {jail.get("namespaces")} · time limit '
             f'{jail.get("timeout_seconds")} s · memory {jail.get("memory_mib")} MiB ({jail.get("memory_resource")})')
+
+
+def git_guard_line(guard: dict | None) -> str | None:
+    changed = (guard or {}).get('changed')
+    if not changed:
+        return None
+    return '- git guard held: ' + ', '.join(f'`{path}`' for path in changed)
 
 
 
@@ -104,6 +114,9 @@ def render(result: dict, console: str, failures: list[dict]) -> str:
            jail_line(result.get('jail')),
            f'- command: `{" ".join(result.get("argv", []))}`',
            f'- started {result.get("started")}, ended {result.get("ended")}, {result.get("seconds")} s', '']
+    guard = git_guard_line(result.get('git_guard'))
+    if guard:
+        out.insert(out.index(jail_line(result.get('jail'))) + 1, guard)
     evidence = result.get('evidence') or {}
     out += ['## Counts', '']
     if evidence.get('complete'):

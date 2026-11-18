@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import time
@@ -44,6 +45,21 @@ def register(root: Root, target, run: str) -> None:
 
 
 # -- one run's scratch ----------------------------------------------------------------------------------------
+def drop_worktree_admin(admin: Path) -> bool:
+    """Remove one recorded worktree admin directory without invoking git.
+
+    ``git worktree remove`` reads the checkout's git pointer. A jailed step can rewrite that file, so once
+    scratch is gone the tool removes this entry itself, and only after its gitdir still names that checkout.
+    """
+    if admin.is_symlink() or not admin.is_dir():
+        return False
+    parent = admin.parent
+    if parent.name != 'worktrees' or parent.parent.name != '.git':
+        return False
+    shutil.rmtree(admin)
+    return not os.path.lexists(admin)
+
+
 def kept(root: Root, run: str) -> dict | None:
     fd = root.child(KEEPS)
     try:
@@ -127,12 +143,21 @@ def _retire_run(root: Root, runs_fd: int, run: str, state: dict, *, releasing=Fa
         cleanup['git_admin'] = {'path': admin, 'removed': not os.path.lexists(admin),
                                 'repository_kind': 'independent', 'external_admin': False}
     elif admin and cleanup['outcome'] == 'complete':
-        checkout = state['checkout']
-        done = gitops.ok(root.project, 'worktree', 'remove', '--force', checkout)
-        cleanup['git_admin'] = {'path': admin, 'removed': not os.path.lexists(admin), 'command_ok': done}
-        if os.path.lexists(admin):
+        path = Path(admin)
+        expected = str(Path(state['checkout']) / '.git')
+        backlink = path / 'gitdir'
+        matches = (path.is_dir() and not path.is_symlink() and backlink.is_file() and not backlink.is_symlink()
+                   and backlink.read_text().strip() == expected)
+        if not os.path.lexists(path):
+            done = True
+        elif matches:
+            done = drop_worktree_admin(path)
+        else:
+            done = False
+        cleanup['git_admin'] = {'path': admin, 'removed': not os.path.lexists(path), 'command_ok': done}
+        if os.path.lexists(path):
             cleanup['outcome'] = 'held'
-            cleanup['reason'] = f'git worktree admin {admin} remains; `git worktree remove --force {checkout}` clears it'
+            cleanup['reason'] = f'git worktree admin {admin} remains; the recorded entry was not removed'
     return cleanup
 
 

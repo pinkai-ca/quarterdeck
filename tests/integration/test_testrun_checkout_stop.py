@@ -41,10 +41,9 @@ run.Runner.execute = hold_checkout
 DRIVER = LEAP.replace('sys.exit(cli.main', PATCH + '\nsys.exit(cli.main')
 
 REFUSE_REMOVAL = '''
-original_ok = run.gitops.ok
-def cannot_remove(project, *args):
-    return False if args[:2] == ('worktree', 'remove') else original_ok(project, *args)
-run.gitops.ok = cannot_remove
+def cannot_remove(admin):
+    return False
+run.clean.drop_worktree_admin = cannot_remove
 '''
 
 

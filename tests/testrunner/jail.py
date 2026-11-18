@@ -10,8 +10,9 @@ whose tool lies inside its target is refused. Nothing of the machine is visible 
 - a private ``/tmp``, a minimal ``/dev`` (bubblewrap's: null, zero, full, random, urandom, tty, pts, shm; no GPU),
   ``/proc`` of the jail's own processes;
 - the run's own scratch, writable: its checkout of the target, its venv and an empty HOME;
-- read-only: the user site that supplies the test tools, and the project's Git folder, with the run checkout's
-  own admin entry writable, so Git works in the checkout;
+- read-only: the user site that supplies the test tools, and the project's Git folder;
+- the checkout's Git admin as a copy inside scratch, mounted at the real admin path, so Git works in the
+  jail while the real entry outside stays the tool's and is not writable from the jail;
 - nothing else of /home or /run/user.
 
 The time limit and the per-process memory ceiling are the run's own (``--timeout``, ``--memory-mib``); the jail
@@ -128,19 +129,41 @@ def environment(env: dict) -> dict:
     return jailed
 
 
-def binds(scratch: Path, *, user_site: str | None, git_dir: Path | None, admin: Path | None) -> list[tuple[str, str]]:
-    """What goes in, as (kind, path): ro, rw. Each path is mounted at the same place inside."""
-    listed = [('rw', str(scratch))]
+def stage_admin(admin: Path, scratch: Path) -> Path:
+    """Copy the checkout's admin entry into scratch. The jail mounts the copy, never the real entry."""
+    dest = scratch / 'admin-copy'
+    if dest.exists() or dest.is_symlink():
+        raise JailRefused(f'admin copy {dest} already exists')
+    shutil.copytree(admin, dest, symlinks=True)
+    return dest
+
+
+def binds(scratch: Path, *, user_site: str | None, git_dir: Path | None, admin: Path | None,
+          admin_copy: Path | None = None) -> list[tuple]:
+    """What goes in. ``(kind, source)`` is mounted on itself; ``(kind, source, dest)`` mounts elsewhere.
+
+    A checkout admin is mounted from ``admin_copy`` onto the real ``admin`` path. The real entry is not a
+    source, so the jail cannot write it.
+    """
+    listed: list[tuple] = [('rw', str(scratch))]
     if git_dir is not None:
         listed.append(('ro', str(git_dir)))
     if admin is not None:
-        listed.append(('rw', str(admin)))
+        if admin_copy is None:
+            raise JailRefused('the jail mounts a copy of the checkout admin, never the real entry')
+        listed.append(('rw', str(admin_copy), str(admin)))
     if user_site and Path(user_site).is_dir():
         listed.append(('ro', user_site))
     return listed
 
 
-def argv(command: list, *, env: dict, cwd: Path, listed: list[tuple[str, str]]) -> list[str]:
+def mounted(item: tuple) -> tuple[str, str, str]:
+    kind, source = item[0], item[1]
+    dest = item[2] if len(item) > 2 else source
+    return kind, source, dest
+
+
+def argv(command: list, *, env: dict, cwd: Path, listed: list[tuple]) -> list[str]:
     jail = [program(), '--unshare-all', '--die-with-parent', '--new-session', '--clearenv']
     for name, value in sorted(environment(env).items()):
         jail += ['--setenv', name, value]
@@ -154,8 +177,9 @@ def argv(command: list, *, env: dict, cwd: Path, listed: list[tuple[str, str]]) 
     for name in ETC:
         jail += ['--ro-bind-try', f'/etc/{name}', f'/etc/{name}']
     jail += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp']
-    for kind, path in listed:
-        jail += ['--bind' if kind == 'rw' else '--ro-bind', path, path]
+    for item in listed:
+        kind, source, dest = mounted(item)
+        jail += ['--bind' if kind == 'rw' else '--ro-bind', source, dest]
     jail += ['--chdir', str(cwd), '--']
     return jail + [str(part) for part in command]
 
@@ -168,7 +192,9 @@ def statement(*, listed, env: dict, timeout: float, memory_mib: int, tool: dict)
         version = 'unreadable'
     return {'jailed': True, 'bubblewrap': version, 'namespaces': 'unshare-all (no network but loopback)',
             'environment': sorted(environment(env)), 'usr': 'read-only', 'etc': list(ETC), 'tmp': 'private',
-            'dev': 'minimal, no GPU', 'binds': [{'kind': kind, 'path': path} for kind, path in listed],
+            'dev': 'minimal, no GPU',
+            'binds': [{'kind': kind, 'path': dest, **({'from': source} if source != dest else {})}
+                      for kind, source, dest in (mounted(item) for item in listed)],
             'timeout_seconds': timeout, 'memory_mib': memory_mib, 'memory_resource': 'RLIMIT_AS, per process',
             'tool': {'checkout': tool.get('checkout'), 'head': tool.get('head'),
                      'matches_head': tool.get('matches_head')}}
