@@ -468,12 +468,17 @@ def run(seat, *, observe_delivery=None) -> str | None:
 
 
 def _held_episode(seat, wake, relative: str) -> bool:
-    """The current episode is held. A readable mark lets a new launch release it; the episode stays held."""
+    """The current episode is held. A readable mark lets a new launch release it; the episode stays held.
+
+    A cancelled wake is resolved and is never typed, including when the mark cannot be read.
+    """
     from .delivery_boundary import episode_held, held_journal, mark_unreadable
     try:
         data = json.loads(metadata(wake))
     except (OSError, ValueError, UnicodeError):
         return held_journal(seat.ship.runtime, relative)
+    if data.get('phase') == 'cancelled':
+        return False
     if not episode_held(seat.ship.runtime, relative, data):
         return False
     if mark_unreadable(seat.ship.runtime):

@@ -205,8 +205,10 @@ runtime/
   service.delivery     runtime-only in-flight owner/transaction token and confined pending-journal path.
                        A pointer the next service cannot resolve is settled by qd service --settle-delivery,
                        which moves only that file; the journal stays, held uncertain by a mark in trusted/.
-                       An unreadable pointer holds every unresolved journal that exists; a wake is held by its
-                       episode, and a mark that cannot be read holds rather than releases.
+                       An unreadable pointer holds every in-flight journal, not one already delivered or
+                       cancelled. A cancelled wake is not held. A wake still in flight is held by its episode,
+                       and a mark that cannot be read holds rather than releases. The settling line is forced
+                       to disk before the pointer is renamed.
   seats/<seat>/home/   the program's home, built by qd: the ship's settings, the seat's records and logs
   seats/<seat>/record  the path of the current record, taken at launch
   seats/<seat>/watch   pid and time of the seat's armed watch, if any

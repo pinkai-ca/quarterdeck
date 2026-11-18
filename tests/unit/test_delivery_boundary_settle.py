@@ -678,3 +678,151 @@ def test_a_settling_destination_holds_after_a_new_pointer(tmp_path, monkeypatch)
     assert journal.read_bytes() == journal_bytes
     again = json.loads(attempt.path.read_text())
     assert again['result'] == 'uncertain' and again['detail'] == delivery_boundary.HOLD_DETAIL
+
+
+def _desk(ship):
+    """The desk, on the same launch its cancelled wake was saved under. No watch is armed."""
+    pane = SimpleNamespace(id='%9', pid=4242, dead=False, in_mode=False, width=200)
+    seat = seat_for(ship, 'desk')
+    seat.session = SimpleNamespace(human=True)
+    seat.launched = lambda: SimpleNamespace(pane='%9', pid=4242, at=STAMP)
+    seat.pane = lambda: pane
+    seat.harness = SimpleNamespace(name='fake', human_wake_box_margin=lambda width: 2)
+    seat.join = lambda: SimpleNamespace(record=None, reason='no record yet')
+    seat.record = lambda: None
+    seat.tmux = SimpleNamespace()
+    return seat
+
+
+def _delivering_door(monkeypatch):
+    from quarterdeck.door import Door
+    calls = []
+
+    def screen(self):
+        self.captured_pane = SimpleNamespace(id='%9', pid=4242, dead=False, in_mode=False, width=200)
+        return SimpleNamespace(box='', unknown=False, interruption=False, starting=False, working=False, queued=None)
+
+    def reading(self, _screen):
+        return SimpleNamespace(open=True)
+
+    def deliver(self, _line, proof, human_wake=False):
+        calls.append(proof.data['at'])
+        return SimpleNamespace(result='delivered', detail='')
+
+    monkeypatch.setattr(Door, 'screen', screen)
+    monkeypatch.setattr(Door, '_reading', reading)
+    monkeypatch.setattr(Door, 'deliver', deliver)
+    return calls
+
+
+@pytest.mark.parametrize('mark', ['settled', 'unreadable'])
+def test_a_cancelled_wake_is_not_held_and_a_new_reservation_runs(tmp_path, monkeypatch, mark):
+    """A finished wake, phase cancelled and ended false, is not held. A waiting message makes a new reservation
+    on the same launch, after a settle and under an unreadable mark."""
+    ship = ship_at(tmp_path)
+    wake, data = write_wake(ship, 'desk', 'cancelled', ended=False)
+    relative = wake.relative_to(ship.runtime).as_posix()
+    assert data['phase'] == 'cancelled' and data['ended'] is False
+    if mark == 'settled':
+        old_owner(ship.runtime)
+        pointer = shutdown.pointer_path(ship.runtime)
+        pointer.write_text('not json\n')
+        result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+        assert result.startswith('delivery boundary moved aside unchanged: '), result
+        assert 'unreadable delivery pointer' in result, result
+        text = delivery_boundary.mark_path(ship.runtime).read_text()
+        assert human_wake.LINE not in text
+        rows = [json.loads(line) for line in text.splitlines()]
+        assert relative not in (rows[0].get('journals') or [])
+        assert not any(item.get('journal') == relative for item in rows[0].get('wakes') or [])
+    else:
+        plant_bad_mark(ship, 'link')
+    assert not delivery_boundary.episode_held(ship.runtime, relative, data)
+    assert not delivery_boundary.held_journal(ship.runtime, relative)
+    post.Store(ship.runtime).new('order', 'operator', 'desk', 'Synthetic waiting order')
+    calls = _delivering_door(monkeypatch)
+    reason = human_wake._run(_desk(ship))
+    assert calls, reason
+    assert reason is None or 'never resent' not in reason
+    current = json.loads(wake.read_text())
+    assert current['at'] == calls[0] and current['at'] != STAMP and current['phase'] == 'delivered'
+
+
+def test_an_unreadable_pointer_holds_a_submitted_journal_and_not_a_delivered_one(tmp_path, monkeypatch):
+    """An unparseable pointer holds a journal still being submitted, and not one already delivered."""
+    def fail_screen(*_args, **_kwargs):
+        raise AssertionError('the screen was read')
+
+    monkeypatch.setattr('quarterdeck.door.Door.screen', fail_screen)
+    ship = ship_at(tmp_path)
+    old_owner(ship.runtime)
+    store, attempts, submitted_message, submitted_attempt = open_attempt(ship)
+    submitted = write_journal(ship, submitted_attempt, 'submitted')
+    delivered_message = store.new('order', 'operator', 'ops', 'Synthetic delivered order')
+    delivered_attempt = attempts.open(delivered_message, 'ops', '%9', 4242, STAMP)
+    delivered = write_journal(ship, delivered_attempt, 'delivered')
+    attempts.close(delivered_attempt, 'delivered', 'synthetic completion')
+    pointer = shutdown.pointer_path(ship.runtime)
+    pointer.write_text('not json\n')
+    submitted_bytes, delivered_bytes = submitted.read_bytes(), delivered.read_bytes()
+    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    assert result.startswith('delivery boundary moved aside unchanged: '), result
+    assert 'unreadable delivery pointer' in result, result
+    rows = [json.loads(line) for line in delivery_boundary.mark_path(ship.runtime).read_text().splitlines()]
+    named = rows[0]['journals']
+    submitted_rel = submitted.relative_to(ship.runtime).as_posix()
+    delivered_rel = delivered.relative_to(ship.runtime).as_posix()
+    assert submitted_rel in named
+    assert submitted_attempt.path.relative_to(ship.runtime).as_posix() in named
+    assert delivered_rel not in named
+    assert delivered_attempt.path.relative_to(ship.runtime).as_posix() not in named
+    assert delivery_boundary.held_journal(ship.runtime, submitted_rel)
+    assert not delivery_boundary.held_journal(ship.runtime, delivered_rel)
+    assert delivery_boundary.message_held(ship.runtime, 'ops', submitted_message.id)
+    assert not delivery_boundary.message_held(ship.runtime, 'ops', delivered_message.id)
+    seat = seat_for(ship)
+    svc = service_for(ship, store, attempts)
+    screen = SimpleNamespace(box='', unknown=False, interruption=False)
+    assert pending.one_look(svc, seat, [submitted_attempt]) == []
+    pending.explicit_resend(svc, seat, [submitted_message], screen)
+    pending._reconcile_claimed(svc, seat, {submitted_attempt.path.name: submitted_attempt})
+    assert submitted.read_bytes() == submitted_bytes and delivered.read_bytes() == delivered_bytes
+    again = json.loads(submitted_attempt.path.read_text())
+    assert again['result'] == 'uncertain' and again['detail'] == delivery_boundary.HOLD_DETAIL
+    assert json.loads(delivered_attempt.path.read_text())['result'] == 'delivered'
+
+
+def test_an_unreadable_pointer_refuses_an_unclassified_journal(tmp_path):
+    """A phase that is neither in flight nor finished cannot be classified, so nothing is moved."""
+    ship = ship_at(tmp_path)
+    old_owner(ship.runtime)
+    _store, _attempts, _message, attempt = open_attempt(ship)
+    write_journal(ship, attempt, 'mystery')
+    pointer = shutdown.pointer_path(ship.runtime)
+    pointer.write_text('not json\n')
+    raw = pointer.read_bytes()
+    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    assert result.startswith('refused: ') and 'could not be named' in result, result
+    assert pointer.read_bytes() == raw
+    assert not (ship.runtime / 'evidence' / 'delivery-boundary').exists()
+    assert not delivery_boundary.mark_path(ship.runtime).exists()
+
+
+def test_a_mark_that_cannot_be_synced_moves_nothing(tmp_path, monkeypatch):
+    """The pointer stays where it is when the settling line cannot be forced to disk."""
+    ship = ship_at(tmp_path)
+    _store, _attempts, _message, attempt = open_attempt(ship)
+    journal = write_journal(ship, attempt, 'submitted')
+    pointer = plant_pointer(ship, journal.relative_to(ship.runtime).as_posix())
+    raw = pointer.read_bytes()
+
+    def fail_sync(_descriptor):
+        raise OSError('synthetic mark sync failed')
+
+    monkeypatch.setattr(os, 'fsync', fail_sync)
+    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    assert result.startswith('refused: ') and 'forced to disk' in result and 'nothing was moved' in result, result
+    assert pointer.read_bytes() == raw
+    assert not (ship.runtime / 'evidence' / 'delivery-boundary').exists()
+    rows = [json.loads(line) for line in delivery_boundary.mark_path(ship.runtime).read_text().splitlines()]
+    assert [row['outcome'] for row in rows] == ['settling', 'not settled']

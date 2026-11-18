@@ -35,14 +35,16 @@ lock, the attempts or a human-wake reservation.
 
 Before the move the act records itself in ``runtime/trusted/delivery-boundary.jsonl`` (and, when the pointer
 names a declared seat, that seat's ``acts.jsonl``, as set-aside does). The settling line names the evidence
-file the pointer will occupy. The next service honours a settled mark, or a settling mark while the pointer
-is absent or that evidence file exists: the named journal is outcome uncertain and is never typed again.
-When the pointer does not parse, that line names every pending journal past prepared, every attempt with no
-result or a blind one, and every human-wake reservation not ended, and holds them; if they cannot all be
-named, the act refuses and moves nothing. A human wake is held by the episode on the line (its wake token),
-not by the path later episodes reuse. A mark that exists but cannot be read holds those same live journals,
-and that is logged once. A prepared journal that was never pasted is not cancelled. A refusal before the
-settling line writes no hold.
+file the pointer will occupy. That line and the trusted folder that holds it are forced to disk before the
+pointer is renamed. The next service honours a settled mark, or a settling mark while the pointer is absent
+or that evidence file exists: the named journal is outcome uncertain and is never typed again. When the
+pointer does not parse, that line names every pending journal still in flight (pasting, submitting, submitted
+or queued: not prepared and not a terminal phase), every attempt with no result or a blind one, and every
+human-wake reservation that is not ended and not cancelled, and holds them; if they cannot all be named, the
+act refuses and moves nothing. A cancelled wake is resolved and nothing types it. A human wake still in
+flight is held by the episode on the line (its wake token), not by the path later episodes reuse. A mark
+that exists but cannot be read holds those same live journals, and that is logged once. A prepared journal
+that was never pasted is not cancelled. A refusal before the settling line writes no hold.
 
 Only a systems seat may run it, or the operator's own shell, and never from inside a jail. Spock tells the
 captain and the desk, as the orders already say for set-aside; this act does not post.
@@ -67,6 +69,8 @@ MARK = 'delivery-boundary.jsonl'
 LIMIT = 4096
 HOLD_DETAIL = 'delivery boundary settled; outcome uncertain; never resent'
 WHAT = 'settles the delivery boundary'
+# A journal the door may still be typing. A terminal phase is finished, and prepared was never pasted.
+_IN_FLIGHT = frozenset({'pasting', 'submitting', 'submitted', 'queued'})
 
 
 def _now() -> str:
@@ -421,11 +425,13 @@ def _wake_identity(data: dict) -> str | None:
 
 
 def _list_holds(runtime: Path) -> _Holds:
-    """Every pending journal past prepared, every open or blind attempt, and every unended wake. Names only.
+    """Every in-flight journal, every open or blind attempt, and every wake that is not ended and not
+    cancelled. Names only.
 
     A file that exists and cannot be classified refuses the whole list: a partial hold would leave the rest
-    to the ordinary rules.
+    to the ordinary rules. A cancelled wake is resolved, so it is not named.
     """
+    from .pending import TERMINAL
     found = _Holds()
     pending_root = runtime / 'post' / 'pending'
     seats = _child_names(pending_root)
@@ -452,8 +458,11 @@ def _list_holds(runtime: Path) -> _Holds:
                 phase = data.get('phase')
                 if not isinstance(phase, str):
                     raise _Unlisted('a pending journal could not be read')
-                if phase != 'prepared':
-                    found.add(path.relative_to(runtime).as_posix())
+                if phase == 'prepared' or phase in TERMINAL:
+                    continue
+                if phase not in _IN_FLIGHT:
+                    raise _Unlisted('a pending journal could not be read')
+                found.add(path.relative_to(runtime).as_posix())
     attempt_root = runtime / 'post' / 'attempts'
     attempts = _child_names(attempt_root)
     if attempts is not None:
@@ -498,10 +507,13 @@ def _list_holds(runtime: Path) -> _Holds:
                 data = _read_object(wake, shutdown.MAX_JOURNAL_BYTES)
             except (OSError, ValueError) as error:
                 raise _Unlisted('a human wake could not be read') from error
+            phase = data.get('phase')
+            if not isinstance(phase, str):
+                raise _Unlisted('a human wake could not be read')
             ended = data.get('ended', False)
             if type(ended) is not bool:
                 raise _Unlisted('a human wake could not be read')
-            if ended:
+            if ended or phase == 'cancelled':
                 continue
             identity = _wake_identity(data)
             if identity is None:
@@ -540,9 +552,27 @@ def _append(path: Path, line: str) -> None:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise OSError(errno.EINVAL, 'the delivery boundary record is not a regular file')
-        os.write(descriptor, line.encode())  # before the move, as set-aside's acts.write: no forced sync of its own
+        os.write(descriptor, line.encode())  # the line itself is not synced here; settle syncs the mark before the rename
     finally:
         os.close(descriptor)
+
+
+def _sync_mark(runtime: Path) -> None:
+    """The settling line is on disk before the pointer is renamed away."""
+    path = mark_path(runtime)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, 'the delivery boundary record is not a regular file')
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    folder = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fsync(folder)
+    finally:
+        os.close(folder)
 
 
 def _journals_of(entry: dict) -> list[str]:
@@ -708,8 +738,13 @@ def _sweep_names(runtime: Path) -> list[str] | None:
 
 
 def episode_held(runtime: Path, relative: str, data: dict) -> bool:
-    """Whether this human-wake episode, not merely its path, is held."""
+    """Whether this human-wake episode, not merely its path, is held.
+
+    A cancelled wake is resolved. Nothing types it, under a readable mark or an unreadable one.
+    """
     if not _relative_ok(relative) or not isinstance(data, dict):
+        return False
+    if data.get('phase') == 'cancelled':
         return False
     state, why, rows = _load_mark(runtime)
     if state == 'absent':
@@ -949,7 +984,7 @@ def settle(ship: Ship, tmux, caller: str | None, *, cgroup_of=barrier_settle._cg
             wakes = None
             wake = None
             if journal is None:
-                # The pointer's bytes name nothing. Hold every unresolved journal that exists now, or refuse.
+                # The pointer's bytes name nothing. Hold every journal still in flight, or refuse.
                 try:
                     holds = _list_holds(runtime)
                 except _Unlisted as error:
@@ -996,6 +1031,18 @@ def settle(ship: Ship, tmux, caller: str | None, *, cgroup_of=barrier_settle._cg
                 _log(runtime, 'delivery-boundary-settle-refused', caller=who, problem=problem, proofs=proofs,
                      pids=pids, seen=['the delivery pointer changed'])
                 return 'refused: the delivery pointer changed; nothing was moved'
+            try:
+                _sync_mark(runtime)
+            except OSError as error:
+                entry = dict(entry, at=_now(), outcome='not settled')
+                try:
+                    _record(ship, entry)
+                except (OSError, ShipError):
+                    pass
+                why = f'the delivery boundary record could not be forced to disk ({error})'
+                _log(runtime, 'delivery-boundary-settle-refused', caller=who, problem=problem, proofs=proofs,
+                     pids=pids, seen=[why])
+                return f'refused: {why}; nothing was moved'
             folder = runtime / 'evidence' / EVIDENCE / folder_name
             folder.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             folder.mkdir(mode=0o700)

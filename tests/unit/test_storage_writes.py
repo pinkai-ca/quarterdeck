@@ -113,7 +113,9 @@ def test_only_the_three_fixed_call_sites_can_reach_the_forced_storage_helper():
     assert sorted(callers) == ['compaction.py:save', 'post.py:Attempts.open', 'refusal.py:save']
     # A seat's folder takes the same shape as the post folder's walk: a private writer whose syncs only the law
     # records' entry reaches (seat_files._replace_law_bytes, from durable._replace_law_record alone).
-    assert sorted(syncs) == ['durable.py:_replace_law_record', 'durable.py:sync_folder',
+    # The delivery-boundary mark syncs its own file and its folder once, before the pointer is renamed.
+    assert sorted(syncs) == ['delivery_boundary.py:_sync_mark', 'delivery_boundary.py:_sync_mark',
+                             'durable.py:_replace_law_record', 'durable.py:sync_folder',
                              'post_dir.py:_replace_bytes', 'post_dir.py:_replace_bytes',
                              'seat_files.py:_write', 'seat_files.py:_write']
     assert post_law == ['durable.py:_replace_law_record', 'durable.py:_replace_law_record']
