@@ -69,14 +69,14 @@ def eligible_rows(result):
 
 def test_all_ships_succeed_in_folder_order_with_marked_office_last(tmp_path, monkeypatch):
     world = modeled_project(tmp_path, monkeypatch)
-    real_default = shipmod.default_ship
+    read_mark = shipmod.read_default_mark
     mark_reads = []
 
-    def shared_default(project):
-        mark_reads.append(project)
-        return real_default(project)
+    def shared_mark(ships):
+        mark_reads.append(ships)
+        return read_mark(ships)
 
-    monkeypatch.setattr(shipmod, 'default_ship', shared_default)
+    monkeypatch.setattr(shipmod, 'read_default_mark', shared_mark)
     result = sync_all.run(world.project, 'synthetic-release-zzzz', force=True)
     expected = sorted(world.states.keys() - {world.office}) + [world.office]
     assert [name for name, _, _ in world.calls] == expected
@@ -84,7 +84,51 @@ def test_all_ships_succeed_in_folder_order_with_marked_office_last(tmp_path, mon
     assert result['ok'] and all(row['commit'] == TARGET for row in eligible_rows(result))
     assert all(row['disposition'] == 'synced' for row in eligible_rows(result))
     assert world.resolutions == [(world.project, 'synthetic-release-zzzz')]
-    assert mark_reads == [world.project]
+    assert mark_reads == [world.project / 'ships']
+
+
+@pytest.mark.parametrize(('state', 'cause'), [
+    ('broken', 'has an invalid declaration'),
+    ('missing', 'is missing or holds no ship.toml'),
+    ('template', 'is a template or practice ship'),
+])
+def test_invalid_default_fails_last_after_other_ships_sync(tmp_path, monkeypatch, state, cause):
+    world = modeled_project(tmp_path, monkeypatch)
+    ships = world.project / 'ships'
+    marked = 'drydock' if state == 'template' else world.office
+    (ships / '.default').write_text(marked + '\n')
+    folder = ships / marked
+    if state == 'broken':
+        (folder / 'ship.toml').write_text('[ship')
+    elif state == 'missing':
+        (folder / 'ship.toml').unlink()
+        folder.rmdir()
+    with pytest.raises(ShipError, match=cause) as default_error:
+        shipmod.default_ship(world.project)
+
+    result = sync_all.run(world.project)
+
+    expected = sorted(world.states.keys() - {marked})
+    assert [name for name, _, _ in world.calls] == expected
+    assert [(row['ship'], row['commit']) for row in result['ships'] if row['disposition'] == 'synced'] == [
+        (name, TARGET) for name in expected]
+    failed = result['ships'][-1]
+    assert not result['ok'] and failed['ship'] == marked and failed['disposition'] == 'failed'
+    assert failed['reason'] == f'cannot prepare ship: {default_error.value}'
+    assert sync_all.render(result)[-1] == f"{marked}: failed; copy unknown: {failed['reason']}"
+
+
+@pytest.mark.parametrize(('contents', 'cause'), [
+    (b'../outside\n', 'does not hold one ship folder name'),
+    (b'\xff', 'is unreadable'),
+])
+def test_unusable_mark_contents_refuse_before_installing(tmp_path, monkeypatch, contents, cause):
+    world = modeled_project(tmp_path, monkeypatch)
+    (world.project / 'ships/.default').write_bytes(contents)
+
+    with pytest.raises(ShipError, match=cause):
+        sync_all.run(world.project)
+    assert world.calls == []
 
 
 def test_second_failure_keeps_first_synced_and_rest_untried(tmp_path, monkeypatch):

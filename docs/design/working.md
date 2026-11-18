@@ -104,7 +104,7 @@ Positive refresh saves an intent in the original journal bound to immutable subm
 
 ### Syncing the project
 
-`qd sync --all [REF]` stays in the typed checkout and resolves one local target before snapshotting direct ship declarations. It passes each through the ordinary installer with its own `Tmux.for_ship`. Tracked templates and checkout-mode ships are named once as passed over. Other crew folders sort by basename; an explicitly marked default goes last, using the shared mark reader once. No mark means ordinary ordering, not arbitrary default selection.
+`qd sync --all [REF]` stays in the typed checkout and resolves one local target before snapshotting direct ship declarations. It passes each through the ordinary installer with its own `Tmux.for_ship`. Unmarked tracked templates and checkout-mode ships are named once as passed over. Other folders sort by basename. A name stored in the default mark goes last. If that ship is missing, ineligible, or invalid, its row reports the cause after the preceding syncs succeed. A malformed or unreadable mark stops planning. With no mark, all rows use ordinary folder order.
 
 First installer/observation failure stops; earlier successes remain and later ships are untried. Final refreshed copy observations establish dispositions and full commits, including changed/unknown copies; a post-activation/reporting error never implies restoration. JSON retains target, ok and ship rows with before/observed commits, reasons and proof lines. Failure exits 2. `--all` conflicts with explicit `--ship` and `--back`; force/alias retain single-ship behavior. There is no fleet rollback or persistent registry.
 

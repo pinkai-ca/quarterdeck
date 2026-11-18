@@ -29,8 +29,7 @@ def plan(project: Path) -> list[dict]:
     ships = shipmod.ships_folder(project)
     if ships.is_symlink() or not ships.is_dir():
         raise ShipError(f'{ships} is not a plain project ships folder')
-    # Only the shared default reader interprets or validates the mark. Absence
-    # means there is no office-last designation, not a single-ship fallback.
+    # A stored name determines order. Its declaration is checked in its row.
     try:
         (ships / shipmod.MARK).lstat()
     except FileNotFoundError:
@@ -38,34 +37,33 @@ def plan(project: Path) -> list[dict]:
     except OSError as error:
         raise ShipError(f'cannot inspect default mark ({type(error).__name__})') from None
     else:
-        marked, source = shipmod.default_ship(project)
-        last = marked.name if source == 'mark' else None
+        last = shipmod.read_default_mark(ships)
     try:
-        folders = sorted((path for path in ships.iterdir()
-                          if path.is_dir()
-                          and (path / 'ship.toml').is_file()),
-                         key=lambda path: (path.name == last, path.name))
+        folders = sorted(path for path in ships.iterdir()
+                         if path.name != last and path.is_dir() and (path / 'ship.toml').is_file())
     except OSError as error:
         raise ShipError(f'cannot enumerate project ships: {error}') from None
+    if last is not None:
+        folders.append(ships / last)
     rows = []
     for folder in folders:
         row = dict(ship=folder.name, folder=folder, disposition='not tried',
                    before=None, commit=None, reason=None, proof=[], ship_object=None)
-        if folder.name in shipmod.TEMPLATES:
+        marked = folder.name == last
+        if not marked and folder.name in shipmod.TEMPLATES:
             row.update(disposition='passed over', reason='tracked template')
         else:
-            # Share the project root, without applying default-name eligibility:
-            # a practice or hidden ship is still in scope unless it is checkout.
             try:
-                folder = folder.resolve()
-                if folder.parent != ships:
+                resolved = folder.resolve()
+                if resolved.parent != ships:
                     raise ShipError('ship folder resolves outside the project ships folder')
-                ship = shipmod.load(folder)
-                row.update(folder=folder, ship_object=ship)
+                ship = (shipmod.load_marked_ship(folder, resolved=resolved) if marked
+                        else shipmod.load(resolved))
+                row.update(folder=ship.folder, ship_object=ship)
                 if ship.code == 'checkout':
                     row.update(disposition='passed over', reason='follows the checkout (code = "checkout")')
                 else:
-                    commit, reason = observe(folder)
+                    commit, reason = observe(ship.folder)
                     row.update(before=commit, commit=commit, reason=reason)
             except (ShipError, OSError, ValueError, TypeError, KeyError, AttributeError) as error:
                 row['reason'] = f'cannot prepare ship: {error}'

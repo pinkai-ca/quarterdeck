@@ -281,30 +281,41 @@ def default_ship(project: Path | None = None) -> tuple[Path, str]:
     return _default_ship(ships_folder(project))
 
 
-def _default_ship(ships: Path) -> tuple[Path, str]:
+def read_default_mark(ships: Path) -> str | None:
+    """Read the stored folder name without resolving or loading its ship."""
     mark = ships / MARK
     try:
         text = mark.read_text()
     except FileNotFoundError:
-        text = None
+        return None
     except (OSError, UnicodeError) as error:
         raise ShipError(f"the default mark {mark} is unreadable ({type(error).__name__}); "
                         "qd default <ship> rewrites it") from None
-    if text is not None:
-        name = text.strip()
-        if not valid_name(name) or text not in (name, name + "\n"):
-            raise ShipError(f"the default mark {mark} does not hold one ship folder name; qd default <ship> rewrites it")
-        try:
-            return _validate_default(ships / name), "mark"
-        except ShipError as error:
-            raise ShipError(f"the default mark {mark}: {error}") from None
+    name = text.strip()
+    if not valid_name(name) or text not in (name, name + "\n"):
+        raise ShipError(f"the default mark {mark} does not hold one ship folder name; qd default <ship> rewrites it")
+    return name
+
+
+def load_marked_ship(folder: Path, *, resolved: Path | None = None) -> Ship:
+    """Load the named default, reusing a resolved folder when the caller has checked it."""
+    try:
+        return _validate_default(folder, resolved=resolved)
+    except ShipError as error:
+        raise ShipError(f"the default mark {folder.parent / MARK}: {error}") from None
+
+
+def _default_ship(ships: Path) -> tuple[Path, str]:
+    name = read_default_mark(ships)
+    if name is not None:
+        return load_marked_ship(ships / name).folder, "mark"
     found = _candidates(ships)
     if not found:
         raise ShipError("no ship named: pass --ship <folder>, or make a ship and mark it with qd default <ship>")
     if len(found) > 1:
         raise ShipError(f"no default ship among several: {', '.join(found)}; qd default <ship> sets one, "
                         "or pass --ship <folder>")
-    return _validate_default(ships / found[0]), "only ship"
+    return _validate_default(ships / found[0]).folder, "only ship"
 
 
 def candidates(project: Path | None = None) -> list[str]:
@@ -333,20 +344,21 @@ def mark_default(name: str, project: Path | None = None) -> Path:
     ships = ships_folder(project)
     if not valid_name(name):
         raise ShipError(f"{name!r} is not a ship folder name under {ships}; name the folder, such as qd default mine")
-    folder = _validate_default(ships / name)
+    folder = _validate_default(ships / name).folder
     durable.replace_file(ships / MARK, name + "\n")  # law: one-folder
     return folder
 
 
-def _validate_default(folder: Path) -> Path:
+def _validate_default(folder: Path, *, resolved: Path | None = None) -> Ship:
     remedy = "pass --ship <folder>, or qd default <ship> marks another"
-    resolved = folder.resolve()
+    if resolved is None:
+        resolved = folder.resolve()
     if folder.name in TEMPLATES or resolved.name in TEMPLATES:
         raise ShipError(f"{folder.name} is a template or practice ship; {remedy}")
     if not (resolved / "ship.toml").is_file():
         raise ShipError(f"{folder} is missing or holds no ship.toml; {remedy}")
     try:
-        return load(resolved).folder
+        return load(resolved)
     except ShipError as error:
         raise ShipError(f"{folder.name} has an invalid declaration ({error}); {remedy}") from None
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
