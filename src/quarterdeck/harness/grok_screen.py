@@ -40,6 +40,8 @@ TRAINING_ALTERED = Interruption(
 FRESH = "Grok composer with no hint row: idle only after this launch answered its training question"
 TRAINING_NEAR = 8  # rows above the composer's top border in which an altered question is looked for
 PASTE_FOLD_LINES = 4
+# A queued response without the foreground-tool shortcut, measured at 256 columns.
+RESPONSE_QUEUE_HINT = ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+;:queue", "Ctrl+x:shortcuts")
 HINT_STATES = {
     ("Shift+Tab:mode", "Ctrl+x:shortcuts"): False,
     ("Enter:send", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+x:shortcuts"): False,
@@ -110,14 +112,17 @@ def training_question(rows: list[str], top: int) -> bool:
             and " ".join(row.strip() for row in body) == TRAINING_BODY)
 
 
-def hint_working(rows: list[str]) -> bool | None:
+def hint_working(rows: list[str], *, native_queue: bool = False) -> bool | None:
     """Only measured hint tuples; unknown is never an inferred idle state."""
     shown = [row.strip(" ") for row in rows if row.strip(" ")]
     if len(shown) != 1:
         return None
     if re.fullmatch(r"Grok Build\s+1\.0\.77", shown[0]):
         return False
-    return HINT_STATES.get(tuple(part.strip(" ") for part in shown[0].split("│")))
+    hint = tuple(part.strip(" ") for part in shown[0].split("│"))
+    if hint == RESPONSE_QUEUE_HINT and native_queue:
+        return True
+    return HINT_STATES.get(hint)
 
 
 def queue_entries(text: str) -> tuple[str, ...] | None:
@@ -139,14 +144,14 @@ def queue_entries(text: str) -> tuple[str, ...] | None:
         match = re.fullmatch(r"     #([1-9][0-9]*) (\S.*)", rows[index].rstrip(" "))
         if match is None:
             break
-        found.append((int(match[1]), match[2]))
+        found.append((match[1], match[2]))
         index -= 1
     title = re.fullmatch(r"   ▾ Queued ([1-9][0-9]*) *", rows[index]) if index >= 0 else None
     if title is None:
         return None if found or index >= 0 and "Queued" in rows[index] else ()
     found.reverse()
-    if (index == 0 or rows[index - 1].strip() or len(found) != int(title[1])
-            or [number for number, _ in found] != list(range(1, len(found) + 1))):
+    if (index == 0 or rows[index - 1].strip() or str(len(found)) != title[1]
+            or any(number != str(position) for position, (number, _) in enumerate(found, 1))):
         return None
     return tuple(preview for _, preview in found)
 
@@ -372,10 +377,10 @@ def read(text: str) -> Screen:
         # the footer, and nothing at all under it. Unknown to this reader; the Door reads it idle only in
         # a launch whose record shows the training question answered and cleared.
         return Screen(plain, box=None, unknown=FRESH, shows=shows, fresh=TRAINING_QUESTION.name)
-    working = hint_working(below)
+    queued = queue_entries(plain)
+    working = hint_working(below, native_queue=bool(queued) and len(body) == 1 and not box.strip(" "))
     if working is None:
         return Screen(plain, box=None, unknown="unmeasured Grok composer hint", shows=shows)
-    queued = queue_entries(plain)
     return Screen(plain, box=box, working=working, shows=shows, queued=len(queued or ()))
 
 
