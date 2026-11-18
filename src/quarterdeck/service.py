@@ -821,7 +821,8 @@ class Service:
 
     def deliveries(self) -> None:
         with post.reader_scope(store=self.store, attempts=self.attempts):
-            results = self.attempts.latest()
+            select_results = getattr(self.attempts, 'delivery_results', self.attempts.latest)
+            results = select_results()
             for seat in self.resolved_seats():
                 with Service.seat_guard(self, 'deliveries', seat):
                     if seat.name in getattr(self.ship, 'forward', {}):
@@ -845,7 +846,7 @@ class Service:
                         except Exception as error:
                             self.human_wake_error(seat, 'alarm', error)
                         continue
-                    with post.reading_pass(store=self.store, attempts=self.attempts):
+                    with post.reading_pass(store=self.store, attempts=self.attempts, delivery_candidates=True):
                         pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
                     if pending and seat.is_up:
                         self.deliver(seat, pending)

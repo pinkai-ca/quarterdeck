@@ -1,6 +1,8 @@
 """A crew candidate decision shares reads; every delivery/alarm action leaves that view."""
 
 from datetime import timedelta
+import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -99,6 +101,12 @@ def test_actions_and_their_writes_are_outside_and_next_seat_sees_a_new_post(tmp_
                             ship=w.seat.ship, launched=w.seat.launched)
     w.svc.resolved_seats = lambda: [w.seat, other]
     first = w.svc.store.new('order', 'operator', w.seat.name, 'First task')
+    writer = post.Store(w.svc.ship.runtime)
+    # The reader starts with a certified listing; its own cache does not see the writer.
+    monkeypatch.setattr(post.time, 'time_ns', lambda: w.svc.store.dir.stat().st_ctime_ns + 10_000_000_000)
+    with post.reading_pass(store=w.svc.store, delivery_candidates=True):
+        assert w.svc.store.for_seat(w.seat.name) == [first]
+    assert w.svc.store._cache_at is not None
     original_write = post.Store._write
 
     def write(store, message):
@@ -112,12 +120,74 @@ def test_actions_and_their_writes_are_outside_and_next_seat_sees_a_new_post(tmp_
     def action(seat, messages):
         deliver(seat, messages)
         if seat.name == w.seat.name:
-            posted.append(w.svc.store.new('order', 'operator', other.name, 'Next task'))
+            stamp = writer.dir.stat().st_mtime_ns
+            posted.append(writer.new('order', 'operator', other.name, 'Next task'))
+            os.utime(writer.dir, ns=(stamp, stamp + 1))
 
     w.svc.deliver = action
     w.svc.deliveries()
     assert w.delivered == [first.id, posted[0].id]
     assert w.alarms == [w.seat.name, other.name]
+    w.svc.deliveries()
+    assert w.delivered == [first.id, posted[0].id]
+    assert w.alarms == [w.seat.name, other.name] * 2
+
+
+def test_quiet_passes_reuse_indexes_and_still_read_each_alarm(tmp_path, monkeypatch):
+    w = world(tmp_path)
+    other = SimpleNamespace(name='other', session=SimpleNamespace(human=False), is_up=True,
+                            ship=w.seat.ship, launched=w.seat.launched)
+    w.svc.resolved_seats = lambda: [w.seat, other]
+    message = w.svc.store.new('order', 'operator', w.seat.name, 'Synthetic work')
+    attempt = w.svc.attempts.open(message, w.seat.name, '%1', 123, w.seat.launched().at)
+    w.svc.attempts.close(attempt, 'delivered')
+    monkeypatch.setattr(post.time, 'time_ns', lambda: w.svc.store.dir.stat().st_ctime_ns + 10_000_000_000)
+    folds, inventories = [], []
+    latest, inventory = w.svc.attempts.latest, w.svc.attempts._inventory_metadata
+
+    def count_fold(**kwargs):
+        folds.append(True)
+        return latest(**kwargs)
+
+    def count_inventory():
+        inventories.append(True)
+        return inventory()
+
+    monkeypatch.setattr(w.svc.attempts, 'latest', count_fold)
+    monkeypatch.setattr(w.svc.attempts, '_inventory_metadata', count_inventory)
+    w.svc.deliveries()
+    first_index = w.svc.store._delivery_recipients
+    assert first_index is not None
+    w.svc.deliveries()
+    assert w.svc.store._delivery_recipients is first_index
+    assert len(folds) == 1 and len(inventories) == 2
+    assert not w.delivered and w.alarms == [w.seat.name, other.name] * 2
+
+
+def test_changed_or_unreadable_attempt_inventory_discards_candidate_results(tmp_path):
+    w = world(tmp_path)
+    message = w.svc.store.new('order', 'operator', w.seat.name, 'Synthetic work')
+    attempt = w.svc.attempts.open(message, w.seat.name, '%1', 123, w.seat.launched().at)
+    w.svc.attempts.close(attempt, 'queued')
+    first = w.svc.attempts.delivery_results()
+    assert first[message.id] == 'queued'
+    saved = json.loads(attempt.path.read_bytes())
+    directory_stamp = attempt.path.parent.stat().st_mtime_ns
+    attempt.path.write_text('{broken')
+    with pytest.raises(json.JSONDecodeError):
+        w.svc.attempts.delivery_results()
+    attempt.path.write_text(json.dumps(saved | {'result': 'launch'}))
+    assert attempt.path.parent.stat().st_mtime_ns == directory_stamp
+    assert w.svc.attempts.delivery_results()[message.id] == 'launch'
+
+
+def test_uncertified_store_still_selects_from_the_current_listing(tmp_path, monkeypatch):
+    w = world(tmp_path)
+    message = w.svc.store.new('order', 'operator', w.seat.name, 'Synthetic work')
+    monkeypatch.setattr(post.time, 'time_ns', lambda: w.svc.store.dir.stat().st_ctime_ns)
+    w.svc.deliveries()
+    assert w.svc.store._delivery_recipients is None
+    assert w.delivered == [message.id] and w.alarms == [w.seat.name]
 
 
 def test_human_wake_stays_outside_the_crew_reading_scope(tmp_path, monkeypatch):

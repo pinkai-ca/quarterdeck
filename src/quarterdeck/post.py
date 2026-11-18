@@ -20,6 +20,7 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 
 from . import durable, post_dir, ship_locks
 from .ship import ShipError
@@ -38,6 +39,7 @@ class _Reading:
     stores: dict = field(default_factory=dict)
     attempts: dict = field(default_factory=dict)
     values: dict = field(default_factory=dict)
+    delivery_candidates: bool = False
 
 
 @contextmanager
@@ -59,12 +61,12 @@ def reader_scope(*, store=None, attempts=None):
 
 
 @contextmanager
-def reading_pass(*, store=None, attempts=None):
+def reading_pass(*, store=None, attempts=None, delivery_candidates=False):
     """One post/attempt view for a read-only presentation, discarded when it ends."""
     if _READING.get() is not None:
         yield
         return
-    reading = _Reading()
+    reading = _Reading(delivery_candidates=delivery_candidates)
     readers = _READERS.get()
     if readers is not None:
         reading.stores = readers.stores
@@ -170,6 +172,7 @@ class Store:
         self._validated_complete = False  # every listed message has a validated entry
         self._reference_messages: list[Message] | None = None
         self._references: dict[str, list[Message]] = {}
+        self._delivery_recipients = None
         self._short_messages: list[Message] | None = None
         self._short_set: frozenset[str] = frozenset()
         self._imports: dict[str, object] = {}
@@ -513,9 +516,27 @@ class Store:
         runtime = self.dir.parent.parent
         def read():
             local = unrouted(runtime)  # in a reading pass, one listing answers for every message without a route
-            return [m for m in self.all() if m.to == seat
+            candidates = self._delivery_messages(seat)
+            messages = self.all() if candidates is None else candidates
+            return [m for m in messages if m.to == seat
                     and (local is not None and local(m.id) or not context_only(runtime, m.id))]
         return list(reading_value('seat', (self.dir.absolute(), seat), read))
+
+    def _delivery_messages(self, seat: str):
+        """Index only addresses from the canonical listing this candidate read verified."""
+        reading = _READING.get()
+        if reading is None or not reading.delivery_candidates:
+            return None
+        messages, _ = self._loaded()
+        if self._cache is None or self._cache_at is None or self._cache[1] is not messages:
+            self._delivery_recipients = None
+            return None
+        if self._delivery_recipients is None or self._delivery_recipients[0] is not messages:
+            recipients: dict[str, list[Message]] = {}
+            for message in messages:
+                recipients.setdefault(message.to, []).append(message)
+            self._delivery_recipients = messages, recipients
+        return self._delivery_recipients[1].get(seat, ())
 
     def replies(self, message: Message) -> list[Message]:
         return list(self._loaded()[1].get(message.id, []))
@@ -553,6 +574,9 @@ class Store:
         def read():
             seen = post_reads.read_times(self.dir.parent.parent, seat)
             messages, replies = self._loaded()
+            candidates = self._delivery_messages(seat)
+            if candidates is not None:
+                messages = candidates
             reported = frozenset(message.id for message in messages
                                  if any(reply.kind == 'report' and reply.sender == seat
                                         for reply in replies.get(message.id, ())))
@@ -1562,6 +1586,7 @@ class Attempts:
         self.dir = runtime / "post" / "attempts"
         self._cache = {}
         self._retired_cache = {}
+        self._delivery_results = None
 
     @contextmanager
     def _locked(self, wait: float | None = None):
@@ -1790,7 +1815,7 @@ class Attempts:
     def recheck_inventory(self, snapshot):
         """Re-stat before legacy handling; decode changes, preserving in-place visibility.
 
-        Nothing is certified across passes. Changed listings get a full sort;
+        Every read rechecks the inventory. Changed listings get a full sort;
         otherwise only changed rows are sorted and merged into the earlier order.
         Any failed listing or read propagates without publishing a partial result.
         """
@@ -1854,6 +1879,22 @@ class Attempts:
         for attempt in self.all() if attempts is None else attempts:
             if seat is None or attempt.seat == seat:
                 results[attempt.message] = attempt.result
+        return results
+
+    def delivery_results(self):
+        """Fold the latest results for candidate selection after verifying every attempt identity."""
+        previous = self._delivery_results
+        self._delivery_results = None
+        if previous is not None:
+            snapshot, results = previous
+            records = self.recheck_inventory(snapshot)
+            if records is snapshot[0]:
+                self._delivery_results = previous
+                return results
+        else:
+            records = self._all_current()
+        results = MappingProxyType(self.latest(attempts=records))
+        self._delivery_results = self.inventory_snapshot(records), results
         return results
 
     def last_results(self, seat: str) -> dict[str, str | None]:
