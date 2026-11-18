@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from quarterdeck import cli, output, post
+from quarterdeck import cli, output, pending, post
 
 
 @pytest.fixture
@@ -33,6 +33,39 @@ def test_inbox_contains_messages_open_state_and_closing_references(inbox, capsys
     assert f"closed by {closed.short}" in text and messages[0].body in text and "## Open (1)" in text
     assert cli.main(["--ship", str(folder), "--json", "inbox"]) == 0
     assert json.loads(capsys.readouterr().out) == {"seat": "operator", "open": [], "received": [], "closed_by": {}, "older_received": 0}
+
+
+@pytest.mark.parametrize("name", ["captian", "check-fake-01ag"])
+def test_unknown_inbox_name_lists_declared_seats(inbox, capsys, name):
+    folder, _, _ = inbox
+    assert cli.main(["--ship", str(folder), "inbox", name]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"qd: no seat {name!r} in {folder / 'ship.toml'}; declared: captain, desk, worker-1\n"
+
+
+@pytest.mark.parametrize("name", ["check-fake-01ab", "check-wake-fake-01ab"])
+def test_unknown_check_inbox_name_keeps_the_temporary_diagnostic(inbox, capsys, name):
+    folder, _, _ = inbox
+    assert cli.main(["--ship", str(folder), "inbox", name]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"qd: {name}: no live check-owned temporary inbox; missing, stale or unknown ownership\n"
+
+
+@pytest.mark.parametrize("name", ["check-fake-01ab", "synthetic-check"])
+def test_live_temporary_inbox_still_reads_its_messages(inbox, capsys, name):
+    folder, store, _ = inbox
+    runtime = folder / "runtime"
+    message = store.new("order", "captain", name, "synthetic temporary inbox message")
+    with pending.transient_lock(runtime, name) as held:
+        assert held
+        with pending.check_inbox_registration(runtime, name, False, enabled=True):
+            assert cli.main(["--ship", str(folder), "--json", "inbox", name]) == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert captured.err == ""
+    assert data["seat"] == name and [item["id"] for item in data["open"]] == [message.id]
 
 
 @pytest.mark.parametrize("json_output", [False, True])

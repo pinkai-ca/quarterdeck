@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -966,7 +967,12 @@ def _inbox_target(ship: shipmod.Ship, name: str | None):
     if chosen in ship.seats:
         return chosen, ship.session_of(ship.seat(chosen)).human, None
     from .pending import check_inbox_owner
-    owner = check_inbox_owner(ship.runtime, chosen)
+    try:
+        owner = check_inbox_owner(ship.runtime, chosen)
+    except ShipError:
+        if not (seatmod.CHECK_SEAT.fullmatch(chosen) or re.fullmatch(r"check-wake-[A-Za-z0-9][A-Za-z0-9_-]*", chosen)):
+            ship.seat(chosen)  # the ordinary unknown-seat diagnostic
+        raise
 
     def validate():
         if check_inbox_owner(ship.runtime, chosen) != owner:
