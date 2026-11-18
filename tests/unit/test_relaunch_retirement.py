@@ -100,6 +100,7 @@ def record_starts(w, monkeypatch, *, previous=None):
 @pytest.mark.parametrize(('kind', 'choices', 'resume', 'outcome'), [
     ('compaction', True, False, 'fresh'),
     ('relaunch', False, True, 'resumed'),
+    ('server-recovery', False, True, 'resumed'),
     ('relaunch', False, True, 'missing-target'),
     ('relaunch', False, True, 'hand-fresh'),
     ('relaunch', False, True, 'screen-fresh'),

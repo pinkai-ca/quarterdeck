@@ -17,7 +17,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import post, seat as seatmod, server_recovery as recovery, ship as shipmod
+from quarterdeck import credential, jail_end, lifecycle, post, relaunch_intent, shutdown, trusted_files
+from quarterdeck import seat as seatmod, server_recovery as recovery, ship as shipmod
+from quarterdeck.harness.claude import ClaudeHarness
+from quarterdeck.harness.codex import CodexHarness
+from quarterdeck.harness.limits import Usage, Window
+from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape
+from quarterdeck.service import Service
+from quarterdeck.tmux import Pane
 
 
 def dead_pid() -> int:
@@ -302,3 +309,149 @@ def test_a_ship_still_on_tmux_default_server_is_never_recovered_there(ship):
     ship.server.legacy = False  # the service has followed the ship to its own server
     assert recovery.pass_once(ship.service) == 'recovered'
     assert recovery.status(ship.runtime) == []
+
+
+@pytest.fixture
+def choice_world(tmp_path, monkeypatch):
+    """Real seat transitions, retained records and ledger walls, with only the process start simulated."""
+    services = []
+
+    def make(case, *, fresh=None):
+        cross_program = case == 'next'
+        saved = 'first' if cross_program else 'second'
+        pools = ('second',) if case == 'no-choice' else ('first', 'second')
+        choices = {'first': {'harness': 'codex'}, 'second': {'harness': 'claude'}} if cross_program else {}
+        old_program = 'codex' if cross_program else 'claude'
+        spec = shipmod.SeatSpec('builder', 'crew', 'worker', old_program, pools, pool_choices=choices, fresh=fresh)
+        ship = shipmod.Ship(tmp_path / 'ship', 'synthetic', 'operator', tmp_path,
+                            {name: shipmod.Pool(name, 'openai' if cross_program and name == 'first' else 'anthropic')
+                             for name in pools}, {'crew': shipmod.Session('crew', 'Synthetic')}, {spec.name: spec})
+        panes = {}
+        tmux = SimpleNamespace(socket=str(tmp_path / 'absent-server'), pane=panes.get)
+        seat = seatmod.Seat(ship, spec, tmux)
+        seat.move_to(saved)
+        launched = seatmod.Launched('%1', dead_pid(), (post.now() - timedelta(minutes=1)).isoformat(), saved, None,
+                                    [old_program], 'synthetic', harness=old_program)
+        launched.write(seat.trusted / trusted_files.LAUNCH)
+        shape = CodexShape if cross_program else ClaudeShape
+        record = shape(seat.home, tmp_path, 'synthetic-resume-target', 'synthetic-model')
+        record.begin('Synthetic input', 'synthetic-model', 'high')
+        record.end('Synthetic output')
+        (seat.trusted / trusted_files.RECORD).write_text(str(record.path) + '\n')
+        assert seat.record() == record.path
+        svc = Service(ship, tmux)
+        services.append(svc)
+        at = post.now()
+        if cross_program:
+            svc.ledger.record_usage('first', Usage((Window('5h', 1.0, at + timedelta(hours=1)),), at))
+        for pool in pools:
+            if not cross_program or pool == 'second':
+                svc.ledger.record_usage(pool, Usage((Window('5h', 0.2, at + timedelta(hours=1)),), at))
+        starts, reseeds = [], []
+
+        def open_window(seat, argv, env, path):
+            with pytest.raises(lifecycle.Busy):
+                with lifecycle.claim(ship.runtime, seat.name):
+                    pytest.fail('the launch escaped its original lifecycle claim')
+            starts.append((seat.pool.name, seat.harness.name, argv))
+            pane = Pane('%2', 'crew', seat.name, 124, 80, 24, False, False, None)
+            panes[pane.id] = pane
+            return pane
+
+        def reseed(ship, seats, **bounds):
+            reseeds.extend((seat.pool.name, seat.launched().pool) for seat in seats if seat.launched())
+            return []
+
+        monkeypatch.setattr(seatmod.Seat, '_open_window', open_window)
+        monkeypatch.setattr(seatmod.Seat, '_survives', lambda *_: None)
+        monkeypatch.setattr(seatmod, 'process_start', lambda _pid: 'synthetic-start')
+        monkeypatch.setattr(seatmod.shutil, 'which', lambda *a, **k: '/usr/bin/sh')
+        monkeypatch.setattr(jail_end, 'end', lambda *_: {})
+        monkeypatch.setattr(credential, 'reseed', reseed)
+        for adapter in (CodexHarness, ClaudeHarness):
+            monkeypatch.setattr(adapter, 'version', lambda self: 'synthetic')
+        return SimpleNamespace(ship=ship, seat=seat, svc=svc, starts=starts, reseeds=reseeds, old=launched,
+                               record=record, saved=saved)
+
+    yield make
+    for svc in services:
+        svc.ledger.close()
+
+
+@pytest.mark.parametrize('method', ['manual', 'server'])
+@pytest.mark.parametrize(('case', 'target', 'resumes'), [
+    ('next', 'second', False), ('earlier', 'first', True), ('no-choice', 'second', True),
+])
+def test_server_recovery_and_qd_up_use_the_same_pool_choice(choice_world, case, target, resumes, method):
+    w = choice_world(case)
+    if method == 'server':
+        assert recovery.pass_once(w.svc) == 'recovered'
+    else:
+        proof = w.seat.up()
+        if case == 'no-choice':
+            assert proof.startswith('builder up in')
+        else:
+            assert proof.startswith(f'builder: launched on {target}')
+    [(pool, program, argv)] = w.starts
+    assert (pool, program) == (target, 'claude')
+    current = w.svc.seat('builder')
+    assert current.is_up and current.launched().pool == target
+    assert current.launched().resume == ('synthetic-resume-target' if resumes else None)
+    assert ('--resume' in argv) is resumes
+    if resumes:
+        assert current.record() == w.record.path
+    assert w.reseeds == [(w.saved, w.saved)]
+
+
+@pytest.mark.parametrize('manual', [False, True])
+def test_only_manual_up_applies_the_reported_order_fresh_rule(choice_world, manual):
+    w = choice_world('no-choice', fresh='after-order')
+    order = w.svc.store.new('order', 'issuer', w.seat.name, 'Synthetic previous order')
+    attempt = w.svc.attempts.open(order, w.seat.name, w.old.pane, w.old.pid, w.old.at)
+    w.svc.attempts.close(attempt, 'delivered', 'Synthetic receipt')
+    w.svc.store.new('report', w.seat.name, 'issuer', 'Completed', re=order.id)
+    if manual:
+        assert w.seat.up().endswith('fresh: its last order is reported')
+    else:
+        assert recovery.pass_once(w.svc) == 'recovered'
+    assert w.seat.launched().resume == (None if manual else 'synthetic-resume-target')
+
+
+@pytest.mark.parametrize('old_launch_remains', [True, False])
+def test_interrupted_server_recovery_does_not_choose_again(choice_world, monkeypatch, old_launch_remains):
+    w = choice_world('earlier')  # plain list, with an earlier choice that has room
+    path = relaunch_intent.path(w.ship.runtime, w.seat.name)
+
+    def interrupt(*args, **kwargs):
+        assert json.loads(path.read_bytes())['needs_destination'] is True
+        raise SystemExit('synthetic interruption')
+
+    with monkeypatch.context() as cut:
+        if old_launch_remains:
+            cut.setattr(seatmod.Seat, 'launch_choice', interrupt)
+        else:
+            move = seatmod.Seat.move_to
+
+            def interrupt_new_selection(seat, pool, **kwargs):
+                if pool == 'first':
+                    assert seat.launched() is None
+                    interrupt()
+                move(seat, pool, **kwargs)
+
+            cut.setattr(seatmod.Seat, 'move_to', interrupt_new_selection)
+        cut.setattr(relaunch_intent, '_remove', lambda *_: None)
+        with shutdown.Stop(w.ship.runtime).installed(), pytest.raises(SystemExit, match='synthetic interruption'):
+            recovery.pass_once(w.svc)
+
+    data = json.loads(path.read_bytes())
+    assert data['kind'] == 'server-recovery' and data['before'] == w.old.at
+    assert w.seat.launched() == (w.old if old_launch_remains else None)
+    monkeypatch.setattr(relaunch_intent, '_gone', lambda owner: owner == data['owner'])
+    w.ship.seats[w.seat.name] = shipmod.replace(w.ship.seat(w.seat.name), pools=(w.saved,))
+    assert recovery.pass_once(w.svc) is None  # this tick runs before relaunch intent recovery
+    relaunch_intent.finish(w.svc)
+    assert json.loads(path.read_bytes())['phase'] == relaunch_intent.FAILED
+    assert relaunch_intent.status(w.ship) == [
+        'builder: relaunch not finished from its intent (its destination pool was not recorded); needs a human: qd up builder']
+    assert recovery.pass_once(w.svc) is None and not w.starts
+    assert [a['outcome'] for a in recovery.read(w.ship.runtime)['attempts']] == ['started']

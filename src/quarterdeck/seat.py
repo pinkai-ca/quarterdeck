@@ -866,43 +866,47 @@ class Seat:
         """Bring the seat up. A seat with declared choices, being down, launches on ``launch_choice``, or on
         ``pool`` for this one launch; a move to another program starts it fresh, as failover does."""
         with self._lifecycle():
-            self.migrate()  # before the launch choice reads the pool selection in its new place
-            if pool is not None and pool not in self.spec.pools:  # a plain list declares its choices as tables do
-                raise ShipError(f"{self.name}: --pool {pool!r} is not one of its declared choices "
-                                f"({', '.join(self.spec.pools)})")
-            reported = (resume and self.spec.fresh == 'after-order' and not self.is_up
-                        and self._last_delivered_order_reported())
-            if reported:
-                resume = False
-            def proof(text):
-                return text + (' · fresh: its last order is reported' if reported else '')
-            if len(self.spec.pools) < 2 or self.is_up:  # a plain list of pools chooses as a table of them does
-                return proof(self._up(resume))
-            from .recovery import require_clear
-            require_clear(self)
-            target, why = (pool, 'chosen for this launch by qd up --pool') if pool is not None else self.launch_choice()
-            current = self.pool.name
-            saved = self._saved_name()
-            if target == current and pool is None and why == 'its saved choice':
-                (self.trusted / EXPLICIT).unlink(missing_ok=True)
-                return proof(self._up(resume))  # nothing chosen: the launch is as it always was
-            selected = replace(self.spec.for_pool(target), human_session=self.session.human)
-            observation = self._observe_selection(selected, self.ship.pool(target))
-            same_program = selected.harness == self.spec.harness
-            if same_program and resume and not self._screened() and not self._never_resumed():
-                self.harness.preflight_resume(self.adapter_spec(selected), self.home, self._resume_id)
-            if self.launched() is not None:
-                self._relaunch_down()  # retain the old record and reseed its source pool before changing selection
-            # A person's choice is used up only by a launch that starts: _up clears it once its pane is open, and a
-            # launch refused at one of _up's doors leaves it as the person set it.
-            self.move_to(target, explicit=None)
-            self.spec = selected
-            if not same_program:
-                self.harness = harnesses.get(selected.harness)
-            started = proof(self._up(resume=resume and same_program, observation=observation))
-            moved = f"{self.name}: launched on {target} ({why})" + (
-                f"; its saved choice was {saved}" if saved is not None and target != saved else "")
-            return moved + '\n' + started
+            return self._up_with_pool_choice(resume, pool=pool, fresh_after_order=True)
+
+    def _up_with_pool_choice(self, resume: bool, *, pool: str | None = None, fresh_after_order: bool = False) -> str:
+        """Choose and launch while the caller holds the seat's lifecycle claim."""
+        self.migrate()  # before the launch choice reads the pool selection in its new place
+        if pool is not None and pool not in self.spec.pools:  # a plain list declares its choices as tables do
+            raise ShipError(f"{self.name}: --pool {pool!r} is not one of its declared choices "
+                            f"({', '.join(self.spec.pools)})")
+        reported = (fresh_after_order and resume and self.spec.fresh == 'after-order' and not self.is_up
+                    and self._last_delivered_order_reported())
+        if reported:
+            resume = False
+        def proof(text):
+            return text + (' · fresh: its last order is reported' if reported else '')
+        if len(self.spec.pools) < 2 or self.is_up:  # a plain list of pools chooses as a table of them does
+            return proof(self._up(resume))
+        from .recovery import require_clear
+        require_clear(self)
+        target, why = (pool, 'chosen for this launch by qd up --pool') if pool is not None else self.launch_choice()
+        current = self.pool.name
+        saved = self._saved_name()
+        if target == current and pool is None and why == 'its saved choice':
+            (self.trusted / EXPLICIT).unlink(missing_ok=True)
+            return proof(self._up(resume))  # nothing chosen: the launch is as it always was
+        selected = replace(self.spec.for_pool(target), human_session=self.session.human)
+        observation = self._observe_selection(selected, self.ship.pool(target))
+        same_program = selected.harness == self.spec.harness
+        if same_program and resume and not self._screened() and not self._never_resumed():
+            self.harness.preflight_resume(self.adapter_spec(selected), self.home, self._resume_id)
+        if self.launched() is not None:
+            self._relaunch_down()  # retain the old record and reseed its source pool before changing selection
+        # A person's choice is used up only by a launch that starts: _up clears it once its pane is open, and a
+        # launch refused at one of _up's doors leaves it as the person set it.
+        self.move_to(target, explicit=None)
+        self.spec = selected
+        if not same_program:
+            self.harness = harnesses.get(selected.harness)
+        started = proof(self._up(resume=resume and same_program, observation=observation))
+        moved = f"{self.name}: launched on {target} ({why})" + (
+            f"; its saved choice was {saved}" if saved is not None and target != saved else "")
+        return moved + '\n' + started
 
     def _last_delivered_order_reported(self) -> bool:
         """Use the service's open-work reading; an ack is never a closing report.

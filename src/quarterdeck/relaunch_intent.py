@@ -181,9 +181,10 @@ def clear(runtime, seat: str, who: str) -> bool:
     return True
 
 
-def clear_all(ship, who: str) -> list[str]:
-    """Every declared seat's intent, for a word about the whole ship."""
-    return [name for name in sorted(ship.seats) if clear(ship.runtime, name, who)]
+def clear_all(ship, who: str, *, keep_server_choices: bool = False) -> list[str]:
+    """Clear for a word about the whole ship, retaining unfinished choices at a server recovery stop."""
+    return [name for name in sorted(ship.seats) if not (keep_server_choices and pending_server_choice(ship, name))
+            and clear(ship.runtime, name, who)]
 
 
 def held(seat) -> str | None:
@@ -227,12 +228,29 @@ def hold(seat) -> str | None:
     return None
 
 
-def _needs_destination(seat, kind: str) -> bool:
+def _needs_destination(spec, kind: str) -> bool:
     """A move may have chosen a pool not preserved by the resume flag or old selection."""
-    spec = getattr(seat, 'spec', None)
+    if kind == 'server-recovery':
+        return len(getattr(spec, 'pools', ())) > 1  # qd up chooses from tables and plain lists
     return kind in ('select', 'failover') or (
         kind in ROUTING and bool(getattr(spec, 'pool_choices', None)) and len(spec.pools) > 1
     )
+
+
+def _destination_unrecorded(spec, intent) -> bool:
+    return intent.get('needs_destination', False) or _needs_destination(spec, intent['kind'])
+
+
+def pending_server_choice(ship, name: str) -> bool:
+    """A new server pass must leave an interrupted pool choice to its intent's recovery."""
+    target = path(ship.runtime, name)
+    try:
+        if post_dir.mode(target) is None:
+            return False
+        intent = read(ship.runtime, target.name, ship.seats)
+    except (OSError, ShipError, TypeError):
+        return True  # an unreadable intent cannot prove a new choice is safe
+    return intent['kind'] == 'server-recovery' and _destination_unrecorded(ship.seats[name], intent)
 
 
 @contextmanager
@@ -261,7 +279,7 @@ def section(service, seat, kind: str, *, resume):
         intent = dict(version=1, seat=seat.name, kind=kind, resume=bool(resume() if callable(resume) else resume),
                       at=_now(), phase=RELAUNCHING, owner=controller.owner,
                       before=launched.at if launched is not None else None)
-        if _needs_destination(seat, kind):
+        if _needs_destination(getattr(seat, 'spec', None), kind):
             intent['needs_destination'] = True  # even if its choices change before recovery
         _write(runtime, intent)
         log('relaunch', seat=seat.name, kind=kind, phase='begin')
@@ -369,7 +387,7 @@ def finish(service) -> None:
                     continue
                 if data['phase'] in (FINISHING, FAILED) or held(seat) is not None:
                     continue  # tried once already, or held: a person decides, and the status line says so
-                if data.get('needs_destination') or _needs_destination(seat, data['kind']):
+                if _destination_unrecorded(getattr(seat, 'spec', None), data):
                     reason = 'its destination pool was not recorded'
                     _write(runtime, {**data, 'phase': FAILED, 'error': reason})
                     service.log('relaunch-intent', seat=seat.name, kind=data['kind'], outcome='refused', reason=reason)

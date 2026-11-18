@@ -17,8 +17,7 @@ from pathlib import Path
 import socket
 import stat
 
-from . import trusted_files
-from . import durable
+from . import durable, relaunch_intent, trusted_files
 from .ship import Ship, ShipError
 
 FORMAT = 1
@@ -167,12 +166,18 @@ def pass_once(service) -> str | None:
         # its sessions to its own, and the next pass recovers it there.
         return _settle_unknown(runtime, data, "the ship ran on tmux's default server; it is recovered on its own "
                                               "server once the service has followed it there")
-    for seat, _ in launches:
+    eligible, choosing = [], []
+    for seat, proved in launches:
         try:
             with seat._lifecycle(automatic=True):
-                pass
+                if relaunch_intent.pending_server_choice(ship, seat.name):
+                    choosing.append(seat.name)
+                else:
+                    eligible.append((seat, proved))
         except ShipError:
             return _settle_unknown(runtime, data, f'{seat.name} lifecycle busy; waiting, no attempt used')
+    if not eligible:
+        return _settle_unknown(runtime, data, None)  # the intent's own status names what holds these seats
     moment = now()
     count, backwards = window(data, moment)
     if backwards or count >= LIMIT:
@@ -180,11 +185,10 @@ def pass_once(service) -> str | None:
                            else f'{count} attempts in the last hour')
         data['unknown'] = None
         save(runtime, data)
-        from . import relaunch_intent  # a stopped recovery keeps every seat down until a person's qd up
-        relaunch_intent.clear_all(ship, 'ship server recovery stopped')
+        relaunch_intent.clear_all(ship, 'ship server recovery stopped', keep_server_choices=True)
         _report(service, f'ship tmux server gone; recovery stopped ({data["stopped"]}); needs a human: qd up')
         return 'stopped'
-    attempt = dict(at=moment.isoformat(), outcome='started', seats=[seat.name for seat, _ in launches])
+    attempt = dict(at=moment.isoformat(), outcome='started', seats=[seat.name for seat, _ in eligible])
     data['attempts'].append(attempt)
     data['unknown'] = None
     save(runtime, data)  # consumed before any effect: a crash after this line still counts
@@ -195,7 +199,7 @@ def pass_once(service) -> str | None:
     except (OSError, ShipError) as error:
         failures.append(f'fence: {error}')
     brought, downed = [], []
-    for seat, proved in launches:
+    for seat, proved in eligible:
         try:
             # Membership is re-read under the same lifecycle lock as the effect, which a qd down also takes:
             # a deliberate down that finished first wins, and one that comes later waits or is refused.
@@ -203,9 +207,11 @@ def pass_once(service) -> str | None:
                 if seat.launched() != proved:
                     downed.append(seat.name)
                     continue
-                from . import relaunch_intent
+                if relaunch_intent.pending_server_choice(ship, seat.name):
+                    choosing.append(seat.name)
+                    continue
                 with relaunch_intent.section(service, seat, 'server-recovery', resume=True):
-                    seat._up(True)  # qd up's own resume path, without taking the lock this already holds
+                    seat._up_with_pool_choice(True)
             brought.append(seat)
         except Exception as error:  # every seat gets its one try; the outcome names each failure
             failures.append(f'{seat.name}: {str(error)[:200]}')
@@ -220,8 +226,7 @@ def pass_once(service) -> str | None:
         data['stopped'] = 'recovery failed: ' + '; '.join(failures)[:400]
     save(runtime, data)
     if failures:
-        from . import relaunch_intent  # a stopped recovery keeps every seat down until a person's qd up
-        relaunch_intent.clear_all(ship, 'ship server recovery stopped')
+        relaunch_intent.clear_all(ship, 'ship server recovery stopped', keep_server_choices=True)
     k = count + 1
     if failures:
         _report(service, f'ship tmux server was gone; recovery attempt {k} of {LIMIT} this hour failed '
@@ -229,6 +234,7 @@ def pass_once(service) -> str | None:
         return 'failed'
     note = f'; not declared, left alone: {", ".join(stray)}' if stray else ''
     note += f'; taken down meanwhile, left down: {", ".join(downed)}' if downed else ''
+    note += f'; unfinished pool choice, left down: {", ".join(choosing)}' if choosing else ''
     _report(service, f'ship tmux server was gone; recovered {len(brought)} seat(s) '
                      f'({", ".join(seat.name for seat in brought)}), attempt {k} of {LIMIT} this hour{note}')
     return 'recovered'
