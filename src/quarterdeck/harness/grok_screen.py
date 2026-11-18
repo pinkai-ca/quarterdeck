@@ -168,6 +168,15 @@ def indexed(index: int) -> tuple[int, int, int]:
     return steps[index // 36], steps[index // 6 % 6], steps[index % 6]
 
 
+# Measured on 1.0.77 at 256 columns with truecolor and with the xterm palette.
+# A whole chip uses one palette: the brackets, the label and the background.
+FOLDED_CHIP_STYLES = (
+    (Style((65, 65, 65), (17, 17, 17)), Style((200, 200, 200), (17, 17, 17))),
+    (Style(indexed(238), indexed(233)), Style(indexed(251), indexed(233))),
+)
+INDEXED_DRAFT_STYLE = Style(indexed(254), indexed(233))
+
+
 def characters(text: str) -> tuple[str, list[Style]] | None:
     """Decode the SGR subset tmux emits; other terminal controls stay unknown."""
     plain, styles, position = [], [], 0
@@ -331,18 +340,17 @@ def read(text: str) -> Screen:
         token = content.rstrip(" ")
         folded = (len(body) == 1 and re.fullmatch(r"\[Pasted: [1-9][0-9]* lines\]", token)
                   and len(attributes) >= len(token)
-                  and all(not attribute.faint and attribute.background == (17, 17, 17)
-                          and attribute.foreground == ((65, 65, 65) if i in (0, len(token) - 1)
-                                                       else (200, 200, 200))
-                          for i, attribute in enumerate(attributes[:len(token)])))
+                  and any(attributes[0] == bracket and attributes[len(token) - 1] == bracket
+                          and all(attribute == label for attribute in attributes[1:len(token) - 1])
+                          for bracket, label in FOLDED_CHIP_STYLES))
         if folded:
             # Keep the native chip for the payload-derived Box comparison.
             # It proves only the visual submission contract, never delivery.
             continue
         for char, attribute in zip(content, attributes):
-            if not char.isspace() and (attribute.faint or attribute.foreground not in
-                                      (None, (225, 225, 225), (122, 162, 247))
-                                      or attribute.background not in (None, (20, 20, 20))):
+            if (not char.isspace() and attribute != INDEXED_DRAFT_STYLE
+                    and (attribute.faint or attribute.foreground not in (None, (225, 225, 225), (122, 162, 247))
+                         or attribute.background not in (None, (20, 20, 20)))):
                 return Screen(plain, box=None, unknown="unmeasured Grok composer text styling", shows=shows)
     box = "\n".join(content for content, _ in body)
     if training_question(rows, top):

@@ -357,6 +357,48 @@ def test_unmeasured_wide_working_hint_stays_blind(old, new):
     assert screen.unknown == "unmeasured Grok composer hint" and screen.box is None
 
 
+WIDE_FOLDED_PAYLOAD = (
+    "Reply with exactly the word ok.\n"
+    "Synthetic line two.\nSynthetic line three.\nSynthetic line four.\nSynthetic line five."
+)
+
+
+@pytest.mark.parametrize("name", ["folded-draft-256", "folded-draft-indexed-256"])
+def test_measured_wide_folded_paste_before_submit(name):
+    adapter = GrokHarness()
+    screen = adapter.screen(fixture(name))
+    assert screen.unknown is None and screen.interruption is None and screen.working is False
+    assert screen.box is not None and screen.box.strip() == "[Pasted: 5 lines]"
+    assert adapter.box(WIDE_FOLDED_PAYLOAD).matches(screen.box, adapter.box_columns(256))
+    assert not adapter.box(WIDE_FOLDED_PAYLOAD.rsplit("\n", 1)[0]).matches(screen.box, adapter.box_columns(256))
+
+
+@pytest.mark.parametrize("name", ["idle-after-fold-256", "idle-after-fold-indexed-256"])
+def test_measured_wide_composer_after_the_folded_turn(name):
+    adapter = GrokHarness()
+    native = fixture(name)
+    screen = adapter.screen(native)
+    assert screen.unknown is None and screen.interruption is None and screen.working is False
+    assert screen.box is not None and not screen.box.strip()
+    assert native.count("shortcuts") == 1
+    altered = adapter.screen(native.replace("shortcuts", "other"))
+    assert altered.unknown == "unmeasured Grok composer hint" and altered.box is None
+
+
+def test_measured_wide_indexed_text_draft():
+    adapter = GrokHarness()
+    screen = adapter.screen(fixture("text-draft-indexed-256"))
+    assert screen.unknown is None and screen.working is False
+    assert adapter.box(WIDE_FOLDED_PAYLOAD.split("\n", 1)[0]).matches(screen.box, adapter.box_columns(256))
+
+
+def test_wide_indexed_fold_keeps_unmeasured_style_unknown():
+    native = fixture("folded-draft-indexed-256")
+    assert native.count("38;5;251mPasted") == 1
+    screen = GrokHarness().screen(native.replace("38;5;251mPasted", "38;5;250mPasted"))
+    assert screen.unknown == "unmeasured Grok composer text styling" and screen.box is None
+
+
 def test_transcript_working_words_do_not_replace_native_hint_evidence():
     text = "   ⠹ Responding… [stop]\nCtrl+c:cancel\n" + fixture("idle-mono")
     screen = GrokHarness().screen(text)
