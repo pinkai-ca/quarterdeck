@@ -100,15 +100,6 @@ def report_success(service, health):
         service.log('accounting-recovered', since=previous, failures=failures, causes=causes)
 
 
-def visible(service):
-    """Keep the existing record alarm first, then show any outstanding usage alarm."""
-    records = service.accounting_health
-    usage = getattr(service, 'usage_accounting_health', None)
-    if usage is not None and usage.failures and (not records.failures or records.failures < BOUND <= usage.failures):
-        return usage
-    return records
-
-
 @dataclass
 class UsagePass:
     rollback: Exception | None = None
@@ -150,13 +141,33 @@ class Health:
         return alarmed
 
 
+@dataclass(frozen=True)
+class Reading:
+    checked: bool
+    failures: int
+    since: str | None
+    current: str | None
+    causes: dict[str, int]
+
+    def shown(self):
+        return shown(self.checked, self.failures, self.since, self.current)
+
+
+def visible(service):
+    """Read record check state alongside the selected failure streak."""
+    records = service.accounting_health
+    usage = getattr(service, 'usage_accounting_health', None)
+    streak = records
+    if usage is not None and usage.failures and (not records.failures or records.failures < BOUND <= usage.failures):
+        streak = usage
+    return Reading(records.checked, streak.failures, streak.since, streak.current, dict(streak.causes))
+
+
 def shown(checked, failures, since, current):
-    """What the status line says of accounting: nothing while it commits or below the bound."""
-    if not checked:
-        return UNKNOWN
+    """Give bounded alarms priority over the initial unknown record state."""
     if failures >= BOUND:
         return f"accounting failing since {since}: {current}"
-    return None  # below the explicit transient-failure bound, not a measurement of turns
+    return None if checked else UNKNOWN
 
 
 def publish(runtime, health):
@@ -191,7 +202,10 @@ def _valid(data):
             or sum(data['causes'].values()) != data['failures']):
         return False
     if data['failures']:
-        if not data['checked'] or data['cause'] not in data['causes'] or not isinstance(data['since'], str):
+        if data['cause'] not in data['causes'] or not isinstance(data['since'], str):
+            return False
+        # Only the independent usage streak can accumulate before the first record check.
+        if not data['checked'] and not data['causes'].keys() <= {USAGE_UNPROVED, USAGE_ROLLED_BACK}:
             return False
         since = datetime.fromisoformat(data['since'])
         return (since.tzinfo is not None and since.isoformat(timespec='seconds') == data['since']

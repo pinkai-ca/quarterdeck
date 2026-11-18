@@ -72,6 +72,8 @@ Incomplete intended DML rolls back. The standalone writer stores a unique receip
 
 Three consecutive accounting preparation or transaction failures, including unreadable usage receipts and mixed causes, raise `accounting failing since <time>: <cause>`. The sliced duty checks pending usage ownership even when its idle certificate would skip accounting. A successful record pass clears record failures. Confirmed usage rollbacks have a separate streak. A duty pass with any confirmed rollback counts once, even if another pool commits or a deferred rollback is settled during record preparation. A pass that commits usage without a rollback clears the usage streak. A pass with no usage outcome leaves it as it was. The onset log includes an allowlisted exception type and a fixed message, with recognized SQLite or OS diagnostics where available. The status uses fixed causes. Per-record incomplete measurements and post-commit or usage errors retain their separate visibility.
 
+Until records have been checked, status shows `accounting health unknown` below the usage alarm bound. A bounded usage alarm is visible even while the snapshot still records the check as pending. A bounded record alarm takes precedence over a usage alarm.
+
 `accounting_health.py` publishes a disposable process-bound `runtime/accounting-health.json` beside heartbeat. Independent readers require live lock, fresh matching heartbeat, pid/start identity, fresh observation and valid shape. Invalid evidence is health unknown while the service runs, never healthy or an old process's alarm. Reads do not repair it. Status-cache reuse rechecks that fresh health fact; changed facts force collection. This snapshot authorizes no accounting or transport.
 
 ### Allowances and limits

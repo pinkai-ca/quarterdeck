@@ -14,12 +14,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import accounting_health, accounting_slices, harness, quota, service
+from quarterdeck import accounting_health, accounting_slices, harness, post, quota, service, servicectl, watch
 from quarterdeck.accounting_slices import Driver
 from quarterdeck.attribution_cache import Attribution
 from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.ledger import UsageCommitRolledBack, UsageCommitUnproved
-from quarterdeck.ship import Pool
+from quarterdeck.ship import Pool, Ship
 from .test_ledger_pass_boundaries import AT, grow, world
 
 SECRET = 'synthetic record body q7 that must never reach an alarm'
@@ -217,6 +217,40 @@ def write_usage(svc, writer):
 def usage_counts(db):
     return tuple(db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
                  for table in ('usage_reads', 'pools', 'usage_samples', 'usage_commit'))
+
+
+@pytest.mark.parametrize('rollbacks', [1, 3])
+def test_usage_rollbacks_leave_fresh_record_accounting_unchecked(tmp_path, monkeypatch, rollbacks):
+    ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, {}, {}, {})
+    svc = service.Service(ship, SimpleNamespace())
+    book = svc.ledger
+    book.db = fault = InterruptedCommit(book.db)
+    monkeypatch.setattr(post, 'now', lambda: AT)
+    monkeypatch.setattr(accounting_health, 'time', SimpleNamespace(time=AT.timestamp))
+    monkeypatch.setattr(servicectl, 'datetime', SimpleNamespace(now=lambda tz: AT, fromisoformat=datetime.fromisoformat))
+    expected = (f"accounting failing since {AT.isoformat(timespec='seconds')}: {accounting_health.USAGE_ROLLED_BACK}"
+                if rollbacks == accounting_health.BOUND else accounting_health.UNKNOWN)
+    try:
+        with servicectl.acquire_lock(svc.runtime):
+            svc.first_beat()
+            svc.publish_accounting_health(force=True)
+            assert accounting_health.reading(svc.runtime) == accounting_health.UNKNOWN
+
+            for _ in range(rollbacks):
+                with held_reader(svc), pytest.raises(UsageCommitRolledBack):
+                    usage(svc)
+
+            assert fault.reads == rollbacks and usage_counts(book.db) == (0, 0, 0, 0)
+            assert svc.accounting_health == accounting_health.Health()
+            assert svc.usage_accounting_health.checked and svc.usage_accounting_health.failures == rollbacks
+            assert accounting_health.visible(svc).shown() == expected
+            data = json.loads((svc.runtime / accounting_health.NAME).read_text())
+            assert (data['checked'], data['failures'], data['cause']) == (
+                False, rollbacks, accounting_health.USAGE_ROLLED_BACK)
+            assert accounting_health.reading(svc.runtime) == expected
+            assert expected in watch.facts(ship, svc.tmux).line()
+    finally:
+        book.close()
 
 
 @pytest.mark.parametrize('writer', ['ledger', 'quota'])

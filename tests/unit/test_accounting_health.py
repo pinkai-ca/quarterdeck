@@ -58,9 +58,19 @@ def test_recovery_gives_next_streak_its_own_start():
     assert health.causes == {'database locked': 1}
 
 
-@pytest.mark.parametrize('failures', [0, 1, 2, 3, 5])
-def test_current_owned_snapshot_reading(tmp_path, monkeypatch, failures):
-    data = dict(format=1, pid=4107, process_start='209', observed=AT.timestamp(), checked=True,
+def test_a_bounded_record_alarm_takes_precedence_over_a_usage_alarm():
+    records = accounting_health.Health()
+    usage = accounting_health.Health()
+    for _ in range(accounting_health.BOUND):
+        records.failed('database busy', AT)
+        usage.failed(accounting_health.USAGE_ROLLED_BACK, AT)
+    worker = SimpleNamespace(accounting_health=records, usage_accounting_health=usage)
+    assert accounting_health.visible(worker).shown() == records.shown()
+
+
+@pytest.mark.parametrize(('checked', 'failures'), [(True, n) for n in (0, 1, 2, 3, 5)] + [(False, 0), (False, 3)])
+def test_current_owned_snapshot_reading(tmp_path, monkeypatch, checked, failures):
+    data = dict(format=1, pid=4107, process_start='209', observed=AT.timestamp(), checked=checked,
                 failures=failures, since=AT.isoformat(timespec='seconds') if failures else None,
                 cause='database busy' if failures else None,
                 causes={'database busy': failures} if failures else {})
@@ -69,7 +79,10 @@ def test_current_owned_snapshot_reading(tmp_path, monkeypatch, failures):
     monkeypatch.setattr(accounting_health.servicectl, 'read_heartbeat', lambda runtime: (4107, 0.0))
     monkeypatch.setattr(accounting_health.servicectl, 'alive', lambda runtime: True)
     monkeypatch.setattr(accounting_health.presentation, 'process_start', lambda pid: '209')
-    expected = (f"accounting failing since {data['since']}: database busy" if failures >= 3 else None)
+    if checked:
+        expected = f"accounting failing since {data['since']}: database busy" if failures >= 3 else None
+    else:
+        expected = accounting_health.UNKNOWN  # an unchecked snapshot cannot carry a record failure
     assert accounting_health.reading(tmp_path) == expected
 
 
