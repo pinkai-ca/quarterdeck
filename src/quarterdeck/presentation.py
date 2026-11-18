@@ -243,6 +243,8 @@ def command_folder(argv):
 
 def command_line(argv):
     """Only the plain canonical text command bypasses the normal parser/handoff."""
+    if os.environ.get(copy_state.DEFAULT_SHIP_ENV):
+        return None  # the parser consumes the handoff and annotates the reading
     folder = command_folder(argv)
     if folder is None:
         return None

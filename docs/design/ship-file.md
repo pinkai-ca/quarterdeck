@@ -141,7 +141,9 @@ One plain service process belongs to whoever ran `qd up`, outlives that shell an
 
 Without the table the ship has no screen, and the program says so and reads nothing.
 
-`--ship` or `QD_SHIP` selects a ship explicitly. Up sets `QD_SHIP` in each seat. Without either, a person's shell uses `ships/.default`, managed by `qd default`; without a mark it uses the sole non-template, non-practice ship. An invalid mark or several eligible ships without a mark refuses rather than guesses. The selected folder is forwarded through installed-copy handoff, shown in the act's text proof and exposed as JSON `default_ship`. A seat never reads the default mark. Doctor warns about `QD_SHIP` in a shell that is no seat.
+`--ship` wins over `QD_SHIP`. Up sets `QD_SHIP` in each seat. Without either, a person's shell uses the invoking checkout's `ships/.default` or, when no mark exists, its sole non-template, non-practice ship. An invalid mark or several eligible ships without a mark refuses. `qd default` reads the checkout's mark and `qd default <ship>` validates the named eligible ship's declaration before writing it. Both forms stay in the checkout even with `QD_SHIP` set and refuse global `--ship`. A seat never selects a ship from the mark. A ship's installed copy needs `--ship` or `QD_SHIP` for ship selection and has no default mark of its own.
+
+The invoking checkout passes the absolute selected folder to the ship's own copy. A copy that supports the default annotation includes it in the text proof or the JSON `default_ship` field. For an older copy the invoking checkout reports the selection on stderr before handing over the same command. Doctor warns about `QD_SHIP` in a shell that is no seat.
 
 ### Project and runtime
 

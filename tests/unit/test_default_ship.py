@@ -6,8 +6,10 @@ Every case runs in a synthetic project folder; nothing reads or writes the real 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -31,7 +33,7 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setattr(standing, "PROJECT_DIR", root)
     handed = []
     monkeypatch.setattr(install, "handoff", lambda folder, argv: handed.append(
-        (Path(folder), list(argv), __import__("os").environ.get(cli.HANDED))))
+        (Path(folder), list(argv), os.environ.get(cli.HANDED))))
     root.handed = handed
     return root
 
@@ -66,10 +68,38 @@ def test_the_mark_chooses_the_ship(project):
     assert shipmod.find() == folder
 
 
-def test_the_mark_may_name_a_template(project):
-    templates(project)
-    mark(project, "drydock")
-    assert shipmod.choose(None) == ((project / "ships" / "drydock").resolve(), "drydock")
+@pytest.mark.parametrize("name", sorted(shipmod.TEMPLATES))
+def test_templates_are_refused_as_new_and_preexisting_marks(project, name):
+    folder = ship(project, name)
+    ship(project, "endeavour")
+    mark(project, "endeavour\n")
+    mark_file = project / "ships/.default"
+    with pytest.raises(ShipError, match="template or practice ship"):
+        shipmod.mark_default(name)
+    assert mark_file.read_bytes() == b"endeavour\n"
+
+    mark(project, name)
+    with pytest.raises(ShipError, match=rf"the default mark .*: {name} .*qd default <ship>"):
+        shipmod.choose(None)
+    assert mark_file.read_text() == name
+    assert shipmod.choose(str(folder)) == (folder.resolve(), None)
+
+
+@pytest.mark.parametrize("declaration", ["[ship", "[ship]\ntick = 0", "seats = true"])
+def test_invalid_declaration_cannot_replace_a_mark_or_be_used_by_one(project, declaration):
+    ship(project, "endeavour")
+    broken = ship(project, "defiant")
+    (broken / "ship.toml").write_text(declaration)
+    mark(project, "endeavour\n")
+    mark_file = project / "ships/.default"
+    with pytest.raises(ShipError, match=r"defiant has .*invalid declaration"):
+        shipmod.mark_default("defiant")
+    assert mark_file.read_bytes() == b"endeavour\n"
+
+    mark(project, "defiant\n")
+    with pytest.raises(ShipError, match=r"the default mark .*: defiant has .*invalid declaration .*qd default <ship>"):
+        shipmod.choose(None)
+    assert mark_file.read_bytes() == b"defiant\n"
 
 
 def test_with_no_mark_the_only_ship_that_is_no_template_is_the_default(project):
@@ -179,7 +209,7 @@ def test_a_verb_on_the_default_ship_says_so_and_hands_over_the_same_folder(proje
     assert code == 0
     assert out.splitlines()[0].endswith(" (default ship: endeavour)")
     assert project.handed == [(folder, ["--ship", str(folder), "ledger"], str(folder))]
-    assert cli.HANDED not in __import__("os").environ, "nothing launched afterwards inherits it"
+    assert cli.HANDED not in os.environ, "nothing launched afterwards inherits it"
 
 
 def test_the_json_reading_carries_the_default_ship_as_a_field(project, capsys):
@@ -207,7 +237,7 @@ def test_the_ships_own_copy_names_the_default_it_was_handed(project, capsys, mon
     monkeypatch.setenv(cli.HANDED, str(folder))
     code, out, _ = run(capsys, "--ship", str(folder), "ledger")
     assert code == 0 and out.splitlines()[0].endswith("(default ship: endeavour)")
-    assert cli.HANDED not in __import__("os").environ
+    assert cli.HANDED not in os.environ
     monkeypatch.setenv(cli.HANDED, str(other))  # handed a different folder: never said
     code, out, _ = run(capsys, "--ship", str(folder), "ledger")
     assert code == 0 and "default ship" not in out
@@ -274,14 +304,143 @@ def test_qd_default_takes_the_folder_by_path_too_and_refuses_a_missing_one(proje
     assert (project / "ships" / ".default").read_text() == "endeavour\n"
 
 
-def test_qd_default_says_when_the_shell_does_not_use_it(project, capsys, monkeypatch):
-    folder = ship(project, "endeavour")
-    monkeypatch.setenv("QD_SHIP", str(folder))
-    _, out, _ = run(capsys, "default")
+def test_qd_default_only_reads_or_changes_the_invoking_checkout(project, capsys, monkeypatch):
+    ship(project, "endeavour")
+    other = ship(project, "defiant")
+    mark(project, "endeavour\n")
+    monkeypatch.setenv("QD_SHIP", str(other))
+    monkeypatch.chdir(other)
+    code, out, err = run(capsys, "default")
+    assert code == 0 and not err and out.startswith("default ship: endeavour")
     assert "QD_SHIP is set in this shell and wins over the default ship" in out
+    assert (project / "ships/.default").read_bytes() == b"endeavour\n"
+    code, out, err = run(capsys, "default", "defiant")
+    assert code == 0 and not err and out.startswith("default ship: defiant")
+    assert (project / "ships/.default").read_bytes() == b"defiant\n"
     monkeypatch.setenv("QD_SEAT", "worker-1")
     _, out, _ = run(capsys, "default")
     assert "this shell is a seat" in out
+    assert project.handed == []
+
+
+@pytest.mark.parametrize("argument", [[], ["defiant"]])
+def test_qd_default_refuses_the_global_ship_option(project, capsys, argument):
+    folder = ship(project, "endeavour")
+    ship(project, "defiant")
+    mark(project, "endeavour\n")
+    assert run(capsys, "--ship", str(folder), "default", *argument) == (
+        2, "", "qd: name the ship as the argument\n")
+    assert (project / "ships/.default").read_bytes() == b"endeavour\n"
+    assert project.handed == []
+
+
+# -- installed copies -------------------------------------------------------------------
+
+
+def synthetic_copy(folder, capable):
+    """A usable recorded copy with either the current package or an older stand-in."""
+    declaration = folder / "ship.toml"
+    declaration.write_text(declaration.read_text().replace('code = "checkout"\n', ''))
+    venv = folder / "runtime/venv"
+    package = venv / "lib/python3/site-packages/quarterdeck"
+    if capable:
+        shutil.copytree(Path(cli.__file__).parent, package, ignore=shutil.ignore_patterns("__pycache__"))
+        body = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            f"sys.path.insert(0, {str(package.parent)!r})\n"
+            "sys.executable = str(Path(sys.argv[0]).with_name('python'))\n"
+            "sys.prefix = str(Path(sys.executable).parents[1])\n"
+            "from quarterdeck import main, presentation\n"
+            "presentation.published_reading = lambda *args, **kwargs: ('synthetic status', None)\n"
+            "raise SystemExit(main())\n"
+        )
+    else:
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text("# older CLI\n")
+        body = (
+            "import json, os, sys\n"
+            "assert 'QD_DEFAULT_SHIP' not in os.environ\n"
+            f"assert sys.argv[1:3] == ['--ship', {str(folder)!r}]\n"
+            "print(json.dumps({'ship': sys.argv[2]}) if '--json' in sys.argv else 'historical output')\n"
+        )
+    (venv / "bin").mkdir()
+    (venv / "bin/python").symlink_to(sys.executable)
+    qd = venv / "bin/qd"
+    qd.write_text(f"#!{sys.executable}\n" + body)
+    qd.chmod(0o755)
+    laws = venv / "share/quarterdeck/standing-orders/laws.md"
+    laws.parent.mkdir(parents=True)
+    laws.write_text("- `example` synthetic law\n")
+    (folder / "runtime/installed.json").write_text(json.dumps(
+        dict(commit="a" * 40, ref="copy", at="2026-11-17T00:00:00+00:00")))
+    return qd
+
+
+@pytest.mark.parametrize("capable", [False, True])
+def test_installed_handoff_keeps_the_pinned_folder_and_calls_out_old_copies(project, tmp_path, capable):
+    folder = ship(project, "endeavour").resolve()
+    ship(project, "defiant")
+    mark(project, "endeavour\n")
+    synthetic_copy(folder, capable)
+    # This subprocess starts the ordinary checkout CLI and really execs the recorded synthetic copy.
+    caller = (
+        "import sys; "
+        f"sys.path.insert(0, {str(Path(cli.__file__).parents[1])!r}); "
+        "from pathlib import Path; from quarterdeck import cli, standing; "
+        f"standing.PROJECT_DIR = Path({str(project)!r}); "
+        "raise SystemExit(cli.main())"
+    )
+    warning = (f"qd: acting on the default ship endeavour ({folder}); "
+               "its copy is older than the default-ship annotation\n")
+    for as_json in (False, True):
+        argv = ["--json", "ledger"] if as_json else ["ledger"]
+        result = subprocess.run([sys.executable, "-c", caller, *argv], cwd=tmp_path,
+                                capture_output=True, text=True, check=True)
+        assert result.stderr == ("" if capable else warning)
+        if as_json:
+            data = json.loads(result.stdout)
+            if capable:
+                assert data["default_ship"] == "endeavour"
+            else:
+                assert data == {"ship": str(folder)}
+        elif capable:
+            assert result.stdout.splitlines()[0].endswith("(default ship: endeavour)")
+        else:
+            assert result.stdout == "historical output\n"
+
+    if capable:
+        result = subprocess.run([sys.executable, "-c", caller, "status", "--line"],
+                                capture_output=True, text=True, check=True)
+        assert (result.stdout, result.stderr) == ("synthetic status (default ship: endeavour)\n", "")
+    else:
+        named = subprocess.run([sys.executable, "-c", caller, "--ship", str(folder), "ledger"],
+                               capture_output=True, text=True, check=True)
+        assert (named.stdout, named.stderr) == ("historical output\n", "")
+
+
+def test_the_installed_copy_requires_a_named_ship_and_has_no_default_mark(project, tmp_path):
+    folder = ship(project, "endeavour")
+    other = ship(project, "defiant")
+    qd = synthetic_copy(folder, capable=True)
+    mark(project, "endeavour\n")
+    refusal = "qd: this is a ship's own copy; name its ship with --ship or QD_SHIP\n"
+
+    def invoke(*argv, **env):
+        return subprocess.run([str(qd), *argv], cwd=project, capture_output=True, text=True,
+                              env={**os.environ, **env})
+
+    for argv in (("ledger",), ("default",), ("default", "defiant")):
+        result = invoke(*argv)
+        assert (result.returncode, result.stdout, result.stderr) == (2, "", refusal)
+    for argv in (("default",), ("default", "defiant")):
+        result = invoke(*argv, QD_SHIP=str(other))
+        assert (result.returncode, result.stdout, result.stderr) == (2, "", refusal)
+    assert invoke("ledger", QD_SHIP=str(folder)).returncode == 0
+    result = invoke("--ship", str(folder), "ledger", QD_SHIP=str(tmp_path / "absent"))
+    assert result.returncode == 0 and "(default ship:" not in result.stdout
+    assert invoke("laws").returncode == 0
+    assert (project / "ships/.default").read_bytes() == b"endeavour\n"
 
 
 # -- doctor -----------------------------------------------------------------------------

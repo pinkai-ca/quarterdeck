@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import tomllib
 
+DEFAULT_SHIP_ENV = 'QD_DEFAULT_SHIP'
 RECORD = 'installed.json'
 MARKER = '.quarterdeck-copy.json'
 FORMAT = 1
@@ -163,6 +164,32 @@ class Selection:
     warning: str | None = None
     checkout: bool = False
     first_copy: bool = False
+
+
+def supports_default_annotation(qd: Path) -> bool:
+    """Read the selected copy's static declaration without importing it."""
+    import ast
+
+    try:
+        root = qd.parent.parent.resolve()
+        sources = {path.resolve() for lib in ('lib', 'lib64')
+                   for path in (root / lib).glob('python*/site-packages/quarterdeck/cli.py')}
+        if len(sources) != 1:
+            return False
+        source = sources.pop()
+        if not source.is_relative_to(root) or not source.is_file():
+            return False
+        limit = 128 * 1024
+        with source.open('rb') as stream:
+            text = stream.read(limit + 1)
+        if len(text) > limit:
+            return False
+        markers = [node.value for node in ast.parse(text).body if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == 'DEFAULT_HANDOFF'
+                          for target in node.targets)]
+        return len(markers) == 1 and isinstance(markers[0], ast.Constant) and markers[0].value == 'default-label-v1'
+    except (OSError, ValueError, SyntaxError, RuntimeError):
+        return False
 
 
 def select(folder: Path, *, mode: str | None = None, mode_known: bool = False) -> Selection:

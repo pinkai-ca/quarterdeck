@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     argv = list(argv if argv is not None else sys.argv[1:])
     argv = choose_default(args, argv)
-    runs_itself = (args.run in (cmd_upgrade, cmd_service, cmd_setup, cmd_init, cmd_raise)
+    runs_itself = (args.run in (cmd_upgrade, cmd_service, cmd_setup, cmd_init, cmd_raise, cmd_default)
                    and not (args.run is cmd_service and getattr(args, 'settle_barrier', False)))  # an act, not the service
     if not runs_itself and not (args.run is cmd_controls and getattr(args, "harness", None)):
         handoff(args, argv)
@@ -63,7 +63,8 @@ def completed_error(text):
         closed_pipe.silence('stderr')
 
 
-HANDED = "QD_DEFAULT_SHIP"  # the folder the typed qd chose as the default, passed to the ship's own copy
+DEFAULT_HANDOFF = "default-label-v1"  # read statically by the invoking copy before exec
+HANDED = copy_state.DEFAULT_SHIP_ENV
 
 
 def needs_ship(args: argparse.Namespace) -> bool:
@@ -702,6 +703,8 @@ def cmd_laws(args: argparse.Namespace) -> Reading:
 
 
 def cmd_default(args: argparse.Namespace) -> Reading:
+    if args.ship is not None:
+        raise ShipError("name the ship as the argument")
     ships = shipmod.ships_folder()
     if args.name:
         name = args.name

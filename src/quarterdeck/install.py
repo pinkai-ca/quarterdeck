@@ -125,6 +125,11 @@ def handoff(folder: Path, argv: list[str]) -> None:
     if selected.warning:
         print(f'qd: {selected.warning}; continuing with this qd', file=sys.stderr)
     elif selected.qd is not None and not running_from(selected.qd.parent):
+        if os.environ.get(copy_state.DEFAULT_SHIP_ENV) == str(folder) and not copy_state.supports_default_annotation(
+                selected.qd):
+            os.environ.pop(copy_state.DEFAULT_SHIP_ENV)
+            print(f'qd: acting on the default ship {folder.name} ({folder}); '
+                  'its copy is older than the default-ship annotation', file=sys.stderr, flush=True)
         try:
             os.execv(str(selected.qd), [str(selected.qd), *argv])
         except OSError:

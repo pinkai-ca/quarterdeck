@@ -20,13 +20,15 @@ from .ship import SeatSpec, Ship
 from .seat_command import qd_command
 
 
-def project_dir() -> Path:
-    """Where the framework's own files are: the repository, when this code runs from a checkout; else the copy
-    an installed qd keeps under its own prefix, which ``qd sync`` puts there beside the package."""
+def checkout_dir() -> Path | None:
+    """The invoking source checkout, independent of the working directory and QD_SHIP."""
     source = Path(__file__).resolve().parents[2]
-    if (source / "standing-orders").is_dir():
-        return source
-    return Path(sys.prefix) / "share" / "quarterdeck"
+    return source if (source / "standing-orders").is_dir() else None
+
+
+def project_dir() -> Path:
+    """Framework resources live in the checkout or beside the installed package."""
+    return checkout_dir() or Path(sys.prefix) / "share" / "quarterdeck"
 
 
 PROJECT_DIR = project_dir()
