@@ -972,7 +972,7 @@ class Seat:
         alarm's or a server's recovery, a sync's relaunch. Each starts it fresh with its open messages carried."""
         return self.spec.role == 'hand'
 
-    def _up(self, resume: bool = True, *, observation=None) -> str:
+    def _up(self, resume: bool = True, *, observation=None, require_resume_target: bool = False) -> str:
         self.migrate()
         if resume and (self._never_resumed() or self._screened()):
             resume = False  # a hand, and a screening launch, are never resumed
@@ -1028,8 +1028,11 @@ class Seat:
         spec = self.adapter_spec()  # the adapter sees the seat's real working directory, as every preflight does
         self.harness.build_home(self.home, spec, pool, ship_home if ship_home.is_dir() else None)
         resume_id = self._resume_id() if resume else None
-        if resume and resume_id is None and prior:
-            self.harness.preflight_resume(spec, self.home, lambda: None)
+        if resume and resume_id is None:
+            if require_resume_target:
+                raise ShipError("resume target unproved")
+            if prior:
+                self.harness.preflight_resume(spec, self.home, lambda: None)
         carriage = self.carriage(resume_id=resume_id, brief_at=datetime.now(timezone.utc))
         # Plan after supplying the brief, while the last record is still pinned.
         carried = carriage.carried
@@ -1412,6 +1415,8 @@ class Seat:
         down keeps observing the same process up to RELAUNCH_END_SECONDS before the relaunch is refused.
         """
         relaunch = relaunch or getattr(self, "_relaunching", False)
+        if (held := self.retiring()) is not None and (held["pid"] is None or process_alive(held["pid"], held["start"])):
+            raise ShipError(f"{self.name}: prior retirement not proved; its launch is retained")
         launched = self.launched()
         pane = self._lifecycle_pane(launched)
         if launched is not None:
@@ -1435,13 +1440,14 @@ class Seat:
         self._retire_window(launched)
         if self.launched() != launched:
             raise ShipError(f"{self.name}: launch identity changed during retirement; launch retained")
+        if program is not None:
+            durable.replace_file(self.trusted / RETIRING, json.dumps(self._retirement_binding(launched)) + "\n")
         waited = ""
         if program is not None and not wait_for_end(*program, PROCESS_END_SECONDS):
             started = time.monotonic() - PROCESS_END_SECONDS
             if not (relaunch and wait_for_end(*program, RELAUNCH_END_SECONDS - PROCESS_END_SECONDS)):
                 # The pane is closed but the program still runs: it may still write its credential or record.
                 # Nothing is reseeded and the launch stays, for the service's tick to finish once it has ended.
-                durable.replace_file(self.trusted / RETIRING, json.dumps(dict(pid=program[0], start=program[1])) + "\n")
                 bound = RELAUNCH_END_SECONDS if relaunch else PROCESS_END_SECONDS
                 if relaunch:
                     durable.replace_file(self.trusted / REFUSED_RELAUNCH, json.dumps(dict(
@@ -1461,6 +1467,7 @@ class Seat:
             if relaunch:
                 durable.replace_file(self.trusted / REFUSED_RELAUNCH, json.dumps(dict(
                     at=datetime.now(timezone.utc).isoformat(), pid=launched.pid if launched else None)) + "\n")
+            (self.trusted / RETIRING).unlink(missing_ok=True)  # the sandbox hold now owns deferred cleanup
             closed = f"pane {pane.id} closed" if pane is not None else "no pane"
             return (f"{self.name} down · {closed} · "
                     + jail_end.words(self.name, jail_end.held(self.trusted)).removeprefix(f"{self.name}: ")
@@ -1471,14 +1478,17 @@ class Seat:
         return f"{self.name} down · pane {pane.id} closed · process ended" + waited
 
     def _finish_retirement(self, launched: Launched | None) -> None:
+        if self.launched() != launched or ((held := self.retiring()) is not None and held["pid"] is None):
+            raise ShipError(f"{self.name}: retirement does not prove this launch; launch and retirement record retained")
         if launched is not None:
             from .pending_lifecycle import link_launch_record
             link_launch_record(self, launched)  # include a last write before the program ended
             from . import credential  # the credential module reads seats, so it is imported here, not above
 
             credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)  # the program has ended: a refresh it left reseeds the pool its launch names, while it is named
-        (self.trusted / trusted_files.LAUNCH).unlink(missing_ok=True)
         (self.trusted / RETIRING).unlink(missing_ok=True)
+        if launched is not None:
+            (self.trusted / trusted_files.LAUNCH).unlink(missing_ok=True)
 
     def relaunch_refused(self) -> str | None:
         """Plain words for the status line while the seat is down because its relaunch met a program still ending."""
@@ -1493,35 +1503,78 @@ class Seat:
             return f"{self.name}: its relaunch was refused while its program was ending; qd up {self.name}"
         return None
 
+    def _retirement_binding(self, launched: Launched) -> dict:
+        return dict(seat=self.name, pid=launched.pid, start=launched.start,
+                    launch=dict(pane=launched.pane, at=launched.at))
+
     def retiring(self) -> dict | None:
-        """The program a closed pane left still running at down: its pid and start, until it has ended."""
+        """The closed pane's old program, bound to its launch until retirement is proved."""
+        from . import seat_files
+        path = self.trusted / RETIRING
+        unknown = dict(pid=None, start=None)
         try:
-            data = json.loads((self.trusted / RETIRING).read_text())
+            raw = seat_files.read_text(path)
+            if raw is None:
+                path.lstat()  # an unreadable entry still holds
+                return unknown
+            data = json.loads(raw)
         except FileNotFoundError:
             return None
-        except (OSError, ValueError):
-            return {"pid": None, "start": None}  # unreadable: held as still ending, never finished on a guess
-        return data if isinstance(data, dict) else {"pid": None, "start": None}
+        except (OSError, ShipError, ValueError):
+            return unknown
+        if (not isinstance(data, dict) or type(data.get("pid")) is not int or data["pid"] <= 0
+                or not isinstance(data.get("start"), str) or not data["start"]):
+            return unknown
+        try:
+            launched = self.launched()
+            if launched is None and trusted_cache.link_stamp(self.trusted / trusted_files.LAUNCH) is not None:
+                return unknown  # absence requires the name itself to be gone
+        except (OSError, ShipError, ValueError):
+            return unknown
+        if data.keys() == {"pid", "start"}:  # the older marker has only the process identity
+            return data if launched is None or (data["pid"], data["start"]) == (launched.pid, launched.start) else unknown
+        if launched is not None:
+            return data if data == self._retirement_binding(launched) else unknown
+        # An older removal order could leave this marker after completing and removing its launch.
+        identity = data.get("launch")
+        if (data.keys() != {"seat", "pid", "start", "launch"} or data["seat"] != self.name
+                or not isinstance(identity, dict) or identity.keys() != {"pane", "at"}
+                or not isinstance(identity["pane"], str) or not re.fullmatch(r"%[0-9]+", identity["pane"])
+                or not isinstance(identity["at"], str)):
+            return unknown
+        try:
+            return data if datetime.fromisoformat(identity["at"]).tzinfo is not None else unknown
+        except ValueError:
+            return unknown
 
     def finish_retirement(self) -> str | None:
         """The service's tick: reseed and remove the launch once the program down left running has ended, and end
         a held sandbox again until none of it runs."""
         from . import jail_end
         with self._lifecycle():
+            marker = self.trusted / RETIRING
+            held = self.retiring()
+            if held is not None:
+                if held["pid"] is None or process_alive(held["pid"], held["start"]):
+                    return None
+                if jail_end.held(self.trusted) is not None:
+                    marker.unlink()  # an interruption may have left both records after the sandbox hold was written
+                    held = None
+                elif "launch" in held and self.launched() is None:
+                    self._finish_retirement(None)
+                    return f"{self.name} retired · process {held['pid']} ended · retirement record removed"
             lifted = jail_end.retry(self.trusted)
             if lifted is False:
                 return None  # still held: the status line names it
-            if lifted is True and self.retiring() is None:
+            if lifted is True:
                 self._finish_retirement(self.launched())
                 return f"{self.name} retired · its old sandbox has ended · credential reseeded, launch removed"
-            held = self.retiring()
             if held is None:
-                return None
-            if not isinstance(held.get("pid"), int) or process_alive(held["pid"], held.get("start")):
                 return None
             with jail_end.stopping(self.trusted):
                 if left := jail_end.end(self, {}):  # the program has ended: its jail's orphans end with it
                     jail_end.hold(self.trusted, self.name, left)
+                    marker.unlink()
                     return jail_end.words(self.name, jail_end.held(self.trusted))
             self._finish_retirement(self.launched())
             return f"{self.name} retired · process {held['pid']} ended · credential reseeded, launch removed"

@@ -50,6 +50,7 @@ GRACE = 30.0
 LIMIT = 4096  # an intent is a few hundred bytes; a larger file is not one
 RELAUNCHING, RELEASED, FINISHING, FAILED = 'relaunching', 'released', 'finishing', 'failed'
 KINDS = frozenset({'after-order', 'relaunch', 'refusal', 'failover', 'select', 'compaction', 'server-recovery'})
+ROUTING = frozenset({'after-order', 'relaunch', 'refusal'})
 
 
 # A hold that keeps a seat down, added later, registers a reader here: seat -> reason or None. Its writer calls
@@ -119,6 +120,7 @@ def read(runtime, name: str, seats) -> dict:
         raise ShipError(f'relaunch intent {name}: unreadable ({type(error).__name__}); refused') from None
     if (not isinstance(data, dict) or data.get('version') != 1 or data.get('seat') != name[:-5]
             or data.get('kind') not in KINDS or type(data.get('resume')) is not bool
+            or type(data.get('needs_destination', False)) is not bool
             or not isinstance(data.get('at'), str) or not _owner_valid(data.get('owner'))
             or data.get('phase') not in (RELAUNCHING, RELEASED, FINISHING, FAILED)
             or not (data.get('before') is None or isinstance(data.get('before'), str))):
@@ -225,6 +227,14 @@ def hold(seat) -> str | None:
     return None
 
 
+def _needs_destination(seat, kind: str) -> bool:
+    """A move may have chosen a pool not preserved by the resume flag or old selection."""
+    spec = getattr(seat, 'spec', None)
+    return kind in ('select', 'failover') or (
+        kind in ROUTING and bool(getattr(spec, 'pool_choices', None)) and len(spec.pools) > 1
+    )
+
+
 @contextmanager
 def section(service, seat, kind: str, *, resume):
     """One relaunch of ``seat``: intent and log line before the down, log line after the up, a stop held between.
@@ -248,10 +258,12 @@ def section(service, seat, kind: str, *, resume):
     controller.relaunching = True  # from here the handler holds a stop until the section ends
     try:
         launched = seat.launched()
-        _write(runtime, dict(version=1, seat=seat.name, kind=kind,
-                             resume=bool(resume() if callable(resume) else resume), at=_now(),
-                             phase=RELAUNCHING, owner=controller.owner,
-                             before=launched.at if launched is not None else None))
+        intent = dict(version=1, seat=seat.name, kind=kind, resume=bool(resume() if callable(resume) else resume),
+                      at=_now(), phase=RELAUNCHING, owner=controller.owner,
+                      before=launched.at if launched is not None else None)
+        if _needs_destination(seat, kind):
+            intent['needs_destination'] = True  # even if its choices change before recovery
+        _write(runtime, intent)
         log('relaunch', seat=seat.name, kind=kind, phase='begin')
         outcome = 'failed'
         try:
@@ -357,12 +369,17 @@ def finish(service) -> None:
                     continue
                 if data['phase'] in (FINISHING, FAILED) or held(seat) is not None:
                     continue  # tried once already, or held: a person decides, and the status line says so
+                if data.get('needs_destination') or _needs_destination(seat, data['kind']):
+                    reason = 'its destination pool was not recorded'
+                    _write(runtime, {**data, 'phase': FAILED, 'error': reason})
+                    service.log('relaunch-intent', seat=seat.name, kind=data['kind'], outcome='refused', reason=reason)
+                    continue
                 left_by = data['owner']['pid']
                 data.update(phase=FINISHING, finisher=own, finishing_at=_now())
                 _write(runtime, data)  # before the up: a finish cut short is never tried twice
                 service.log('relaunch', seat=seat.name, kind=data['kind'], phase='finish-begin', left_by=left_by)
                 try:
-                    proof = seat._up(resume=data['resume'])
+                    proof = seat._up(resume=data['resume'], require_resume_target=True)
                 except Exception as error:
                     data.update(phase=FAILED, error=str(error)[:200])
                     _write(runtime, data)
