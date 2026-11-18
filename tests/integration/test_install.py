@@ -106,6 +106,7 @@ def test_a_ship_with_a_source_repository_passes_before_its_first_copy(drydock: P
 
 
 def test_a_ship_without_a_repository_beside_it_is_told_where_to_run_upgrade(tmp_path: Path, monkeypatch):
+    """qd up owns first installation, so doctor --fix leaves out the first-copy notice."""
     from quarterdeck.ship import Pool, SeatSpec, Session, Ship, ShipError
 
     ship = Ship(tmp_path / "ships" / "lone", "lone", "operator", tmp_path, {"fake": Pool("fake", "fake")},
@@ -114,4 +115,5 @@ def test_a_ship_without_a_repository_beside_it_is_told_where_to_run_upgrade(tmp_
     with pytest.raises(ShipError, match="no framework repository"):
         install.upgrade(ship, "HEAD")
     checked = doctor.framework_check(ship)
-    assert not checked.passed and "no copy yet; qd up makes one" in checked.detail
+    assert checked.passed and "no copy yet; qd up makes one" in checked.detail
+    assert 'run qd sync or qd upgrade from a Quarterdeck checkout to make the first copy' in checked.detail

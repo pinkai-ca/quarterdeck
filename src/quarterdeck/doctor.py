@@ -159,7 +159,11 @@ def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None)
 
 
 def framework_check(ship: Ship) -> Check:
-    """Selected copy and observed service identity are distinct read-only evidence."""
+    """Selected copy and observed service identity are distinct read-only evidence.
+
+    First installation belongs to ``qd up``. Doctor passes the first-copy notice,
+    so ``doctor --fix`` leaves it out of the failures it dispatches.
+    """
     if ship.code == 'checkout':
         try:
             head = install.git(install.source_repo(ship), 'rev-parse', '--short', 'HEAD').decode().strip()
@@ -177,15 +181,13 @@ def framework_check(ship: Ship) -> Check:
         lines.append('current installed commit unknown')
     if selected.warning:
         lines.append(selected.warning)
-    copy_ready = selected.qd is not None
+    copy_ready = selected.qd is not None or selected.first_copy
     if selected.first_copy:
         try:
             install.source_repo(ship)
         except (ShipError, OSError):
             lines.append('source repository unavailable; run qd sync or qd upgrade from a Quarterdeck checkout '
                          'to make the first copy')
-        else:
-            copy_ready = True
     previous = copy_state.previous(data)
     if previous:
         try:

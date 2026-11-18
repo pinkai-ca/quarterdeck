@@ -39,14 +39,20 @@ def test_the_drydock_passes_every_check_on_a_machine_that_runs_the_tests(drydock
     assert code == 0 and out.startswith("PASS  ship file · ship.toml: 3 seats, 1 pools, 3 sessions") and "FAIL" not in out
 
 
-def test_a_ship_before_its_first_copy_passes_with_a_note(drydock: Path, capsys):
+@pytest.mark.parametrize('source_available', [True, False], ids=['with-source', 'without-source'])
+def test_a_ship_before_its_first_copy_passes_with_a_note(drydock: Path, capsys, monkeypatch, source_available):
     declaration = drydock / 'ship.toml'
     declaration.write_text(declaration.read_text().replace('code = "checkout"\n', ''))
+    if not source_available:
+        monkeypatch.setattr(doctor.install, '__file__', str(drydock / 'lib/quarterdeck/install.py'))
+    monkeypatch.setattr(doctor, 'fix', lambda *args: pytest.fail('first-copy notice dispatched to a fix seat'))
     check = doctor.framework_check(load(drydock))
     assert check.passed and 'no copy yet; qd up makes one' in check.detail
     assert 'current installed commit unknown' not in check.detail
-    code, out = run(capsys, '--ship', str(drydock), 'doctor')
-    assert code == 0 and 'PASS  framework · no copy yet; qd up makes one' in out
+    assert ('source repository unavailable' in check.detail) == (not source_available)
+    for flags in [(), ('--fix',)]:
+        code, out = run(capsys, '--ship', str(drydock), 'doctor', *flags)
+        assert code == 0 and 'PASS  framework · no copy yet; qd up makes one' in out
     assert not (drydock / 'runtime').exists(), 'doctor does not create the first copy'
 
 
