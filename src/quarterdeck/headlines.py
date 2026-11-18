@@ -65,6 +65,7 @@ def _abbreviated_status(facts) -> str:
     parts += getattr(facts, 'sign_in_failures', ())
     # A short pane's delivery obstruction must retain its seat and remedy on overflow.
     parts += getattr(facts, 'pane_obstructions', ())
+    parts += getattr(facts, 'seat_holds', ())
     # A link that stops the post must keep the path it names.
     parts += getattr(facts, 'post_held', ())
     parts += getattr(facts, 'post_waits', ())

@@ -825,7 +825,7 @@ class Service:
                     if seat.name in getattr(self.ship, 'forward', {}):
                         continue  # declared forwarding disables dispatch at the old address
                     if seat.session.human:
-                        from . import human_wake, turn_failure
+                        from . import alarms, human_wake, turn_failure
                         from .auth_failure import status as authentication_status, waiting as authentication_waiting
                         phase = 'ownership'
                         try:
@@ -838,6 +838,8 @@ class Service:
                             self.human_wake_error(seat, phase, error)
                         try:
                             self.needs_human(seat)  # genuine alarms survive a down seat or failed wake
+                        except alarms.JournalError:
+                            raise  # the delivery hold is visible even without a human wake launch
                         except Exception as error:
                             self.human_wake_error(seat, 'alarm', error)
                         continue

@@ -1,12 +1,15 @@
 """Ordinary synthetic notification transitions; no delivery or native record actions."""
 
+from dataclasses import replace
 from datetime import datetime, timezone, timedelta
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import alarms, auth_failure, compaction_alert, post, service, unconfirmed_alert, watch
+from quarterdeck import alarms, auth_failure, compaction_alert, post, service, ship as shipmod, unconfirmed_alert, watch
 from quarterdeck.door import Reading
+from quarterdeck.ship import ShipError
 
 
 OLD = unconfirmed_alert.PREFIX + '; synthetic old submission (worker)'
@@ -151,6 +154,102 @@ def test_reordering_and_duplicates_are_the_same_operational_reading(alarm):
     alarm.actor = alarm.restart()
     alarm.detached = [OTHER, OLD, OTHER]
     assert notice(alarm) == first
+
+
+@pytest.mark.parametrize('unfinished', [False, True])
+def test_legacy_unconfirmed_reading_uses_current_words_and_preserves_exact_posts(alarm, unfinished):
+    store = alarm.actor.store
+    already = store.new('report', post.SHIP, 'desk', f'worker obstructed, {OLD}')
+    plan = store.prepare('report', post.SHIP, 'systems', 'synthetic outdated words') if unfinished else None
+    source = unconfirmed_alert.path(alarm.ship.runtime, 'worker')
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(dict(version=1, key=[OLD], reports=[already.to_json()] +
+                                      ([plan.to_json()] if plan is not None else []))))
+    published = store.dir / f'{already.id}.json'
+    original = published.read_bytes()
+    assert unconfirmed_alert.load(alarm.ship.runtime, 'worker')['body'] is None
+
+    found = notice(alarm)
+    assert len(found) == 2 and {report.to for report in found} == {'desk', 'systems'}
+    systems = next(report for report in found if report.to == 'systems')
+    assert systems.body == f'worker obstructed, {OLD}'
+    if plan is not None:
+        assert systems.id == plan.id
+    assert published.read_bytes() == original
+    assert not any('synthetic outdated words' in report.body for report in store.all())
+    assert unconfirmed_alert.load(alarm.ship.runtime, 'worker')['body'] == systems.body
+    alarm.actor = alarm.restart()
+    assert notice(alarm) == found
+    assert published.read_bytes() == original
+
+
+@pytest.mark.parametrize('invalid', [
+    {'version': True}, {'key': 'synthetic invalid key'}, {'reports': ['{}']},
+    {'first_at': '2030-01-01T00:00:00'}, {'taken': []}, {'published': [1]}, {'escalations': None},
+])
+def test_legacy_body_exception_keeps_other_alarm_validation(alarm, invalid):
+    source = unconfirmed_alert.path(alarm.ship.runtime, 'worker')
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(dict(dict(version=1, key=[OLD], reports=[]), **invalid)))
+    with pytest.raises(ShipError):
+        unconfirmed_alert.load(alarm.ship.runtime, 'worker')
+
+
+@pytest.mark.parametrize('human', [False, True], ids=['crew', 'down-human'])
+def test_corrupt_alarm_isolated_in_real_delivery_pass_and_cleared(alarm, monkeypatch, human):
+    actor, seat = alarm.actor, alarm.seat
+    seat.session.human = human
+    seat.is_up = not human
+    peer = SimpleNamespace(**{**vars(seat), 'name': 'peer', 'is_up': True,
+                              'session': SimpleNamespace(human=False)})
+    actor.resolved_seats = lambda: [seat, peer]
+    actor.attempts = post.Attempts(alarm.ship.runtime)
+    actor.withheld, actor.wake_errors = {}, set()
+    log, delivered = [], []
+    actor.log = lambda event, **fields: log.append(dict(event=event, **fields))
+    peer_reason = unconfirmed_alert.PREFIX + '; synthetic submission (peer)'
+    state = {seat.name: [OLD], peer.name: [peer_reason]}
+    monkeypatch.setattr(service.pending_delivery, 'detached', lambda subject: state[subject.name])
+
+    def deliver(subject, messages):
+        for message in messages:
+            delivered.append((subject.name, message.id))
+            attempt = actor.attempts.open(message, subject.name, '%1', 1, alarm.when.isoformat())
+            actor.attempts.close(attempt, 'delivered')
+
+    actor.deliver = deliver
+    job = actor.store.new('order', 'operator', peer.name, 'Synthetic next seat delivery')
+    journal = unconfirmed_alert.path(alarm.ship.runtime, seat.name)
+    journal.parent.mkdir(parents=True)
+    journal.write_text('{synthetic corrupt journal')
+
+    actor.deliveries()
+    actor.deliveries()
+    assert delivered == [(peer.name, job.id)]
+    reports = [message for message in actor.store.all() if message.kind == 'report']
+    assert {report.to for report in reports} == {'systems', 'desk'}
+    assert len(reports) == 2 and all(peer_reason in report.body for report in reports)
+    assert journal.read_text() == '{synthetic corrupt journal'
+    assert len([entry for entry in log if entry.get('seat') == seat.name]) == 1
+
+    folder = alarm.ship.runtime.parent
+    (folder / 'ship.toml').write_text('[ship]\nname="synthetic"\ncode="checkout"\n')
+    status_ship = shipmod.load(folder)
+    facts = watch.facts(status_ship, None, login=[])
+    assert len(facts.seat_holds) == 1
+    hold = facts.seat_holds[0]
+    assert hold.startswith('worker: deliveries held for this seat alone:')
+    assert 'alarm journal unreadable' in hold and 'synthetic corrupt journal' not in hold
+    assert facts.line().count(hold) == 1
+    overflow = replace(facts, pending=['synthetic pending reason ' * 12]).line()
+    assert 'details: qd status' in overflow and overflow.count(hold) == 1
+
+    state[seat.name] = []
+    journal.write_text(json.dumps(dict(version=1, key=None, reports=[])))
+    actor.deliveries()
+    cleared = watch.facts(status_ship, None, login=[])
+    assert cleared.seat_holds == [] and hold not in cleared.line()
+    assert [message for message in actor.store.all() if message.kind == 'report'] == reports
 
 
 @pytest.mark.parametrize('published', [False, True])

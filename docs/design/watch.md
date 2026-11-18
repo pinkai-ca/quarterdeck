@@ -6,6 +6,8 @@ A page of [the design](../DESIGN.md).
 
 Watch answers two questions independently: what the record says a seat is doing, and whether its screen lets the door deliver. It reads the record first and screen second. A missing observation is unknown with a reason, never a default reported as fact. Titles and personas are display; pane, process and record establish identity.
 
+The delivery pass names unreadable alarm evidence for the affected seat, including when a human-owned seat is down. The seat's hold survives status overflow and clears after a successful reading. Version 1 unconfirmed-delivery alarm journals can lack a saved body. The next matching standing observation supplies the words for new reports while retaining saved report identities and existing posts.
+
 ### Activity and door
 
 | Activity | Evidence |

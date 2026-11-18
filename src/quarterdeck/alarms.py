@@ -17,6 +17,10 @@ FILES = {'human': 'human-alert.json', 'detached': 'unconfirmed-delivery-alert.js
          'output-limit': 'output-limit-alert.json'}
 
 
+class JournalError(ShipError):
+    """An alarm journal cannot supply its notification state."""
+
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -32,11 +36,20 @@ def load(runtime, name, channel):
         return dict(version=1, key=None, body=None, reports=[], first_at=None, taken=None,
                     published=[], escalations=[])
     except (OSError, ValueError) as error:
-        raise ShipError('alarm journal unreadable; reports held') from error
+        raise JournalError('alarm journal unreadable; reports held') from error
     if (not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] != 1
-            or not {'key', 'body', 'reports'} <= data.keys() or not isinstance(data['reports'], list)
-            or data['key'] is not None and not isinstance(data['body'], str)):
-        raise ShipError('alarm journal unsupported; reports held')
+            or not {'key', 'reports'} <= data.keys() or not isinstance(data['reports'], list)):
+        raise JournalError('alarm journal unsupported; reports held')
+    if channel == 'detached' and data.get('body') is None:
+        from .unconfirmed_alert import PREFIX
+
+        key = data['key']
+        if key is not None and (not isinstance(key, list) or not key
+                                or any(not isinstance(reason, str) or not reason.startswith(PREFIX) for reason in key)):
+            raise JournalError('alarm journal unsupported; reports held')
+        data.setdefault('body', None)
+    elif 'body' not in data or data['key'] is not None and not isinstance(data['body'], str):
+        raise JournalError('alarm journal unsupported; reports held')
     # Old manual-fresh journals predate escalation. Start the clock only when
     # their standing reading is next observed, never from a guessed old time.
     data.setdefault('first_at', None)
@@ -56,7 +69,7 @@ def load(runtime, name, channel):
             if message.kind != 'report' or message.sender != post.SHIP or message.re is not None:
                 raise ValueError('alarm report identity invalid')
     except (ValueError, TypeError, ShipError) as error:
-        raise ShipError('alarm evidence invalid; reports held') from error
+        raise JournalError('alarm evidence invalid; reports held') from error
     return data
 
 
@@ -183,6 +196,8 @@ def notify(service, name, human, key, body, *, channel='human', ship=None, up=No
     # Timed desk escalation is deliberately excluded from this recovery.
     names = {name, *(compaction.decode(intent).to for intent in prior['reports'])}
     standing = current if key == prior['key'] else None
+    if prior['body'] is None and standing is not None:
+        prior['body'] = standing
     with ExitStack() as held:
         for recipient in sorted(names & (allowed | {name})):
             held.enter_context(post.admission(runtime, recipient))
