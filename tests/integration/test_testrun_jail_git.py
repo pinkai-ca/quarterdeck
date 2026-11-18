@@ -5,18 +5,27 @@ A throwaway project. The marker lives outside the jail: only an outer git that h
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 
 import pytest
 
 from tests.conftest import git
 from tests.integration.test_testrun_jail import needs_a_jail
-from tests.integration.testrun_synthetic import (admin_entries, controller_environment, commit, make,
+from tests.integration.testrun_synthetic import (TOOL, admin_entries, controller_environment, commit, make,
                                                  needs_ci_memory, result, results, tool)
 
 HOOK = """#!/bin/sh
 touch {marker} 2>/dev/null || true
+exit 0
+"""
+
+FILTER_HOOK = """#!/bin/sh
+touch {marker} 2>/dev/null || true
+cat
 exit 0
 """
 
@@ -137,9 +146,71 @@ def scratch_gone(project: Path) -> bool:
     return scratch(project) == []
 
 
-def plant_body(template: str, marker: Path) -> str:
-    hook = HOOK.format(marker=marker)
-    return template.format(marker=str(marker), hook=hook)
+def plant_body(template: str, marker: Path, *, hook: str = HOOK, folder: str = 'sub') -> str:
+    script = hook.format(marker=marker)
+    return template.format(marker=str(marker), hook=script, folder=folder)
+
+
+# The refusal is replaced only in this driver, which is the tool process. The status flag and the guard stay.
+ALLOW_SUBMODULES = r'''
+import pathlib, sys
+sys.dont_write_bytecode = True
+tool = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(tool.parent))
+from testrunner import cli, run
+def allow(self, paths):
+    return None
+run.Runner.refuse_submodules = allow
+files = [tool, *sorted((tool.parent / "testrunner").glob("*.py"))]
+sys.exit(cli.main(sys.argv[2:], files))
+'''
+
+
+def tool_allowing_submodules(*args: str, cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, '-I', '-c', ALLOW_SUBMODULES, str(TOOL), *args], cwd=cwd,
+                          env=dict(os.environ), capture_output=True, text=True, timeout=300)
+
+
+def record_gitlink(worktree: Path, path: str = 'sub') -> None:
+    sha = git(worktree, 'rev-parse', 'HEAD^{commit}')
+    git(worktree, 'update-index', '--add', '--cacheinfo', f'160000,{sha},{path}')
+    git(worktree, 'commit', '-q', '-m', 'record a submodule')
+    # A missing directory is an uncommitted deletion of the gitlink. An empty one matches the commit.
+    (worktree / path).mkdir(parents=True, exist_ok=True)
+
+
+PLANT_NESTED = """
+import os
+import subprocess
+from pathlib import Path
+
+MARKER = {marker!r}
+HOOK = {hook!r}
+FOLDER = {folder!r}
+
+def plant(root: Path) -> None:
+    folder = root / FOLDER
+    folder.mkdir(exist_ok=True)
+    evil = root / "evil.git"
+    subprocess.check_call(["git", "init", "-q", "-b", "main", str(evil)])
+    (evil / "tracked.txt").write_text("same-size\\n")
+    (evil / ".gitattributes").write_text("* filter=plant\\n")
+    subprocess.check_call(["git", "-C", str(evil), "add", "tracked.txt", ".gitattributes"])
+    # An editable install executes setup.py twice. The second commit has nothing new.
+    subprocess.check_call(["git", "-C", str(evil), "-c", "user.email=t@example.com", "-c", "user.name=t",
+                           "commit", "-q", "--allow-empty", "-m", "tracked"])
+    hook = root / "hook.sh"
+    hook.write_text(HOOK)
+    hook.chmod(0o755)
+    subprocess.check_call(["git", "-C", str(evil), "config", "filter.plant.clean", str(hook)])
+    (folder / ".git").write_text("gitdir: %s\\n" % (evil / ".git"))
+    (folder / "tracked.txt").write_text("same-size\\n")
+    (folder / ".gitattributes").write_text("* filter=plant\\n")
+    os.utime(folder / "tracked.txt", None)
+
+def test_writes_the_nested_gitfile():
+    plant(Path.cwd())
+"""
 
 
 @needs_a_jail
@@ -258,3 +329,63 @@ def test_a_jailed_run_that_fails_before_its_checkout_exists_says_so(tmp_path):
     assert '- jailed: no' not in text
     assert '- jailed: yes, failed early: failed before the checkout existed' in text
     git(project, 'status', '--porcelain')
+
+
+@needs_a_jail
+def test_a_jailed_run_whose_commit_records_a_submodule_is_refused_before_checkout(tmp_path):
+    marker = tmp_path / 'marker'
+    project, worktree = make(tmp_path, {'test_ok.py': 'def test_ok():\n    assert True\n'})
+    record_gitlink(worktree)
+    done = tool('run', '--jail', '--target', str(worktree), '-n', '0', cwd=project)
+    assert done.returncode == 5, done.stdout + done.stderr
+    assert not marker.exists()
+    found = result(project)
+    note = found['outcome']['note']
+    assert found['outcome']['status'] == 'incomplete', found['outcome']
+    assert 'records a submodule (sub)' in note
+    assert 'stops before making a checkout' in note
+    assert 'checkout' not in found
+    assert admin_entries(project) == ['feature']
+    assert found['jail']['jailed'] is True and 'bubblewrap' not in found['jail']
+    text = (results(project)[-1] / 'report.md').read_text()
+    assert 'records a submodule (sub)' in text
+    assert scratch_gone(project)
+
+
+@needs_a_jail
+def test_a_jailed_test_that_writes_a_submodule_gitfile_is_held(tmp_path):
+    marker = tmp_path / 'marker'
+    project, worktree = make(tmp_path, {'test_plant.py': plant_body(PLANT_NESTED, marker, hook=FILTER_HOOK)})
+    record_gitlink(worktree)
+    done = tool_allowing_submodules('run', '--jail', '--target', str(worktree), '-n', '0', cwd=project)
+    found = assert_held(done, project, marker, '/sub/.git')
+    assert found['git_guard']['changed'] == names(found['git_guard']['changed'], '/sub/.git')
+
+
+@needs_a_jail
+def test_a_setup_py_at_install_that_writes_a_submodule_gitfile_is_held(tmp_path):
+    marker = tmp_path / 'marker'
+    project, worktree = make(tmp_path, {'test_ok.py': 'def test_ok():\n    assert True\n'})
+    body = plant_body(PLANT_NESTED, marker, hook=FILTER_HOOK)
+    plant, _, _ = body.partition('\ndef test_')
+    (worktree / 'setup.py').write_text(SETUP.format(plant=plant))
+    commit(worktree, 'setup.py writes a submodule git file at install')
+    record_gitlink(worktree)
+    done = tool_allowing_submodules('run', '--jail', '--target', str(worktree), '-n', '0', cwd=project)
+    found = assert_held(done, project, marker, '/sub/.git')
+    assert found['git_guard']['changed'] == names(found['git_guard']['changed'], '/sub/.git')
+
+
+@needs_a_jail
+def test_an_untracked_nested_repository_written_in_the_jail_leaves_no_marker(tmp_path):
+    marker = tmp_path / 'marker'
+    project, worktree = make(tmp_path, {'test_plant.py': plant_body(PLANT_NESTED, marker, hook=FILTER_HOOK,
+                                                                   folder='nested')})
+    done = tool('run', '--jail', '--target', str(worktree), '-n', '0', cwd=project)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not marker.exists()
+    found = result(project)
+    assert found['outcome']['status'] == 'passed', found['outcome']
+    assert found['git_guard']['changed'] == []
+    assert found['cleanup']['outcome'] == 'complete'
+    assert scratch_gone(project)

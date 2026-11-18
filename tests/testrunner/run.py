@@ -123,6 +123,7 @@ class Runner:
         self.listed = None  # what the jail holds, once the run checkout exists
         self.pin = None  # recorded git directories for outer git after the first target-code step
         self.common_dir = None  # the project's git common directory, taken at worktree add
+        self.submodule_paths = ()  # gitlinks in the target commit; a jailed run refuses these before checkout
 
     def jailed(self, argv, cwd):
         """A step that runs the target's code: inside the jail when --jail was given, else as it is."""
@@ -561,7 +562,18 @@ class Runner:
         return admin, {'common_dir': common, 'history': actual_history, 'target_history': ancestry,
                        'repository_kind': 'independent'}
 
+    def refuse_submodules(self, paths) -> None:
+        """A jailed checkout is not made when the commit records a submodule."""
+        if not paths:
+            return
+        shown = ', '.join(paths)
+        raise Refused(f'this commit records a submodule ({shown}); a jailed run stops before making a checkout')
+
     def setup_and_test(self, target, targets, scratch, checkout, env, result):
+        if getattr(self.args, 'jail', False):
+            # The target's own repository, before any checkout exists. The jail has nothing to write yet.
+            self.submodule_paths = tuple(gitops.gitlinks(target.top, target.head))
+            self.refuse_submodules(self.submodule_paths)
         repository = {}
         if self.ci_layout:
             admin, repository = self.independent_checkout(target, scratch, checkout, env)
@@ -600,7 +612,8 @@ class Runner:
             result['jail'] = jail.statement(listed=self.listed, env=self.env, timeout=self.args.timeout,
                                             memory_mib=self.args.memory_mib, tool=result['runner'])
             self.arm_pin('pinned', git_dir=str(admin), common_dir=self.common_dir,
-                         watch=(checkout / '.git', copy / 'commondir', Path(admin) / 'commondir'))
+                         watch=(checkout / '.git', copy / 'commondir', Path(admin) / 'commondir',
+                                *(checkout.joinpath(*Path(name).parts) / '.git' for name in self.submodule_paths)))
         elif self.ci_layout:
             source_git = gitops.git(target.top, 'rev-parse', '--absolute-git-dir').strip()
             source_common = gitops.git(target.top, 'rev-parse', '--path-format=absolute',
@@ -744,8 +757,10 @@ class Runner:
         if pin['mode'] == 'pinned':
             env = gitops.pinned_environment(pin['git_dir'], pin['common_dir'], checkout)
             config = gitops.PINNED_CONFIG
+            # ls-tree reads the recorded tree and cannot take this flag. status is the call that would
+            # enter a submodule, so it is the call that passes --ignore-submodules=all.
             return (gitops.tracked_manifest(checkout, head, env=env, config=config),
-                    gitops.extra_manifest(checkout, env=env, config=config))
+                    gitops.extra_manifest(checkout, env=env, config=config, ignore_submodules=True))
         index = Path(pin['index'])
         env = gitops.private_index_environment(pin['git_dir'], pin['common_dir'], checkout, index, head)
         try:

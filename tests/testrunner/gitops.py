@@ -130,10 +130,35 @@ def private_index_environment(git_dir, common_dir, work_tree, index: Path, commi
     return env
 
 
-def status(top: Path, *, env: dict | None = None, config: tuple = ()) -> list[tuple[str, str]]:
-    """Every entry Git reports, ignored ones included: (two-letter code, path)."""
-    raw = git(top, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching',
-              env=env, config=config)
+def gitlinks(top: Path, commit: str) -> list[str]:
+    """Submodule paths in ``commit``, from ``top``'s own repository. A mode 160000 entry is a gitlink."""
+    raw = git(top, 'ls-tree', '-r', '-z', '--full-tree', commit)
+    found = []
+    for item in raw.split('\0'):
+        if not item:
+            continue
+        meta, name = item.split('\t', 1)
+        mode, _kind, _sha = meta.split()
+        if mode != '160000':
+            continue
+        parts = Path(name).parts
+        if not name or Path(name).is_absolute() or any(part in ('', '.', '..') for part in parts):
+            raise Refused(f'this commit records a submodule path the tool will not use ({name})')
+        found.append(name)
+    return found
+
+
+def status(top: Path, *, env: dict | None = None, config: tuple = (),
+           ignore_submodules: bool = False) -> list[tuple[str, str]]:
+    """Every entry Git reports, ignored ones included: (two-letter code, path).
+
+    ``ignore_submodules`` keeps status from starting a child git in a submodule or nested repository.
+    """
+    command = ['status']
+    if ignore_submodules:
+        command.append('--ignore-submodules=all')
+    command += ['--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching']
+    raw = git(top, *command, env=env, config=config)
     entries, parts = [], raw.split('\0')
     index = 0
     while index < len(parts):
@@ -196,10 +221,11 @@ def tracked_manifest(top: Path, commit: str, *, git_at: Path | None = None, env:
     return {'commit': commit, 'files': len(expected), 'digest': digest, 'differ': differ}
 
 
-def extra_manifest(top: Path, *, env: dict | None = None, config: tuple = ()) -> dict:
+def extra_manifest(top: Path, *, env: dict | None = None, config: tuple = (),
+                   ignore_submodules: bool = False) -> dict:
     """Untracked and ignored entries as Git lists them, each with its type, size and identity stamps."""
     entries = {}
-    for code, name in status(top, env=env, config=config):
+    for code, name in status(top, env=env, config=config, ignore_submodules=ignore_submodules):
         if code not in ('??', '!!'):
             continue
         try:
