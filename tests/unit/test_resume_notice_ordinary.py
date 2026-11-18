@@ -163,6 +163,7 @@ def resumed_seat(tmp_path, monkeypatch, *, stopped, rows=None, launch_second=4):
                            pane=lambda: pane, launched=lambda: launch,
                            record=lambda: path, join=lambda: SimpleNamespace(record=path, reason=None),
                            read_pane=lambda: (pane, screen.text),
+                           require_restart_target=lambda: None,
                            restart=lambda: calls.append('restart') or 'synthetic restart applied')
     seat.is_working = lambda: Seat.is_working(seat)
     monkeypatch.setattr(recovery, 'held', lambda _: None)

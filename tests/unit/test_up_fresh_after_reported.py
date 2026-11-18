@@ -21,7 +21,7 @@ def down_seat(tmp_path, monkeypatch):
     monkeypatch.setattr(seat, '_lifecycle', lambda: nullcontext())
     monkeypatch.setattr(seat, 'launched', lambda: None)
     started = []
-    def start(resume=True):
+    def start(resume=True, *, target=None):
         assert post._READING.get() is None, 'launch/carriage must leave the decision snapshot'
         started.append(resume)
         return 'builder up · resumed ordinary' if resume else 'builder up · fresh'

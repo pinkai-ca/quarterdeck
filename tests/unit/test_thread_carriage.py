@@ -127,15 +127,18 @@ def test_actual_same_record_resume_keeps_index_and_fresh_adds_only_self_handoff(
     assert r.svc.attempts.for_message(question.id) == []
 
 
-def test_requested_resume_resolves_fresh_and_retains_amendment_index(running, monkeypatch):
+def test_unproved_resume_refuses_and_explicit_fresh_retains_amendment_index(running, monkeypatch):
     r = running
     root, question, answer = amendment(r.svc.store, r.seat)
     r.svc.failover()
     r.created[-1].begin(post.typed([answer]), r.seat.spec.model, 'high')
     r.created[-1].end('Synthetic reply.')
-    monkeypatch.setattr(r.seat, '_resume_id', lambda: None)
-    monkeypatch.setattr(r.seat.harness, 'preflight_resume', lambda *a: None)
-    r.seat.restart()
+    before = r.seat.launched()
+    monkeypatch.setattr(r.seat, '_resume_target', lambda: None)
+    with pytest.raises(ShipError, match='Use qd fresh worker'):
+        r.seat.restart()
+    assert r.seat.launched() == before and r.seat.is_up
+    r.seat.fresh()
     assert r.seat.launched().resume is None and answer.body not in r.launches[-1][-1]
     assert answer.id in indexed(r.launches[-1][-1])[root.id]['amendments']
     assert answer.body in whole(r.svc.store, root, r.seat)

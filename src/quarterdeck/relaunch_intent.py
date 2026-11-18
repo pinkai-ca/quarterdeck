@@ -40,6 +40,7 @@ from pathlib import Path
 import stat
 
 from . import post_dir, ship_locks, shutdown
+from .harness import resume_target
 from .ship import ShipError
 
 # The bound a stop waits for a relaunch, from the stop's signal. Measured on the crew (15 Nov), a fresh start's up
@@ -50,8 +51,8 @@ from .ship import ShipError
 GRACE = 30.0
 LIMIT = 4096  # an intent is a few hundred bytes; a larger file is not one
 RELAUNCHING, RELEASED, FINISHING, FAILED = 'relaunching', 'released', 'finishing', 'failed'
-KINDS = frozenset({'after-order', 'relaunch', 'refusal', 'failover', 'select', 'compaction', 'server-recovery'})
-ROUTING = frozenset({'after-order', 'relaunch', 'refusal'})
+KINDS = frozenset({'after-order', 'relaunch', 'refusal', 'failover', 'select', 'compaction', 'server-recovery', 'fresh-handoff'})
+ROUTING = frozenset({'after-order', 'relaunch', 'refusal', 'fresh-handoff'})
 _active = ContextVar('relaunch_intent', default=None)
 
 
@@ -111,6 +112,12 @@ def _destination_valid(destination) -> bool:
             and all(isinstance(value, str) and bool(value) for value in destination.values()))
 
 
+def _target_valid(target) -> bool:
+    return (isinstance(target, dict) and target.keys() == {'id', 'record'}
+            and all(isinstance(value, str) and bool(value) for value in target.values())
+            and Path(target['record']).is_absolute())
+
+
 def read(runtime, name: str, seats) -> dict:
     """One intent, by its file name, read without following a link and checked whole; ShipError says why not.
 
@@ -129,6 +136,7 @@ def read(runtime, name: str, seats) -> dict:
             or data.get('kind') not in KINDS or type(data.get('resume')) is not bool
             or type(data.get('needs_destination', False)) is not bool
             or ('destination' in data and not _destination_valid(data['destination']))
+            or ('target' in data and not (data['resume'] and _target_valid(data['target'])))
             or not isinstance(data.get('at'), str) or not _owner_valid(data.get('owner'))
             or data.get('phase') not in (RELAUNCHING, RELEASED, FINISHING, FAILED)
             or not (data.get('before') is None or isinstance(data.get('before'), str))):
@@ -241,9 +249,7 @@ def _needs_destination(spec, kind: str) -> bool:
     """A move may have chosen a pool not preserved by the resume flag or old selection."""
     if kind == 'server-recovery':
         return len(getattr(spec, 'pools', ())) > 1  # qd up chooses from tables and plain lists
-    return kind in ('select', 'failover') or (
-        kind in ROUTING and bool(getattr(spec, 'pool_choices', None)) and len(spec.pools) > 1
-    )
+    return kind in ('select', 'failover') or (kind in ROUTING and len(getattr(spec, 'pools', ())) > 1)
 
 
 def _destination_required(spec, intent) -> bool:
@@ -267,7 +273,8 @@ def _intent_lock(runtime, seat):
     return ship_locks.held(ship_locks.path(runtime, 'relaunch', f'{seat}.lock'), f'{seat}: relaunch intent')
 
 
-def record_destination(seat, resume: bool, *, pool: str | None = None, harness: str | None = None) -> None:
+def record_destination(seat, resume: bool, *, pool: str | None = None, harness: str | None = None,
+                       target: resume_target.Target | None = None) -> None:
     """Record the chosen pool and actual resume mode under the caller's lifecycle claim, before retirement."""
     active = _active.get()
     if active is None or active[0] is not seat:
@@ -277,7 +284,6 @@ def record_destination(seat, resume: bool, *, pool: str | None = None, harness: 
                    'harness': harness if harness is not None else seat.spec.harness}
     runtime = seat.ship.runtime
     name = path(runtime, seat.name).name
-    resume = resume and not seat._never_resumed() and not seat._screened()
     with _intent_lock(runtime, seat.name):
         if post_dir.mode(path(runtime, seat.name)) is None:
             return  # a person's later word cleared it
@@ -285,6 +291,8 @@ def record_destination(seat, resume: bool, *, pool: str | None = None, harness: 
         if current != intent:
             raise ShipError(f'{seat.name}: relaunch intent changed before its destination was recorded')
         current.update(destination=destination, resume=resume)
+        if target is not None:
+            current['target'] = dict(id=target.id, record=str(target.record))
         _write(runtime, current)
 
 
@@ -418,6 +426,11 @@ def finish(service) -> None:
                     continue  # changed under the claim: the next pass reads it again
                 if current != data:
                     continue
+                if data['kind'] == 'fresh-handoff':
+                    _remove(runtime, seat.name)
+                    service.log('relaunch-intent', seat=seat.name, kind=data['kind'], outcome='cleared',
+                                reason='the durable handoff records whether its fresh start completed')
+                    continue
                 if seat.is_up or _had_up(seat, data):
                     _remove(runtime, seat.name)
                     service.log('relaunch-intent', seat=seat.name, kind=data['kind'], outcome='cleared',
@@ -436,10 +449,17 @@ def finish(service) -> None:
                 _write(runtime, data)  # before the up: a finish cut short is never tried twice
                 service.log('relaunch', seat=seat.name, kind=data['kind'], phase='finish-begin', left_by=left_by)
                 try:
+                    saved = data.get('target')
+                    expected = resume_target.Target(saved['id'], Path(saved['record'])) if saved else None
                     if destination is None:
-                        proof = seat._up(resume=data['resume'], require_resume_target=data['resume'])
+                        resume = data['resume'] and seat.resumable()
+                        target = seat._require_resume(expected=expected) if resume else None
+                        proof = seat._up(resume=resume, target=target)
                     else:
-                        proof = seat._up_on_recorded_pool(**destination, resume=data['resume'])
+                        proof = seat._up_on_recorded_pool(**destination, resume=data['resume'], expected=expected)
+                    if destination is not None and not data['resume'] and data['kind'] in ('failover', 'select', 'server-recovery'):
+                        service.store.new('report', 'ship', seat.name,
+                                          f"Moved to pool {destination['pool']} and {resume_target.NEW_CONVERSATION}.")
                 except Exception as error:
                     data.update(phase=FAILED, error=str(error)[:200])
                     _write(runtime, data)
@@ -490,5 +510,8 @@ def status(ship, seats=None) -> list[str]:
             continue  # being finished now
         else:
             reason = data.get('error') or 'its finish was cut short'
-            lines.append(f"{seat}: relaunch not finished from its intent ({reason}); needs a human: qd up {seat}")
+            if data['resume'] and f'Use qd fresh {seat} to start a new conversation' in reason:
+                lines.append(reason)
+            else:
+                lines.append(f"{seat}: relaunch not finished from its intent ({reason}); needs a human: qd up {seat}")
     return lines

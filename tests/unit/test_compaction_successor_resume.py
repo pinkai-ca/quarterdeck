@@ -3,6 +3,7 @@
 import pytest
 
 from quarterdeck import compaction
+from quarterdeck.harness import resume_target
 from .test_compaction_protocol import world, ready
 
 
@@ -46,7 +47,7 @@ def test_immediate_resume_keeps_proved_successor(world, monkeypatch, successor_c
 
 
 @pytest.mark.parametrize('damage', ['missing-record', 'unproved-origin'])
-def test_unproved_successor_stays_unknown_but_explicit_resume_remains_available(world, damage):
+def test_unproved_successor_keeps_compaction_unknown(world, damage):
     w = world
     _, hand, _ = ready(w)
     predecessor = compaction.load(w.svc.runtime, w.seat.name)['generation']
@@ -60,11 +61,17 @@ def test_unproved_successor_stays_unknown_but_explicit_resume_remains_available(
         from dataclasses import replace
         launch = w.seat.launched()
         replace(launch, records_before=[str(w.source[0].path)]).write(w.seat.trusted/'launch.json')
-    w.seat.restart()
+    if damage == 'missing-record':
+        before = w.seat.launched()
+        with pytest.raises(resume_target.Unproved, match='Use qd fresh worker'):
+            w.seat.restart()
+        assert w.seat.launched() == before and w.calls == ['down', 'fresh']
+    else:
+        w.seat.restart()
     compaction.tick(w.seat)
     data = compaction.load(w.svc.runtime, w.seat.name)
     assert data['generation'] == predecessor and data['reading_unknown']
     assert 'count unknown' in compaction.status(w.seat)
     assert data['transition'] is None and data['ready'] is None
     assert hand in w.carried[-1] and w.svc.store.is_open(hand)
-    assert w.calls == ['down', 'fresh', 'down', 'resume']
+    assert w.calls == (['down', 'fresh'] if damage == 'missing-record' else ['down', 'fresh', 'down', 'resume'])

@@ -71,7 +71,7 @@ def test_pop_returns_one_item_and_never_proves_delivery(tmp_path):
 def test_popped_nonopen_post_is_unread_and_carried_until_actual_submission(setup, monkeypatch, kind):
     svc, original, live, _ = setup
     path = original.home / "claude.jsonl"
-    append(path, *working())
+    append(path, *[dict(entry, sessionId='synthetic-session') for entry in working()])
     seat = bind(svc, original, "claude", path)
     # Neither an answer nor a report is itself an open obligation.
     parent = svc.store.new("question" if kind == "answer" else "order", seat.name, "desk", "Synthetic parent")
@@ -90,7 +90,7 @@ def test_popped_nonopen_post_is_unread_and_carried_until_actual_submission(setup
         # Exercise the real restart/fresh lifecycle entry points and real first_message;
         # replace only retirement/program launch, so no native process or provider runs.
         monkeypatch.setattr(seat, "_down", lambda: "synthetic down")
-        def launch(*, resume=False, observation=None):
+        def launch(*, resume=False, observation=None, target=None):
             first, messages = seat.first_message()
             carried.append((resume, first, messages))
             return "synthetic launch"

@@ -10,7 +10,7 @@ import pytest
 from quarterdeck import cli, lifecycle, request_queue, seat as seatmod, ship as shipmod
 from quarterdeck.service import Service
 from .test_launch_lifecycle import process_identity, windows
-from .waiting import wait_for
+from .waiting import start_with_conversation, wait_for
 
 
 @pytest.mark.parametrize('operation', ['restart', 'fresh', 'select'])
@@ -91,7 +91,10 @@ def test_qd_down_waits_for_a_transition_then_retires_the_launch(drydock, tmux, m
 def test_explicit_lifecycle_commands_wait_before_starting(drydock, tmux, monkeypatch, capsys, operation):
     ship = shipmod.load(drydock)
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
-    seat.up(False)
+    if operation == 'restart':
+        start_with_conversation(seat)
+    else:
+        seat.up(False)
     wait_for(lambda: seat.harness.screen(tmux.capture(seat.pane().id)).working is False)
     if operation == 'up':
         seat.down()

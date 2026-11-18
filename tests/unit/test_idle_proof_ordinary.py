@@ -62,6 +62,7 @@ def service_case(tmp_path, monkeypatch, state):
         pane=lambda: SimpleNamespace(dead=False, id=launch.pane, pid=launch.pid),
         harness=SimpleNamespace(state=lambda record: state, waiting_for_human=lambda reading: False),
         failover_to=lambda pool: moved.append(pool) or 'synthetic move proof',
+        require_restart_target=lambda: None,
         restart=lambda: moved.append('restart') or 'synthetic restart proof',
         fresh=lambda: moved.append('fresh') or 'synthetic fresh proof',
     )

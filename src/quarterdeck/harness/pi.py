@@ -26,6 +26,7 @@ from ..pricing import Price, amount
 from .endpoint import EndpointHarness
 from .costs import CostStep, costed, model_name
 from .json_record import JsonLinesReader, input_reader, input_rows
+from .record_file import Opened
 from .types import CappedGeneration, Inputs, _cells, _pi_wrap
 
 from ..ship import Pool, SeatSpec, ShipError
@@ -498,7 +499,18 @@ class PiHarness(EndpointHarness):
         durable.replace_file(agent / "settings.json", json.dumps(settings, indent=2) + "\n")
         return self.endpoint_ready(home, choice, secret, price)
 
-    def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
+    def launch_with_record(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str,
+                           first: str | None, record: Path) -> Launch:
+        try:
+            with Opened(record, 0):
+                pass  # the proved path must still open as the seat's regular record
+        except OSError:
+            raise ShipError(f'{seat.name}: its proved conversation is unavailable. '
+                            f'Use qd fresh {seat.name} to start a new conversation carrying its handoff.') from None
+        return self.launch(seat, pool, home, brief, resume, first, resume_record=record)
+
+    def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None,
+               *, resume_record: Path | None = None) -> Launch:
         choice = endpoint.Choice.read(home)
         argv = [self.program, "--provider", pool.name, "--model", choice.model, "--session-dir", str(home / "sessions"),
                 "--append-system-prompt", str(brief), "--no-context-files",  # the brief, and no instruction file of the user's
@@ -507,7 +519,9 @@ class PiHarness(EndpointHarness):
         if seat.effort:
             argv += ["--thinking", seat.effort]
         if resume:
-            record = next((r for r in reversed(records(home)) if session_id(r) == resume), None)
+            record = resume_record
+            if record is None:
+                record = next((r for r in reversed(records(home)) if session_id(r) == resume), None)
             if record is None:
                 raise ShipError(f"{seat.name}: no record in {home} holds the session {resume}; qd fresh {seat.name} starts a new one")
             from ..record_location import retired

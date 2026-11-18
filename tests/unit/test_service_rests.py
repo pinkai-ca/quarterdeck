@@ -390,7 +390,7 @@ def test_every_pass_step_and_between_duty_drain_reaches_the_numeric_summary(monk
     service._tick = service._tick_steps
     steps = ('server_recovery', 'relaunch_intents', 'reconcile', 'file_drops', 'groups', 'cascades', 'fleet_post',
              'inboxes', 'views', 'recoveries', 'refusals', 'set_asides', 'answers', 'looks', 'jailed_watches',
-             'write_bound_floor', 'deliveries', 'follow', 'requests', 'compactions', 'output_limits', 'person_quiet',
+             'write_bound_floor', 'deliveries', 'follow', 'requests', 'fresh_handoffs', 'compactions', 'output_limits', 'person_quiet',
              'fresh_after_order',
              'rebrief', 'push_reminders', 'credentials', 'authentications', 'model_differences',
              'failover', 'retire_hand_transcripts', 'account', 'refresh_usage', 'pool_forecasts', 'retire_post')

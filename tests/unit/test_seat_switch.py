@@ -90,13 +90,13 @@ def test_a_seat_moves_back_to_its_first_choice_by_failovers_path(running):
     usage(r.svc, "first", 0.2)
     r.svc.account()
     answer = select(r, "first")
-    assert "moved to first from second" in answer, answer
+    assert "moved to first from second" in answer and "started a new conversation" in answer, answer
     assert r.seat.pool.name == "first" and r.seat.harness.name == "codex"
     assert r.seat.launched().pool == "first" and r.seat.launched().resume is None, "another program starts fresh"
     assert message.id in r.launches[-1][-1], "with its brief and open thread index"
     assert f"qd thread {message.id}" in r.launches[-1][-1]
     assert r.reseeds[-1][0] == "second", "the source credential is reseeded first"
-    assert any(m.body == "moved to pool first from second by qd set" for m in r.svc.store.for_seat("worker"))
+    assert any(m.body == "moved to pool first from second by qd set and started a new conversation" for m in r.svc.store.for_seat("worker"))
     assert (r.seat.trusted / "pool").read_text().strip() == "first"
 
 

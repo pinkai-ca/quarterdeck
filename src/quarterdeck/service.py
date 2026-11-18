@@ -317,7 +317,7 @@ class Service:
         # under its own name: the drain and the status work between duties too, so neither reads as the duty before.
         self.loop_stamp('drain')
         self._drain_between_duties()
-        for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.set_asides, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.deliveries, self.follow, self.requests, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.set_asides, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.deliveries, self.follow, self.requests, self.fresh_handoffs, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.retire_hand_transcripts, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.loop_stamp(step.__name__)  # a slow duty reads as busy, then stuck, never as ok; the beat thread
             self.heartbeat()  # proves only that the process is alive, never that this loop is moving
@@ -1054,7 +1054,9 @@ class Service:
             with post.admission(self.runtime, seat.name):
                 if message.id in self.store.settled_notices(seat.name):
                     return f'{message.short} to {seat.name} · settled notice; not delivered'
-                from . import compaction
+                from . import compaction, fresh_handoff
+                if fresh_handoff.blocks_delivery(self.runtime, message):
+                    return f'{seat.name}: handoff waits for the next conversation'
                 reserved, transitioning = compaction.withheld(self.runtime, seat.name)
                 if transitioning or message.id in reserved:
                     return f"{seat.name}: compaction handoff/transition reserved; held for successor"
@@ -1513,7 +1515,9 @@ class Service:
         if kind == "resend":
             message = self.store.get(data["message"])
             seat = self.seat(message.to)
-            from . import compaction
+            from . import compaction, fresh_handoff
+            if fresh_handoff.blocks_delivery(self.runtime, message):
+                return f'{seat.name}: handoff waits for the next conversation'
             reserved, transitioning = compaction.withheld(self.runtime, seat.name)
             if transitioning or message.id in reserved:
                 return f"{message.short}: held for the compaction successor"
@@ -1619,12 +1623,15 @@ class Service:
             return f'refused: {seat.name} launch changed; request retired without applying'
         released = self.released_at(seat, data, origin)
         if not seat.session.human:
-            return self.relaunch(seat, bool(data['resume']), released=released)
+            return self.relaunch(seat, bool(data['resume']), released=released,
+                                 caller=data.get('caller'))
         pane = seat.pane()
         if pane is None or pane.dead:
             return self.relaunch(seat, bool(data['resume']))
         proved = idle.reading(seat, explicit=True, relaunch=True)
         state, hold = proved
+        if data['resume'] and (state is None or state.conversation is None):
+            seat.require_restart_target()
         try:
             asked = datetime.fromisoformat(data['created_at'])
         except (KeyError, TypeError, ValueError):
@@ -1759,13 +1766,22 @@ class Service:
         if any(result in (None, 'pending', 'blind', 'queued')
                for result in Attempts(self.runtime).latest(seat.name).values()):
             return ('delivery', 'a delivery to the seat is not confirmed')
-        screen = Door(seat).screen()
-        if (screen is None or screen.box != '' or screen.working is not False or screen.queued
-                or screen.unknown or screen.interruption or screen.starting):
+        if not idle.at_rest(Door(seat).screen()):
             return ('box', 'the box is not proved empty and idle')
         return None
 
-    def relaunch(self, seat: Seat, resume: bool, *, reading=None, released=None) -> str | None:
+    def relaunch(self, seat: Seat, resume: bool, *, reading=None, released=None, caller=None) -> str | None:
+        from . import fresh_handoff
+        from .harness import resume_target
+        try:
+            return Service._relaunch(self, seat, resume, reading=reading, released=released)
+        except resume_target.Unproved as error:
+            if self is None or seat.session.human:
+                raise
+            return fresh_handoff.request(seat, reason=error.reason, caller=caller or seat.ship.operator.lower(),
+                                         expected_launch=error.launch, service=self, restart=True).proof
+
+    def _relaunch(self, seat: Seat, resume: bool, *, reading=None, released=None) -> str | None:
         """Explicit recovery alone may interrupt a proven question-only wait. ``released`` is when the seat
         itself released what it has running, by its own proved request: it lifts a hold of the tool state alone,
         at the end of the turn it was given in."""
@@ -1784,6 +1800,8 @@ class Service:
                     hold = idle.release(seat, state, hold, released)
                     witness = idle.RECORD_AND_WORD if hold is None else witness
                 if hold is not None:
+                    if resume and self is not None and not seat.session.human and (state is None or state.conversation is None):
+                        seat.require_restart_target()
                     if self is not None:
                         self.request_wait = (hold.dimension, hold.reason)
                     return None  # deferred-request answers/lifetime are separate; the reason is shared
@@ -2103,6 +2121,20 @@ class Service:
             except (OSError, ShipError) as error:
                 self.log('error', step='person_quiet', seat=seat.name, error=repr(error))
 
+    def request_fresh_handoff(self, seat: Seat, *, reason: str, caller: str | None = None,
+                              expected_launch=None):
+        """Stage a crew handoff for this launch, returning its disposition and proof."""
+        from . import fresh_handoff
+        return fresh_handoff.request(seat, reason=reason, caller=caller, expected_launch=expected_launch, service=self)
+
+    def fresh_handoffs(self) -> None:
+        from . import fresh_handoff
+        if not fresh_handoff.folder(self.runtime).is_dir():
+            return
+        for seat in self.resolved_seats():
+            with Service.seat_guard(self, 'fresh_handoffs', seat):
+                fresh_handoff.tick(self, seat)
+
     def fresh_after_order(self) -> None:
         """Read each closing-turn decision once; start fresh outside that read-only view."""
         for seat in self.resolved_seats():
@@ -2117,9 +2149,10 @@ class Service:
 
     def _fresh_after_order_ready(self, seat) -> bool:
         """The current orders, recovery and recorded completion; never a lifecycle action."""
-        from . import compaction
+        from . import compaction, fresh_handoff
         from . import hand_door
         if (seat.session.human or seat.spec.fresh != "after-order" or not seat.is_up
+                or fresh_handoff.active(seat.ship.runtime, seat.name)
                 or hand_door.blocks_fresh(seat, self.store, getattr(self, 'attempts', None)) or recovery.held(seat)):
             return False
         launched = seat.launched()
@@ -2483,8 +2516,8 @@ class Service:
 
     @staticmethod
     def resumes_on(seat: Seat, pool: str) -> bool:
-        """Whether a move to ``pool`` keeps the conversation, as Seat.failover_to decides: the same program."""
-        return seat.spec.for_pool(pool).harness == seat.spec.harness
+        """Whether a move to ``pool`` keeps the conversation, as Seat.failover_to decides."""
+        return seat.spec.for_pool(pool).harness == seat.spec.harness and seat.resumable()
 
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""
@@ -2507,9 +2540,15 @@ class Service:
                 continue  # every pool is walled or unread: a fact the status line shows, not a move
             came_from = seat.pool.name
             from . import relaunch_intent
-            with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
-                proof = seat.failover_to(target)
-            self.store.new("report", post.SHIP, seat.name, f"moved to pool {target} from {came_from} at its wall")
+            from .harness import resume_target
+            try:
+                with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
+                    proof = seat.failover_to(target)
+            except resume_target.Unproved as error:
+                self.log("failover", seat=seat.name, pool=target, skipped=str(error))
+                continue
+            notice = f"moved to pool {target} from {came_from} at its wall"
+            self.report_pool_move(seat, notice)
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
 
     def not_idle(self, seat: Seat) -> str | None:
@@ -2555,6 +2594,8 @@ class Service:
         if not seat.is_up:
             return f"{seat.name} not moved: it is down; qd up {seat.name} first"
         if reason := self.not_idle_at_wall(seat):
+            if reason in (idle.REASONS['record'], 'its record is unreadable', 'it has no joined record') and self.resumes_on(seat, pool):
+                seat._require_resume(seat.spec.for_pool(pool))
             return f"{seat.name} not moved: {reason}; ask again when its turn has ended"
         # The destination is read as failover would read it. Only a wall refuses the explicit act: a pool
         # whose usage is unknown, such as a background provider with no seat on it to read, is the human's call.
@@ -2565,10 +2606,18 @@ class Service:
         from . import relaunch_intent
         with relaunch_intent.section(self, seat, 'select', resume=lambda: self.resumes_on(seat, pool)):
             proof = seat.failover_to(pool)
-        self.store.new("report", post.SHIP, seat.name, f"moved to pool {pool} from {came_from} by qd set")
+        self.report_pool_move(seat, f"moved to pool {pool} from {came_from} by qd set")
         self.log("select", seat=seat.name, pool=pool, came_from=came_from, usage_unknown=unknown, proof=proof)
         note = f"; {pool} usage unknown; moved on the explicit act" if unknown else ""
         return f"{seat.name} moved to {pool} from {came_from}{note}\n{proof}"
+
+    def report_pool_move(self, seat: Seat, notice: str) -> None:
+        from .harness import resume_target
+
+        launched = seat.launched()
+        if getattr(launched, 'resume', '') is None:
+            notice += f' and {resume_target.NEW_CONVERSATION}'
+        self.store.new("report", post.SHIP, seat.name, notice)
 
     def known_open(self, seat: Seat, pool_name: str) -> bool:
         """A destination pool, judged by its own adapter's existing usage rules.

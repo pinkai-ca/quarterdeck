@@ -157,14 +157,15 @@ def test_recovery_waits_for_tick_retirement_and_only_finishes_proved_intents(wor
         successor.relaunch_intents()
         successor.relaunch_intents()
         reason = {'missing-destination': 'its destination pool was not recorded',
-                  'missing-target': 'resume target unproved'}.get(outcome)
+                  'missing-target': 'builder: the existing conversation could not be identified. Use qd fresh builder to start a new conversation carrying its handoff.'}.get(outcome)
         if reason:
             assert not w.starts and not w.seat.is_up and w.seat.launched() is None
             failed = json.loads(intent.read_text())
             assert failed['phase'] == relaunch_intent.FAILED and failed['error'] == reason
             status = watch.facts(w.seat.ship, w.seat.tmux)
-            assert status.relaunches == [
-                f'builder: relaunch not finished from its intent ({reason}); needs a human: qd up builder']
+            line = (reason if outcome == 'missing-target' else
+                    f'builder: relaunch not finished from its intent ({reason}); needs a human: qd up builder')
+            assert status.relaunches == [line]
             assert status.relaunches[0] in status.line()
         else:
             [(argv, pool)] = w.starts

@@ -158,9 +158,11 @@ Change an agent, such as the engineer, `engineering` in the ship's file:
 ```sh
 qd set engineering model=gpt-6.1-sol  # written to the ship's file and committed; the command says whether a restart must apply it
 qd stop engineering                   # interrupt its turn, nothing more
-qd restart engineering                # relaunch it; its conversation goes on
+qd restart engineering                # relaunch it with its existing conversation
 qd fresh engineering                  # a new conversation, with its brief and a list of its open messages
 ```
+
+If Quarterdeck cannot identify the existing conversation, a person-owned seat waits for `qd fresh` to start a new conversation with its handoff. A running crew seat gets an order to prepare its handoff and starts a new conversation at a proved idle break.
 
 See what it cost, and that all is well:
 

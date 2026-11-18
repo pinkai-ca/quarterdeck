@@ -46,7 +46,7 @@ class ModelScope:
         return verdict
 
 
-def model_scope(seat, pool_name: str, *, running: bool = False, screen=None):
+def model_scope(seat, pool_name: str, *, running: bool = False, screen=None, declared_fallback=False):
     """Adapter-owned group applicability; source evidence differs from a resolved destination."""
     from . import harness as harnesses
 
@@ -65,6 +65,8 @@ def model_scope(seat, pool_name: str, *, running: bool = False, screen=None):
     if running:
         from .watch import running_settings
         model = running_settings(seat, screen=screen).get("model")
+        if model is None and declared_fallback:
+            model = seat.spec.for_pool(pool_name).model
         if reader.model_scoped_quota:
             record, launched = seat.record(), seat.launched()
             sources = tuple(filter(None, (str(record) if record else None,
@@ -91,12 +93,12 @@ def current_walls(seat, book) -> list[str]:
     return found
 
 
-def current_walled(seat, book) -> bool:
+def current_walled(seat, book, *, declared_fallback=False) -> bool:
     """Main's boolean path: the pool's walls and refusals, under the running model's scope."""
     pool = seat.pool.name
     if not book.walled(pool, seat.ship) and not book.quota.blocked(seat.name, pool):
         return False  # No model reading is needed unless this pool has a wall to scope.
-    scope = model_scope(seat, pool, running=True)
+    scope = model_scope(seat, pool, running=True, declared_fallback=declared_fallback)
     return book.walled(pool, seat.ship, scope=scope) or book.quota.blocked(seat.name, pool, scope=scope) is not None
 
 

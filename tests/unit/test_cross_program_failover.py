@@ -11,6 +11,7 @@ from quarterdeck import cli, credential, pending, post, quota, record_owner, sea
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.limits import Usage, Window
+from quarterdeck.harness.record_file import LINES_BOUND
 from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape
 from quarterdeck.harness.types import Screen, State
 from quarterdeck.seat import Launched, Seat
@@ -54,14 +55,17 @@ def running(tmp_path, monkeypatch, request):
 
     def open_window(argv, env, path):
         launches.append(argv)
-        if '--resume' in argv:
+        if seat.harness.name == 'codex' and 'resume' in argv:
+            record = source
+        elif '--resume' in argv:
             record = created[-1]
         else:
             shape = CodexShape if seat.harness.name == 'codex' else ClaudeShape
             record = shape(seat.home, tmp_path, f'synthetic-target-{len(launches)}', seat.spec.model)
             created.append(record)
-        record.begin('new synthetic input', seat.spec.model, seat.spec.effort or 'none')
-        record.end('new synthetic reply')
+        if not record.path.exists() or record.path.stat().st_size <= LINES_BOUND:
+            record.begin('new synthetic input', seat.spec.model, seat.spec.effort or 'none')
+            record.end('new synthetic reply')
         live['pane'] = Pane(f'%{len(launches)+1}', 'crew', 'worker', 101+len(launches), 80, 24, False, False, None)
         return live['pane']
 
@@ -81,7 +85,7 @@ def running(tmp_path, monkeypatch, request):
     usage(svc, 'first', 1.0)
     usage(svc, 'second', 0.0)
     usage(svc, 'third', 0.0)
-    yield SimpleNamespace(seat=seat, svc=svc, source=source, launches=launches, created=created, reseeds=reseeds)
+    yield SimpleNamespace(seat=seat, svc=svc, source=source, launches=launches, created=created, reseeds=reseeds, live=live)
     svc.ledger.close()
 
 
@@ -93,6 +97,8 @@ def test_actual_cross_program_move_is_fresh_carries_context_and_keeps_readers(ru
     before = r.source.path.read_bytes()
     r.svc.account()
     r.svc.failover()
+    assert any('started a new conversation' in m.body for m in r.svc.store.for_seat('worker') if m.kind == 'report')
+    assert 'started a new conversation' in (r.svc.runtime / 'log' / 'service.jsonl').read_text()
     assert r.seat.pool.name == 'second' and r.seat.harness.name == 'claude'
     assert r.seat.launched().harness == 'claude' and r.seat.launched().resume is None
     assert '--resume' not in r.launches[0]

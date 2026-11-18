@@ -34,6 +34,17 @@ def wait_for(predicate, seconds: float = 10.0):
     raise AssertionError("condition not met in time") from last_read_error
 
 
+def start_with_conversation(seat):
+    """Start a stand-in seat and wait for its first complete conversation turn."""
+    from quarterdeck import post
+    store = post.Store(seat.ship.runtime)
+    order = store.new('order', 'issuer', seat.name, 'Synthetic opening turn')
+    seat.up(resume=False)
+    record = wait_for(seat.record)
+    wait_for(lambda: seat.harness.state(record).turns)
+    store.new('report', seat.name, 'issuer', 'Synthetic opening complete', re=order.id)
+
+
 def posted_short(text: str) -> str:
     """The short id qd post names in its first words: 'Posted <short> to <seat>. Nothing more to do ...'."""
     words = text.split()

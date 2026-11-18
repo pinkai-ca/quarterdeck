@@ -31,6 +31,7 @@ def seat_for(path, name):
                            session=SimpleNamespace(human=False),
                            pane=lambda: SimpleNamespace(dead=False), launched=lambda: None,
                            is_working=lambda: harness.state(path).turn_open,
+                           require_restart_target=lambda: None,
                            restart=lambda: calls.append('restart') or 'restarted',
                            fresh=lambda: calls.append('fresh') or 'fresh')
     return seat, calls

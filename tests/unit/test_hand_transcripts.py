@@ -305,7 +305,7 @@ def test_unknown_reader_stays_and_retired_binding_cannot_be_rejoined(tmp_path, m
                 remember_launch(w.seat.trusted, path, w.seat.launched())
             (w.seat.trusted / 'record').write_text(str(path)+'\n')
             with pytest.raises(ShipError, match='conversation is retired'):
-                Seat._resume_id(w.seat)
+                Seat._resume_target(w.seat)
     finally:
         w.svc.ledger.close()
 

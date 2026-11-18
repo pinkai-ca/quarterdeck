@@ -351,7 +351,7 @@ def test_service_relaunch_recovers_its_pool_and_effective_resume(routed, monkeyp
     recovered = svc.seat(seat.name)
     if resume and not target_present:
         assert not recovered.is_up and recovered.pool.name == 'fake'
-        assert json.loads(journal.read_bytes())['error'] == 'resume target unproved'
+        assert 'Use qd fresh worker-1' in json.loads(journal.read_bytes())['error']
     else:
         assert recovered.is_up and recovered.launched().pool == target_pool
         assert recovered.launched().resume == target_id

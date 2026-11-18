@@ -45,7 +45,7 @@ def world(tmp_path, monkeypatch, request):
     def down():
         calls.append('down')
         return 'synthetic down'
-    def up(resume=True, *, observation=None):
+    def up(resume=True, *, observation=None, target=None):
         first, messages = seat.first_message()
         carried.append(messages)
         calls.append('resume' if resume else 'fresh')
@@ -718,7 +718,7 @@ def test_measured_fake_program_uses_real_lifecycle_and_carries_open_handoff(worl
             return Seat._down(w.seat)
 
     monkeypatch.setattr(w.seat, '_down', down)
-    def up(resume=True, *, observation=None):
+    def up(resume=True, *, observation=None, target=None):
         up_attempts.append(resume)
         proof = Seat._up(w.seat, resume)
         if lost_reply:

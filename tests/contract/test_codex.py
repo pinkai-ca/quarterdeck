@@ -289,6 +289,7 @@ def test_restart_rebuilds_generated_policy_before_opening_the_program(tmp_path, 
     import tomllib
     from types import SimpleNamespace
     from quarterdeck import seat as seatmod
+    from quarterdeck.harness import resume_target
     from quarterdeck.seat import Seat
     from quarterdeck.ship import Session, Ship
 
@@ -299,7 +300,7 @@ def test_restart_rebuilds_generated_policy_before_opening_the_program(tmp_path, 
     seat.home.mkdir(parents=True)
     (seat.home/'config.toml').write_text('sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n')
     monkeypatch.setattr(seat,'pane',lambda:None)
-    monkeypatch.setattr(seat,'_resume_id',lambda:'synthetic-resume')
+    monkeypatch.setattr(seat, '_resume_target', lambda: resume_target.Target('synthetic-resume', seat.home / 'record.jsonl'))
     monkeypatch.setattr(seat,'_survives',lambda *args:None)
     monkeypatch.setattr(seat.harness,'version',lambda:'synthetic-version')
     monkeypatch.setattr(seatmod.shutil,'which',lambda *args,**kwargs:'/synthetic/codex')

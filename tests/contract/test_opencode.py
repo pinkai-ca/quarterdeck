@@ -389,10 +389,10 @@ def test_scoped_hand_relaunch_refuses_unproved_directory_before_retirement(tmp_p
     monkeypatch.setattr(seat, "_down", lambda: retired.append(True) or "down")
     # The resume of an unproved directory is refused before anything retires ...
     with pytest.raises(ShipError, match="qd fresh w starts a scoped session"):
-        seat.harness.preflight_resume(spec, seat.home, seat._resume_id)
+        seat.harness.preflight_resume(spec, seat.home, lambda: target.id if (target := seat._resume_target()) else None)
     assert not retired
     # ... and a hand is never resumed: its restart is the fresh start that refusal names, never that resume.
-    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None:
+    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None, target=None:
                         pytest.fail("a hand's restart asked to resume") if resume else "fresh")
     assert seat.restart().startswith("down\nfresh") and retired == [True]
     assert seat.fresh() == "down\nfresh" and retired == [True, True]
@@ -431,7 +431,7 @@ def test_a_jailed_hand_launched_then_resumed_through_the_seat_is_checked_against
     monkeypatch.setattr(seat, "_never_resumed", lambda: False)  # stands for a seat whose role may resume
     monkeypatch.setattr(seat, "_down", lambda: "down")
     resumed = []
-    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None: resumed.append(resume) or "up")
+    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None, target=None: resumed.append(resume) or "up")
     assert seat.restart() == "down\nup" and resumed == [True], "the preflight passed and the seat resumed"
     # A session saved anywhere else is still refused by the same preflight, naming both folders.
     elsewhere = tmp_path / "elsewhere"
@@ -456,6 +456,7 @@ def test_the_seat_gives_its_adapter_the_same_folder_at_launch_and_at_every_resum
     """Seat.adapter_spec, one rule: the launch (build_home and launch) and the four preflights, a restart, a failover,
     an up on a chosen pool and a relaunch off a walled pool, are each given the seat with the folder it works in."""
     from quarterdeck import recovery
+    from quarterdeck.harness import resume_target
     pools = {name: Pool(name, "local", endpoint="http://127.0.0.1:9/v1") for name in ("a", "b")}
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -467,6 +468,10 @@ def test_the_seat_gives_its_adapter_the_same_folder_at_launch_and_at_every_resum
                 {"crew": Session("crew", "crew")}, {spec.name: spec})
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: None))
     given = []
+    Launched("%1", 101, datetime.now(UTC).isoformat(), "a", None,
+             ["opencode"], VERSION, "opencode").write(seat.trusted / "launch.json")
+    monkeypatch.setattr(seat, "_resume_target",
+                        lambda: resume_target.Target("synthetic-session", seat.home / "record.db"))
 
     def adapter(spec, *args, **kwargs):
         given.append(spec.cwd)
@@ -478,7 +483,7 @@ def test_the_seat_gives_its_adapter_the_same_folder_at_launch_and_at_every_resum
     monkeypatch.setattr(seat, "_screened", lambda: False)
     monkeypatch.setattr(seat, "_observe_selection", lambda *args: (VERSION, None))
     monkeypatch.setattr(seat, "_walled_now", lambda: path == "off a wall")
-    monkeypatch.setattr(seat, "launch_choice", lambda: ("b", "synthetic room"))
+    monkeypatch.setattr(seat, "launch_choice", lambda **kwargs: ("b", "synthetic room"))
     monkeypatch.setattr(recovery, "require_clear", lambda seat: None)
     run = {"launch": lambda: seat._up(resume=False), "restart": seat.restart,
            "failover": lambda: seat._failover_to("b"), "up on a chosen pool": lambda: seat.up(pool="b"),

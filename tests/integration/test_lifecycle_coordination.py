@@ -11,7 +11,7 @@ from quarterdeck import seat as seatmod, ship as shipmod
 from quarterdeck.ship import ShipError
 from quarterdeck.tmux import Tmux
 from .test_launch_lifecycle import process_identity, windows
-from .waiting import wait_for
+from .waiting import start_with_conversation, wait_for
 
 
 def peer_call(ship, tmux, operation, process):
@@ -103,7 +103,7 @@ def test_start_during_retirement_cannot_replace_launch_before_unlink(drydock, tm
 def test_relaunch_owns_stop_and_start_as_one_transition(drydock, tmux, monkeypatch, operation):
     ship = shipmod.load(drydock)
     outer = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
-    outer.up(False)
+    start_with_conversation(outer)
     prior = outer.launched()
     original = outer.harness.build_home
     outcomes = []
@@ -161,7 +161,7 @@ def test_different_seat_can_start_during_another_seat_preparation(drydock, tmux,
 def test_failover_owns_selection_and_start_as_one_transition(drydock, tmux, monkeypatch):
     ship = shipmod.load(drydock)
     outer = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
-    outer.up(False)
+    start_with_conversation(outer)
     prior = outer.launched()
     original = outer.move_to
     outcomes = []

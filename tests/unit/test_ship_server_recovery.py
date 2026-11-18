@@ -76,6 +76,7 @@ def ship(drydock, tmp_path, monkeypatch):
         return f'{self.name} up (synthetic)'
     fail, silent, held = set(), set(), []
     monkeypatch.setattr(seatmod.Seat, '_up', up)
+    monkeypatch.setattr(seatmod.Seat, '_require_resume', lambda self, *a, **kw: None)
     monkeypatch.setattr(seatmod.Seat, 'is_up', property(lambda self: self.name in upped))
     server = Server(Path(os.environ.get('TMUX_TMPDIR', str(tmp_path))) / f'w3-{os.getpid()}-{id(loaded)}.sock')
     store = post.Store(loaded.runtime)
@@ -386,8 +387,11 @@ def test_server_recovery_and_qd_up_use_the_same_pool_choice(choice_world, case, 
     w = choice_world(case)
     if method == 'server':
         assert recovery.pass_once(w.svc) == 'recovered'
+        owner_reports = [m.body for m in w.svc.store.for_seat('builder') if m.kind == 'report']
+        assert any('started a new conversation' in body for body in owner_reports) is (not resumes)
     else:
         proof = w.seat.up()
+        assert ('started a new conversation' in proof) is (not resumes)
         if case == 'no-choice':
             assert proof.startswith('builder up in')
         else:
@@ -401,6 +405,21 @@ def test_server_recovery_and_qd_up_use_the_same_pool_choice(choice_world, case, 
     if resumes:
         assert current.record() == w.record.path
     assert w.reseeds == [(w.saved, w.saved)]
+
+
+@pytest.mark.parametrize('human', [False, True], ids=['crew', 'human'])
+def test_server_recovery_of_unproved_resume_respects_session_ownership(choice_world, human):
+    w = choice_world('no-choice')
+    w.ship.sessions['crew'] = shipmod.replace(w.ship.sessions['crew'], human=human)
+    w.record.path.unlink()
+    outcome = recovery.pass_once(w.svc)
+    seat = w.svc.seat('builder')
+    if human:
+        assert outcome == 'failed' and not w.starts and seat.launched() == w.old
+        assert 'Use qd fresh builder' in recovery.read(w.ship.runtime)['stopped']
+    else:
+        assert outcome == 'recovered' and len(w.starts) == 1 and seat.launched().resume is None
+        assert any('started a new conversation' in m.body for m in w.svc.store.for_seat('builder'))
 
 
 @pytest.mark.parametrize('manual', [False, True])

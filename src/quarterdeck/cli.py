@@ -465,9 +465,25 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None, re
     write_bound.lift(ship.runtime, seat.name, f"qd {'restart' if resume else 'fresh'} by {caller_of(ship)}")
     if not resume:
         relaunch_intent.clear(ship.runtime, seat.name, f'qd fresh by {caller_of(ship)}')  # the person's own relaunch
+    def ask_service():
+        origin = request_queue.launch_binding(seat)
+        try:
+            return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume, **word,
+                                   caller=os.environ.get('QD_SEAT'), origin=origin)
+        except ShipError:
+            if not resume or service.alive(ship.runtime):
+                raise
+            from .harness import resume_target
+            if request_queue.launch_binding(seat) != origin:
+                raise
+            try:
+                seat.require_restart_target()
+            except resume_target.Unproved as error:
+                return restart_needs_handoff(ship, seat, error)
+            raise
+
     if seat.is_working():
-        return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume, **word,
-                               caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat))
+        return ask_service()
     kind = 'restart' if resume else 'fresh'
     with request_queue.direct(ship.runtime, seat.name, kind) as retired:
         suffix = f'; retired pending relaunch request(s): {", ".join(retired)}' if retired else ''
@@ -476,14 +492,25 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None, re
         try:
             proof = seat.restart() if resume else seat.fresh()
         except ShipError as error:
-            if retired:
+            from .harness import resume_target
+            if isinstance(error, resume_target.Unproved) and not seat.session.human:
+                proof = restart_needs_handoff(ship, seat, error)
+            elif retired:
                 raise ShipError(str(error) + suffix) from error
-            raise
+            else:
+                raise
         return proof + suffix
     # The existing working guard is rechecked after writer coordination, so
     # waiting for that lock never turns a direct act into an unexamined restart.
-    return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume, **word,
-                           caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat)) + suffix
+    return ask_service() + suffix
+
+
+def restart_needs_handoff(ship, seat, error) -> str:
+    if seat.session.human:
+        raise error
+    from . import fresh_handoff
+    return fresh_handoff.request(seat, reason=error.reason, caller=caller_of(ship).lower(),
+                                 expected_launch=error.launch, restart=True).proof
 
 
 def cmd_stop(args: argparse.Namespace) -> str:

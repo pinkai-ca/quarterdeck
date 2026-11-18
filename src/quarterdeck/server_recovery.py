@@ -192,26 +192,42 @@ def pass_once(service) -> str | None:
     data['attempts'].append(attempt)
     data['unknown'] = None
     save(runtime, data)  # consumed before any effect: a crash after this line still counts
-    from . import ship as shipmod
+    from . import fresh_handoff, ship as shipmod
+    from .harness import resume_target
     failures = []
     try:
         shipmod.fence(ship)
     except (OSError, ShipError) as error:
         failures.append(f'fence: {error}')
-    brought, downed = [], []
+    brought, downed, new_conversations = [], [], []
     for seat, proved in eligible:
         try:
             # Membership is re-read under the same lifecycle lock as the effect, which a qd down also takes:
             # a deliberate down that finished first wins, and one that comes later waits or is refused.
-            with seat._lifecycle(automatic=True):
-                if seat.launched() != proved:
-                    downed.append(seat.name)
-                    continue
-                if relaunch_intent.pending_server_choice(ship, seat.name):
-                    choosing.append(seat.name)
-                    continue
-                with relaunch_intent.section(service, seat, 'server-recovery', resume=True):
-                    seat._up_with_pool_choice(True)
+            try:
+                with seat._lifecycle(automatic=True):
+                    if seat.launched() != proved:
+                        downed.append(seat.name)
+                        continue
+                    if relaunch_intent.pending_server_choice(ship, seat.name):
+                        choosing.append(seat.name)
+                        continue
+                    with relaunch_intent.section(service, seat, 'server-recovery', resume=True):
+                        seat._up_with_pool_choice(True, require_resume_target=True)
+            except resume_target.Unproved as error:
+                if seat.session.human:
+                    raise
+                result = fresh_handoff.request(seat, reason=error.reason, expected_launch=proved,
+                                               service=service, restart=True)
+                if result.disposition != 'started':
+                    raise ShipError(result.proof) from error
+                new_conversations.append(seat.name)  # the restart already reported to the seat
+            else:
+                launch = seat.launched()
+                if launch is not None and launch.resume is None:
+                    new_conversations.append(seat.name)
+                    service.store.new('report', 'ship', seat.name,
+                                      f'Tmux server recovery {resume_target.NEW_CONVERSATION}.')
             brought.append(seat)
         except Exception as error:  # every seat gets its one try; the outcome names each failure
             failures.append(f'{seat.name}: {str(error)[:200]}')
@@ -232,7 +248,8 @@ def pass_once(service) -> str | None:
         _report(service, f'ship tmux server was gone; recovery attempt {k} of {LIMIT} this hour failed '
                          f'({"; ".join(failures)[:300]}); needs a human: qd up')
         return 'failed'
-    note = f'; not declared, left alone: {", ".join(stray)}' if stray else ''
+    note = f'; started a new conversation for {", ".join(new_conversations)}' if new_conversations else ''
+    note += f'; not declared, left alone: {", ".join(stray)}' if stray else ''
     note += f'; taken down meanwhile, left down: {", ".join(downed)}' if downed else ''
     note += f'; unfinished pool choice, left down: {", ".join(choosing)}' if choosing else ''
     _report(service, f'ship tmux server was gone; recovered {len(brought)} seat(s) '

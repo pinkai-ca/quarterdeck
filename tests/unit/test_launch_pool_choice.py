@@ -249,7 +249,7 @@ def test_a_launch_after_the_pane_exits_reseeds_its_old_pool_before_selection(run
 def walled_now(monkeypatch, *walled):
     """The ledger shows these pools walled for the running seat."""
     from quarterdeck import quota
-    monkeypatch.setattr(quota, 'current_walled', lambda seat, book: seat.pool.name in walled)
+    monkeypatch.setattr(quota, 'current_walled', lambda seat, book, **kwargs: seat.pool.name in walled)
     walls(monkeypatch, *walled)
 
 

@@ -70,6 +70,7 @@ class Case:
             harness=SimpleNamespace(state=lambda record: self.state, waiting_for_human=lambda reading: False,
                                     background=native.background, background_versions=native.background_versions),
             failover_to=lambda pool: self.moved.append(pool) or 'synthetic move proof',
+            require_restart_target=lambda: None,
             restart=lambda: self.moved.append('restart') or 'synthetic restart proof',
             fresh=lambda: self.moved.append('fresh') or 'synthetic fresh proof')
         case = self

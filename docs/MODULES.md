@@ -72,6 +72,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `record_file.py` | the one opener of a seat's program record: no link at its name or on the way from the seat folder, no fifo, socket or device, only this user's own regular file with one name; one read at most a bound (128 MiB for JSON lines, 512 MiB for a SQLite record with its log), refused past it; the status line's word on a record near or past its bound |
 | `limits.py` | usage windows and walls |
 | `opencode_record.py` | the OpenCode database read session by session: the latest root session is the seat's, and a task's child sessions are accounted on their own |
+| `resume_target.py` | launch-only conversation identity from an already joined record, including bounded identity reads of oversized records |
 | `simulator.py` | the fake program the drill runs |
 | `sqlite_snapshot.py` | a SQLite record read from a snapshot of its bytes and its log, shared by the Antigravity and OpenCode readers |
 | `synthetic_control.py` | the rendezvous a test holds the fake program at |
@@ -130,6 +131,7 @@ The modules that the framework table does not list, the module of each part amon
 | `fleet.py` | the fleet: an index of the project's declarations, never another configuration |
 | `fleet_post.py` | posts between ships: offered by the sender and fetched by the receiver, each writer in its own runtime |
 | `forward_post.py` | recorded forwarding routes from an old address; the original posts stay as they are |
+| `fresh_handoff.py` | durable crew order, report and idle-break proof for a new conversation |
 | `group_post.py` | declared groups: a fixed fanout to the members, and one terminal notice |
 | `human_wake.py` | the one fixed waking line for a human seat, through the door, once per watch |
 | `idle.py` | the one live idle proof that relaunch, failover and selection share |

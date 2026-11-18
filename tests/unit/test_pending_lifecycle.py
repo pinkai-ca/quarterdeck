@@ -51,7 +51,7 @@ class SyntheticSeat(Seat):
             self.retire_hook()
         self._pane = None
 
-    def _up(self, resume=True, *, observation=None):
+    def _up(self, resume=True, *, observation=None, target=None):
         pin = self.trusted / 'record'
         prior = [pin.read_text().strip()] if pin.exists() else []
         pin.unlink(missing_ok=True)
@@ -250,6 +250,11 @@ def test_service_retires_legacy_identity_without_resend_or_lifecycle_hold(tmp_pa
     assert pending.detached(seat) == []
     rows = [json.loads(line) for line in service.log_path.read_text().splitlines()]
     assert [row['event'] for row in rows] == ['pending-retired']
+    if act == 'restart':
+        writer = ClaudeShape(seat.home, tmp_path, 'synthetic-session', 'synthetic-model')
+        writer.begin('Synthetic prompt', 'synthetic-model', 'high')
+        writer.end('Synthetic response')
+        assert seat.record() == writer.path
     assert 'synthetic up' in getattr(seat, act)()
 
 

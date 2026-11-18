@@ -14,7 +14,7 @@ import pytest
 
 from quarterdeck import credential, seat as seatmod, service, ship as shipmod
 
-from .waiting import wait_for
+from .waiting import start_with_conversation, wait_for
 
 
 @pytest.fixture
@@ -77,7 +77,7 @@ def test_a_restart_whose_program_ends_past_the_first_bound_comes_back_up(lingeri
     monkeypatch.setattr(seatmod, "PROCESS_END_SECONDS", 0.3)
     monkeypatch.setattr(seatmod, "RELAUNCH_END_SECONDS", 6.0)
     w = lingering(1.5)
-    w.seat.up(resume=False)
+    start_with_conversation(w.seat)
     old = w.seat.launched()
     proof = w.seat.restart()
     assert "still ending after 0.3s, ended after" in proof and "the relaunch follows" in proof, proof
@@ -90,7 +90,7 @@ def test_a_restart_whose_program_outlasts_the_longer_bound_is_refused_and_named_
     monkeypatch.setattr(seatmod, "PROCESS_END_SECONDS", 0.2)
     monkeypatch.setattr(seatmod, "RELAUNCH_END_SECONDS", 0.6)
     w = lingering(3)
-    w.seat.up(resume=False)
+    start_with_conversation(w.seat)
     old = w.seat.launched()
     with pytest.raises(shipmod.ShipError, match="still ending"):
         w.seat.restart()

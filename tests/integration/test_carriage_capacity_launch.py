@@ -7,6 +7,7 @@ import json
 import pytest
 
 from quarterdeck import cli, output, post, post_threads, recovery, standing
+from quarterdeck.harness import resume_target
 from quarterdeck.seat import Seat
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship, ShipError
 
@@ -85,17 +86,17 @@ def test_fresh_handoff_renders_first_and_self_questions_are_only_indexed(tmp_pat
 def test_actual_resume_has_index_without_retyping_self_handoff(tmp_path, monkeypatch):
     seat, opened = prepared(tmp_path, monkeypatch)
     handoff = publish(seat, 'own-handoff', 'Retain this in the resumed conversation.', sender='builder')
-    monkeypatch.setattr(seat, '_resume_id', lambda: 'synthetic-session')
+    monkeypatch.setattr(seat, '_resume_target', lambda: resume_target.Target('synthetic-session', seat.home / 'record.jsonl'))
     seat._up(resume=True)
     opening = first(opened)
     assert handoff.body not in opening
     assert entries(opening)[0]['id'] == handoff.id
 
 
-def test_restart_that_resolves_fresh_still_receives_full_handoff(tmp_path, monkeypatch):
+def test_initial_up_with_no_session_receives_full_handoff(tmp_path, monkeypatch):
     seat, opened = prepared(tmp_path, monkeypatch)
     handoff = publish(seat, 'own-handoff', 'Complete handoff for an actual fresh conversation.', sender='builder')
-    monkeypatch.setattr(seat, '_resume_id', lambda: None)
+    monkeypatch.setattr(seat, '_resume_target', lambda: None)
     seat._up(resume=True)
     assert handoff.body in first(opened)
 
