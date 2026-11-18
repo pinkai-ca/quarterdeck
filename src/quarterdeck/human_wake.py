@@ -467,19 +467,38 @@ def run(seat, *, observe_delivery=None) -> str | None:
         return reason
 
 
+def _held_episode(seat, wake, relative: str) -> bool:
+    """The current episode is held. A readable mark lets a new launch release it; the episode stays held."""
+    from .delivery_boundary import episode_held, held_journal, mark_unreadable
+    try:
+        data = json.loads(metadata(wake))
+    except (OSError, ValueError, UnicodeError):
+        return held_journal(seat.ship.runtime, relative)
+    if not episode_held(seat.ship.runtime, relative, data):
+        return False
+    if mark_unreadable(seat.ship.runtime):
+        return True  # the episode cannot be told from a later one: do not type either
+    try:
+        proof = pending.Proof(wake, data)
+        if data.get('phase') != 'cancelled' and changed_launch(seat, proof):
+            return False
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return True
+    return True
+
+
 def _run(seat, *, observe_delivery=None) -> str | None:
     from pathlib import Path
     import stat
     from .door import Door
-    from .delivery_boundary import held_journal
 
     wake = seat.trusted / trusted_files.HUMAN_WAKE
+    relative = f'{trusted_files.TRUSTED}/{seat.name}/{trusted_files.HUMAN_WAKE}'
     try:
         info = wake.lstat()
     except OSError:
         info = None
-    if info is not None and stat.S_ISREG(info.st_mode) and held_journal(
-            seat.ship.runtime, f'{trusted_files.TRUSTED}/{seat.name}/{trusted_files.HUMAN_WAKE}'):
+    if info is not None and stat.S_ISREG(info.st_mode) and _held_episode(seat, wake, relative):
         return 'human wake receipt uncertain; never resent; inspect human-wake.json'
     watch, waiting, proof, reason = metadata_context(seat)
     if reason:

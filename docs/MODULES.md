@@ -183,7 +183,7 @@ The modules that the framework table does not list, the module of each part amon
 | `shutdown.py` | the service's stop at a durable delivery boundary, held through a relaunch section (`relaunch_intent.py`), and read-only diagnosis of unresolved startup delivery evidence |
 | `stop_barrier.py` | a service stop's process identities, retained until every exit is confirmed |
 | `barrier_settle.py` | `qd service --settle-barrier`: an unreadable stop barrier moved aside unchanged, only when no service, scope member or QD_SHIP carrier of the ship runs |
-| `delivery_boundary.py` | `qd service --settle-delivery`: a delivery pointer the next service cannot resolve, moved aside unchanged once the old owner is proved stopped; the named journal is held uncertain |
+| `delivery_boundary.py` | `qd service --settle-delivery`: a delivery pointer the next service cannot resolve, moved aside unchanged once the old owner is proved stopped; the journals it names are held uncertain, a wake by its episode |
 | `standing.py` | standing orders: the laws, the ship's orders, the cards and the brief every seat reads |
 | `brief_change.py` | a change to a seat's brief wakes no seat: the brief last told each seat, and the head of changed lines its next message carries, bounded; the editor of a commit not told of its own edit |
 | `structure_outcome.py` | read-only proof of an ended turn, and one completed service pass of report grace |

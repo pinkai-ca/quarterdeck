@@ -34,9 +34,15 @@ The journal the pointer names is not edited, cancelled, deleted or resent, and n
 lock, the attempts or a human-wake reservation.
 
 Before the move the act records itself in ``runtime/trusted/delivery-boundary.jsonl`` (and, when the pointer
-names a declared seat, that seat's ``acts.jsonl``, as set-aside does). The next service honours a settled mark,
-or a settling mark whose pointer is already gone: the named journal is outcome uncertain and is never typed
-again. A prepared journal that was never pasted is not cancelled. A refusal before that line writes no hold.
+names a declared seat, that seat's ``acts.jsonl``, as set-aside does). The settling line names the evidence
+file the pointer will occupy. The next service honours a settled mark, or a settling mark while the pointer
+is absent or that evidence file exists: the named journal is outcome uncertain and is never typed again.
+When the pointer does not parse, that line names every pending journal past prepared, every attempt with no
+result or a blind one, and every human-wake reservation not ended, and holds them; if they cannot all be
+named, the act refuses and moves nothing. A human wake is held by the episode on the line (its wake token),
+not by the path later episodes reuse. A mark that exists but cannot be read holds those same live journals,
+and that is logged once. A prepared journal that was never pasted is not cancelled. A refusal before the
+settling line writes no hold.
 
 Only a systems seat may run it, or the operator's own shell, and never from inside a jail. Spock tells the
 captain and the desk, as the orders already say for set-aside; this act does not post.
@@ -335,6 +341,177 @@ def _named_journal(runtime: Path) -> tuple[str | None, str | None]:
     return data['journal'], data.get('kind', 'pending')
 
 
+class _Unlisted(Exception):
+    """The journals beside an unreadable pointer could not all be named. Nothing is moved."""
+
+    def __init__(self, why: str) -> None:
+        self.why = why
+
+
+class _Holds:
+    """Names only: paths to hold, and each unended wake's episode token."""
+
+    def __init__(self) -> None:
+        self.names: list[str] = []
+        self.wakes: list[dict] = []
+
+    def add(self, relative: str) -> None:
+        if relative not in self.names:
+            self.names.append(relative)
+
+
+def _relative_ok(relative: str) -> bool:
+    if not isinstance(relative, str) or not relative or relative.startswith(('/', '\\')):
+        return False
+    return '..' not in Path(relative).parts
+
+
+def _wake_path(relative: str) -> bool:
+    parts = Path(relative).parts
+    return len(parts) == 3 and parts[0] == trusted_files.TRUSTED and parts[2] == trusted_files.HUMAN_WAKE
+
+
+def _child_names(path: Path) -> list[str] | None:
+    """Names in a real directory. None when it is absent. A link or an unlistable directory cannot be named."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise _Unlisted(error.strerror or 'unreadable') from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise _Unlisted('not a directory')
+    try:
+        return sorted(os.listdir(path))
+    except OSError as error:
+        raise _Unlisted(error.strerror or 'unreadable') from error
+
+
+def _read_object(path: Path, limit: int) -> dict:
+    """One regular file's object, never through a link. OSError when it cannot be read; ValueError when it is not one."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, 'not a regular file')
+        if info.st_size > limit:
+            raise OSError(errno.EFBIG, 'oversize')
+        raw = os.read(descriptor, info.st_size)
+    finally:
+        os.close(descriptor)
+    try:
+        data = json.loads(raw.decode() or 'null')
+    except ValueError:
+        raise ValueError('not json') from None
+    if not isinstance(data, dict):
+        raise ValueError('not an object')
+    return data
+
+
+def _wake_identity(data: dict) -> str | None:
+    """The episode: its wake token, or its ``at`` stamp when the token's fields are not all there."""
+    try:
+        token = shutdown.wake_token(data)
+    except (KeyError, TypeError, ValueError):
+        token = None
+    if isinstance(token, str) and token:
+        return token
+    at = data.get('at') if isinstance(data, dict) else None
+    return at if isinstance(at, str) and at else None
+
+
+def _list_holds(runtime: Path) -> _Holds:
+    """Every pending journal past prepared, every open or blind attempt, and every unended wake. Names only.
+
+    A file that exists and cannot be classified refuses the whole list: a partial hold would leave the rest
+    to the ordinary rules.
+    """
+    found = _Holds()
+    pending_root = runtime / 'post' / 'pending'
+    seats = _child_names(pending_root)
+    if seats is not None:
+        for seat in seats:
+            folder = pending_root / seat
+            names = _child_names(folder)
+            if names is None:
+                raise _Unlisted('a pending journal vanished')
+            for name in names:
+                path = folder / name
+                if not name.endswith('.json'):
+                    try:
+                        info = path.lstat()
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISLNK(info.st_mode):
+                        raise _Unlisted('a pending journal is a link')
+                    continue
+                try:
+                    data = _read_object(path, shutdown.MAX_JOURNAL_BYTES)
+                except (OSError, ValueError) as error:
+                    raise _Unlisted('a pending journal could not be read') from error
+                phase = data.get('phase')
+                if not isinstance(phase, str):
+                    raise _Unlisted('a pending journal could not be read')
+                if phase != 'prepared':
+                    found.add(path.relative_to(runtime).as_posix())
+    attempt_root = runtime / 'post' / 'attempts'
+    attempts = _child_names(attempt_root)
+    if attempts is not None:
+        for name in attempts:
+            path = attempt_root / name
+            if not name.endswith('.json'):
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISLNK(info.st_mode):
+                    raise _Unlisted('an attempt is a link')
+                continue
+            try:
+                data = _read_object(path, shutdown.MAX_JOURNAL_BYTES)
+            except (OSError, ValueError) as error:
+                raise _Unlisted('an attempt could not be read') from error
+            if 'result' not in data or data.get('result') is None or data.get('result') == 'blind':
+                found.add(path.relative_to(runtime).as_posix())
+    trusted = _child_names(trusted_files.root(runtime))
+    if trusted is not None:
+        for name in trusted:
+            folder = trusted_files.root(runtime) / name
+            try:
+                info = folder.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                if name == MARK:
+                    continue  # the mark itself may be the link this check is about
+                raise _Unlisted('a trusted folder is a link')
+            if not stat.S_ISDIR(info.st_mode):
+                continue
+            wake = folder / trusted_files.HUMAN_WAKE
+            try:
+                info = wake.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                raise _Unlisted('a human wake could not be read')
+            try:
+                data = _read_object(wake, shutdown.MAX_JOURNAL_BYTES)
+            except (OSError, ValueError) as error:
+                raise _Unlisted('a human wake could not be read') from error
+            ended = data.get('ended', False)
+            if type(ended) is not bool:
+                raise _Unlisted('a human wake could not be read')
+            if ended:
+                continue
+            identity = _wake_identity(data)
+            if identity is None:
+                raise _Unlisted('a human wake could not be read')
+            relative = wake.relative_to(runtime).as_posix()
+            found.add(relative)
+            found.wakes.append({'journal': relative, 'wake': identity})
+    return found
+
+
 def _seat_of(journal: str | None) -> str | None:
     """The seat a pending journal or a human-wake reservation names, from the path alone."""
     if not journal:
@@ -368,35 +545,74 @@ def _append(path: Path, line: str) -> None:
         os.close(descriptor)
 
 
+def _journals_of(entry: dict) -> list[str]:
+    found = []
+    journal = entry.get('journal')
+    if isinstance(journal, str):
+        found.append(journal)
+    extra = entry.get('journals')
+    if isinstance(extra, list):
+        found.extend(item for item in extra if isinstance(item, str) and item not in found)
+    return found
+
+
 def _record(ship: Ship, entry: dict) -> None:
-    """The mark, then the same line in the seat's acts when the pointer names a declared seat.
+    """The mark, then the same line in each declared seat the line names.
 
     Only the ship-level mark is required. A seat copy that cannot be written leaves the mark standing.
     """
     _append(mark_path(ship.runtime), json.dumps(entry, ensure_ascii=False) + '\n')
-    seat_name = _seat_of(entry.get('journal'))
-    if seat_name is None or seat_name not in ship.seats:
-        return
     from types import SimpleNamespace
     from . import acts
-    seat = SimpleNamespace(name=seat_name, trusted=trusted_files.folder(ship.runtime, seat_name))
-    try:
-        acts.write(seat, entry)
-    except (OSError, ShipError):
-        return
+    seen: list[str] = []
+    for journal in _journals_of(entry):
+        seat_name = _seat_of(journal)
+        if seat_name is None or seat_name not in ship.seats or seat_name in seen:
+            continue
+        seen.append(seat_name)
+        seat = SimpleNamespace(name=seat_name, trusted=trusted_files.folder(ship.runtime, seat_name))
+        try:
+            acts.write(seat, entry)
+        except (OSError, ShipError):
+            continue
 
 
-def _rows(runtime: Path) -> list[dict]:
+_MARK_LIMIT = 1024 * 1024
+_MARK_SEEN: set[tuple[str, str]] = set()
+
+
+def _load_mark(runtime: Path) -> tuple[str, str, list[dict]]:
+    """``(absent|unreadable|rows, why, rows)``. A missing mark is absent. One that exists and cannot be read is not."""
     path = mark_path(runtime)
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        info = path.lstat()
+    except FileNotFoundError:
+        return 'absent', '', []
     except OSError:
-        return []
+        return 'unreadable', 'unreadable', []
+    if stat.S_ISLNK(info.st_mode):
+        return 'unreadable', 'link', []
+    if not stat.S_ISREG(info.st_mode):
+        return 'unreadable', 'not a regular file', []
+    if info.st_size > _MARK_LIMIT:
+        return 'unreadable', 'over 1 MiB', []
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
-            return []
-        raw = os.read(descriptor, info.st_size)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as error:
+        if error.errno == errno.ENOENT:
+            return 'absent', '', []
+        if error.errno == errno.ELOOP:
+            return 'unreadable', 'link', []
+        return 'unreadable', 'unreadable', []
+    try:
+        current = os.fstat(descriptor)
+        if not stat.S_ISREG(current.st_mode):
+            return 'unreadable', 'not a regular file', []
+        if current.st_size > _MARK_LIMIT:
+            return 'unreadable', 'over 1 MiB', []
+        raw = os.read(descriptor, current.st_size)
+    except OSError:
+        return 'unreadable', 'unreadable', []
     finally:
         os.close(descriptor)
     rows = []
@@ -407,40 +623,123 @@ def _rows(runtime: Path) -> list[dict]:
             continue
         if isinstance(row, dict):
             rows.append(row)
-    return rows
+    return 'rows', '', rows
 
 
-def _final(runtime: Path) -> dict[str, dict]:
-    """One row per act: a later line replaces the outcome."""
+def _log_mark_once(runtime: Path, why: str) -> None:
+    """One log line for a mark that exists and cannot be read. Later checks in this process do not repeat it."""
+    key = (os.fspath(runtime), why)
+    if key in _MARK_SEEN:
+        return
+    _MARK_SEEN.add(key)
+    try:
+        _log(runtime, 'delivery-boundary-mark-unreadable', why=why)
+    except OSError:
+        _MARK_SEEN.discard(key)
+
+
+def mark_unreadable(runtime: Path) -> bool:
+    """Whether the mark exists and cannot be read. A missing mark is readable enough: it holds nothing."""
+    return _load_mark(runtime)[0] == 'unreadable'
+
+
+def _final(rows: list[dict]) -> dict[str, dict]:
+    """One row per act: a later line replaces the outcome and the fields it carries."""
     merged: dict[str, dict] = {}
-    for row in _rows(runtime):
+    for row in rows:
         key = row.get('act')
         if not isinstance(key, str) or row.get('verb') != 'delivery-boundary':
             continue
         if key not in merged:
             merged[key] = dict(row)
-        else:
-            merged[key]['outcome'] = row.get('outcome')
-            if 'journal' in row:
-                merged[key]['journal'] = row.get('journal')
+            continue
+        current = merged[key]
+        for field in ('outcome', 'journal', 'journals', 'wakes', 'wake', 'destination', 'kind'):
+            if field in row:
+                current[field] = row.get(field)
     return merged
 
 
-def _honoured(runtime: Path) -> list[dict]:
+def _destination_exists(runtime: Path, row: dict) -> bool:
+    dest = row.get('destination')
+    if not isinstance(dest, str) or not _relative_ok(dest):
+        return False
+    return os.path.lexists(runtime / dest)
+
+
+def _honoured_rows(runtime: Path, rows: list[dict]) -> list[dict]:
+    """A settled line always. A settling line while the pointer is gone or the evidence file it named exists."""
     pointer_gone = not os.path.lexists(shutdown.pointer_path(runtime))
     found = []
-    for row in _final(runtime).values():
+    for row in _final(rows).values():
         outcome = row.get('outcome')
-        if outcome == 'settled' or outcome == 'settling' and pointer_gone:
+        if outcome == 'settled' or outcome == 'settling' and (
+                pointer_gone or _destination_exists(runtime, row)):
             found.append(row)
     return found
 
 
+def _wake_bindings(row: dict) -> list[tuple[str, str]]:
+    found = []
+    if isinstance(row.get('wake'), str) and isinstance(row.get('journal'), str):
+        found.append((row['journal'], row['wake']))
+    wakes = row.get('wakes')
+    if isinstance(wakes, list):
+        for item in wakes:
+            if isinstance(item, dict) and isinstance(item.get('journal'), str) and isinstance(item.get('wake'), str):
+                found.append((item['journal'], item['wake']))
+    return found
+
+
+def _episode_in(rows: list[dict], relative: str, data: dict) -> bool:
+    identity = _wake_identity(data)
+    if identity is None:
+        return False
+    return any(path == relative and wake == identity for row in rows for path, wake in _wake_bindings(row))
+
+
+def _sweep_names(runtime: Path) -> list[str] | None:
+    """The live holds a mark that cannot be read stands for. None when even that list cannot be made:
+    the caller then holds what it was asked about, rather than releasing it."""
+    try:
+        return _list_holds(runtime).names
+    except _Unlisted:
+        return None
+
+
+def episode_held(runtime: Path, relative: str, data: dict) -> bool:
+    """Whether this human-wake episode, not merely its path, is held."""
+    if not _relative_ok(relative) or not isinstance(data, dict):
+        return False
+    state, why, rows = _load_mark(runtime)
+    if state == 'absent':
+        return False
+    if state == 'unreadable':
+        _log_mark_once(runtime, why)
+        return data.get('ended') is not True
+    return _episode_in(_honoured_rows(runtime, rows), relative, data)
+
+
 def held_journal(runtime: Path, relative: str) -> bool:
     """Whether the next service must hold this runtime-relative journal: outcome uncertain, never typed again."""
-    if not isinstance(relative, str) or not relative or relative.startswith('/') or '..' in Path(relative).parts:
+    if not _relative_ok(relative):
         return False
-    return any(row.get('journal') == relative for row in _honoured(runtime))
+    state, why, rows = _load_mark(runtime)
+    if state == 'absent':
+        return False
+    if state == 'unreadable':
+        _log_mark_once(runtime, why)
+        names = _sweep_names(runtime)
+        return True if names is None else relative in names
+    if _wake_path(relative):
+        try:
+            data = _read_object(runtime / relative, shutdown.MAX_JOURNAL_BYTES)
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError):
+            return any(relative in _journals_of(row) for row in _honoured_rows(runtime, rows))
+        return _episode_in(_honoured_rows(runtime, rows), relative, data)
+    return any(relative in _journals_of(row) for row in _honoured_rows(runtime, rows))
 
 
 def held_path(runtime: Path, path: Path) -> bool:
@@ -451,13 +750,31 @@ def held_path(runtime: Path, path: Path) -> bool:
     return held_journal(runtime, relative)
 
 
+def _held_names(runtime: Path) -> list[str] | None:
+    """Relative paths the mark holds. None when the mark cannot be read and the live list cannot be made."""
+    state, why, rows = _load_mark(runtime)
+    if state == 'absent':
+        return []
+    if state == 'unreadable':
+        _log_mark_once(runtime, why)
+        return _sweep_names(runtime)
+    names: list[str] = []
+    for row in _honoured_rows(runtime, rows):
+        for journal in _journals_of(row):
+            if journal not in names:
+                names.append(journal)
+    return names
+
+
 def message_held(runtime: Path, seat_name: str, message_id: str) -> bool:
     """Whether a resend of this message would retype a journal the mark holds. The service's check, not the act's."""
+    names = _held_names(runtime)
+    if names is None:
+        return True  # the mark exists and neither it nor the live journals can be read: do not resend
     prefix = f'{message_id}-'
     pending = f'post/pending/{seat_name}/'
-    for row in _honoured(runtime):
-        journal = row.get('journal')
-        if not isinstance(journal, str):
+    for journal in names:
+        if not _relative_ok(journal):
             continue
         name = Path(journal).name
         if name == message_id or name.startswith(prefix):
@@ -628,10 +945,42 @@ def settle(ship: Ship, tmux, caller: str | None, *, cgroup_of=barrier_settle._cg
                      proofs=proofs, pids=pids, seen=seen, environment_unreadable=skipped)
                 return 'refused: ' + '; '.join(seen) + '; nothing was moved'
             journal, kind = _named_journal(runtime)
+            journals = None
+            wakes = None
+            wake = None
+            if journal is None:
+                # The pointer's bytes name nothing. Hold every unresolved journal that exists now, or refuse.
+                try:
+                    holds = _list_holds(runtime)
+                except _Unlisted as error:
+                    why = f'the journals beside an unreadable pointer could not be named ({error.why})'
+                    _log(runtime, 'delivery-boundary-settle-refused', caller=who, problem=problem, proofs=proofs,
+                         pids=pids, seen=[why])
+                    return f'refused: {why}; nothing was moved'
+                journals = holds.names
+                wakes = holds.wakes
+            elif kind == 'human wake':
+                try:
+                    wake = _wake_identity(_read_object(runtime / journal, shutdown.MAX_JOURNAL_BYTES))
+                except (OSError, ValueError):
+                    wake = None
+                if wake is None:
+                    why = 'the human-wake episode could not be named'
+                    _log(runtime, 'delivery-boundary-settle-refused', caller=who, problem=problem, proofs=proofs,
+                         pids=pids, seen=[why])
+                    return f'refused: {why}; nothing was moved'
             stamp_word = 'read' if shutdown.owner(runtime) is not None else 'unreadable'
+            folder_name = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            relative_dest = f'evidence/{EVIDENCE}/{folder_name}/service.delivery'
             entry = dict(act=uuid.uuid4().hex[:12], verb='delivery-boundary', at=_now(), caller=who,
                          problem=problem, journal=journal, kind=kind, proofs=proofs, pids=pids,
-                         lock_stamp=stamp_word, outcome='settling')
+                         lock_stamp=stamp_word, destination=relative_dest, outcome='settling')
+            if journals is not None:
+                entry['journals'] = journals
+            if wakes:
+                entry['wakes'] = wakes
+            if wake is not None:
+                entry['wake'] = wake
             try:
                 _record(ship, entry)
             except (OSError, ShipError) as error:
@@ -647,7 +996,7 @@ def settle(ship: Ship, tmux, caller: str | None, *, cgroup_of=barrier_settle._cg
                 _log(runtime, 'delivery-boundary-settle-refused', caller=who, problem=problem, proofs=proofs,
                      pids=pids, seen=['the delivery pointer changed'])
                 return 'refused: the delivery pointer changed; nothing was moved'
-            folder = runtime / 'evidence' / EVIDENCE / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            folder = runtime / 'evidence' / EVIDENCE / folder_name
             folder.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             folder.mkdir(mode=0o700)
             destination = folder / 'service.delivery'
