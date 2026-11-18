@@ -13,7 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import relaunch_intent, sandbox, seat as seatmod, ship as shipmod
+from quarterdeck import lifecycle, post, refusal, relaunch_intent, sandbox, seat as seatmod, ship as shipmod, shutdown
+from quarterdeck.harness.limits import Usage, Window
+from quarterdeck.service import Service
+
+from .waiting import wait_for
 
 DEAD = dict(version=1, pid=999999999, start='synthetic-start-zzzz', token='synthetic-owner-zzzz', device=1, inode=1)
 
@@ -212,3 +216,182 @@ def test_a_hold_the_service_places_clears_the_intent_and_says_who(ship):
     link = relaunch_intent.path(ship.runtime, 'worker-1')
     link.symlink_to(ship.folder / 'ship.toml')
     assert not relaunch_intent.clear(ship.runtime, 'worker-1', 'its refusal hold') and link.is_symlink()
+
+
+class ServiceEnded(BaseException):
+    """A cut after retirement but before the subsequent launch."""
+
+
+@pytest.fixture
+def routed(ship, tmux):
+    name = 'worker-1'
+    spec = ship.seat(name)
+    ship.seats[name] = replace(spec, pools=('fake', 'second', 'third'),
+                               pool_choices={pool: {} for pool in ('fake', 'second', 'third')})
+    for pool in ('second', 'third'):
+        ship.pools[pool] = shipmod.Pool(pool, 'synthetic')
+    svc = Service(ship, tmux)
+    seat = svc.seat(name)
+    initial = svc.store.new('order', 'issuer', seat.name, 'Synthetic opening turn')
+    try:
+        seat.up()
+
+        def completed_turn():
+            record = seat.record()
+            if record is not None:
+                state = seat.harness.state(record)
+                return state.turn_open is False and state.completed_turns and record
+
+        record = wait_for(completed_turn)
+        svc.store.new('report', seat.name, 'issuer', 'Synthetic opening complete', re=initial.id)
+        yield svc, seat, record
+    finally:
+        svc.seat(name).down()
+        svc.ledger.close()
+
+
+def cut_after_down(svc, seat, action, monkeypatch):
+    target = relaunch_intent.path(svc.runtime, seat.name)
+
+    def cut(current, *args, **kwargs):
+        assert current.launched() is None and current.pool.name != 'second'
+        with pytest.raises(lifecycle.Busy):
+            with lifecycle.claim(svc.runtime, seat.name):
+                pytest.fail('retirement lost the relaunch claim')
+        raise ServiceEnded
+
+    # A process exit would skip the section's cleanup. Keep its actual bytes at the cut.
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(seatmod.Seat, '_up', cut)
+        move = seatmod.Seat.move_to
+
+        def before_move(current, pool, **kwargs):
+            if current.launched() is None and pool == 'second':
+                cut(current)
+            return move(current, pool, **kwargs)
+
+        interrupted.setattr(seatmod.Seat, 'move_to', before_move)
+        interrupted.setattr(relaunch_intent, '_remove', lambda *_: None)
+        with shutdown.Stop(svc.runtime).installed(), pytest.raises(ServiceEnded):
+            action()
+    data = json.loads(target.read_bytes())
+    monkeypatch.setattr(relaunch_intent, '_gone', lambda owner: owner == data['owner'])
+    return target, data
+
+
+def wall(svc, pool):
+    at = post.now()
+    svc.ledger.record_usage(pool, Usage((Window('5h', 1.0, at + timedelta(hours=1)),), at))
+
+
+@pytest.mark.parametrize('kind', ['select', 'failover'])
+@pytest.mark.parametrize('recorded', [False, True])
+def test_service_move_recovers_only_its_recorded_destination(routed, monkeypatch, kind, recorded):
+    svc, seat, record = routed
+    target_id = seat.harness.session_id(record)
+    if kind == 'failover':
+        wall(svc, 'fake')
+        action = svc.failover
+    else:
+        action = lambda: svc.select(seat, 'second')
+    journal, data = cut_after_down(svc, seat, action, monkeypatch)
+    assert data['kind'] == kind and data['resume'] is True
+    assert data['destination'] == {'pool': 'second', 'harness': 'fake'}
+    assert svc.seat(seat.name).pool.name == 'fake'
+
+    # Changing the ordinary saved selection and current quota cannot supply the old route.
+    seat.move_to('third')
+    wall(svc, 'second')
+    if not recorded:
+        del data['destination']
+        journal.write_text(json.dumps(data))
+
+    svc.relaunch_intents()
+    recovered = svc.seat(seat.name)
+    if recorded:
+        assert recovered.is_up and recovered.launched().pool == 'second'
+        assert recovered.launched().resume == target_id and recovered.record() == record
+        assert not journal.exists()
+        launch = recovered.launched()
+        svc.relaunch_intents()
+        assert svc.seat(seat.name).launched() == launch
+    else:
+        assert not recovered.is_up and recovered.pool.name == 'third'
+        assert json.loads(journal.read_bytes())['error'] == 'its destination pool was not recorded'
+
+
+@pytest.mark.parametrize(('kind', 'resume', 'route', 'target_present'), [
+    ('relaunch', True, True, True), ('relaunch', True, False, True), ('relaunch', True, True, False),
+    ('relaunch', False, True, False), ('relaunch', False, False, False),
+    ('after-order', False, True, False), ('refusal', False, True, False),
+])
+def test_service_relaunch_recovers_its_pool_and_effective_resume(routed, monkeypatch, kind, resume, route, target_present):
+    svc, seat, record = routed
+    target_id = seat.harness.session_id(record) if target_present else None
+    if route:
+        wall(svc, 'fake')
+    if kind == 'after-order':
+        monkeypatch.setattr(Service, '_fresh_after_order_ready', lambda _, candidate: candidate.name == seat.name)
+        action = svc.fresh_after_order
+    elif kind == 'refusal':
+        action = lambda: refusal.relaunch(svc, seat, [], {'quarantined': []})
+    else:
+        action = lambda: svc.relaunch(seat, resume)
+    journal, data = cut_after_down(svc, seat, action, monkeypatch)
+    assert data['kind'] == kind
+    target_pool = 'second' if route else 'fake'
+    assert data['destination'] == {'pool': target_pool, 'harness': 'fake'}
+    assert data['resume'] is resume
+    if not target_present:
+        rows = [json.loads(line) for line in record.read_text().splitlines()]
+        for row in rows:
+            row.pop('sessionId', None)
+        record.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    svc.relaunch_intents()
+    recovered = svc.seat(seat.name)
+    if resume and not target_present:
+        assert not recovered.is_up and recovered.pool.name == 'fake'
+        assert json.loads(journal.read_bytes())['error'] == 'resume target unproved'
+    else:
+        assert recovered.is_up and recovered.launched().pool == target_pool
+        assert recovered.launched().resume == target_id
+        assert not journal.exists()
+
+
+def test_credentials_skips_lifecycle_contention_and_logs_a_retirement_failure(routed, monkeypatch):
+    svc, seat, _ = routed
+    old = seat.launched()
+    seat.down()
+    marker = seat.trusted / seatmod.RETIRING
+    marker.write_text(json.dumps(seat._retirement_binding(old)))
+    logs = []
+    monkeypatch.setattr(svc, 'log', lambda event, **data: logs.append((event, data)))
+
+    with lifecycle.claim(svc.runtime, seat.name):
+        svc.credentials()
+        assert marker.exists() and logs == []
+
+    with monkeypatch.context() as failed:
+        def fail(current, launched):
+            assert current.name == seat.name and launched is None
+            raise shipmod.ShipError('synthetic retirement read failed')
+
+        failed.setattr(seatmod.Seat, '_finish_retirement', fail)
+        svc.credentials()
+        assert marker.exists()
+        assert logs == [('error', dict(step='retire', seat=seat.name, error='synthetic retirement read failed'))]
+
+    svc.credentials()
+    assert not marker.exists() and logs[-1][0] == 'retired'
+
+
+def test_recovery_holds_a_recorded_destination_that_no_longer_matches(routed, monkeypatch):
+    svc, seat, _ = routed
+    journal, data = cut_after_down(svc, seat, lambda: svc.select(seat, 'second'), monkeypatch)
+    data['destination']['harness'] = 'different-program'
+    journal.write_text(json.dumps(data))
+    svc.relaunch_intents()
+    current = svc.seat(seat.name)
+    assert current.launched() is None and current.pool.name == 'fake'
+    assert json.loads(journal.read_bytes())['error'] == (
+        f'{seat.name}: its recorded destination no longer names the same program')

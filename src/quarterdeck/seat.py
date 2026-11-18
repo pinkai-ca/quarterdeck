@@ -499,6 +499,8 @@ class Seat:
         if same_program:
             if not self._screened() and not self._never_resumed():
                 self.harness.preflight_resume(self.adapter_spec(selected), self.home, self._resume_id)
+        from . import relaunch_intent
+        relaunch_intent.record_destination(self, same_program, pool=pool, harness=selected.harness)
         self.record()
         credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)
         stopped = self._relaunch_down()
@@ -868,7 +870,8 @@ class Seat:
         with self._lifecycle():
             return self._up_with_pool_choice(resume, pool=pool, fresh_after_order=True)
 
-    def _up_with_pool_choice(self, resume: bool, *, pool: str | None = None, fresh_after_order: bool = False) -> str:
+    def _up_with_pool_choice(self, resume: bool, *, pool: str | None = None, fresh_after_order: bool = False,
+                             recorded: bool = False) -> str:
         """Choose and launch while the caller holds the seat's lifecycle claim."""
         self.migrate()  # before the launch choice reads the pool selection in its new place
         if pool is not None and pool not in self.spec.pools:  # a plain list declares its choices as tables do
@@ -880,33 +883,55 @@ class Seat:
             resume = False
         def proof(text):
             return text + (' · fresh: its last order is reported' if reported else '')
+        from . import relaunch_intent
         if len(self.spec.pools) < 2 or self.is_up:  # a plain list of pools chooses as a table of them does
+            relaunch_intent.record_destination(self, resume)
             return proof(self._up(resume))
         from .recovery import require_clear
         require_clear(self)
-        target, why = (pool, 'chosen for this launch by qd up --pool') if pool is not None else self.launch_choice()
+        if pool is None:
+            target, why = self.launch_choice()
+        else:
+            target = pool
+            why = 'recorded relaunch destination' if recorded else 'chosen for this launch by qd up --pool'
         current = self.pool.name
         saved = self._saved_name()
+        selected = replace(self.spec.for_pool(target), human_session=self.session.human)
+        same_program = selected.harness == self.spec.harness
+        relaunch_intent.record_destination(self, resume and same_program, pool=target, harness=selected.harness)
         if target == current and pool is None and why == 'its saved choice':
             (self.trusted / EXPLICIT).unlink(missing_ok=True)
             return proof(self._up(resume))  # nothing chosen: the launch is as it always was
-        selected = replace(self.spec.for_pool(target), human_session=self.session.human)
         observation = self._observe_selection(selected, self.ship.pool(target))
-        same_program = selected.harness == self.spec.harness
         if same_program and resume and not self._screened() and not self._never_resumed():
             self.harness.preflight_resume(self.adapter_spec(selected), self.home, self._resume_id)
         if self.launched() is not None:
             self._relaunch_down()  # retain the old record and reseed its source pool before changing selection
+            if recorded and self.launched() is not None:
+                raise ShipError(self.relaunch_refused() or f'{self.name}: old launch still retained')
         # A person's choice is used up only by a launch that starts: _up clears it once its pane is open, and a
         # launch refused at one of _up's doors leaves it as the person set it.
         self.move_to(target, explicit=None)
         self.spec = selected
         if not same_program:
             self.harness = harnesses.get(selected.harness)
-        started = proof(self._up(resume=resume and same_program, observation=observation))
+        started = proof(self._up(resume=resume and same_program, observation=observation,
+                                 require_resume_target=recorded and resume))
         moved = f"{self.name}: launched on {target} ({why})" + (
             f"; its saved choice was {saved}" if saved is not None and target != saved else "")
         return moved + '\n' + started
+
+    def _up_on_recorded_pool(self, pool: str, harness: str, *, resume: bool) -> str:
+        """Finish a service transaction without choosing from current quota or a saved pool hint."""
+        selected = self.spec.for_pool(pool)
+        if selected.harness != harness:
+            raise ShipError(f'{self.name}: its recorded destination no longer names the same program')
+        if resume and (harness != self.harness.name or self._never_resumed() or self._screened()
+                       or self._resume_id() is None):
+            raise ShipError('resume target unproved')
+        if pool == self.pool.name:
+            return self._up(resume=resume, require_resume_target=resume)
+        return self._up_with_pool_choice(resume, pool=pool, recorded=True)
 
     def _last_delivered_order_reported(self) -> bool:
         """Use the service's open-work reading; an ack is never a closing report.
@@ -1596,6 +1621,8 @@ class Seat:
             if not screened and not hand:
                 self.harness.preflight_resume(self.adapter_spec(), self.home, self._resume_id)
             observation = self._observe_selection()
+            from . import relaunch_intent
+            relaunch_intent.record_destination(self, not hand)
             return (self._relaunch_down() + "\n" + self._up(resume=not hand, observation=observation)
                     + (" · fresh: a hand starts fresh on every launch" if hand else
                        " · fresh: a record of a launch that screened a pull request is still in its home"
@@ -1610,6 +1637,8 @@ class Seat:
             if moved := self._relaunch_off_wall(resume=False):
                 return moved
             observation = self._observe_selection()
+            from . import relaunch_intent
+            relaunch_intent.record_destination(self, False)
             return self._relaunch_down() + "\n" + self._up(resume=False, observation=observation)
 
     def _walled_now(self) -> bool:
@@ -1639,6 +1668,8 @@ class Seat:
         same_program = selected.harness == self.spec.harness
         if same_program and resume and not self._never_resumed():
             self.harness.preflight_resume(self.adapter_spec(selected), self.home, self._resume_id)
+        from . import relaunch_intent
+        relaunch_intent.record_destination(self, resume and same_program, pool=target, harness=selected.harness)
         stopped = self._relaunch_down()
         self.move_to(target)
         self.spec = selected

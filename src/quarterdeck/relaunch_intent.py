@@ -33,12 +33,13 @@ ending, a stopped ship-server recovery, or a hold registered in ``HOLDS``. The s
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import stat
 
-from . import post_dir, shutdown
+from . import post_dir, ship_locks, shutdown
 from .ship import ShipError
 
 # The bound a stop waits for a relaunch, from the stop's signal. Measured on the crew (15 Nov), a fresh start's up
@@ -51,6 +52,7 @@ LIMIT = 4096  # an intent is a few hundred bytes; a larger file is not one
 RELAUNCHING, RELEASED, FINISHING, FAILED = 'relaunching', 'released', 'finishing', 'failed'
 KINDS = frozenset({'after-order', 'relaunch', 'refusal', 'failover', 'select', 'compaction', 'server-recovery'})
 ROUTING = frozenset({'after-order', 'relaunch', 'refusal'})
+_active = ContextVar('relaunch_intent', default=None)
 
 
 # A hold that keeps a seat down, added later, registers a reader here: seat -> reason or None. Its writer calls
@@ -104,6 +106,11 @@ def _owner_valid(owner) -> bool:
             and isinstance(owner.get('start'), str) and bool(owner['start']))
 
 
+def _destination_valid(destination) -> bool:
+    return (isinstance(destination, dict) and destination.keys() == {'pool', 'harness'}
+            and all(isinstance(value, str) and bool(value) for value in destination.values()))
+
+
 def read(runtime, name: str, seats) -> dict:
     """One intent, by its file name, read without following a link and checked whole; ShipError says why not.
 
@@ -121,6 +128,7 @@ def read(runtime, name: str, seats) -> dict:
     if (not isinstance(data, dict) or data.get('version') != 1 or data.get('seat') != name[:-5]
             or data.get('kind') not in KINDS or type(data.get('resume')) is not bool
             or type(data.get('needs_destination', False)) is not bool
+            or ('destination' in data and not _destination_valid(data['destination']))
             or not isinstance(data.get('at'), str) or not _owner_valid(data.get('owner'))
             or data.get('phase') not in (RELAUNCHING, RELEASED, FINISHING, FAILED)
             or not (data.get('before') is None or isinstance(data.get('before'), str))):
@@ -169,14 +177,15 @@ def clear(runtime, seat: str, who: str) -> bool:
         return False
     if mode is None or not stat.S_ISREG(mode):
         return False  # nothing to clear, or a link or other file finish() already refuses and the line names
-    try:
-        kind = json.loads(post_dir.read_bytes(target, limit=LIMIT)).get('kind')
-    except (OSError, ShipError, ValueError, AttributeError):
-        kind = None
-    try:
-        post_dir.remove(target)
-    except FileNotFoundError:
-        return False
+    with _intent_lock(runtime, seat):
+        try:
+            kind = json.loads(post_dir.read_bytes(target, limit=LIMIT)).get('kind')
+        except (OSError, ShipError, ValueError, AttributeError):
+            kind = None
+        try:
+            post_dir.remove(target)
+        except FileNotFoundError:
+            return False
     _log(runtime, 'relaunch-intent', seat=seat, kind=kind, outcome='cleared', reason=f'cleared by {who}')
     return True
 
@@ -237,7 +246,7 @@ def _needs_destination(spec, kind: str) -> bool:
     )
 
 
-def _destination_unrecorded(spec, intent) -> bool:
+def _destination_required(spec, intent) -> bool:
     return intent.get('needs_destination', False) or _needs_destination(spec, intent['kind'])
 
 
@@ -250,7 +259,33 @@ def pending_server_choice(ship, name: str) -> bool:
         intent = read(ship.runtime, target.name, ship.seats)
     except (OSError, ShipError, TypeError):
         return True  # an unreadable intent cannot prove a new choice is safe
-    return intent['kind'] == 'server-recovery' and _destination_unrecorded(ship.seats[name], intent)
+    return intent['kind'] == 'server-recovery' and (
+        'destination' in intent or _destination_required(ship.seats[name], intent))
+
+
+def _intent_lock(runtime, seat):
+    return ship_locks.held(ship_locks.path(runtime, 'relaunch', f'{seat}.lock'), f'{seat}: relaunch intent')
+
+
+def record_destination(seat, resume: bool, *, pool: str | None = None, harness: str | None = None) -> None:
+    """Record the chosen pool and actual resume mode under the caller's lifecycle claim, before retirement."""
+    active = _active.get()
+    if active is None or active[0] is not seat:
+        return  # an ordinary launch, outside this seat's service transaction
+    _, intent = active
+    destination = {'pool': pool if pool is not None else seat.pool.name,
+                   'harness': harness if harness is not None else seat.spec.harness}
+    runtime = seat.ship.runtime
+    name = path(runtime, seat.name).name
+    resume = resume and not seat._never_resumed() and not seat._screened()
+    with _intent_lock(runtime, seat.name):
+        if post_dir.mode(path(runtime, seat.name)) is None:
+            return  # a person's later word cleared it
+        current = read(runtime, name, {seat.name})
+        if current != intent:
+            raise ShipError(f'{seat.name}: relaunch intent changed before its destination was recorded')
+        current.update(destination=destination, resume=resume)
+        _write(runtime, current)
 
 
 @contextmanager
@@ -258,8 +293,9 @@ def section(service, seat, kind: str, *, resume):
     """One relaunch of ``seat``: intent and log line before the down, log line after the up, a stop held between.
 
     Outside a running service (a person's qd, a check, a test) it does nothing and reads nothing. ``resume`` is
-    what the next service's up does if this one dies between the down and the up: a bool, or a callable read only
-    when the intent is written. ``service`` logs the lines; without one they go to the service's log directly.
+    the initial resume mode: a bool, or a callable read only when the intent is written. A seat that selects a
+    destination records its effective mode and destination before retirement. ``service`` logs the lines; without
+    one they go to the service's log directly.
     """
     if shutdown._controller is None:
         yield
@@ -284,6 +320,7 @@ def section(service, seat, kind: str, *, resume):
         _write(runtime, intent)
         log('relaunch', seat=seat.name, kind=kind, phase='begin')
         outcome = 'failed'
+        active = _active.set((seat, intent))
         try:
             yield
             outcome = 'done'
@@ -291,6 +328,7 @@ def section(service, seat, kind: str, *, resume):
             outcome = f'failed: {type(error).__name__}'
             raise
         finally:
+            _active.reset(active)
             _remove(runtime, seat.name)
             log('relaunch', seat=seat.name, kind=kind, phase=outcome)
     finally:
@@ -387,7 +425,8 @@ def finish(service) -> None:
                     continue
                 if data['phase'] in (FINISHING, FAILED) or held(seat) is not None:
                     continue  # tried once already, or held: a person decides, and the status line says so
-                if _destination_unrecorded(getattr(seat, 'spec', None), data):
+                destination = data.get('destination')
+                if destination is None and _destination_required(getattr(seat, 'spec', None), data):
                     reason = 'its destination pool was not recorded'
                     _write(runtime, {**data, 'phase': FAILED, 'error': reason})
                     service.log('relaunch-intent', seat=seat.name, kind=data['kind'], outcome='refused', reason=reason)
@@ -397,7 +436,10 @@ def finish(service) -> None:
                 _write(runtime, data)  # before the up: a finish cut short is never tried twice
                 service.log('relaunch', seat=seat.name, kind=data['kind'], phase='finish-begin', left_by=left_by)
                 try:
-                    proof = seat._up(resume=data['resume'], require_resume_target=True)
+                    if destination is None:
+                        proof = seat._up(resume=data['resume'], require_resume_target=data['resume'])
+                    else:
+                        proof = seat._up_on_recorded_pool(**destination, resume=data['resume'])
                 except Exception as error:
                     data.update(phase=FAILED, error=str(error)[:200])
                     _write(runtime, data)

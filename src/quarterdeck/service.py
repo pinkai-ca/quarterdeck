@@ -2180,6 +2180,8 @@ class Service:
             try:
                 if proof := seat.finish_retirement():
                     self.log("retired", seat=seat.name, proof=proof)
+            except lifecycle.Busy:
+                continue  # the owner of the transition still owns its retirement
             except ShipError as error:
                 self.log("error", step="retire", seat=seat.name, error=str(error))
         for line in credential.reseed(self.ship, ready):

@@ -417,9 +417,13 @@ def test_only_manual_up_applies_the_reported_order_fresh_rule(choice_world, manu
     assert w.seat.launched().resume == (None if manual else 'synthetic-resume-target')
 
 
-@pytest.mark.parametrize('old_launch_remains', [True, False])
-def test_interrupted_server_recovery_does_not_choose_again(choice_world, monkeypatch, old_launch_remains):
-    w = choice_world('earlier')  # plain list, with an earlier choice that has room
+@pytest.mark.parametrize(('case', 'boundary'), [
+    ('earlier', 'before-choice'), ('earlier', 'before-down'),
+    ('earlier', 'before-move'), ('next', 'before-move'),
+])
+def test_interrupted_server_recovery_does_not_choose_again(choice_world, monkeypatch, case, boundary):
+    w = choice_world(case)
+    target = 'first' if case == 'earlier' else 'second'
     path = relaunch_intent.path(w.ship.runtime, w.seat.name)
 
     def interrupt(*args, **kwargs):
@@ -427,13 +431,15 @@ def test_interrupted_server_recovery_does_not_choose_again(choice_world, monkeyp
         raise SystemExit('synthetic interruption')
 
     with monkeypatch.context() as cut:
-        if old_launch_remains:
+        if boundary == 'before-choice':
             cut.setattr(seatmod.Seat, 'launch_choice', interrupt)
+        elif boundary == 'before-down':
+            cut.setattr(seatmod.Seat, '_relaunch_down', interrupt)
         else:
             move = seatmod.Seat.move_to
 
             def interrupt_new_selection(seat, pool, **kwargs):
-                if pool == 'first':
+                if pool == target:
                     assert seat.launched() is None
                     interrupt()
                 move(seat, pool, **kwargs)
@@ -445,13 +451,23 @@ def test_interrupted_server_recovery_does_not_choose_again(choice_world, monkeyp
 
     data = json.loads(path.read_bytes())
     assert data['kind'] == 'server-recovery' and data['before'] == w.old.at
-    assert w.seat.launched() == (w.old if old_launch_remains else None)
+    assert w.seat.launched() == (None if boundary == 'before-move' else w.old)
     monkeypatch.setattr(relaunch_intent, '_gone', lambda owner: owner == data['owner'])
-    w.ship.seats[w.seat.name] = shipmod.replace(w.ship.seat(w.seat.name), pools=(w.saved,))
+    monkeypatch.setattr(seatmod.Seat, 'launch_choice', lambda _: pytest.fail('interrupted recovery re-routed'))
     assert recovery.pass_once(w.svc) is None  # this tick runs before relaunch intent recovery
     relaunch_intent.finish(w.svc)
-    assert json.loads(path.read_bytes())['phase'] == relaunch_intent.FAILED
-    assert relaunch_intent.status(w.ship) == [
-        'builder: relaunch not finished from its intent (its destination pool was not recorded); needs a human: qd up builder']
-    assert recovery.pass_once(w.svc) is None and not w.starts
+    if boundary == 'before-choice':
+        assert 'destination' not in data
+        assert json.loads(path.read_bytes())['phase'] == relaunch_intent.FAILED
+        assert relaunch_intent.status(w.ship) == [
+            'builder: relaunch not finished from its intent (its destination pool was not recorded); needs a human: qd up builder']
+        assert not w.starts
+    else:
+        assert data['destination'] == {'pool': target, 'harness': 'claude'}
+        assert data['resume'] is (case == 'earlier')
+        [(pool, program, argv)] = w.starts
+        assert (pool, program) == (target, 'claude')
+        assert ('--resume' in argv) is (case == 'earlier')
+        assert not path.exists()
+    assert recovery.pass_once(w.svc) is None
     assert [a['outcome'] for a in recovery.read(w.ship.runtime)['attempts']] == ['started']
