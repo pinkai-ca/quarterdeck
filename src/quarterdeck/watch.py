@@ -407,11 +407,8 @@ def render_table(data: dict) -> list[str]:
     if data.get('programs_error'):
         rows.append(data['programs_error'])
     rows += check_outcome.alarms(data.get('check_outcomes', []))
+    rows += check_outcome.unknown_alarms(data.get('check_outcomes', []))
     rows += data.get('check_outcome_errors', [])
-    for outcome in data.get('check_outcomes', []):
-        latest = outcome['latest_attempt']
-        if latest['outcome'] == 'unknown':
-            rows.append(f"{outcome['harness']}: {check_outcome.REASONS[latest['reason']][1]}")
     rows.append(f"open orders: {len(data['open_orders'])}")
     for m in data["open_orders"]:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
@@ -1237,7 +1234,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         retirement=post_retirement.reading(ship.runtime),
         ledger_recovery=ledger_recovery.alarms(ship.runtime),
         check_failed=check_outcome.alarms(outcomes),
-        check_unknown=outcome_errors,
+        check_unknown=check_outcome.unknown_alarms(outcomes) + outcome_errors,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),
         disks=disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())]),

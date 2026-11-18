@@ -635,6 +635,8 @@ def _starting(lines: list[str]) -> bool:
 
 DEFAULT_MODEL = "gpt-6-astra"
 DEFAULT_EFFORT = "medium"
+LOGIN_QUESTION = Interruption("login", r"Sign in with ChatGPT|Welcome to Codex|Log in", key=None)
+APPROVAL_QUESTION = Interruption("approval prompt", r"Allow command\?|Approve\?|Yes, proceed", key=None)
 
 
 CONFIG = """\
@@ -920,6 +922,9 @@ class CodexHarness(Harness):
         return (
             Interruption("model picker", r"Select Model and Effort", key="Escape"),
             Interruption("daybreak notice", r"Daybreak", key="Escape"),
-            Interruption("login", r"Sign in with ChatGPT|Welcome to Codex|Log in", key=None),
-            Interruption("approval prompt", r"Allow command\?|Approve\?|Yes, proceed", key=None),
+            LOGIN_QUESTION,
+            APPROVAL_QUESTION,
         )
+
+    def check_account_questions(self) -> tuple[tuple[Interruption, str], ...]:
+        return ((LOGIN_QUESTION, 'account-login'), (APPROVAL_QUESTION, 'account-permission'))

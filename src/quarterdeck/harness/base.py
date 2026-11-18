@@ -565,6 +565,10 @@ class Harness(ABC):
     def interruptions(self) -> tuple[Interruption, ...]:
         return ()
 
+    def check_account_questions(self) -> tuple[tuple[Interruption, str], ...]:
+        """Native descriptors and outcome reasons for account questions that stop a check."""
+        return ()
+
     def control(self, name: str) -> Control | None:
         return next((c for c in self.controls() if c.name == name), None)
 

@@ -579,3 +579,7 @@ class GrokHarness(Harness):
 
     def interruptions(self):
         return (grok_screen.COMMANDS, grok_screen.MODEL_PICKER)
+
+    def check_account_questions(self) -> tuple[tuple[Interruption, str], ...]:
+        return ((grok_screen.TRAINING_QUESTION, 'account-training'),
+                (grok_screen.TRAINING_ALTERED, 'account-training'))

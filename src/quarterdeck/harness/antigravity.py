@@ -47,6 +47,8 @@ STATUS_LINE = re.compile(r"(?:^|\s{2,})([A-Z]\w*(?: [\w().-]+)*) · (low|medium|
 WORKING = re.compile(r"esc to cancel|^[⠁-⣿]\s+\w+ing", re.M)
 QUEUED_PLACEHOLDER = "Press up to edit queued messages"
 QUEUED_LINE = re.compile(r"^▸ (.*?)\s*\(alt\+m to send immediately\)\s*$")
+TRUST_QUESTION = Interruption("trust dialog", r"Do you trust the contents of this project\?", key="Enter")
+LOGIN_QUESTION = Interruption("login", r"Sign in|Log in to|Authenticate", key=None)
 
 
 class AntigravityHarness(Harness):
@@ -277,8 +279,11 @@ class AntigravityHarness(Harness):
 
     def interruptions(self) -> tuple[Interruption, ...]:
         return (
-            Interruption("trust dialog", r"Do you trust the contents of this project\?", key="Enter"),
-            Interruption("login", r"Sign in|Log in to|Authenticate", key=None),
+            TRUST_QUESTION,
+            LOGIN_QUESTION,
             SURVEY,
             SURVEY_ALTERED,
         )
+
+    def check_account_questions(self) -> tuple[tuple[Interruption, str], ...]:
+        return ((TRUST_QUESTION, 'account-trust'), (LOGIN_QUESTION, 'account-login'))

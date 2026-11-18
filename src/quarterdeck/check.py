@@ -46,9 +46,12 @@ class ProbeCheck(Check):
 
 
 def account_question(door: Door) -> str | None:
-    """Only a recognized, named native prompt supplies a question classification."""
+    """Only an adapter's own descriptor supplies an account question classification."""
     screen = door.screen()
-    return check_outcome.QUESTIONS.get(screen.interruption.name) if screen and screen.interruption else None
+    if screen is None or screen.interruption is None:
+        return None
+    return next((reason for descriptor, reason in door.harness.check_account_questions()
+                 if screen.interruption is descriptor), None)
 
 
 def ready_for_probe(seat: Seat, door: Door) -> bool:
@@ -108,12 +111,14 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None,
             checks, version = (_check(ship, name, tmux, harness, model, minimal=True)
                                if minimal else _check(ship, name, tmux, harness, model))
     except BaseException as error:
-        reason = 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'unclassified'
-        check_outcome.publish(runtime, name, check_outcome.event('unknown', version, reason))
+        interrupted = isinstance(error, (KeyboardInterrupt, SystemExit))
+        reason = 'interrupted' if interrupted else 'unclassified'
+        check_outcome.publish(runtime, name, check_outcome.event('unknown', version, reason),
+                              classification=None if interrupted else 'exception')
         raise
     failures = [c for c in checks if c.passed is False]  # a step not applicable is no failure
     question = next((c.reason for c in failures if isinstance(c, ProbeCheck)
-                     and c.reason in check_outcome.QUESTIONS.values()), None)
+                     and c.reason in check_outcome.ACCOUNT_QUESTIONS), None)
     reason = question or (getattr(failures[0], 'reason', None) if failures else 'passed')
     if reason is None or not checks:
         observed = check_outcome.event('unknown', version, 'unclassified')

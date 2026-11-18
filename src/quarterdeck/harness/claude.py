@@ -1132,6 +1132,11 @@ class ClaudeBox(Box):
         return super().matches('\n'.join(rows), columns, slack)
 
 
+LOGIN_QUESTION = Interruption("login", r"Select login method|Paste code here if prompted|Browser didn't open", key=None)
+TRUST_QUESTION = Interruption("trust dialog", r"Do you trust the files in this folder\?", key=None)
+PERMISSION_QUESTION = Interruption("permission prompt", r"Do you want to proceed\?|Allow once|Allow always", key=None)
+
+
 class ClaudeHarness(Harness):
     reading_fingerprint = staticmethod(children_fingerprint)
     box_geometry_known = True  # box_columns below declares the established text area
@@ -1507,10 +1512,14 @@ class ClaudeHarness(Harness):
     def interruptions(self) -> tuple[Interruption, ...]:
         return (
             ControlInterruption("switch-model confirmation", r"Switch model\?", control="model"),
-            Interruption("login", r"Select login method|Paste code here if prompted|Browser didn't open", key=None),
-            Interruption("trust dialog", r"Do you trust the files in this folder\?", key=None),
-            Interruption("permission prompt", r"Do you want to proceed\?|Allow once|Allow always", key=None),
+            LOGIN_QUESTION,
+            TRUST_QUESTION,
+            PERMISSION_QUESTION,
         )
+
+    def check_account_questions(self) -> tuple[tuple[Interruption, str], ...]:
+        return ((LOGIN_QUESTION, 'account-login'), (TRUST_QUESTION, 'account-trust'),
+                (PERMISSION_QUESTION, 'account-permission'))
 
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
