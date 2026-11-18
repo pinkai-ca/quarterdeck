@@ -1,10 +1,4 @@
-"""Hold gates for the Grok screen queue: only an exact, readable native queue defers the 600 s limit.
-
-Law one-door: a delivery the door cannot settle is held and never typed again. The
-queue handoff may only widen what counts as "still waiting"; every screen it cannot
-read exactly, and every queue that no longer shows this payload, falls back to the
-old hold, and nothing is pasted or submitted a second time.
-"""
+"""Grok queue evidence requires an exact, complete native preview in the same launch."""
 
 import json
 from dataclasses import replace
@@ -138,32 +132,54 @@ def _queued_delivery(setup, monkeypatch, width):  # noqa: F811
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-@pytest.mark.parametrize("later", ["queue-gone", "other-payload", "unknown", "box-typed"])
+@pytest.mark.parametrize("later", ["queue-gone", "other-payload", "unknown", "box-typed", "clipped", "duplicate"])
 def test_after_600s_a_queue_that_no_longer_vouches_holds_and_is_never_resent(
         setup, monkeypatch, width, later):  # noqa: F811
     svc, seat, live, proof, message, data, at = _queued_delivery(setup, monkeypatch, width)
     harness = seat.harness
+    entry = next(row for row in rows(width, 1) if "#1 " in row)
+    duplicate = edited(rows(width, 2), next(row for row in rows(width, 2) if "#2 " in row),
+                       entry.replace("#1 ", "#2 ", 1))
+    first = proof.data["payload"].split("\n", 1)[0]
+    edge = next(row.index("╮") for row in rows(width, 1) if row.startswith("  ╭"))
+    clipped = entry.rstrip().replace(first, first + "x" * (edge - len(entry.rstrip())))
+    proof_at_edge = pending.Proof(proof.path, {
+        **proof.data, "payload": proof.data["payload"].replace(first, first + "x" * (edge - len(entry.rstrip())), 1)})
     screens = {
         "queue-gone": replace(harness.screen(frame(data["screens"]["0"])), box=""),
         "other-payload": replace(harness.screen(frame(
             edited(rows(width, 1), "ord-a1b2", "ord-z9y8"))), box=""),
         "unknown": replace(harness.screen(frame(data["screens"]["1"])), box="", unknown="unmeasured"),
         "box-typed": replace(harness.screen(frame(data["screens"]["1"])), box="a person's draft"),
+        "clipped": replace(harness.screen(frame(edited(rows(width, 1), entry, clipped))), box=""),
+        "duplicate": replace(harness.screen(frame(duplicate)), box=""),
     }
     moment = at + timedelta(seconds=601)
     monkeypatch.setattr(post, "now", lambda: moment)
-    reason, remedy, quiet = proof.reading(seat, screens[later], now=moment)
+    reading = proof_at_edge if later == "clipped" else proof
+    reason, remedy, quiet = reading.reading(seat, screens[later], now=moment)
     assert quiet is False and remedy == "needs a human"
-    assert "queued on screen" not in reason
+    assert "native Grok queue entry cannot be verified" in reason
     assert len(svc.attempts.for_message(message.id)) == 1
     assert live["pasted"] == live["submitted"] == 0
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-def test_before_600s_a_lost_queue_still_waits_on_the_ordinary_clock(setup, monkeypatch, width):  # noqa: F811
+def test_before_600s_a_lost_queue_holds_and_is_never_resent(setup, monkeypatch, width):  # noqa: F811
     svc, seat, live, proof, message, data, at = _queued_delivery(setup, monkeypatch, width)
     gone = replace(seat.harness.screen(frame(data["screens"]["0"])), box="")
     moment = at + timedelta(seconds=30)
     reason, remedy, quiet = proof.reading(seat, gone, now=moment)
-    assert quiet is True and remedy == "record confirmation" and "of 600s" in reason
+    assert quiet is False and remedy == "needs a human" and "native Grok queue entry cannot be verified" in reason
+    assert live["pasted"] == live["submitted"] == 0
+
+
+def test_an_exact_queue_entry_on_a_different_launch_cannot_quiet_its_alarm(setup, monkeypatch):
+    svc, seat, live, proof, _, data, at = _queued_delivery(setup, monkeypatch, 112)
+    path = seat.trusted / "launch.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "at": (at + timedelta(seconds=1)).isoformat()}))
+    native = seat.harness.screen(frame(data["screens"]["1"]))
+    assert proof.reading(seat, native)[1:] == ("needs a human", False)
+    assert pending.detached(seat)
+    svc.reconcile()
     assert live["pasted"] == live["submitted"] == 0

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from . import ledger as ledgermod, pending, input_receipt, quota, pane_obstruction
 from .harness.base import Screen
+from .harness.capabilities import persistent_screen_queue
 from .harness.types import _cells
 from .quota import reset_text, stamp
 from .seat import Seat
@@ -834,10 +835,16 @@ class Door:
                 return Delivery(result, "exact payload in the record after paste")
             if self.proof and self.before_submit is not None and self.proof.same_launch(self.seat):
                 screen = self.screen()
-                notice = self.harness.queued_input(text, self.before_submit, screen) if screen else None
-                if notice and self.proof.same_launch(self.seat):
-                    self.proof.save(screen_queue=True)
-                    return Delivery("queued", notice)
+                if policy := persistent_screen_queue(self.harness.name):
+                    if (self.proof.data["phase"] == "submitted" and self.proof.data["payload"] == text
+                            and self.proof.native_queue_visible(self.seat, screen, policy, before=self.before_submit)):
+                        self.proof.save(phase="queued", screen_queue=True)
+                        return Delivery("queued", policy.QUEUE_DETAIL)
+                else:
+                    notice = self.harness.queued_input(text, self.before_submit, screen) if screen else None
+                    if notice and self.proof.same_launch(self.seat):
+                        self.proof.save(screen_queue=True)
+                        return Delivery("queued", notice)
             if time.monotonic() >= deadline:
                 return Delivery("pending" if self.proof else "blind", "submitted once; waiting for record confirmation")
             time.sleep(0.2)

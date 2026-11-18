@@ -26,6 +26,7 @@ from typing import Any, Iterator, Sequence, TYPE_CHECKING
 from . import durable, pane_obstruction, post, post_dir
 from . import input_receipt
 from .harness import closed_record
+from .harness.capabilities import persistent_screen_queue
 from .harness.json_record import RecordError
 from .harness.types import Screen
 from .ship import ShipError
@@ -207,6 +208,28 @@ class Proof:
     def same_launch(self, seat: Seat) -> bool:
         return self.data["identity"] == identity(seat)
 
+    def screen_queue_policy(self):
+        return persistent_screen_queue(self.data["identity"]["harness"])
+
+    def native_queue_visible(self, seat: Seat, screen: Screen | None, policy, *, before: Screen | None = None) -> bool:
+        """The known native list identifies this journal's payload in its own launch."""
+        return (self.same_launch(seat) and policy.matches_queue(self.data["payload"], screen, before)
+                and self.same_launch(seat))
+
+    def late_queue_candidate(self) -> bool:
+        """Without a before frame, the preview itself must contain this transport's identity."""
+        if (self.data["phase"] != "submitted" or self.screen_queue_policy() is None
+                or any(self.data.get(key) for key in ("recovery", "receipt_refresh", "paste_clear"))):
+            return False
+        message = self.data.get("message")
+        if not message:
+            return False
+        header = self.data["payload"].split("\n", 1)[0]
+        short = re.escape(post.short_of(message))
+        return (header == post.SECOND.format(id=message)
+                or re.fullmatch(r"qd > (?:order|report|question|answer|ack) from [^·]+ · "
+                                + short + r"(?: · .*)?", header) is not None)
+
     def finish(self, result: str) -> None:
         if result in ("unacted", "uncertain"):
             self.save(phase=result, resolution=UNSETTLED[result])
@@ -214,28 +237,32 @@ class Proof:
             self.save(phase="cancelled")
         elif result in ("delivered", "queued"):
             if result == "queued" and self.data.get("screen_queue"):
-                return  # visible native queue; submitted stays unresolved until the record confirms
-            self.save(phase=result)
+                if holds_screen_queue(self.data) and self.data["phase"] != "queued":
+                    self.save(phase="queued")  # the legacy journal already recorded the native observation
+                return
+            self.save(phase=result, **({"screen_queue": False} if holds_screen_queue(self.data) else {}))
+
+    def _record_receipt(self, record: str | Path | None) -> str | None:
+        if not record:
+            return None
+        try:
+            return input_receipt.confirmed(self.data["identity"]["harness"], Path(record), self.data["payload"],
+                                           datetime.fromisoformat(self.data["since"]))
+        except OSError:
+            return None  # unreadable evidence never becomes success
 
     def confirmed(self, seat: Seat) -> str | None:
         """Only an exact owned-record input after this paste proves delivery."""
-        name = self.data["identity"]["harness"]
         record = self.data["record"]
         if not record and self.same_launch(seat):
             joined = seat.record()
             if joined:
                 self.save(record=str(joined))
                 record = str(joined)
-        if not record:
-            return None
-        try:
-            result = input_receipt.confirmed(name, Path(record), self.data["payload"],
-                                             datetime.fromisoformat(self.data["since"]))
-            if result and self.data.get("screen_queue"):
-                self.save(screen_queue=False)
-            return result
-        except OSError:
-            return None  # unreadable evidence never becomes success
+        result = self._record_receipt(record)
+        if result and self.data.get("screen_queue") and not holds_screen_queue(self.data):
+            self.save(screen_queue=False)
+        return result
 
     def reading(self, seat: Seat, screen: Screen | None, now: datetime | None = None) -> tuple[str, str, bool] | None:
         """Return (reason, remedy, quiet) or None for a proven accepted queue."""
@@ -246,6 +273,18 @@ class Proof:
 
         if self.data.get('paste_clear') and phase!='withheld':
             return uncertain('paste/submit outcome uncertain: owned unsubmitted-paste cleanup unconfirmed; never resent')
+
+        screen_queue = holds_screen_queue(self.data)
+        if screen_queue or self.late_queue_candidate():
+            policy = self.screen_queue_policy()
+            if self.same_launch(seat):
+                record = self.data["record"] or seat.lookup_record()
+                if self._record_receipt(record) == "delivered" and self.same_launch(seat):
+                    return None
+                if self.native_queue_visible(seat, screen, policy):
+                    return ("queued on screen; waiting for record confirmation", "record confirmation", True)
+            if screen_queue:
+                return uncertain(policy.QUEUE_LOST)
 
         if phase == "queued" and (not self.same_launch(seat) or (screen and screen.box == "")):
             return None
@@ -282,6 +321,11 @@ class Proof:
         reason = ("queued on screen; waiting for record confirmation" if self.data.get("screen_queue")
                   else "waiting to be taken" if screen.box else "waiting for record confirmation")
         return (f"{reason} ({int(max(0, age))}s of 600s)", "record confirmation", True)
+
+
+def holds_screen_queue(data) -> bool:
+    """The persisted phase still needs the adapter's screen-only queue hold."""
+    return bool(data.get("screen_queue") and persistent_screen_queue(data["identity"]["harness"]))
 
 
 def journals(seat: Seat) -> tuple[list[Proof], list[str]]:
@@ -852,6 +896,12 @@ def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.At
                 phase = closed_record.PHASE
         if result:
             proof.finish(result)
+        elif proof.data["phase"] == "submitted" and holds_screen_queue(proof.data):
+            proof.finish("queued")
+        elif proof.late_queue_candidate() and proof.same_launch(seat) and not seat.session.human:
+            from .door import Door
+            if proof.native_queue_visible(seat, Door(seat).screen(), proof.screen_queue_policy()):
+                proof.save(phase="queued", screen_queue=True)
         from .pending_lifecycle import settle_reported
         if settle_reported(service, seat, proof, attempts):
             paths.update(attempts[n].path for n in proof.data['attempts'])
@@ -864,6 +914,9 @@ def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.At
                     service.attempts.close(attempt, closed_record.PHASE, closed_record.DETAIL)
             elif result and attempt.result != result:
                 service.attempts.close(attempt, result, "exact payload found in owned record after paste")
+            elif (holds_screen_queue(proof.data) and proof.data["phase"] == "queued"
+                  and attempt.result in (None, "pending", "typed")):
+                service.attempts.close(attempt, "queued", proof.screen_queue_policy().QUEUE_DETAIL)
             elif attempt.result is None:
                 recovered = {"submitted": "pending", "queued": "queued", "cancelled": "withheld", "withheld":"withheld", "abandoned": "abandoned",
                              "unacted": "unacted", "uncertain": "uncertain"}.get(proof.data["phase"], "blind")
@@ -901,7 +954,8 @@ def detached(seat: Seat) -> list[str]:
     """Old unresolved submissions remain visible without owning a different door."""
     try:
         return [inspection(seat, "prior launch has an unconfirmed delivery; historical record evidence required", proof.data["attempts"], message=proof.data.get('message'))
-                for proof in active(seat) if not proof.same_launch(seat) and proof.data["phase"] != "queued"]
+                for proof in active(seat) if not proof.same_launch(seat)
+                and (proof.data["phase"] != "queued" or holds_screen_queue(proof.data))]
     except (OSError, ValueError, KeyError):
         return [inspection(seat, "pending delivery journal unreadable; never resent")]
 
@@ -1037,7 +1091,8 @@ def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Atte
         data = proof.data
         owed = data.get("look", {}).get("outcome") == NOT_TYPED
         if (data["phase"] in TERMINAL or ("look" in data and not owed) or not proof.same_launch(seat)
-                or data.get("recovery") or "receipt_refresh" in data or data.get("paste_clear")):
+                or holds_screen_queue(data) or data.get("recovery")
+                or "receipt_refresh" in data or data.get("paste_clear")):
             continue
         door = Door(seat)
         screen = door.screen()
@@ -1151,7 +1206,7 @@ def _submit_candidate(door: Door, screen: Screen | None, pane: Pane | None,
         return None, f"refused: {seat.name}'s box is empty"
     try:
         proofs = [p for p in (active(seat) if proofs is None else proofs)
-                  if p.data["phase"] not in TERMINAL and p.same_launch(seat)]
+                  if p.data["phase"] not in TERMINAL and not holds_screen_queue(p.data) and p.same_launch(seat)]
     except (RecordError, OSError, ValueError, KeyError):
         return None, f"refused: {seat.name}'s pending journal is unreadable"
     matching = [p for p in proofs if door.held_matches(seat.harness.box(p.data["payload"]), screen)]

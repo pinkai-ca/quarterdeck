@@ -42,6 +42,9 @@ TRAINING_NEAR = 8  # rows above the composer's top border in which an altered qu
 PASTE_FOLD_LINES = 4
 # A queued response without the foreground-tool shortcut, measured at 256 columns.
 RESPONSE_QUEUE_HINT = ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+;:queue", "Ctrl+x:shortcuts")
+UNKNOWN_HINT = "unmeasured Grok composer hint"
+QUEUE_DETAIL = "native Grok queue shows the submitted envelope; awaiting exact record receipt"
+QUEUE_LOST = "pending delivery; native Grok queue entry cannot be verified; never resent"
 HINT_STATES = {
     ("Shift+Tab:mode", "Ctrl+x:shortcuts"): False,
     ("Enter:send", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+x:shortcuts"): False,
@@ -125,7 +128,7 @@ def hint_working(rows: list[str], *, native_queue: bool = False) -> bool | None:
     return HINT_STATES.get(hint)
 
 
-def queue_entries(text: str) -> tuple[str, ...] | None:
+def queue_entries(text: str, *, complete_previews: bool = False) -> tuple[str, ...] | None:
     """The complete native list immediately above the composer, not transcript echoes.
 
     1.0.77 at 112/256 columns shows a blank row, `   ▾ Queued N`, N numbered
@@ -144,6 +147,10 @@ def queue_entries(text: str) -> tuple[str, ...] | None:
         match = re.fullmatch(r"     #([1-9][0-9]*) (\S.*)", rows[index].rstrip(" "))
         if match is None:
             break
+        if complete_previews:
+            width = _cells(match[0])
+            if width is None or width >= rows[top].index("╮"):
+                return None  # no complete preview proved where the row reaches the frame edge
         found.append((match[1], match[2]))
         index -= 1
     title = re.fullmatch(r"   ▾ Queued ([1-9][0-9]*) *", rows[index]) if index >= 0 else None
@@ -154,6 +161,33 @@ def queue_entries(text: str) -> tuple[str, ...] | None:
             or any(number != str(position) for position, (number, _) in enumerate(found, 1))):
         return None
     return tuple(preview for _, preview in found)
+
+
+def visible_queue(screen: Screen | None) -> tuple[str, ...] | None:
+    """Read queue evidence independently of an unread composer hint."""
+    if screen is None or screen.interruption or screen.starting:
+        return None
+    if screen.unknown == UNKNOWN_HINT and screen.working is None and screen.box is None:
+        rows = screen.text.splitlines()
+        footer = next((i for i in range(len(rows) - 1, -1, -1) if FOOTER.fullmatch(rows[i])), None)
+        if footer is None or hint_working(rows[footer + 1:], native_queue=True) is not True:
+            return None
+    elif screen.unknown or screen.working is not True or screen.box is None or screen.box.strip():
+        return None
+    return queue_entries(screen.text, complete_previews=True)
+
+
+def matches_queue(payload: str, screen: Screen | None, before: Screen | None = None) -> bool:
+    """One exact preview, or one new exact entry appended since the matched paste."""
+    entries = visible_queue(screen)
+    preview = queue_preview(payload)
+    if entries is None or entries.count(preview) != 1:
+        return False
+    if before is None:
+        return True
+    previous = queue_entries(before.text, complete_previews=True)
+    return (before.working is True and not before.unknown and not before.interruption
+            and previous is not None and entries == (*previous, preview))
 
 
 @dataclass(frozen=True)
@@ -380,7 +414,7 @@ def read(text: str) -> Screen:
     queued = queue_entries(plain)
     working = hint_working(below, native_queue=bool(queued) and len(body) == 1 and not box.strip(" "))
     if working is None:
-        return Screen(plain, box=None, unknown="unmeasured Grok composer hint", shows=shows)
+        return Screen(plain, box=None, unknown=UNKNOWN_HINT, shows=shows)
     return Screen(plain, box=box, working=working, shows=shows, queued=len(queued or ()))
 
 

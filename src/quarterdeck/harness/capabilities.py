@@ -9,6 +9,14 @@ from dataclasses import dataclass
 from ..ship import ShipError
 
 
+def persistent_screen_queue(harness: str):
+    """Optional control-side policy for a queue evidenced by the native screen."""
+    if harness == "grok":
+        from . import grok_screen
+        return grok_screen
+    return None
+
+
 @dataclass(frozen=True)
 class SuggestedValue:
     value: str | None
