@@ -62,10 +62,11 @@ def cause(error):
     return 'accounting exception'
 
 
-def report_failure(service, error, at):
+def report_failure(service, error, at, *, health=None):
     """Log one onset with a known exception type and a fixed, bounded message."""
     reason = cause(error)
-    health = service.accounting_health
+    if health is None:
+        health = service.accounting_health
     if not health.failed(reason, at):
         return
     from .harness import record_file
@@ -83,6 +84,41 @@ def report_failure(service, error, at):
     message = f'{reason} ({diagnostic})' if diagnostic else reason
     service.log('accounting-failing', since=health.since, cause=health.current, failures=health.failures,
                 causes=dict(health.causes), error_type=kind, message=message)
+
+
+def report_record_failure(service, error, at):
+    from .ledger import UsageCommitRolledBack, UsageCommitUnproved
+    if isinstance(error, UsageCommitRolledBack):
+        return  # the ledger already reported the settled usage outcome once
+    health = service.usage_accounting_health if isinstance(error, UsageCommitUnproved) else service.accounting_health
+    report_failure(service, error, at, health=health)
+
+
+def report_success(service, health):
+    previous, failures, causes = health.since, health.failures, dict(health.causes)
+    if health.committed():
+        service.log('accounting-recovered', since=previous, failures=failures, causes=causes)
+
+
+def visible(service):
+    """Keep the existing record alarm first, then show any outstanding usage alarm."""
+    records = service.accounting_health
+    usage = getattr(service, 'usage_accounting_health', None)
+    if usage is not None and usage.failures and (not records.failures or records.failures < BOUND <= usage.failures):
+        return usage
+    return records
+
+
+@dataclass
+class UsagePass:
+    rollback: Exception | None = None
+    committed: bool = False
+
+    def note(self, error):
+        if error is None:
+            self.committed = True
+        else:
+            self.rollback = error
 
 
 @dataclass

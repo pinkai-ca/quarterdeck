@@ -137,7 +137,7 @@ class Service:
         self.framework_commit = (self.copy_identity['commit'] if self.copy_identity is not None
                                  else copy['commit'] if copy else None)
         self.copy_start_token = os.environ.pop('QD_COPY_START', None)
-        self.ledger = Ledger(self.runtime / "ledger.sqlite")
+        self.ledger = Ledger(self.runtime / "ledger.sqlite", usage_outcome=self._usage_commit_outcome)
         reader_keys = reader_stamp.attributions()
         self.accounting_epoch = reader_keys if all(reader_keys.values()) else None
         self.ledger.begin_catchup(self.accounting_epoch)
@@ -150,6 +150,7 @@ class Service:
         self.read_holds: dict[Path, held_reading.Hold] = {}
         self.account_errors: dict[Path, tuple] = {}  # evidence, error, next transient read time
         self.accounting_health = accounting_health.Health()  # a new process starts unchecked
+        self.usage_accounting_health = accounting_health.Health()
         self.accounting_health_error = None
         self.accounting_health_due = 0.0
         self.heartbeat_lock = threading.Lock()
@@ -296,7 +297,8 @@ class Service:
         self.structure_passes.begin()
         self._accounting_tick = True
         try:
-            self._tick_steps()
+            with self._track_usage_pass():
+                self._tick_steps()
         finally:
             self._accounting_tick = False
             self.loop_stamp('pass_end')
@@ -458,7 +460,7 @@ class Service:
             # refresh collects in full. Beside the files: the service's own accounting state, held in memory and
             # read with the service's state at every publish. It changes only on a transition, never on a pass, so
             # a transition is published at once, by a post refresh, and the service's own churn forces nothing.
-            accounting = self.accounting_health.shown()
+            accounting = accounting_health.visible(self).shown()
             post_now, other_now = (service_status.split(self.ship, files) if isinstance(files, tuple)
                                    else ((), files))
             last = getattr(self, 'status_inputs', None)
@@ -570,7 +572,7 @@ class Service:
             return
         self.accounting_health_due = now + self.ship.tick  # once a pass, alongside the heartbeat
         try:
-            accounting_health.publish(self.runtime, self.accounting_health)
+            accounting_health.publish(self.runtime, accounting_health.visible(self))
         except OSError as error:
             reason = accounting_health.cause(error)
             if self.accounting_health_error is None:
@@ -2247,19 +2249,15 @@ class Service:
             # including while its child is busy. A disabled duty schedules no work.
             self.usage_pending = True
             return self.account_driver.step(self)
-        before = self.accounting_health.shown()
+        before = accounting_health.visible(self).shown()
         try:
             observations, notices, human_readings = self.account_records()
         except Exception as error:
-            accounting_health.report_failure(self, error, post.now())
+            accounting_health.report_record_failure(self, error, post.now())
             self.publish_accounting_health(force=True)
             self.accounting_shown_changed(before)
             return  # no per-pass raw exception log; the bounded operational alarm owns this failure
-        previous = self.accounting_health.since
-        failures = self.accounting_health.failures
-        causes = dict(self.accounting_health.causes)
-        if self.accounting_health.committed():
-            self.log('accounting-recovered', since=previous, failures=failures, causes=causes)
+        accounting_health.report_success(self, self.accounting_health)
         self.publish_accounting_health(force=True)
         self.accounting_shown_changed(before)
         # These duties happen after commit. Their failures retain tick's existing
@@ -2269,25 +2267,59 @@ class Service:
         for seat, record, state, turns, stamp in human_readings:
             from . import turn_failure
             turn_failure.publish(seat, record, state, turns, stamp)
-        for seat, _, launched, live, _, _, _, _ in observations:
-            quota.refresh(self, seat, live, launched)
-        quota.refresh_declared(self)
+        with self._track_usage_pass():
+            for seat, _, launched, live, _, _, _, _ in observations:
+                quota.refresh(self, seat, live, launched)
+            quota.refresh_declared(self)
 
     def accounting_shown_changed(self, before) -> None:
         """A status snapshot taken before the outcome would disagree with it: the next status check republishes."""
-        if self.accounting_health.shown() != before:
+        if accounting_health.visible(self).shown() != before:
             self.status_checked = None
+
+    @contextmanager
+    def _track_usage_pass(self):
+        """Coalesce confirmed rollbacks across the duty, including an earlier settlement in this tick."""
+        if getattr(self, '_usage_pass', None) is not None:
+            yield
+            return
+        started = self._usage_pass = accounting_health.UsagePass()
+        try:
+            yield
+        finally:
+            self._usage_pass = None
+            if started.rollback is not None or started.committed:
+                self._usage_commit_outcome(started.rollback)
+
+    def _usage_commit_outcome(self, error):
+        if (active := getattr(self, '_usage_pass', None)) is not None:
+            active.note(error)
+            return
+        health = self.usage_accounting_health
+        if error is None and not health.failures:
+            return
+        before = accounting_health.visible(self).shown()
+        if error is None:
+            accounting_health.report_success(self, health)
+        else:
+            accounting_health.report_failure(self, error, post.now(), health=health)
+        self.publish_accounting_health(force=True)
+        self.accounting_shown_changed(before)
 
     def refresh_usage(self):
         """Live provider evidence is independent of a historical accounting backlog."""
         if not getattr(self, 'usage_pending', False):
             return
         self.usage_pending = False
-        for seat in self.resolved_seats():
-            with Service.seat_guard(self, 'refresh_usage', seat):
-                pane = seat.pane()
-                quota.refresh(self, seat, pane is not None and not pane.dead, seat.launched())
-        quota.refresh_declared(self)
+        with self._track_usage_pass():
+            for seat in self.resolved_seats():
+                with Service.seat_guard(self, 'refresh_usage', seat):
+                    pane = seat.pane()
+                    quota.refresh(self, seat, pane is not None and not pane.dead, seat.launched())
+            try:
+                quota.refresh_declared(self)
+            except ledger.UsageCommitRolledBack:
+                pass  # the ledger reported the rollback to this pass
 
     def account_records(self, *, source_records=None, source_screens=None, source_walls=None,
                         replay=True, process_table=None, source_reader_keys=None):

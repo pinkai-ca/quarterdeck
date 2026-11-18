@@ -174,17 +174,18 @@ class UsageCommitUnproved(RuntimeError):
 
 
 class UsageCommitRolledBack(RuntimeError):
-    """A previously unreadable receipt now proves the standalone usage transaction rolled back."""
+    """The receipt proves the standalone usage transaction rolled back."""
 
 
 class Ledger:
     """The book. The service opens it to write; a reading opens it read-only with ``Ledger.reading``."""
 
-    def __init__(self, path: Path, readonly: bool = False):
+    def __init__(self, path: Path, readonly: bool = False, *, usage_outcome=None):
         self.path = path
         self._record_active = False
         self._usage_staging = False
         self._usage_commit_pending: str | None = None
+        self._usage_outcome = usage_outcome
         if readonly:
             self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
             self.attributions = Attribution(self.db, create=False)
@@ -265,23 +266,25 @@ class Ledger:
             row = self.db.execute('SELECT attempt FROM usage_commit WHERE singleton=1').fetchone()
         except (sqlite3.Error, OSError):
             raise UsageCommitUnproved('standalone usage commit outcome unreadable') from None
-        committed = row == (self._usage_commit_pending,)
-        self._usage_commit_pending = None
-        return committed
+        return row == (self._usage_commit_pending,)
 
     def _finish_usage_commit(self) -> None:
-        if not self.db.in_transaction:
-            if not self._settle_usage_commit():
-                raise UsageCommitRolledBack('standalone usage commit rolled back')
-            return
-        try:
-            self.db.commit()
-        except Exception:
-            # An open transaction can see its own receipt. Only retry its COMMIT.
-            if self.db.in_transaction or not self._settle_usage_commit():
-                raise
-        else:
-            self._usage_commit_pending = None
+        committed = False
+        if self.db.in_transaction:
+            try:
+                self.db.commit()
+            except Exception:
+                if self.db.in_transaction:
+                    raise  # an open transaction can see its own receipt, so only retry COMMIT
+            else:
+                committed = True
+        committed = committed or self._settle_usage_commit()
+        self._usage_commit_pending = None
+        error = None if committed else UsageCommitRolledBack('standalone usage commit rolled back')
+        if self._usage_outcome is not None:
+            self._usage_outcome(error)
+        if error is not None:
+            raise error
 
     def _commit_usage_attempt(self, write, *, commit=True):
         if not commit:

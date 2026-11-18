@@ -124,6 +124,7 @@ def planning_book(path, send):
     book.path, book.db = path, PlanningDB(memory, send)
     book._record_active = book._usage_staging = False
     book._usage_commit_pending = None
+    book._usage_outcome = None
     book.attributions = Attribution(book.db, create=False)
     book.costs = CostEvidence(book.db, create=False)
     book.provenance = Provenance(book.db, create=False)
@@ -542,10 +543,7 @@ class Driver:
                                 self.retry_generation = None
                                 emptied = True  # every seat has been read whole once: the gate may stitch
                 self.active = False
-                health = service.accounting_health
-                previous, failures, causes = health.since, health.failures, dict(health.causes)
-                if health.committed():  # failing accounting recovers: said once, as the direct path says it
-                    service.log('accounting-recovered', since=previous, failures=failures, causes=causes)
+                accounting_health.report_success(service, service.accounting_health)
                 service.log('accounting-job-end', job=self.job, seconds=time.monotonic() - self.started,
                             records=len(self.records), counts=dict(self.counts),
                             retry=sorted(self.invalid), pending=service.ledger.catching_up())
@@ -563,7 +561,7 @@ class Driver:
 
     def step(self, service, *, seconds=None, wait=True):
         deadline = time.monotonic() + (BUDGET if seconds is None else seconds)
-        before = service.accounting_health.shown()
+        before = accounting_health.visible(service).shown()
         was_active, failed = self.active, False
         prepared = False
         self.step_changes = service.ledger.db.total_changes
@@ -724,13 +722,13 @@ class Driver:
                 except Exception:
                     pass  # retain the original failure and the last committed progress
             failed = True
-            accounting_health.report_failure(service, error, post.now())
+            accounting_health.report_record_failure(service, error, post.now())
         finally:
             self.gate.own(self.step_changes, service.ledger.db.total_changes)
             # Written at once only when what the health shows changed, or a job ended or failed in this step; else
             # the publisher's own once-a-pass rule (service.publish_accounting_health), however many drains step a job.
             ended = was_active and not self.active
-            service.publish_accounting_health(force=failed or ended or service.accounting_health.shown() != before)
+            service.publish_accounting_health(force=failed or ended or accounting_health.visible(service).shown() != before)
             service.accounting_shown_changed(before)
 
 

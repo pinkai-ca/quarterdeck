@@ -9,16 +9,17 @@ import errno
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import accounting_health
+from quarterdeck import accounting_health, accounting_slices, harness, quota, service
 from quarterdeck.accounting_slices import Driver
 from quarterdeck.attribution_cache import Attribution
 from quarterdeck.harness.limits import Usage, Window
-from quarterdeck.ledger import UsageCommitUnproved
+from quarterdeck.ledger import UsageCommitRolledBack, UsageCommitUnproved
+from quarterdeck.ship import Pool
 from .test_ledger_pass_boundaries import AT, grow, world
 
 SECRET = 'synthetic record body q7 that must never reach an alarm'
@@ -181,6 +182,12 @@ class InterruptedCommit:
     def __getattr__(self, name):
         return getattr(self.raw, name)
 
+    def __enter__(self):
+        return self.raw.__enter__()
+
+    def __exit__(self, *error):
+        return self.raw.__exit__(*error)
+
     def execute(self, sql, parameters=()):
         if sql.startswith('SELECT attempt FROM usage_commit'):
             assert not self.raw.in_transaction, 'a receipt in the open writer is no proof'
@@ -226,9 +233,8 @@ def test_rolled_back_usage_commit_reports_failure_and_retries_on_the_same_connec
         before = db.execute('SELECT attempt FROM usage_commit').fetchone()
         book.db = fault = InterruptedCommit(db)
         with held_reader(svc):
-            with pytest.raises(sqlite3.OperationalError) as raised:
+            with pytest.raises(UsageCommitRolledBack, match='standalone usage commit rolled back'):
                 write_usage(svc, writer)
-            assert raised.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
         assert not db.in_transaction and fault.reads == 1
         assert db.execute('SELECT attempt FROM usage_commit').fetchone() == before
         assert usage_counts(db) == (expected if older_identical else (0, 0, 0, 0))
@@ -240,6 +246,121 @@ def test_rolled_back_usage_commit_reports_failure_and_retries_on_the_same_connec
         assert db.execute('SELECT attempt FROM usage_commit').fetchone() != before
         assert fault.commits == 2
     finally:
+        book.close()
+
+
+@pytest.mark.parametrize(('route', 'healthy_pool'), [
+    ('seat', None), ('declared', None), ('mixed', None),
+    ('mixed', 'synthetic-live'), ('mixed', 'synthetic-declared'),
+])
+@pytest.mark.parametrize('failed_passes', [1, 3])
+def test_normal_usage_duty_counts_rollbacks_once_and_clears_on_commit(tmp_path, monkeypatch, route, healthy_pool,
+                                                                    failed_passes):
+    w = world(tmp_path, monkeypatch)
+    svc = w.svc
+    book = svc.ledger
+    db = book.db
+
+    class UsageFault(InterruptedCommit):
+        def commit(self):
+            if self.fail and (not calls or calls[-1] != healthy_pool):
+                with held_reader(svc):  # the read lock exists only for the standalone usage COMMIT
+                    return super().commit()
+            self.raw.commit()
+            self.commits += 1
+
+    book.db = fault = UsageFault(db)
+    calls, jobs = [], []
+
+    def measurement(pool):
+        calls.append(pool.name)
+        return Usage((Window('7d', .4, AT + timedelta(days=3)),), AT)
+
+    live_reader = SimpleNamespace(name='fake', background_usage=False, screen_walls=False, usage_interval=1,
+                                  reads_usage=True, usage=measurement)
+    declared_reader = SimpleNamespace(background_usage=True, usage_interval=1, usage_from_records=None,
+                                      shared_usage_key=lambda pool: None, usage=measurement)
+    readers = {}
+    if route != 'declared':
+        pool = Pool('synthetic-live', 'openai')
+        readers[pool.provider] = live_reader
+        svc.ship.pools[pool.name] = w.seat.pool = pool
+        w.seat.harness = live_reader
+        w.seat.pane = lambda: SimpleNamespace(id='%1', pid=123, dead=False)
+    if route != 'seat':
+        pool = Pool('synthetic-declared', 'anthropic')
+        readers[pool.provider] = declared_reader
+        svc.ship.pools[pool.name] = pool
+    monkeypatch.setattr(harness, 'native_for', readers.__getitem__)
+    monkeypatch.setattr(quota, 'time', w.clock)
+    monkeypatch.setattr(quota, 'datetime', SimpleNamespace(now=lambda *_: AT + timedelta(seconds=w.clock.now - 1000),
+                                                          fromisoformat=datetime.fromisoformat))
+    monkeypatch.setattr(service.shipmod, 'load', lambda folder: svc.ship)
+
+    # Keep the actual tick, duty order, record apply and quota dispatch. Supply the planner's reply
+    # synchronously and stand in for unrelated duties so this test never needs a child or tmux.
+    for name in ('rebind heartbeat status_due server_recovery relaunch_intents reconcile file_drops groups cascades '
+                 'fleet_post inboxes views recoveries refusals set_asides answers looks jailed_watches '
+                 'write_bound_floor deliveries follow requests compactions output_limits person_quiet fresh_after_order '
+                 'rebrief push_reminders credentials authentications model_differences failover retire_hand_transcripts '
+                 'pool_forecasts retire_post drain_drops drain_requests').split():
+        monkeypatch.setattr(svc, name, lambda: None)
+    svc.account_driver = driver = Driver()
+    monkeypatch.setattr(driver.gate, 'allowed', lambda *a, **k: True)
+    monkeypatch.setattr(driver, 'pump', lambda: False)
+
+    def planned(service):
+        driver.started = accounting_slices.time.monotonic()
+        driver.job += 1
+        jobs.append(driver.job)
+        driver.ready.extend([('sql', [('UPDATE accounting_progress SET pending=0', (), False)]), ('done',)])
+
+    monkeypatch.setattr(driver, 'start', planned)
+
+    try:
+        if route == 'mixed' and healthy_pool is None:
+            fault.readable = False
+            with pytest.raises(UsageCommitUnproved):
+                usage(svc)
+            fault.readable = True  # account() settles this rollback before the fresh attempts in the same tick
+
+        for failed in range(1, failed_passes + 1):
+            w.clock.now += 60
+            svc.tick()
+            assert svc.usage_accounting_health.failures == failed
+            assert svc.usage_accounting_health.current == accounting_health.USAGE_ROLLED_BACK
+            assert not book.usage_commit_pending and not db.in_transaction
+            assert usage_counts(db) == ((1, 1, 1, 1) if healthy_pool else (0, 0, 0, 0))
+            assert db.execute('SELECT pool FROM usage_reads').fetchall() == ([(healthy_pool,)] if healthy_pool else [])
+            assert len(events(w, 'accounting-failing')) == (failed >= accounting_health.BOUND)
+            if failed == 1:
+                before = len(calls)
+                svc.usage_hold.update(dict.fromkeys(svc.ship.pools, float('inf')))
+                svc.tick()
+                assert len(calls) == before and svc.usage_accounting_health.failures == 1
+                svc.usage_hold.clear()
+
+        assert len(calls) == failed_passes * len(svc.ship.pools)
+        succeeded = [event for event in events(w, 'accounting-job-end') if 'error' not in event]
+        assert len(succeeded) >= failed_passes, 'the independent record jobs completed'
+        assert jobs and svc.accounting_health.failures == 0
+        if failed_passes == accounting_health.BOUND:
+            (onset,) = events(w, 'accounting-failing')
+            assert onset['error_type'] == 'UsageCommitRolledBack'
+            assert onset['message'] == onset['cause'] == accounting_health.USAGE_ROLLED_BACK
+            with monkeypatch.context() as snapshot_patch:
+                assert reading(w, snapshot_patch) == f"accounting failing since {onset['since']}: {onset['cause']}"
+
+        fault.fail = False
+        w.clock.now += 60
+        svc.tick()
+        count = len(svc.ship.pools)
+        assert usage_counts(db) == (count, count, count, 1)
+        assert svc.usage_accounting_health.failures == 0 and reading(w, monkeypatch) is None
+        assert len(events(w, 'accounting-recovered')) == (failed_passes >= accounting_health.BOUND)
+        assert SECRET not in json.dumps(w.logs, default=str)
+    finally:
+        driver.close()
         book.close()
 
 
@@ -301,8 +422,8 @@ def test_unreadable_usage_proof_is_rechecked_and_alarms_in_accounting(tmp_path, 
         fault.readable = True
         svc.account()
         assert fault.reads == 5 and fault.commits == 1
-        assert svc.accounting_health.current == 'standalone usage commit rolled back'
-        assert svc.accounting_health.failures == 4 and book._usage_commit_pending is None
+        assert svc.usage_accounting_health.current == 'standalone usage commit rolled back'
+        assert svc.usage_accounting_health.failures == 4 and book._usage_commit_pending is None
         assert not gate_checks, 'the idle gate could not skip an unresolved usage owner'
         assert usage_counts(db) == (0, 0, 0, 0)
         fault.fail = False
