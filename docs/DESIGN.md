@@ -23,6 +23,8 @@ Six parts operate the ship; standing orders describe its guarantees and crew rul
 
 The [door](design/door.md) is the seat's one typing path, shared by delivery, controls, dialog answers and waking. [Structures](design/structures.md) combines seats/posts into forum reviews, cascade laps, a three-seat shuttle mission and the person's office. The [module list](MODULES.md) maps these parts to source files.
 
+Antigravity scopes quota groups using the three exact model identities and group relations measured on agy 1.5.5. Its all-model group table is empty, and other relations remain unknown. The before-and-after usage proof is recorded in [Antigravity quota walls and usage](ANTIGRAVITY.md#quota-walls-and-usage).
+
 `qd doctor` checks installation, programs, sign-in grants, working directories, runtime fences, service and disk, with proof lines per check. Its fix mode hands failures to a throwaway seat, waits for a report and checks again. It does not make a failed observation into a success.
 
 ## 3. What the human sees

@@ -671,7 +671,16 @@ def held_scope(reason: str, pool: str) -> str:
     """The scope of a held seat's limit, short enough for the line: the group, or what is known of it."""
     head = reason.split(" · ")[0]
     head = head[len(pool) + 1:] if head.startswith(pool + " ") else head
-    return head[head.rindex("(") + 1:-1] if head.endswith(")") and "(" in head else head
+    if head.endswith(")"):
+        depth = 1
+        for index in range(len(head) - 2, -1, -1):
+            if head[index] == ")":
+                depth += 1
+            elif head[index] == "(":
+                depth -= 1
+                if depth == 0:
+                    return head[index + 1:-1]
+    return head
 
 
 def headline_readings(ship: Ship) -> list[dict]:

@@ -43,7 +43,17 @@ A banner seen on the screen before the record shows it is persisted under the la
 
 Usage comes from the program's own command, `agy -p /usage --output-format json`, which on 1.5.2 answers without opening a conversation. The service runs it every five minutes for each declared Google subscription pool. Every returned group's bucket is retained independently and may constrain only proved member models. The historical Gemini 4 Argon weekly storage key stays `7d`; detailed status and ledger label its group, and show the other returned groups and periods separately. An unsuccessful whole read reports unavailable usage without inventing an Argon-only reading. The program is found on the PATH as every launch finds it.
 
-`harness/antigravity_models.py` holds explicit membership, exclusion, canonical-identity and all-model facts. Its real fact tables are empty until reviewed statements from the program or its sign-in establish them. A group's label, a similar model name, a successful turn or a matching reset does not establish membership. Positive membership supplies no exclusion from another cap unless the native schema proves completeness or exclusivity. Unknown scope proves no group wall and no automatic destination room. With empty real tables a model can continue until its own provider refusal establishes its wall; no unknown group cap holds it preemptively.
+`harness/antigravity_models.py` records three native identities and their measured quota memberships and exclusions:
+
+| Launch model ID | Recorded model name | Member of | Excluded from |
+| --- | --- | --- | --- |
+| `gemini-3.8-flash-low` | Gemini 3.8 Flash (Low) | Gemini Models | Gemini 4 Argon, Claude and GPT models |
+| `gemini-4-argon-low` | Gemini 4 Argon (Low) | Gemini 4 Argon | Gemini Models, Claude and GPT models |
+| `claude-sonnet-5-5-low` | Claude Sonnet 5.5 (Low) | Claude and GPT models | Gemini Models, Gemini 4 Argon |
+
+The First Officer's proof on agy 1.5.5 ran from 19:33 to 19:35 UTC on 13 November 2026. Each model was selected by ID for one opening turn on a throwaway ship, and the native record named the display model above. A native `/usage` reading before and after each turn showed the Gemini Models 5-hour and weekly buckets increase for Flash, the Gemini 4 Argon weekly bucket increase for Argon, and the Claude and GPT models 5-hour and weekly buckets increase for Sonnet. The other groups in the table held steady for each turn.
+
+The all-model group table is empty. Other model, tier and group relations remain unknown. A group's label, a similar name, a successful turn or a matching reset alone establishes no membership. Unknown scope proves no group wall and no automatic destination room.
 
 The book keeps one complete reading per window, replacing fraction, reset and reading time together only with another complete reading. A failed or partial read changes only the latest-attempt metadata and leaves the retained measurement dated and labelled last known. A complete spent window remains a wall for its proved scope until its own reset or a newer complete reading with room, even through failed or stale reads. Automatic room requires current applicable windows, within the hour and before reset, with no unresolved relevant cap or refusal scope. Source decisions use the model observed in the running record, then screen; destinations use their own resolved model and provider policy. The door, routing, held-seat status and ledger share these decisions. The tmux line carries operational held reasons, without usage percentages.
 
