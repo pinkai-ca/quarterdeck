@@ -247,28 +247,30 @@ def _today_in(items, day: str) -> ledger.Count:
     """Today's tokens in these owned records, read whole, in passing: a sweep the record cache must not keep, or it
     would push out the records the seats are reading now (json_record.passing)."""
     from .harness import json_record
-    with json_record.passing():
-        owned = [(item, _read_owned(item)) for item in items]
     found = ledger.Count()
-    for item, reading in owned:
-        if reading is None:
-            found += ledger.Count(0, 1)  # a record that would not read: whatever it holds is not in the figure
-            continue
-        state, turns = reading
-        for turn in turns:
-            when = turn.ended or turn.started
-            if when is not None and when.astimezone().date().isoformat() == day:
-                found += ledger.Count(turn.tokens.total, turn.tokens.unmeasured)
-        if state.turns is None or state.turn_open is None:
-            found += ledger.Count(0, 1)  # the record leaves its own turn count uncertain
+    with json_record.passing():
+        for item in items:
+            found += _count_owned_today(item, day)
     return found
 
 
-def _read_owned(item):
+def _count_owned_today(item, day: str) -> ledger.Count:
+    """Keep a record's state and turns local to its own count."""
     try:
-        return item.read()
+        reading = item.read()
     except OSError:
-        return None
+        reading = None
+    if reading is None:
+        return ledger.Count(0, 1)  # a record that would not read: whatever it holds is not in the figure
+    state, turns = reading
+    found = ledger.Count()
+    for turn in turns:
+        when = turn.ended or turn.started
+        if when is not None and when.astimezone().date().isoformat() == day:
+            found += ledger.Count(turn.tokens.total, turn.tokens.unmeasured)
+    if state.turns is None or state.turn_open is None:
+        found += ledger.Count(0, 1)  # the record leaves its own turn count uncertain
+    return found
 
 
 def unaccounted_records(book, seat):

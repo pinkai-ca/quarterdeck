@@ -3,13 +3,15 @@ has not accounted is read for today's turns, never every record the seat ever ow
 
 Synthetic fake-program records, accounted by the service's own pass; record reads counted. No program runs.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
+from weakref import ref
 
 import pytest
 
-from quarterdeck import record_owner, ship as shipmod, watch
+from quarterdeck import ledger, record_owner, ship as shipmod, watch
 from quarterdeck.harness import json_record, synthetic_record
+from quarterdeck.harness.base import State, Tokens, Turn
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
@@ -115,3 +117,49 @@ def test_with_no_accounting_at_all_every_record_is_still_read(seat, reads):
     reads.passing.clear()
     assert watch.tokens_today(seat).known == 0
     assert sorted(reads) == sorted(writer.path for writer in seat.writers), 'nothing proves the zero: read as before'
+
+
+def test_fallback_counts_each_record_and_releases_it_before_the_next_read(tmp_path, monkeypatch):
+    day = date(2026, 1, 10)
+    yesterday = datetime(2026, 1, 9, 23, 59).astimezone(timezone.utc)
+    today = datetime(2026, 1, 10, 0, 1).astimezone(timezone.utc)
+    tomorrow = datetime(2026, 1, 11, 0, 1).astimezone(timezone.utc)
+    previous = []
+    seen = []
+
+    class Turns(list):
+        """A turn list whose lifetime the next reader can check."""
+
+    class Owned:
+        def __init__(self, number):
+            self.number = number
+
+        def read(self):
+            assert json_record._PASSING.get()
+            assert all(reference() is None for reference in previous), 'the previous reading is still held'
+            seen.append(self.number)
+            if self.number in (3, 37):
+                raise OSError('synthetic unreadable record')
+            turns = Turns()
+            if self.number != 4:  # an empty record between two populated records
+                turns.extend([
+                    Turn(1, yesterday, today, '', '', None, Tokens(1, 2, 3, 4, unmeasured=2)),
+                    Turn(2, today, None, '', '', None, Tokens(written=5)),
+                    Turn(3, today, tomorrow, '', '', None, Tokens(written=100, unmeasured=4)),
+                    Turn(4, None, None, '', '', None, Tokens(written=200, unmeasured=8)),
+                ])
+            state = State(turns=None if self.number in (0, 2) else len(turns),
+                          turn_open=None if self.number in (1, 2) else False)
+            previous[:] = [ref(state), ref(turns), *(ref(turn) for turn in turns)]
+            return state, turns
+
+    items = [Owned(number) for number in range(67)]
+    seat = SimpleNamespace(ship=SimpleNamespace(runtime=tmp_path))
+    monkeypatch.setattr(watch, 'date', SimpleNamespace(today=lambda: day))
+    monkeypatch.setattr(ledger.Ledger, 'reading', staticmethod(lambda path: None))
+    monkeypatch.setattr(record_owner, 'records', lambda seat: items)
+
+    count = watch.tokens_today(seat)
+    assert seen == list(range(67))
+    assert all(reference() is None for reference in previous), 'the final reading is still held'
+    assert count == ledger.Count(64 * 15, 64 * 2 + 3 + 2)
