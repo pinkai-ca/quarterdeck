@@ -4,12 +4,14 @@ A synthetic ship with one fake seat; the stop's interrupt is synthetic, so no pr
 """
 
 import json
+import subprocess
+import sys
 
 import pytest
 
-from quarterdeck import door as doormod, durable, watch
+from quarterdeck import cli, door as doormod, durable, request_queue, watch
 from quarterdeck.service import Service
-from quarterdeck.ship import ShipError
+from quarterdeck.ship import ShipError, load
 from .test_check_lifetime import synthetic_ship
 
 
@@ -46,6 +48,8 @@ def test_a_poison_request_sorted_before_a_stop_leaves_the_stop_answered_that_sam
     assert not stop.exists() and stop.with_suffix(".done").read_text() == "survivor interrupted (synthetic)\n"
     bad = paths["110000-stop-1"]
     assert not bad.exists(), "the poison no longer sits in the queue"
+    assert not bad.with_suffix(".claimed").exists()
+    assert not request_queue.state_path(bad).exists()
     kept = folder / "failed" / bad.name
     assert kept.read_text() == (poison if isinstance(poison, str) else json.dumps(poison)), "the request is kept as it was"
     answer = bad.with_suffix(".done").read_text()
@@ -77,8 +81,11 @@ def test_an_unwritable_reply_for_one_request_does_not_block_the_next_stop_or_rep
     paths = requests(service, folder, **{"110000-stop-1": {"kind": "stop", "seat": "survivor"},
                                          "110001-stop-2": {"kind": "stop", "seat": "survivor"}})
     assert paths["110001-stop-2"].with_suffix(".done").read_text() == "synthetic stop\n"
-    assert (folder / "failed" / paths["110000-stop-1"].name).is_file()
-    assert not paths["110000-stop-1"].exists()
+    bad = paths["110000-stop-1"]
+    assert (folder / "failed" / bad.name).is_file()
+    assert not bad.exists()
+    assert bad.with_suffix(".claimed").is_file()
+    assert request_queue.state_path(bad).is_file()
     errors = logged(service, "error")
     assert any(row.get("request") == "110000-stop-1.json" and "Traceback" in row["trace"] for row in errors)
     service.tick()
@@ -102,6 +109,7 @@ def test_failed_archival_after_an_action_keeps_its_claim_and_later_requests_run_
     assert paths["110001-stop-2"].with_suffix(".done").read_text() == "synthetic stop\n"
     held = paths["110000-stop-1"].with_suffix(".claimed")
     assert json.loads(held.read_text()) == {"kind": "stop", "seat": "survivor"}
+    assert request_queue.state_path(paths["110000-stop-1"]).is_file()
     assert "claimed" in paths["110000-stop-1"].with_suffix(".done").read_text()
     service.requests()
     restarted = Service(service.ship, None)
@@ -178,3 +186,51 @@ def test_a_failing_rebrief_stays_to_be_tried_again_and_the_stop_after_it_is_answ
     assert not paths["110000-rebrief"].with_suffix(".claimed").exists()
     error, = logged(service, "error")
     assert "synthetic interrupted post" in error["error"] and "Traceback" in error["trace"]
+
+
+def test_explicit_cancel_recovers_after_the_first_cancel_exits_just_after_claiming(drydock, capsys, monkeypatch):
+    ship = load(drydock)
+    pending = request_queue.enqueue(ship.runtime, "relaunch", {"seat": "worker-1", "resume": True})
+    claim = pending.with_suffix(".claimed")
+    done = pending.with_suffix(".done")
+    state = request_queue.state_path(pending)
+    cmd = """
+import os
+import sys
+
+from quarterdeck import cli, durable
+
+replace = durable.replace_file
+
+def exit_after_claim(path, text, **kwargs):
+    replace(path, text, **kwargs)
+    if path.suffix == ".claimed":
+        os._exit(73)
+
+durable.replace_file = exit_after_claim
+sys.exit(cli.main(sys.argv[1:]))
+"""
+    args = ["--ship", str(drydock)]
+    target = ["worker-1", "--cancel", pending.stem]
+    interrupted = subprocess.run([sys.executable, "-c", cmd, *args, "restart", *target],
+                                 capture_output=True, text=True)
+    assert interrupted.returncode == 73, interrupted.stderr
+    assert claim.read_bytes() == pending.read_bytes()
+    assert "terminal" not in request_queue.metadata(pending)
+    assert not done.exists()
+
+    assert cli.main([*args, "fresh", *target]) == 0
+    assert f"cancelled request(s) {pending.stem}; settled without applying" in capsys.readouterr().out
+
+    dispatched = []
+    monkeypatch.setattr(Service, "answer", lambda self, data: dispatched.append(data) or "dispatched")
+    service = Service(ship, None)
+    try:
+        service.requests()
+    finally:
+        service.ledger.close()
+
+    assert ("cancelled; never applied by this request; the earlier claim owner ended without a terminal result"
+            in done.read_text())
+    assert not any(path.exists() for path in (pending, claim, state))
+    assert not dispatched

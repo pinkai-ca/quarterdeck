@@ -1475,10 +1475,11 @@ class Service:
             self.log("error", step="requests", request=path.name, archive_unavailable=True,
                      error=repr(archive_error), trace=traceback.format_exc())
         try:
-            durable.replace_file(path.with_suffix(".done"), f"failed: {error!r}; the request is kept in "
-                                 f"requests/{kept.relative_to(path.parent)} and the service log has the trace\n")
+            request_queue.answer(path, f"failed: {error!r}; the request is kept in "
+                                 f"requests/{kept.relative_to(path.parent)} and the service log has the trace")
             if kept != claim:
                 self.clear_request_claim(claim)
+                request_queue.clear_metadata(path)
         except OSError as answer_error:
             self.log("error", step="requests", request=path.name, answer_unavailable=True,
                      error=repr(answer_error), trace=traceback.format_exc())

@@ -530,11 +530,11 @@ def settle(path, proof, *, clear_claim=False):
 
 def terminal(path, data, proof, *, notice_state='retired'):
     """Durable retirement intent, protected from both new and older service replay."""
-    durable.replace_file(path.with_suffix('.claimed'), path.read_text())
     meta = metadata(path)
+    claim(path, path.read_text(), meta)
     meta['terminal'] = proof
     if data.get('kind') == 'relaunch' and meta.get('told'):
-        meta['notice_terminal_state'] = notice_state
+        meta.setdefault('notice_terminal_state', notice_state)
     save_metadata(path, meta)
     if data.get('kind') == 'relaunch' and meta.get('told'):
         # A client may withdraw or supersede, but never write trusted completion.
@@ -562,20 +562,20 @@ def _retire(runtime, name, reason, identifier=None):
         if identifier is None and data['kind'] != 'relaunch':
             continue
         meta = metadata(path)
-        if (claimed(path) is not False and not isinstance(meta.get('terminal'), str)
-                and 'control_confirmation' in meta):
-            raise ShipError(f'request {path.stem} not {reason}: its command may already be typed; '
-                            'the service confirms it; retained')
-        if (claimed(path) is not False and not isinstance(meta.get('terminal'), str)
-                and not (reason == 'cancelled' and stale_claim(path, meta))):
-            raise ShipError(f'request {path.stem} already claimed; outcome unknown; retained')
-        paths.append((path, data, meta))
+        proof = meta.get('terminal') or f'{name}: {data["kind"]} request {path.stem} {reason}; never applied by this request'
+        if claimed(path) is not False and not isinstance(meta.get('terminal'), str):
+            if 'control_confirmation' in meta:
+                raise ShipError(f'request {path.stem} not {reason}: its command may already be typed; '
+                                'the service confirms it; retained')
+            if reason != 'cancelled' or not stale_claim(path, meta):
+                raise ShipError(f'request {path.stem} already claimed; outcome unknown; retained')
+            proof += '; the earlier claim owner ended without a terminal result'
+        paths.append((path, data, proof))
     if identifier is None and uncertain:
         raise ShipError('request inventory unreadable; no retirement proved; retained')
     if identifier is not None and not paths:
         raise ShipError(f'no pending request {identifier} for {name}; nothing cancelled')
-    for path, data, meta in paths:
-        proof = meta.get('terminal') or f'{name}: {data["kind"]} request {path.stem} {reason}; never applied by this request'
+    for path, data, proof in paths:
         terminal(path, data, proof, notice_state='withdrawn' if reason == 'cancelled' else 'retired')
     return [path.stem for path, _, _ in paths]
 
