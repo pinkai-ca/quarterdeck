@@ -232,23 +232,35 @@ def test_setup_run_again_after_a_refusal_keeps_the_desks_folder_private_and_its_
 
 @pytest.mark.parametrize('planted', ['link', 'file', 'another user\'s'])
 def test_a_desk_folder_that_is_not_the_operators_own_real_folder_is_refused(tmp_path, monkeypatch, planted):
-    office_folder = tmp_path / 'office'
-    office_folder.mkdir()
-    text = setup.template('office')[0]
-    text = shipmod.edit(text, 'seats.desk', 'sandbox', True)
-    text = shipmod.edit(text, 'seats.desk', 'cwd', setup.JAILED_DESK_WORK)
-    office = shipmod._from_text(text, office_folder)
-    work = office_folder / 'work' / 'desk'
-    work.parent.mkdir()
-    elsewhere = tmp_path / 'elsewhere'
-    elsewhere.mkdir(mode=0o755)
-    if planted == 'link':
-        work.symlink_to(elsewhere, target_is_directory=True)
-    elif planted == 'file':
-        work.write_text('not a folder')
-    else:
-        work.mkdir(mode=0o755)
-        monkeypatch.setattr(os, 'getuid', lambda: os.stat(work).st_uid + 1)
+    """A link, a file, or another user's folder is refused, and the other place is left as the fixture made it.
+
+    mkdir keeps the caller's umask, so the fixture is made at umask 0 and then given its mode outright. The
+    caller's umask is restored before the check. The refusal itself does not read the umask.
+    """
+    caller = os.umask(0)
+    try:
+        office_folder = tmp_path / 'office'
+        office_folder.mkdir(mode=0o755)
+        text = setup.template('office')[0]
+        text = shipmod.edit(text, 'seats.desk', 'sandbox', True)
+        text = shipmod.edit(text, 'seats.desk', 'cwd', setup.JAILED_DESK_WORK)
+        office = shipmod._from_text(text, office_folder)
+        work = office_folder / 'work' / 'desk'
+        work.parent.mkdir(mode=0o755)
+        elsewhere = tmp_path / 'elsewhere'
+        elsewhere.mkdir(mode=0o755)
+        elsewhere.chmod(0o755)
+        if planted == 'link':
+            work.symlink_to(elsewhere, target_is_directory=True)
+        elif planted == 'file':
+            work.write_text('not a folder')
+            work.chmod(0o644)
+        else:
+            work.mkdir(mode=0o755)
+            work.chmod(0o755)
+            monkeypatch.setattr(os, 'getuid', lambda: os.stat(work).st_uid + 1)
+    finally:
+        os.umask(caller)
     with pytest.raises(shipmod.ShipError, match='is a link|not this user\'s own folder'):
         setup.make_jailed_work(office)
     assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o755 and not any(elsewhere.iterdir()), 'nothing changed there'
