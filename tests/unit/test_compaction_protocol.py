@@ -649,11 +649,16 @@ def test_direct_process_requires_native_lifetime_and_exact_completion(world, res
     print(f'synthetic direct {result}: automatic launches={w.calls.count("fresh")}')
 
 
-@pytest.mark.parametrize('lost_reply', [False, True])
-def test_measured_fake_program_uses_real_lifecycle_and_carries_open_handoff(world, monkeypatch, tmp_path, lost_reply):
+@pytest.mark.parametrize(('lost_reply', 'linger'), [
+    pytest.param(False, 0, id='ordinary'),
+    pytest.param(True, 0, id='lost-reply'),
+    pytest.param(False, 20, id='after-down-bound'),
+    pytest.param(False, 61, id='after-relaunch-bound'),
+])
+def test_measured_fake_program_uses_real_lifecycle_and_carries_open_handoff(world, monkeypatch, tmp_path, lost_reply, linger):
     import subprocess
     import sys
-    from quarterdeck import cli, credential, durable, service
+    from quarterdeck import cli, credential, durable, jail_end, relaunch_intent, seat as seatmod, service, shutdown
     from quarterdeck.harness.base import Launch
 
     w = world
@@ -688,10 +693,33 @@ def test_measured_fake_program_uses_real_lifecycle_and_carries_open_handoff(worl
     # and the synthetic pane transport. The successor process writes its own native record.
     live = [w.seat.pane()]
     launches, retired, first_messages, late = [], [], [], []
+    up_attempts = []
+    old = replace(w.seat.launched(), start='synthetic-start')
+    old.write(w.seat.trusted/'launch.json')
+    tenths = 0
+
+    def sleep(seconds):
+        nonlocal tenths
+        tenths += round(seconds * 10)
+
+    def old_alive(pid, start):
+        assert (pid, start) == (old.pid, old.start)
+        return tenths < linger * 10
+
+    fake_time = SimpleNamespace(monotonic=lambda: tenths / 10, sleep=sleep)
+    monkeypatch.setattr(seatmod, 'process_alive', old_alive)
+    monkeypatch.setattr(jail_end, 'snapshot', lambda launch: {})
     monkeypatch.setattr(w.seat, 'record', lambda: Seat.record(w.seat))
     monkeypatch.setattr(w.seat, 'join', lambda: Seat.join(w.seat))
-    monkeypatch.setattr(w.seat, '_down', lambda: Seat._down(w.seat))
+
+    def down():
+        with monkeypatch.context() as clock:
+            clock.setattr(seatmod, 'time', fake_time)
+            return Seat._down(w.seat)
+
+    monkeypatch.setattr(w.seat, '_down', down)
     def up(resume=True, *, observation=None):
+        up_attempts.append(resume)
         proof = Seat._up(w.seat, resume)
         if lost_reply:
             raise OSError('synthetic crash after durable successor launch')
@@ -703,6 +731,8 @@ def test_measured_fake_program_uses_real_lifecycle_and_carries_open_handoff(worl
     monkeypatch.setattr(w.seat.tmux, 'pane', lambda key: live[0] if live[0] is not None and live[0].id == key else None)
     def kill(key, expected_pid):
         assert (key, expected_pid) == (live[0].id, live[0].pid)
+        intent = relaunch_intent.read(w.svc.runtime, f'{w.seat.name}.json', {w.seat.name})
+        assert intent['kind'] == 'compaction' and intent['resume'] is False
         retired.append((key, expected_pid))
         live[0] = None
     monkeypatch.setattr(w.seat.tmux, 'kill_window', kill, raising=False)
@@ -735,6 +765,7 @@ sys.stdin.read(1)
         return Launch((sys.executable, str(fake), str(template.path), str(target), str(prompt), str(brief)), {})
     monkeypatch.setattr(w.seat.harness, 'launch', launch)
     def open_window(argv, env, path):
+        assert not old_alive(old.pid, old.start)
         late.append(w.svc.store.new('answer', 'operator', w.seat.name, 'Synthetic arrival after the launch snapshot'))
         assert post.typed(late) not in first_messages[-1]
         assert w.svc.attempts.undelivered(w.svc.store, w.seat.name) == []
@@ -754,7 +785,26 @@ sys.stdin.read(1)
         else:
             w.source[0].result()
         w.source[0].finish()
-        compaction.tick(w.seat)
+        with shutdown.Stop(w.svc.runtime).installed():
+            compaction.tick(w.seat)
+        assert not relaunch_intent.path(w.svc.runtime, w.seat.name).exists()
+        if linger > seatmod.RELAUNCH_END_SECONDS:
+            assert tenths == seatmod.RELAUNCH_END_SECONDS * 10
+            assert not up_attempts and not launches
+            assert not w.seat.is_up and w.seat.launched() == old
+            assert old_alive(old.pid, old.start)
+            assert f'{w.seat.name}: its program is still ending; its relaunch was refused' in watch.facts(w.seat.ship, w.seat.tmux).line()
+            tenths = linger * 10
+            assert w.seat.finish_retirement()
+            w.svc.relaunch_intents()
+            compaction.tick(w.seat)
+            assert not launches and not w.seat.is_up and w.seat.launched() is None
+            assert w.seat.retiring() is None and w.svc.store.is_open(hand)
+            line = watch.facts(w.seat.ship, w.seat.tmux).line()
+            assert f'{w.seat.name}: its relaunch was refused while its program was ending; qd up {w.seat.name}' in line
+            return
+        assert tenths == linger * 10
+        assert up_attempts == [False]
         assert len(launches) == len(retired) == 1 and launches[0].poll() is None
         assert w.seat.record() == target
         assert w.svc.attempts.latest()[hand.id] == 'launch' and w.svc.store.is_open(hand)
