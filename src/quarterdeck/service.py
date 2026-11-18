@@ -765,6 +765,10 @@ class Service:
                 continue
             result = attempt.result
             if result is None:
+                from .delivery_boundary import HOLD_DETAIL, held_path
+                if held_path(self.runtime, attempt.path):
+                    self.attempts.judge(attempt, "uncertain", HOLD_DETAIL)
+                    continue
                 if time.time() < attempt.when.timestamp() + CONFIRM_SECONDS:
                     continue
                 if attempt.pane is None:
@@ -1013,6 +1017,8 @@ class Service:
             if len(messages)==1 and (reason:=paste_refusal.refused(seat,post.typed(messages),screen)):
                 return f'{messages[0].short} to {seat.name} · withheld: {reason}'
             pending_delivery.explicit_resend(self, seat, messages, screen)
+            from .delivery_boundary import message_held
+            messages = [message for message in messages if not message_held(self.runtime, seat.name, message.id)]
         latest = self.attempts.last_results(seat.name)
         ordered = sorted(messages, key=lambda message: latest.get(message.id) == "withheld")
         lines = []
@@ -1534,6 +1540,9 @@ class Service:
                 return f"{message.short} re-offered to {seat.name}'s watch; " + ("it prints it now" if post.watch_armed(self.runtime, seat.name) else "no watch is armed yet")
             if not seat.is_up:
                 return f"{message.short}: {seat.name} is down; it is delivered at qd up"
+            from .delivery_boundary import message_held
+            if message_held(self.runtime, seat.name, message.id):
+                return f"{message.short}: delivery boundary settled; outcome uncertain; never resent"
             return self.deliver(seat, [message], resend=True)
         if kind == "submit":
             return pending_delivery.submit(self, self.seat(data["seat"]))

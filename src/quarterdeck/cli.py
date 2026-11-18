@@ -34,7 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
     argv = choose_default(args, argv)
     runs_itself = (args.run in (cmd_upgrade, cmd_service, cmd_setup, cmd_init, cmd_raise, cmd_default)
-                   and not (args.run is cmd_service and getattr(args, 'settle_barrier', False)))  # an act, not the service
+                   and not (args.run is cmd_service and (getattr(args, 'settle_barrier', False)
+                            or getattr(args, 'settle_delivery', False))))  # an act, not the service
     if not runs_itself and not (args.run is cmd_controls and getattr(args, "harness", None)):
         handoff(args, argv)
     try:
@@ -236,10 +237,15 @@ def build_parser() -> argparse.ArgumentParser:
     recovery.add_argument('--recover', action='store_true', help='check the ledger and preserve/rebuild it if malformed; service must be stopped')
     recovery.add_argument('--clear-recovery', action='store_true', help='acknowledge ledger recovery alarms; keep all evidence')
     p = verb("service", cmd_service, "run the ship's service in the foreground (qd up starts it detached)")
-    p.add_argument('--settle-barrier', action='store_true',
-                   help="move an unreadable service stop barrier aside unchanged, once no service runs, nothing is "
-                        "in this ship's service scope and nothing outside its tmux server carries its QD_SHIP; "
-                        "a systems seat or the operator")
+    settle = p.add_mutually_exclusive_group()
+    settle.add_argument('--settle-barrier', action='store_true',
+                        help="move an unreadable service stop barrier aside unchanged, once no service runs, nothing is "
+                             "in this ship's service scope and nothing outside its tmux server carries its QD_SHIP; "
+                             "a systems seat or the operator")
+    settle.add_argument('--settle-delivery', action='store_true',
+                        help="move a delivery pointer the next service cannot resolve aside unchanged, once no service "
+                             "holds the lock and the old owner is proved stopped; a systems seat or the operator, "
+                             "never from a jail")
     p = verb("drill", cmd_drill, "the all-hands drill: on the drydock's simulator, or on --ship with real programs")
     p.add_argument("--keep", action="store_true", help="keep the temporary ship and its tmux server for a look")
     p = verb("check", cmd_check, "prove the installed version of a program live, on a throwaway seat (spends tokens)")
@@ -1073,6 +1079,9 @@ def cmd_service(args: argparse.Namespace) -> str | None:
     if getattr(args, 'settle_barrier', False):
         from . import barrier_settle
         return barrier_settle.settle(ship, Tmux.for_ship(ship), os.environ.get('QD_SEAT') or None)
+    if getattr(args, 'settle_delivery', False):
+        from . import delivery_boundary
+        return delivery_boundary.settle(ship, Tmux.for_ship(ship), os.environ.get('QD_SEAT') or None)
     # Recovery/exec precedes construction (and therefore the ledger and service lock).
     install.bootstrap_service(ship, ['--ship', str(ship.folder), 'service'])
     service.Service(ship, Tmux.for_ship(ship)).run()

@@ -232,6 +232,24 @@ def _startup_problem(runtime: Path) -> str | None:
     return None
 
 
+def finish_would_resolve(runtime: Path) -> bool:
+    """Whether ``finish`` would clear the pointer. Read only: it never calls ``finish`` and writes nothing.
+
+    The same predicates ``finish`` uses before it mutates. A true result is a pointer a start clears; the
+    delivery-boundary act refuses it.
+    """
+    if not pointer_path(runtime).exists():
+        return False
+    expected = owner(runtime)
+    if expected is None or not process_gone(expected):
+        return False
+    data = inflight(runtime, expected)
+    if data is None:
+        return False
+    _, problem = _journal_check(runtime / data['journal'], data, expected)
+    return problem is None
+
+
 def _pointer_stamp(path: Path) -> tuple[int, int, int, int] | None:
     try:
         info = path.lstat()

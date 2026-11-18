@@ -271,6 +271,10 @@ class Proof:
         def uncertain(reason: str) -> tuple[str, str, bool]:
             return inspection(seat, reason, self.data["attempts"], message=self.data.get('message')), "needs a human", False
 
+        from .delivery_boundary import HOLD_DETAIL, held_path
+        if held_path(seat.ship.runtime, self.path):
+            return uncertain(HOLD_DETAIL)
+
         if self.data.get('paste_clear') and phase!='withheld':
             return uncertain('paste/submit outcome uncertain: owned unsubmitted-paste cleanup unconfirmed; never resent')
 
@@ -864,6 +868,20 @@ def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.At
         if _settled_terminal(proof.data, attempts, latest):
             paths.update(attempts[n].path for n in proof.data['attempts'])
             continue
+        from .delivery_boundary import HOLD_DETAIL, held_path
+        if held_path(service.runtime, proof.path):
+            # The boundary act left this journal unchanged. Hold it: do not cancel a prepared
+            # reservation, and do not recover an open or blind attempt into a resend.
+            for filename in proof.data["attempts"]:
+                attempt = attempts.get(filename)
+                if attempt is None:
+                    continue
+                if attempt.result is None:
+                    service.attempts.judge(attempt, "uncertain", HOLD_DETAIL)
+                elif attempt.result == "blind":
+                    service.attempts.close(attempt, "uncertain", HOLD_DETAIL)
+            paths.update(attempts[n].path for n in proof.data["attempts"] if n in attempts)
+            continue
         if any(n not in attempts for n in proof.data["attempts"]):
             paths.update(a.path for a in attempts.values() if a.seat == name)
             service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending attempt receipt missing; never resent", proof.data["attempts"], message=proof.data.get('message')))
@@ -924,14 +942,14 @@ def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.At
     return paths
 
 
-def explicit_resend(service: Service, seat: Seat, messages: list[post.Message], screen: Screen | None) -> None:
+def explicit_resend(service: Service, seat: Seat, messages: list[post.Message], screen: Screen | None) -> set[str]:
     """An explicit request can retire uncertainty only after the box is empty.
 
     It authorizes another submission, not clearing any draft or calling the old
     one delivered. Normal ticks never call this function.
     """
     if seat.session.human or screen is None or screen.box != "" or screen.unknown or screen.interruption:
-        return
+        return set()
     requested = {m.id for m in messages}
     attempts = {a.path.name: a for a in service.attempts.all()}
     proofs = active(seat, include_terminal=True)
@@ -940,14 +958,20 @@ def explicit_resend(service: Service, seat: Seat, messages: list[post.Message], 
                 and proof.data['receipt_refresh'].get('outcome') != 'superseded'
                 and any(attempts[name].message in requested for name in proof.data['attempts'])):
             raise RecordError('closed receipt refresh settlement pending; original input never resent')
+    from .delivery_boundary import held_path
+    held_messages: set[str] = set()
     for proof in proofs:
         if proof.data['phase'] in TERMINAL or str(proof.path) in _RETYPING:
             continue  # the one look's retype settles its own journal once its second typing is proved
         carried = [attempts[name] for name in proof.data["attempts"]]
         if {a.message for a in carried} <= requested:
+            if held_path(service.runtime, proof.path):
+                held_messages.update(a.message for a in carried)
+                continue  # a settled boundary is never cancelled and never typed again
             proof.save(phase="cancelled", resolution="explicit resend requested with empty box")
             for attempt in carried:
                 service.attempts.close(attempt, "blind", "explicit resend superseded this unconfirmed submission")
+    return held_messages
 
 
 def detached(seat: Seat) -> list[str]:
@@ -1081,13 +1105,18 @@ def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Atte
     known = {a.path.name: a for a in attempts}
     done = []
     proofs = _named(seat, [a.path.name for a in mine], known)
+    from .delivery_boundary import held_path
     for proof in proofs:  # a retype a dead service left half done is settled before anything else is looked at
+        if held_path(service.runtime, proof.path):
+            continue  # a settled boundary is never typed again, and its screen is not read
         if (proof.data["phase"] not in TERMINAL and proof.data.get("look", {}).get("outcome") == RETYPING
                 and str(proof.path) not in _RETYPING):
             message = _message_of(service, proof, known)
             if message is not None:
                 done += _settle_retype(service, seat, proof, message, known, "settled after the service ended mid-retype")
     for proof in proofs:
+        if held_path(service.runtime, proof.path):
+            continue  # before the screen: a settled boundary is never typed again
         data = proof.data
         owed = data.get("look", {}).get("outcome") == NOT_TYPED
         if (data["phase"] in TERMINAL or ("look" in data and not owed) or not proof.same_launch(seat)

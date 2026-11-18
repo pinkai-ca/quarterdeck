@@ -202,7 +202,9 @@ runtime/
                        ownership; PID, process start and generation token stamp), request, install, admission/,
                        lifecycle/, attempts, check-outcomes/, raise/, the service log's and the ledger opening's,
                        seat-files/ for each seat's record registry and launches, credential-reseed
-  service.delivery     runtime-only in-flight owner/transaction token and confined pending-journal path
+  service.delivery     runtime-only in-flight owner/transaction token and confined pending-journal path.
+                       A pointer the next service cannot resolve is settled by qd service --settle-delivery,
+                       which moves only that file; the journal stays, held uncertain by a mark in trusted/
   seats/<seat>/home/   the program's home, built by qd: the ship's settings, the seat's records and logs
   seats/<seat>/record  the path of the current record, taken at launch
   seats/<seat>/watch   pid and time of the seat's armed watch, if any

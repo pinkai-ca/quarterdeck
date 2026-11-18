@@ -469,8 +469,18 @@ def run(seat, *, observe_delivery=None) -> str | None:
 
 def _run(seat, *, observe_delivery=None) -> str | None:
     from pathlib import Path
+    import stat
     from .door import Door
+    from .delivery_boundary import held_journal
 
+    wake = seat.trusted / trusted_files.HUMAN_WAKE
+    try:
+        info = wake.lstat()
+    except OSError:
+        info = None
+    if info is not None and stat.S_ISREG(info.st_mode) and held_journal(
+            seat.ship.runtime, f'{trusted_files.TRUSTED}/{seat.name}/{trusted_files.HUMAN_WAKE}'):
+        return 'human wake receipt uncertain; never resent; inspect human-wake.json'
     watch, waiting, proof, reason = metadata_context(seat)
     if reason:
         return reason

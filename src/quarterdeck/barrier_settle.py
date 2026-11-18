@@ -49,15 +49,18 @@ EVIDENCE = 'stop-barrier'
 GUARD = 'service-stop-guard.lock'
 
 
-def authority(ship: Ship, caller: str | None) -> str | None:
-    """Why ``caller`` may not settle the barrier, or None: a systems seat, or the operator's own shell."""
+def authority(ship: Ship, caller: str | None, *, what: str = 'settles the barrier') -> str | None:
+    """Why ``caller`` may not run the act, or None: a systems seat, or the operator's own shell.
+
+    ``what`` is the act's own words. The default keeps the barrier act's refusal byte for byte; the delivery
+    boundary act passes its own."""
     if not caller:
         return None  # the operator's shell: no seat names it
     spec = ship.seats.get(caller)
     if spec is None:
-        return f"refused: {caller} is not a seat of {ship.name}; only a systems seat or the operator settles the barrier"
+        return f"refused: {caller} is not a seat of {ship.name}; only a systems seat or the operator {what}"
     if spec.role != 'systems':
-        return f"refused: {caller} is a {spec.role} seat; only a systems seat or the operator settles the barrier"
+        return f"refused: {caller} is a {spec.role} seat; only a systems seat or the operator {what}"
     return None
 
 

@@ -261,6 +261,7 @@ def test_the_act_is_run_by_the_ships_own_copy_while_the_service_and_controls_by_
     monkeypatch.setattr(cli, 'cmd_controls', lambda args: None)
     folder = str(tmp_path)
     for argv, expected in ((['--ship', folder, 'service', '--settle-barrier'], True),
+                           (['--ship', folder, 'service', '--settle-delivery'], True),
                            (['--ship', folder, 'service'], False),
                            (['--ship', folder, 'controls', '--harness', 'fake'], False)):
         handed.clear()
