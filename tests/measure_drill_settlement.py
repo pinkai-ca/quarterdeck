@@ -71,7 +71,7 @@ def measured(self, seat, order):
                 time.sleep(.1)
         print('DRILL_SETTLEMENT ' + json.dumps(dict(
             python=sys.version.split()[0], role=seat.spec.role, human=seat.session.human,
-            bound_seconds=self.patience * getattr(drill, 'SETTLEMENT_WINDOWS', 1),
+            bound_seconds=getattr(self, 'settlement_guard', self.patience * getattr(drill, 'SETTLEMENT_WINDOWS', 1)),
             ordinary_patience_seconds=self.patience, success=result[0] is not None,
             call_seconds=ended-began,
             settlement_seconds=called[-1][0]-began if called else None,

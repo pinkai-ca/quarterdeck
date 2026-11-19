@@ -1,14 +1,16 @@
 """The temporary drill owns its lifecycle while its matrix sends new orders."""
 import json
+from pathlib import Path
 import sys
 
-from tests.integration.test_plain_install import child_environment, command, scratch
+from tests.integration.test_plain_install import DRILL_TIMEOUT, child_environment, command, scratch
 
 pytest_plugins = ('tests.shared_install',)
 
 ROUND2_RACE = '''
 import json
-from quarterdeck import drill
+from quarterdeck import drill, input_receipt, post
+from quarterdeck.harness.synthetic_control import events
 matrix = drill.Drill.matrix
 observation = {}
 def racing_matrix(self, label):
@@ -40,7 +42,18 @@ def racing_matrix(self, label):
     patience = self.patience
     self.patience = 5
     try:
-        return matrix(self, label)
+        matrix(self, label)
+        keyboard = events(worker.home)
+        observation['worker_orders'] = {}
+        for order in arrived:
+            forms = post.delivered_forms(order)
+            kinds = [event['event'] for event in keyboard
+                     if any(input_receipt.same_text(event['text'], form) for form in forms)]
+            observation['worker_orders'][order.sender] = {
+                'submitted': kinds.count('submitted'),
+                'accepted': kinds.count('accepted') + kinds.count('consumed'),
+                'closed': self.store.closing_report(order) is not None,
+            }
     finally:
         self.patience = patience
         self.store.new = original_new
@@ -64,6 +77,9 @@ def test_installed_matrix_keeps_its_explicit_lifecycle_after_new_round_orders(sc
     assert not shared_wheel.source.exists()
     assert not shared_wheel.build_environment.exists()
     env['PATH'] = str(prefix / 'bin') + ':/usr/bin:/bin'
-    result = json.loads(command(python, '-I', '-c', ROUND2_RACE, cwd=outside, env=env, timeout=240))
+    result = json.loads(command(python, '-I', '-c', ROUND2_RACE, cwd=outside, env=env, timeout=DRILL_TIMEOUT))
     assert result['passed'], json.dumps(result, indent=2)
-    assert result['race'] == dict(configured_after_order=False)
+    assert result['race'] == dict(configured_after_order=False, worker_orders={
+        sender: dict(submitted=1, accepted=1, closed=True) for sender in ('captain', 'desk')})
+    assert not list(Path(env['TMPDIR']).glob('qd-drill-*'))
+    assert not list(private_socket_root.glob('qd-pt-*'))

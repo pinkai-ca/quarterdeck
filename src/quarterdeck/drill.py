@@ -31,7 +31,7 @@ from .tmux import Tmux, TmuxError
 
 DRYDOCK = standing.PROJECT_DIR / "ships" / "drydock"
 DRILL_TICK = 0.1  # seconds: the generated drydock's service passes quickly; ships/drydock keeps the default
-SETTLEMENT_WINDOWS = 4  # outer stuck-run guard, not permission to start fresh
+SETTLEMENT_GUARD = 180.0  # seconds per seat, independent of the matrix patience
 SETTLEMENT_FALLBACK = 1.0  # a flock release need not generate a directory notification
 
 
@@ -55,14 +55,20 @@ def wait_for(predicate, seconds: float, step: float = 0.1):
     deadline = clock() + seconds
     # Only a predicate with an explicit event wait changes the ordinary cadence.
     pause = getattr(predicate, '__dict__', {}).get('_drill_wait')
-    while clock() < deadline:
+    woke = False
+    while woke or clock() < deadline:
         value = predicate()
         if value:
             return value
         if pause is None:
             time.sleep(step)
         else:
-            pause(max(0.0, deadline - clock()))
+            remaining = deadline - clock()
+            if remaining <= 0:
+                break
+            # Read a wake from the last bounded wait even if the clock has
+            # since reached the guard. No further waits begin past the guard.
+            woke = pause(remaining)
     return None
 
 
@@ -84,9 +90,10 @@ def acceptances(inputs: list[Input], text: str, since: datetime) -> int:
 
 
 class Drill:
-    def __init__(self, ship: shipmod.Ship, tmux: Tmux, patience: float = 30.0, *, settlement_clock=None):
+    def __init__(self, ship: shipmod.Ship, tmux: Tmux, patience: float = 30.0, *,
+                 settlement_guard: float = SETTLEMENT_GUARD, settlement_clock=None):
         self.ship, self.tmux, self.patience = ship, tmux, patience
-        self.settlement_clock = settlement_clock
+        self.settlement_guard, self.settlement_clock = settlement_guard, settlement_clock
         self.store, self.attempts = Store(ship.runtime), Attempts(ship.runtime)
         self.checks: list[Check] = []
 
@@ -291,15 +298,18 @@ class Drill:
                 if current and not current[-1].accepted and current[-1].result not in {'withheld', 'cancelled', 'blind'}:
                     reason = f"pending order delivery is {current[-1].result or 'unfinished'}"
                     return None
-                if any(a.seat == seat.name and a.result is None for a in attempts):
-                    reason = "a delivery attempt is still unfinished"
+                if unfinished := next((a for a in attempts if a.seat == seat.name and a.result is None), None):
+                    reason = f"a delivery attempt is still unfinished ({unfinished.path.name})"
                     return None
                 proofs, errors = journals(seat)
                 if errors:
                     reason = "pending delivery evidence is unreadable"
                     return None
-                if any(p.data["phase"] in {"prepared", "pasting", "submitting", "submitted"} for p in proofs):
-                    reason = "a delivery is still being typed or confirmed"
+                active_phases = {"prepared", "pasting", "submitting", "submitted"}
+                if active := next((p for p in proofs if p.data["phase"] in active_phases), None):
+                    results = {a.path.name: a.result for a in attempts if a.seat == seat.name}
+                    receipts = ', '.join(f'{name}={results.get(name, "missing")}' for name in active.data['attempts'])
+                    reason = f"a delivery is still being typed or confirmed ({active.data['phase']}: {receipts})"
                     return None
                 was_blind = bool(current and current[-1].result == 'blind')
             except (OSError, ValueError, TypeError, seat_files.LinkRefused):  # the stand-in watch's file, refused
@@ -326,9 +336,9 @@ class Drill:
             return proof, mode
 
         ready._drill_wait = lambda remaining: notifications.wait(min(SETTLEMENT_FALLBACK, remaining))
-        clock = getattr(self, 'settlement_clock', None) or time.monotonic
+        clock = self.settlement_clock or time.monotonic
         ready._drill_clock = clock  # tests advance only this guard, not real service/lifecycle clocks
-        guard = self.patience * SETTLEMENT_WINDOWS
+        guard = self.settlement_guard
         began = clock()
         try:
             result = wait_for(ready, guard)

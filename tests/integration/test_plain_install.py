@@ -23,6 +23,9 @@ from tests.integration.test_upgrade_resources import RESOURCE_ROOTS, ROOT, archi
 from tests.testrunner import layout
 
 
+DRILL_TIMEOUT = 720  # three 180-second settlement guards, plus startup, the two rounds and teardown
+
+
 def command(*argv, cwd, env, timeout=180):
     done = subprocess.run([str(arg) for arg in argv], cwd=cwd, env=env,
                           capture_output=True, text=True, timeout=timeout)
@@ -178,7 +181,7 @@ def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, cap
                for law in laws['laws'] for carrier in law['carriers'])
     assert all(identity in laws_text for identity in expected_laws)
 
-    drill_text = command(qd, 'drill', cwd=outside, env=env, timeout=240)
+    drill_text = command(qd, 'drill', cwd=outside, env=env, timeout=DRILL_TIMEOUT)
     lines = drill_text.strip().splitlines()
     assert lines and lines[-1] == f'all passed of {len(lines) - 1} checks', drill_text
     assert all(line.startswith('PASS  ') for line in lines[:-1]), drill_text

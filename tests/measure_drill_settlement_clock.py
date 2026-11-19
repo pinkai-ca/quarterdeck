@@ -36,7 +36,7 @@ def observed(self, seat, order):
     before = clock() if clock else None
     result = original(self, seat, order)
     print('DRILL_CLOCK_CALL ' + json.dumps(dict(seat=seat.name,
-        guard_seconds=self.patience * drill.SETTLEMENT_WINDOWS,
+        guard_seconds=getattr(self, 'settlement_guard', self.patience * getattr(drill, 'SETTLEMENT_WINDOWS', 1)),
         wall_seconds=time.monotonic()-began, cpu_seconds=time.process_time()-cpu,
         injected=clock is not None, clock_before=before, clock_after=clock() if clock else None,
         success=result[0] is not None, reason=result[1])), file=sys.stderr, flush=True)

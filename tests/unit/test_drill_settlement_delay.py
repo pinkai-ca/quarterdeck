@@ -9,11 +9,10 @@ from quarterdeck import drill, lifecycle
 
 
 def test_slow_readiness_observation_waits_for_settlement_not_wall_time(tmp_path, monkeypatch):
-    exercise = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), patience=.01)
-    # Attribute injection also lets this exact test run on the unchanged main API.
-    exercise.settlement_clock = lambda: 0.0
+    exercise = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), settlement_guard=.04,
+                           settlement_clock=lambda: 0.0)
     order = exercise.store.new('order', 'ship', 'worker', 'Synthetic open work')
-    guard = exercise.patience * drill.SETTLEMENT_WINDOWS
+    guard = exercise.settlement_guard
     entered, transitions, calls = [], [], []
     def fresh():
         calls.append('claim')

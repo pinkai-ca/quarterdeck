@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import sys
 
-from tests.integration.test_plain_install import child_environment, command
+from tests.integration.test_plain_install import DRILL_TIMEOUT, child_environment, command
 from tests.integration.test_upgrade_resources import RESOURCE_ROOTS, ROOT, archive, environment, git
 
 
@@ -46,7 +46,7 @@ def test_installed_drill_carries_open_orders_before_service_delivery(tmp_path, p
     shutil.rmtree(source)
     shutil.rmtree(tmp_path / 'build-env')
     env['PATH'] = str(prefix / 'bin') + ':/usr/bin:/bin'
-    result = json.loads(command(python, '-I', '-c', PAUSED_SERVICE, cwd=outside, env=env, timeout=240))
+    result = json.loads(command(python, '-I', '-c', PAUSED_SERVICE, cwd=outside, env=env, timeout=DRILL_TIMEOUT))
     assert result['passed'], '\n'.join(result['lines'])
     for name in ['captain', 'worker-1']:
         line, = (line for line in result['lines'] if line.startswith(f'PASS  {name} fresh '))

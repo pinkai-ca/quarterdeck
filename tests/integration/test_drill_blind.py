@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import sys
 
-from tests.integration.test_plain_install import child_environment, command, scratch
+from tests.integration.test_plain_install import DRILL_TIMEOUT, child_environment, command, scratch
 
 pytest_plugins = ('tests.shared_install',)
 
@@ -34,16 +34,16 @@ def after_blind(self, seat, order):
     with drill.lifecycle.claim(self.ship.runtime, seat.name):
         observation.update(result=attempt.result, phase=proof.data['phase'],
                            lifecycle_free=True, confirmed=proof.confirmed(seat), seeded=True)
-    patience = self.patience
     clock = self.settlement_clock
-    self.patience = .2  # The finished state is already observed; no latency is being tested.
+    guard = self.settlement_guard
+    self.settlement_guard = .8  # The finished state is already observed; no latency is being tested.
     # Wait for settled evidence; scheduling/IO time cannot consume this test's guard.
     # The parent command timeout still catches a genuinely stuck drill.
     self.settlement_clock = lambda: 0.0
     try:
         return original_one(self, seat, order)
     finally:
-        self.patience = patience
+        self.settlement_guard = guard
         self.settlement_clock = clock
 drill.Drill.fresh_all = stopped_all
 drill.Drill.fresh_after_delivery = after_blind
@@ -64,7 +64,7 @@ def test_installed_drill_carries_a_finished_blind_order(scratch, private_socket_
     assert not shared_wheel.source.exists()
     assert not shared_wheel.build_environment.exists()
     env['PATH'] = str(prefix / 'bin') + ':/usr/bin:/bin'
-    result = json.loads(command(python, '-I', '-c', FINISHED_BLIND, cwd=outside, env=env, timeout=240))
+    result = json.loads(command(python, '-I', '-c', FINISHED_BLIND, cwd=outside, env=env, timeout=DRILL_TIMEOUT))
     assert result['blind'] == dict(result='blind', phase='cancelled', lifecycle_free=True,
                                    confirmed=None, seeded=True)
     assert result['passed'], '\n'.join(result['lines'])

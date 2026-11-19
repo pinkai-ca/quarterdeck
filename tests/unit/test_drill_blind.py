@@ -9,7 +9,7 @@ from quarterdeck import drill
 
 def exercise(tmp_path, monkeypatch, phase):
     clock = [0.0]
-    run = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), patience=.02,
+    run = drill.Drill(SimpleNamespace(runtime=tmp_path), Mock(), settlement_guard=.08,
                       settlement_clock=lambda: clock[0])
     def advance(seconds):
         clock[0] += seconds
