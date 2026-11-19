@@ -81,7 +81,8 @@ def _complete(reading):
     from .watch import Facts, SeatReading
     if not isinstance(reading, dict) or not TOP <= reading.keys():
         return False
-    if not isinstance(reading['facts'], dict) or not {field.name for field in fields(Facts)} <= reading['facts'].keys():
+    required_facts = {field.name for field in fields(Facts)} - {'oldest_waiting_seat'}
+    if not isinstance(reading['facts'], dict) or not required_facts <= reading['facts'].keys():
         return False
     if any(not isinstance(reading[name], list) for name in
            ('seats', 'programs', 'check_outcomes', 'check_outcome_errors', 'open_orders', 'requests', 'usage', 'pools', 'harnesses')):

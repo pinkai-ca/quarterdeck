@@ -61,6 +61,16 @@ def test_crowded_stale_publication_keeps_provenance_before_urgent_alerts(live, m
     assert headlines.columns(line) <= headlines.WIDTH
 
 
+@pytest.mark.parametrize('extra', [[], [[]]], ids=['legacy-three-fields', 'legacy-four-fields'])
+def test_older_headline_keeps_the_age_when_recomposed(extra):
+    age = '2 waiting, oldest 25m'
+    headline = ['service ok', [[[age], '2 waiting', 2, *extra]], []]
+    assert headlines.render(headlines.recover_document(headline)) == f'service ok · {age} · qd status'
+    publication = dict(line=f'service ok · {age} · qd status', headline=headline)
+    note = headlines.note('copy warning', 'copy warning')
+    assert presentation._render(publication, notes=(note,)) == f'service ok · copy warning · {age} · qd status'
+
+
 @pytest.mark.parametrize('publication', [None, '{corrupt', '{}', '[]', 'x' * 65537])
 def test_no_usable_publication_collects_current_alerts(live, monkeypatch, publication):
     ship, svc, lock = live

@@ -49,6 +49,17 @@ def test_fresh_json_status_preserves_every_feed_field(published, monkeypatch):
     assert status_snapshot.requested(ship)
 
 
+def test_fresh_json_status_accepts_a_publication_without_the_waiting_seat(published):
+    ship, _, _, _ = published
+    path = status_snapshot.path(ship.runtime)
+    publication = json.loads(path.read_text())
+    del publication['reading']['facts']['oldest_waiting_seat']
+    path.write_text(json.dumps(publication))
+    result = status()
+    assert result['reading']['mode'] == 'served'
+    assert 'oldest_waiting_seat' not in result['facts']
+
+
 @pytest.mark.parametrize('change', ['missing', 'stale', 'partial', 'incomplete', 'unreadable', 'down'])
 def test_unavailable_service_reading_falls_back_cold(published, monkeypatch, change):
     ship, lock, clock, original = published

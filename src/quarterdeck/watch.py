@@ -612,6 +612,7 @@ class Facts:
     post_waits: list[str] = field(default_factory=list)
     pool_forecasts: list[str] = field(default_factory=list)
     pool_forecast_headlines: list[str] = field(default_factory=list)
+    oldest_waiting_seat: str | None = None
 
     def line(self) -> str:  # law: nothing-waits-silently
         from .headlines import status_line
@@ -1083,6 +1084,7 @@ def _post_fields(ship, store, attempts, post_held, records, latest, waiting, rea
     """Every Facts field read from the post alone, beside the seats' replayed appends."""
     from . import cascade_runtime, group_post, relaunch_intent, structure_outcome, fleet_post
     now = post.now()
+    oldest = min(waiting, key=lambda message: message.at, default=None)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     state = service_state(ship.runtime)
     return dict(
@@ -1090,7 +1092,8 @@ def _post_fields(ship, store, attempts, post_held, records, latest, waiting, rea
         accounting=accounting_reading(ship.runtime, state),  # said by the service's state, read with it
         post_waits=fleet_post.status(ship, store) + post.filing_waits(ship.runtime) + post.drop_waits(ship.runtime),
         waiting=len(waiting),
-        oldest=int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60),
+        oldest=int((now - oldest.at).total_seconds() // 60) if oldest else 0,
+        oldest_waiting_seat=oldest.to if oldest else None,
         blind=sum(result == 'blind' for result in latest.values()),
         unsettled=_unsettled(store, latest),
         queued=len(queued),

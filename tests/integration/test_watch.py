@@ -59,13 +59,16 @@ def test_activity_and_door_from_record_and_screen(ship: shipmod.Ship, tmux: Tmux
     assert str(watch.activity(captain)) == "off, exited 7"
 
 
-def test_the_table_and_the_line(ship: shipmod.Ship, tmux: Tmux, capsys):
+def test_the_table_and_the_line(ship: shipmod.Ship, tmux: Tmux, capsys, monkeypatch):
     seatmod.bring_up(ship, tmux)
     worker = seatmod.Seat(ship, ship.seat("worker-1"), tmux)
     wait_for(lambda: "unknown dialog" in watch.reading(worker).door.reason)
     assert watch.reading(worker).needs_human
     store = post.Store(ship.runtime)
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(post, 'now', lambda: now - timedelta(minutes=2))
     order = store.new("order", "desk", "worker-1", "waits behind the dialog")
+    monkeypatch.setattr(post, 'now', lambda: now)
     store.new("question", "operator", "desk", "no watch armed")
     rows = qd(capsys, "status").splitlines()
     assert rows[0].startswith("service down")
@@ -79,7 +82,7 @@ def test_the_table_and_the_line(ship: shipmod.Ship, tmux: Tmux, capsys):
     assert "obstructed: a human's session, its watch delivers" in table["desk"]
     assert rows[listed] == "open orders: 1" and rows[listed + 1].startswith(f"  {order.short} desk → worker-1")
     line = qd(capsys, "status", "--line")
-    assert line == "SERVICE DOWN · worker-1 needs a human · 2 waiting, oldest 0m · desk: no watch armed · qd status"
+    assert line == "SERVICE DOWN · worker-1 needs a human · 2 waiting, oldest 2m (worker-1) · desk: no watch armed · qd status"
     facts = watch.facts(ship, tmux)
     assert facts.needs_human == ["worker-1"] and facts.unarmed == ["desk"] and facts.blind == 0
     full = qd(capsys, "watch", "worker-1")

@@ -13,6 +13,7 @@ class Group(NamedTuple):
     summary: str
     count: int
     short_details: tuple[str, ...] = ()
+    fallback: str = ""
 
 
 class Headline(NamedTuple):
@@ -40,6 +41,14 @@ def _named(items, label, format_item=str, *, singular=None):
 def _count(count, label, detail=None):
     summary = f'{count} {label}'
     return Group((detail or summary,), summary, count)
+
+
+def _waiting(facts):
+    age = f'{facts.waiting} waiting, oldest {facts.oldest}m' if facts.waiting else None
+    group = _count(facts.waiting, 'waiting', age)
+    if age and facts.oldest_waiting_seat:
+        return group._replace(details=(_plain(f'{age} ({facts.oldest_waiting_seat})'),), fallback=age)
+    return group
 
 
 def note(text, summary):
@@ -95,7 +104,7 @@ def sections(facts, *, detailed=False) -> Headline:
         _named(facts.disks, 'disk alerts', lambda row: f'disk: {row[0]} {row[1]}%', singular='disk alert'),
         _named(facts.held, 'held at limit', lambda name: f'{name} held at limit', singular='limit hold'),
         _named(past, 'past read bound'),
-        _count(facts.waiting, 'waiting', f'{facts.waiting} waiting, oldest {facts.oldest}m' if facts.waiting else None),
+        _waiting(facts),
         _count(facts.queued, 'queued', f'{facts.queued} queued behind a turn, oldest {facts.oldest_queued}m'),
         _count(facts.blind, 'blind'),
         _count(facts.unsettled, 'unsettled', f'{facts.unsettled} unsettled after an error'),
@@ -219,6 +228,10 @@ def render(headline: Headline, *, lead=None, notes=(), compact=False) -> str:
         trial[index] = _preferred(group)
         if _fits(line(trial)):
             choices[index] = trial[index]
+        elif group.fallback:
+            trial[index] = (group.fallback,)
+            if _fits(line(trial)):
+                choices[index] = trial[index]
 
     for index, group in enumerate(notes, start=1):
         front[index] = _preferred(group)[0]
@@ -253,7 +266,7 @@ def cache_document(facts):
                 short = tuple(short for _, short in variants)
                 group = group._replace(details=items, short_details=short)
             elif not _fits(group.details):
-                group = group._replace(details=())
+                group = group._replace(details=(group.fallback,) if group.fallback else (), fallback="")
             bounded_groups.append(group)
         return tuple(bounded_groups)
     return Headline(headline.lead, bounded(headline.immediate), bounded(headline.lower))
@@ -268,14 +281,15 @@ def recover_document(raw):
         result = []
         for items, summary, count, *extra in groups:
             short = extra[0] if extra else ()
+            fallback = extra[1] if len(extra) > 1 else ""
             if (not isinstance(items, (list, tuple)) or not all(isinstance(item, str) for item in items)
                     or not isinstance(summary, str) or type(count) is not int or count < 0
-                    or len(extra) > 1 or not isinstance(short, (list, tuple))
+                    or len(extra) > 2 or not isinstance(short, (list, tuple)) or not isinstance(fallback, str)
                     or (short and (len(short) != len(items) or len(short) > count
                                    or not all(isinstance(item, str) for item in short)))):
                 raise ValueError('invalid status group')
             result.append(Group(tuple(_plain(item) for item in items), _plain(summary), count,
-                                tuple(_plain(item) for item in short)))
+                                tuple(_plain(item) for item in short), _plain(fallback)))
         return tuple(result)
     return Headline(lead, unpack(immediate), unpack(lower))
 
