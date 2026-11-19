@@ -125,10 +125,9 @@ class Drill:
                 if sender != to:
                     body = f"drill {label}: {sender} to {to}\n$ qd post report --re {{this}} drill-done"
                     orders[(sender, to)] = self.store.new("order", sender, to, body, subject=f"drill {label}")
-        pending = list(orders.values())
         for name, spec in self.ship.seats.items():
             if self.ship.session_of(spec).human:
-                self.play_human_seat(name, [o for (_, to), o in orders.items() if to == name], pending)
+                self.play_human_seat(name, [o for (_, to), o in orders.items() if to == name])
         # A program can post its report before the service finishes writing its
         # receipt. Wait for both observable facts, keeping the exact-once check.
         wait_for(lambda: all(not self.store.is_open(o) and any(a.accepted for a in self.attempts.for_message(o.id))
@@ -158,12 +157,12 @@ class Drill:
                            screen is not None and screen.box in ('', human_wake.LINE),
                            f"box {screen.box!r}" if screen else "no screen")
 
-    def play_human_seat(self, name: str, orders: list[post.Message], pending: list[post.Message]) -> None:
+    def play_human_seat(self, name: str, orders: list[post.Message]) -> None:
         """Stand in for the agent at a human-session seat: its watch prints the orders, it reports on each.
 
-        The watch stays armed until every order of the round is closed and this seat has nothing
-        waiting. A report is filed on the service's tick, after qd post has returned; leaving the
-        watch in that gap types the waking line into the desk (law: one-door).
+        The watch stays armed until this seat's round orders are closed and it has nothing waiting.
+        The service can file a report after qd post returns. Retiring the watch in that gap could
+        let the service type a waking line into the seat (law: one-door).
         """
         runtime = self.ship.runtime
         store, attempts = self.store, self.attempts
@@ -188,7 +187,7 @@ class Drill:
                             store.new("report", name, order.sender, "drill-done", re=order.id)
                             reported.add(order.id)
                     continue
-                if (len(reported) == len(orders) and all(not store.is_open(order) for order in pending)
+                if (len(reported) == len(orders) and all(not store.is_open(order) for order in orders)
                         and not attempts.undelivered(store, name)):
                     break
                 time.sleep(0.1)

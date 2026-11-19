@@ -7,6 +7,58 @@ import pytest
 from quarterdeck import drill, human_wake, post
 
 
+def test_each_human_watch_retires_after_its_own_orders_settle(tmp_path, monkeypatch):
+    human = SimpleNamespace(human=True)
+    ship = SimpleNamespace(runtime=tmp_path, seats={'one': human, 'two': human}, session_of=lambda spec: spec)
+    exercise = drill.Drill(ship, None, patience=0.5)
+    exercise.seats = lambda: []
+    store = exercise.store
+    new = store.new
+    retire = drill.inbox_watch.retire
+    queued, extra_input, retired = [], [], []
+
+    def queue_first_report(kind, sender, to, body, **fields):
+        if kind == 'report' and sender == 'one':
+            message = store.prepare(kind, sender, to, body, **fields)
+            queued.append(message)
+            return message
+        return new(kind, sender, to, body, **fields)
+
+    class Clock:
+        elapsed = 0.0
+
+        def monotonic(self):
+            return self.elapsed
+
+        def sleep(self, seconds):
+            self.elapsed += seconds
+            if not extra_input:
+                report, = queued
+                assert store.is_open(store.get(report.re))
+                assert post.watch_file(tmp_path, 'one').is_file()
+                store.write(report)
+                extra_input.append(new('report', 'two', 'one', 'synthetic additional input'))
+
+    clock = Clock()
+
+    def record_retirement(runtime, name, registration):
+        open_recipients = {m.to for m in store.all() if m.kind == 'order' and store.is_open(m)}
+        waiting = exercise.attempts.undelivered(store, name)
+        retired.append((name, clock.elapsed, open_recipients, waiting))
+        retire(runtime, name, registration)
+
+    monkeypatch.setattr(store, 'new', queue_first_report)
+    monkeypatch.setattr(drill, 'time', clock)
+    monkeypatch.setattr(drill.inbox_watch, 'retire', record_retirement)
+    exercise.matrix('synthetic')
+
+    assert retired == [('one', 0.1, {'two'}, []), ('two', 0.1, set(), [])]
+    extra_attempt, = exercise.attempts.for_message(extra_input[0].id)
+    assert extra_attempt.result == 'watch'
+    assert not any(post.watch_file(tmp_path, name).exists() for name in ship.seats)
+    assert all(check.passed for check in exercise.checks), '\n'.join(map(str, exercise.checks))
+
+
 def matrix(tmp_path, monkeypatch, *, settles=True, duplicate=False, result=None):
     exercise = drill.Drill.__new__(drill.Drill)
     exercise.store = post.Store(tmp_path)
