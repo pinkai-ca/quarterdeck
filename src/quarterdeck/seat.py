@@ -287,7 +287,7 @@ def parse_launch(text: str, name: str) -> dict:
 
 
 def declared_pools(seat) -> tuple[str, ...] | None:
-    """The pools the ship file declares for the seat: the only ones its launch record may name.
+    """The pools the ship file authorizes for this seat.
 
     Every Seat carries its declaration. None only for an object that carries none (a test's stand-in), which the
     service never builds: there the launch's pool is not judged.
@@ -303,6 +303,11 @@ def jailed_seat(seat) -> bool:
     if spec is None or ship is None or not hasattr(ship, 'jailed'):
         return False
     try:
+        if (old := getattr(seat, 'withdrawn_pool', None)) is not None:
+            pool = ship.pools.get(old)
+            # The observed name cannot turn off accounting restrictions for a potentially jailed launch.
+            return (pool is None or pool.kind == 'endpoint'
+                    or any(ship.jailed(spec, ship.pool(name)) for name in spec.pools))
         return ship.jailed(spec, seat.pool)
     except (ShipError, AttributeError, KeyError):
         return True  # a seat whose jail cannot be read is judged as jailed
@@ -355,8 +360,11 @@ EXPLICIT = trusted_files.EXPLICIT  # beside ``pool``: a person chose that pool f
 
 
 class Seat:
+    _withdrawn_launch: Launched | None = None
+
     def __init__(self, ship: Ship, spec: SeatSpec, tmux: Tmux, *, launching: bool = False):
         self.ship, self.spec, self.tmux = ship, spec, tmux
+        self._declaration = replace(spec, human_session=self.session.human)
         # A launch of a seat with no launch on file reads a saved choice the ship file no longer declares as
         # absent, so the declared order chooses (``launch_choice``); every other reader still refuses it.
         self._launching = launching and not trusted_files.path(ship.runtime, spec.name, trusted_files.LAUNCH).exists()
@@ -370,9 +378,27 @@ class Seat:
         self.home = self.folder / "home"
         self._prepared_observation: tuple[str | None, str | None] | None = None
         try:
-            self.spec = replace(spec.for_pool(self.pool.name), human_session=self.session.human)
+            try:
+                launched = self.launched() if spec.pool_choices or tmux is not None else None
+            except LaunchUnreadable:
+                if spec.pool_choices:
+                    raise
+                launched = None  # a plain selection can still be read; launch readers report the error
+            if (launched is not None and launched.pool not in spec.pools
+                    and (tmux is None or self._launch_is_live(launched))):
+                saved = self._selection_name()
+                if saved is not None and saved != launched.pool:
+                    raise ShipError(f"{self.name}: saved launch and selected pool disagree; restore its pool declaration/selection")
+                reader = record_owner.launch_reader(launched)
+                if reader is None:
+                    raise ShipError(f"{self.name}: the saved launch on {launched.pool!r} has no known program")
+                self._withdrawn_launch = launched
+                self.spec = replace(self._declaration, harness=reader, model=None, effort=None,
+                                    model_mode=None, effort_mode=None, settings={})
+            else:
+                self.spec = self._declaration.for_pool(self.pool.name)
             self.harness = self._adapter_for(self.spec)
-            if self.spec.pool_choices and (launched := self.launched()) is not None:
+            if spec.pool_choices and launched is not None and self._withdrawn_launch is None:
                 if launched.pool != self.pool.name or record_owner.launch_reader(launched) != self.spec.harness:
                     raise ShipError(f"{self.name}: saved launch and selected program disagree; restore its pool declaration/selection")
         except (ShipError, OSError, ValueError, TypeError) as error:
@@ -390,16 +416,34 @@ class Seat:
     def session(self) -> shipmod.Session:
         return self.ship.session_of(self.spec)
 
+    @property
+    def withdrawn_pool(self) -> str | None:
+        return self._withdrawn_launch.pool if self._withdrawn_launch is not None else None
+
+    @property
+    def declaration(self) -> SeatSpec:
+        """The spec used to select a destination, even when a retained launch uses another adapter."""
+        return self._declaration if self.withdrawn_pool is not None else self.spec
+
+    @property
+    def pool_move_hold(self) -> str | None:
+        if (old := self.withdrawn_pool) is not None:
+            return f"{self.name}: automatic pool move held; launch pool {old!r} is no longer declared"
+        return None
+
+    def _launch_is_live(self, launch: Launched) -> bool:
+        pane = self.tmux.pane(launch.pane)
+        return pane is not None and pane.pid == launch.pid and not pane.dead
+
     # -- state files -------------------------------------------------------------------
 
     @property
     def pool(self) -> Pool:
-        """The pool the seat is on: the first declared, or the one failover moved it to."""
-        current = self.trusted / trusted_files.POOL
-        try:
-            name = current.read_text().strip()
-        except FileNotFoundError:
-            name = None
+        """The current selection, or the pool named by a retained launch whose choice was withdrawn."""
+        if (old := self.withdrawn_pool) is not None:
+            # If the ship removed the pool itself, only its name remains. There is no credential or destination.
+            return self.ship.pools.get(old) or Pool(old, 'unknown')
+        name = self._selection_name()
         if self.spec.pool_choices:
             if name is not None and name not in self.spec.pools and self._launching:
                 return self.ship.pool(self.spec.pools[0])  # the ship file dropped it: the declared order chooses
@@ -419,7 +463,11 @@ class Seat:
     def move_to(self, pool: str, *, explicit: bool | None = False) -> None:
         """Select ``pool``. ``explicit``: True records a person's choice for the next launch, False clears any, and
         None leaves it as it is, for a selection made before a launch that can still be refused."""
-        self.spec.for_pool(pool)
+        self.declaration.for_pool(pool)
+        self._save_pool(pool, explicit)
+        self._withdrawn_launch = None
+
+    def _save_pool(self, pool: str, explicit: bool | None) -> None:
         trusted_files.make(self.ship.runtime, self.name)
         path = self.trusted / trusted_files.POOL
         durable.replace_file(path, pool + '\n')
@@ -428,11 +476,14 @@ class Seat:
         elif explicit is False:
             (self.trusted / EXPLICIT).unlink(missing_ok=True)
 
-    def _saved_name(self) -> str | None:
+    def _selection_name(self) -> str | None:
         try:
-            return (self.trusted / trusted_files.POOL).read_text().strip() or None
+            return (self.trusted / trusted_files.POOL).read_text().strip()
         except FileNotFoundError:
             return None
+
+    def _saved_name(self) -> str | None:
+        return self._selection_name() or None
 
     def launch_choice(self, *, current_walled: bool = False) -> tuple[str, str]:
         """The pool a launch of this down seat takes, and why: the ship file is the Admiral's order.
@@ -499,7 +550,7 @@ class Seat:
         require_clear(self)
         from . import credential
 
-        selected = self.spec.for_pool(pool)
+        selected = self.declaration.for_pool(pool)
         observation = self._observe_selection(selected, self.ship.pool(pool))
         same_program = selected.harness == self.spec.harness
         resume = same_program and self.resumable()
@@ -585,15 +636,24 @@ class Seat:
     def pane(self) -> Pane | None:
         """The live pane of this seat's launch, by pane id and process id, or None."""
         launched = self.launched()
-        if launched is None:
+        if launched is None or not self._matches_observed_launch(launched):
             return None
         pane = self.tmux.pane(launched.pane)
         if pane is None or pane.pid != launched.pid:
             return None  # law: identity
         return pane
 
+    def _matches_observed_launch(self, launched: Launched) -> bool:
+        """The observed adapter belongs to that launch alone."""
+        old = self._withdrawn_launch
+        return old is None or ((launched.pane, launched.pid, launched.at, launched.pool)
+                               == (old.pane, old.pid, old.at, old.pool)
+                               and record_owner.launch_reader(launched) == self.harness.name)
+
     def _lifecycle_pane(self, launched: Launched | None) -> Pane | None:
         """Unmatched live evidence is a refusal, not permission to forget a launch."""
+        if launched is not None and not self._matches_observed_launch(launched):
+            raise ShipError(f"{self.name}: launch identity changed; retained for inspection")
         pane = self.tmux.pane(launched.pane) if launched is not None else None
         if self.launched() != launched:
             raise ShipError(f"{self.name}: launch identity changed; retained for inspection")
@@ -651,7 +711,7 @@ class Seat:
             pane = self.pane()
             return (pane, self.tmux.capture(pane.id, history=history, **options)) if pane and not pane.dead else None
         launched = self.launched()
-        if launched is None:
+        if launched is None or not self._matches_observed_launch(launched):
             return None
         found = self.tmux.read_pane(launched.pane, history, **options)
         if (found is None or found[0].pid != launched.pid or found[0].dead
@@ -662,7 +722,8 @@ class Seat:
     def read_control_frame(self):
         """Positive cursor/style evidence belongs to this same live launch, or remains unknown."""
         launched = self.launched()
-        if launched is None or not hasattr(self.tmux, 'read_control_frame'):
+        if (launched is None or not self._matches_observed_launch(launched)
+                or not hasattr(self.tmux, 'read_control_frame')):
             return None
         frame = self.tmux.read_control_frame(launched.pane)
         if (frame is None or frame.pane.pid != launched.pid or frame.pane.dead or frame.pane.in_mode
@@ -892,7 +953,9 @@ class Seat:
             return text + (' · fresh: its last order is reported' if reported else '')
         from . import relaunch_intent
         resume = resume and self.resumable()
-        if len(self.spec.pools) < 2 or self.is_up:  # a plain list of pools chooses as a table of them does
+        if self.withdrawn_pool is not None and not (fresh_after_order or recorded):
+            raise ShipError(self.pool_move_hold)
+        if (len(self.spec.pools) < 2 and self.withdrawn_pool is None) or self.is_up:
             prepared = self._require_resume(expected=expected) if resume and require_resume_target else None
             relaunch_intent.record_destination(self, resume, target=prepared)
             return proof(self._up(resume, target=prepared))
@@ -905,7 +968,7 @@ class Seat:
             why = 'recorded relaunch destination' if recorded else 'chosen for this launch by qd up --pool'
         current = self.pool.name
         saved = self._saved_name()
-        selected = replace(self.spec.for_pool(target), human_session=self.session.human)
+        selected = self.declaration.for_pool(target)
         same_program = selected.harness == self.spec.harness
         resume = resume and same_program
         prior_launch = self.launched()
@@ -936,7 +999,7 @@ class Seat:
     def _up_on_recorded_pool(self, pool: str, harness: str, *, resume: bool,
                              expected: resume_target.Target | None = None) -> str:
         """Finish a service transaction without choosing from current quota or a saved pool hint."""
-        selected = self.spec.for_pool(pool)
+        selected = self.declaration.for_pool(pool)
         if selected.harness != harness:
             raise ShipError(f'{self.name}: its recorded destination no longer names the same program')
         if resume and (harness != self.harness.name or not self.resumable()):
@@ -968,6 +1031,8 @@ class Seat:
     def _accept_pool(self, spec: SeatSpec | None = None, pool: Pool | None = None) -> None:
         selected = spec or self.spec
         paid = pool or self.pool
+        if paid.name not in selected.pools:
+            raise ShipError(self.pool_move_hold or f"{self.name}: pool {paid.name!r} is no longer declared")
         reader = self._adapter_for(selected)
         if reason := reader.accepts(paid):
             raise ShipError(f"{self.name}: {reason}")
@@ -1485,7 +1550,9 @@ class Seat:
         if launched is not None:
             from .pending_lifecycle import link_launch_record
             link_launch_record(self, launched)
-            if self.spec.pool_choices:
+            if self.withdrawn_pool is not None:
+                self._save_pool(self.withdrawn_pool, False)  # retain the source evidence through retirement
+            elif self.spec.pool_choices:
                 self.move_to(self.pool.name)  # retain the corroborated selection before its launch disappears
         # The program recorded at launch, by pid and start time; a launch without its start (written before
         # the start was recorded, or a stand-in's) is not waited for: no other process is taken for it.
@@ -1662,10 +1729,14 @@ class Seat:
                        " · fresh: a record of a launch that screened a pull request is still in its home"
                        if screened else ""))
 
-    def fresh(self) -> str:
+    def fresh(self, *, explicit: bool = False) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
         with self._lifecycle():
-            proof = self._fresh()
+            if explicit and self.withdrawn_pool is not None:
+                pool, _ = self.launch_choice()
+                proof = self._fresh_on_pool(pool)
+            else:
+                proof = self._fresh()
         if self.session.human and resume_target.NEW_CONVERSATION not in proof:
             proof = f'{self.name} {resume_target.NEW_CONVERSATION} on the explicit fresh request.\n{proof}'
         return proof
@@ -1687,7 +1758,7 @@ class Seat:
         from .recovery import require_clear
         require_clear(self)
         from . import credential, relaunch_intent
-        selected = self.spec.for_pool(pool)
+        selected = self.declaration.for_pool(pool)
         observation = self._observe_selection(selected, self.ship.pool(pool))
         relaunch_intent.record_destination(self, False, pool=pool, harness=selected.harness)
         self.record()
@@ -1712,7 +1783,7 @@ class Seat:
             book.close()
 
     def _off_wall_destination(self) -> tuple[str, str] | None:
-        if len(self.spec.pools) > 1 and self._walled_now():
+        if self.withdrawn_pool is None and len(self.spec.pools) > 1 and self._walled_now():
             target, why = self.launch_choice(current_walled=True)
             if target != self.pool.name:
                 return target, why
@@ -1722,7 +1793,7 @@ class Seat:
         """Diagnose missing identity when the service cannot read the current turn."""
         if self.resumable():
             destination = self._off_wall_destination()
-            if destination is None or self.spec.for_pool(destination[0]).harness == self.spec.harness:
+            if destination is None or self.declaration.for_pool(destination[0]).harness == self.spec.harness:
                 self._require_resume()
 
     def _relaunch_off_wall(self, *, resume: bool) -> str | None:
@@ -1735,7 +1806,7 @@ class Seat:
             return None
         target, why = destination
         came_from = self.pool.name
-        selected = replace(self.spec.for_pool(target), human_session=self.session.human)
+        selected = self.declaration.for_pool(target)
         observation = self._observe_selection(selected, self.ship.pool(target))
         same_program = selected.harness == self.spec.harness
         resume = resume and same_program and self.resumable()

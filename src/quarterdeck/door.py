@@ -205,7 +205,9 @@ class Door:
         """
         launched = self.seat.launched()
         from .seat import declared_launch_pool
-        pool = declared_launch_pool(self.seat, launched, self.seat.pool.name)
+        from .provenance import UNKNOWN
+        default = UNKNOWN if getattr(self.seat, 'withdrawn_pool', None) is not None else self.seat.pool.name
+        pool = declared_launch_pool(self.seat, launched, default)
         shown = self.harness.quota_wall(screen.quota, datetime.now(timezone.utc)) if screen and screen.quota else None
         book = ledgermod.Ledger.reading(self.seat.ship.runtime / "ledger.sqlite")
         if book is not None:

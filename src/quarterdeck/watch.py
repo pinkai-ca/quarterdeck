@@ -187,6 +187,8 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
         return SeatReading(seat.name, act, Reading(False, str(seat.error), 'needs a human'),
                            order, tokens_today(seat), 'unknown', None, 'unknown',
                            wake='human wake unknown: seat selection unresolved' if seat.ship.session_of(seat.spec).human else None)
+    if hold := getattr(seat, 'pool_move_hold', None):
+        act = Activity(act.state, ' · '.join(filter(None, (act.detail, hold.partition(': ')[2]))))
     door = Door(seat).reading() if act.state not in ("off",) else Reading(False, act.detail or "off", "qd up")
     from . import pr_screen
     if pr_screen.held(seat.ship.runtime, seat.name):
@@ -199,13 +201,14 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
     launched = seat.launched()
     version = launched.version if launched else None
     pool = launched.pool if launched and launched.pool in seat.ship.pools else seat.pool.name
+    provider = configured.provider if (configured := seat.ship.pools.get(pool)) is not None else None
     from .compaction import status as compaction_status
     from . import human_wake
     from .person_quiet import summary as person_quiet
     wake = human_wake.status(seat) if seat.session.human else None
     return SeatReading(seat.name, act, door, order, tokens_today(seat), pool, running,
                        seat.harness.name, seat.spec.model, version, compaction_status(seat),
-                       seat.ship.pool(pool).provider, providers.display(seat.ship.pool(pool).provider), seat.harness.program,
+                       provider, providers.display(provider) if provider is not None else None, seat.harness.program,
                        effort=observed.get('effort'), declared_effort=seat.spec.effort,
                        model_mode=seat.spec.model_mode, effort_mode=seat.spec.effort_mode, wake=wake,
                        selection_warning=observed.get('selection_warning'),
@@ -782,6 +785,8 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat], *, show_moves
         with book:
             held, moves = [], []
             for seat in up:
+                if getattr(seat, 'withdrawn_pool', None) is not None:
+                    continue  # its declared-source hold is reported independently of any wall
                 try:
                     reasons = quota.current_walls(seat, book) if show_moves else None
                     if not (quota.current_walled(seat, book) if reasons is None else reasons):
@@ -991,7 +996,9 @@ def _run_step(step: str, seat, ctx: dict, store, attempts, latest) -> _Step:
                 ops.append(('ending', words, 'append'))  # law: nothing-waits-silently
         elif step == 'launch':
             ctx['launched'] = launched = seat.launched()
-            if refused_pool := launch_pool_refusal(seat, launched):
+            if hold := getattr(seat, 'pool_move_hold', None):
+                ops.append(('seat_holds', hold, 'append'))  # law: nothing-waits-silently
+            elif refused_pool := launch_pool_refusal(seat, launched):
                 ops.append(('seat_holds', refused_pool, 'append'))  # law: nothing-waits-silently
         elif step == 'auth':
             from .auth_failure import status as authentication_status, waiting as authentication_waiting

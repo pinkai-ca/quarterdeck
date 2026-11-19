@@ -1823,7 +1823,12 @@ class Service:
                     return None  # deferred-request answers/lifetime are separate; the reason is shared
         from . import relaunch_intent
         with relaunch_intent.section(self, seat, 'relaunch', resume=resume):
-            proof = seat.restart() if resume else seat.fresh()
+            if resume:
+                proof = seat.restart()
+            elif getattr(seat, 'withdrawn_pool', None) is not None:
+                proof = seat.fresh(explicit=True)
+            else:
+                proof = seat.fresh()
         # The proof line says which witness settled the tool state where the record alone could not.
         if witness == idle.RECORD_AND_SCREEN:
             return f'{proof}\nat rest by its record and its screen'
@@ -2167,7 +2172,8 @@ class Service:
         """The current orders, recovery and recorded completion; never a lifecycle action."""
         from . import compaction, fresh_handoff
         from . import hand_door
-        if (seat.session.human or seat.spec.fresh != "after-order" or not seat.is_up
+        if (getattr(seat, 'withdrawn_pool', None) is not None
+                or seat.session.human or seat.spec.fresh != "after-order" or not seat.is_up
                 or fresh_handoff.active(seat.ship.runtime, seat.name)
                 or hand_door.blocks_fresh(seat, self.store, getattr(self, 'attempts', None)) or recovery.held(seat)):
             return False
@@ -2561,7 +2567,7 @@ class Service:
     @staticmethod
     def resumes_on(seat: Seat, pool: str) -> bool:
         """Whether a move to ``pool`` keeps the conversation, as Seat.failover_to decides."""
-        return seat.spec.for_pool(pool).harness == seat.spec.harness and seat.resumable()
+        return getattr(seat, 'declaration', seat.spec).for_pool(pool).harness == seat.spec.harness and seat.resumable()
 
     @staticmethod
     def _record_identity_hold(reason: str) -> bool:
@@ -2611,6 +2617,8 @@ class Service:
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""
         for seat in self.resolved_seats():
+            if getattr(seat, 'withdrawn_pool', None) is not None:
+                continue  # the running launch can receive post while its move is held
             if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up:
                 continue
             if (getattr(seat.harness, 'screen_walls', False) and self.ledger.catching_up()
@@ -2718,7 +2726,9 @@ class Service:
         at once only when the current pool is walled; an open current pool stages the shared
         handoff on the chosen pool and starts there after the report and a proved idle break.
         """
-        if not seat.spec.pool_choices or pool not in seat.spec.pools:
+        declaration = getattr(seat, 'declaration', seat.spec)
+        if (pool not in declaration.pools
+                or not (declaration.pool_choices or getattr(seat, 'withdrawn_pool', None) is not None)):
             return f"{seat.name}: {pool} is not one of its declared choices ({', '.join(seat.spec.pools)}); nothing moved"
         if pool == seat.pool.name:
             return f"{seat.name} is already on {pool}"
@@ -2730,7 +2740,7 @@ class Service:
             if self._record_identity_hold(reason) and self.resumes_on(seat, pool):
                 from .harness import resume_target
                 try:
-                    seat._require_resume(seat.spec.for_pool(pool))
+                    seat._require_resume(declaration.for_pool(pool))
                 except resume_target.Unproved as error:
                     if seat.session.human:
                         raise
@@ -2757,11 +2767,10 @@ class Service:
         from . import relaunch_intent
         from .harness import resume_target
         # A stand-in with no ledger or no pool table keeps the ordinary move.
-        spec = getattr(seat, 'spec', None)
         if (not seat.session.human and getattr(self, 'ledger', None) is not None
-                and callable(getattr(spec, 'for_pool', None)) and self.resumes_on(seat, pool)):
+                and callable(getattr(declaration, 'for_pool', None)) and self.resumes_on(seat, pool)):
             try:
-                seat._require_resume(spec.for_pool(pool))
+                seat._require_resume(declaration.for_pool(pool))
             except resume_target.Unproved as error:
                 if not quota.current_walled(seat, self.ledger):
                     return self._stage_unproved_select(seat, error, pool)

@@ -500,7 +500,12 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None, re
         working = seat.is_working()
     if not working:
         try:
-            proof = seat.restart() if resume else seat.fresh()
+            if resume:
+                proof = seat.restart()
+            elif getattr(seat, 'withdrawn_pool', None) is not None:
+                proof = seat.fresh(explicit=True)
+            else:
+                proof = seat.fresh()
         except ShipError as error:
             from .harness import resume_target
             if isinstance(error, resume_target.Unproved) and not seat.session.human:
@@ -592,8 +597,9 @@ def set_seat(ship: shipmod.Ship, name: str | None, changes: list[str], *, adopt_
             key = change.partition("=")[0].removeprefix("settings.")
             if change.startswith("settings.") or key in {"harness", "model", "effort", "model_mode", "effort_mode"} or key not in shipmod.SEAT_KEYS:
                 raise ShipError("inline pool choices: edit harness, model, effort and program settings in ship.toml; qd set cannot select their scope")
-        if any(change.partition("=")[0] == "pool" for change in changes):
-            return [select(ship, seat, changes)]
+    if (seat.spec.pool_choices or getattr(seat, 'withdrawn_pool', None) is not None) and any(
+            change.partition("=")[0] == "pool" for change in changes):
+        return [select(ship, seat, changes)]
     parsed = []
     for change in changes:
         key, equals, raw = change.partition("=")
@@ -632,7 +638,7 @@ def set_seat(ship: shipmod.Ship, name: str | None, changes: list[str], *, adopt_
 
 
 def select(ship: shipmod.Ship, seat: seatmod.Seat, changes: list[str]) -> str:
-    """A seat with inline choices moves to one of them by the path failover uses; its declaration is unchanged.
+    """Select a declared destination by the path failover uses.
 
     The selection is the seat's runtime state, so nothing is written to the ship file; the service checks
     the destination and the seat's idleness exactly as failover does, and refuses rather than waits.
@@ -656,7 +662,7 @@ def choose_for_launch(seat: seatmod.Seat, pool: str) -> str:
         if seat.launched() is not None:
             raise ShipError(f"{seat.name}: its last launch is still on file, its pane gone; qd down {seat.name} "
                             "retires it, then qd set chooses the pool for the next launch")
-        selected = seat.spec.for_pool(pool)
+        selected = seat.declaration.for_pool(pool)
         seat._accept_pool(selected, seat.ship.pool(pool))
         seat.move_to(pool, explicit=True)
     return f"{seat.name}: pool {pool} chosen for its next launch (it is down); qd up {seat.name} launches it there"

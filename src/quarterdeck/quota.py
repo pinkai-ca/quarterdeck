@@ -20,7 +20,10 @@ def candidate_pools(seat) -> tuple[str, ...]:
     A launch on a key is refused (ship.key_refusal), so a key pool is no destination: a seat whose other choices
     are spent is held at its limit with no eligible destination, and the status line says so."""
     pools = seat.spec.pools
-    current = pools.index(seat.pool.name)
+    source = seat.pool.name
+    if source not in pools:
+        return ()  # automatic moves require a declared source in the ordering
+    current = pools.index(source)
     return tuple(name for name in pools[current + 1:] + pools[:current] if not seat.ship.pool(name).paid_by_key)
 
 
@@ -50,7 +53,8 @@ def model_scope(seat, pool_name: str, *, running: bool = False, screen=None, dec
     """Adapter-owned group applicability; source evidence differs from a resolved destination."""
     from . import harness as harnesses
 
-    spec = None if running else seat.spec.for_pool(pool_name)
+    declaration = getattr(seat, 'declaration', seat.spec)
+    spec = None if running else declaration.for_pool(pool_name)
     reader = seat.harness if running else harnesses.get(spec.harness)
     ship = getattr(seat, "ship", None)
     pool = ship.pools.get(pool_name) if ship is not None else None
@@ -69,8 +73,8 @@ def model_scope(seat, pool_name: str, *, running: bool = False, screen=None, dec
             model = running_settings(seat, screen=screen, record=record).get("model")
         else:
             model = running_settings(seat, screen=screen).get("model")
-        if model is None and declared_fallback:
-            model = seat.spec.for_pool(pool_name).model
+        if model is None and declared_fallback and pool_name in declaration.pools:
+            model = declaration.for_pool(pool_name).model
         if reader.model_scoped_quota:
             if not read_only:
                 record = seat.record()
@@ -489,7 +493,7 @@ def refresh_idle(service, pool, reader) -> None:
 def refresh(service, seat, live: bool, launched) -> None:
     """A live seat's provider read, paced by its adapter."""
     reader = seat.harness
-    if not live or reader.background_usage:
+    if not live or reader.background_usage or getattr(seat, 'withdrawn_pool', None) is not None:
         return
     from .seat import declared_launch_pool
     name = declared_launch_pool(seat, launched, seat.pool.name)
