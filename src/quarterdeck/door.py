@@ -73,8 +73,10 @@ def mouse_reporting_hold(modes: dict[str, bool] | None) -> str | None:
     """A mouse press needs both SGR encoding and a mode that reports button presses."""
     if not modes:
         return "SGR mouse reporting could not be read"
-    if not modes["sgr"] or not (modes["button"] or modes["all"] or modes["standard"]):
-        return "SGR mouse reporting is off"
+    if not modes["sgr"]:
+        return "SGR encoding is off"
+    if not (modes["button"] or modes["all"] or modes["standard"]):
+        return "press reporting is off"
     return None
 
 

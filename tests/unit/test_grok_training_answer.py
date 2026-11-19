@@ -95,8 +95,8 @@ def test_a_screen_that_does_not_clear_is_held_with_nothing_more_pressed(grok):
 
 @pytest.mark.parametrize(("modes", "reason"), [
     (None, "SGR mouse reporting could not be read"),
-    (dict(SGR_ON, sgr=False), "SGR mouse reporting is off"),
-    (dict(SGR_ON, button=False, all=False, standard=False), "SGR mouse reporting is off"),
+    (dict(SGR_ON, sgr=False), "SGR encoding is off"),
+    (dict(SGR_ON, button=False, all=False, standard=False), "press reporting is off"),
 ], ids=["unreadable", "sgr-off", "tracking-off"])
 def test_missing_mouse_reporting_names_the_held_question_with_no_message(grok, monkeypatch, modes, reason):
     # law: nothing-waits-silently
