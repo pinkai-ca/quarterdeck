@@ -9,11 +9,11 @@ import re
 import shlex
 from collections import defaultdict
 
-from .claude_record import inspect_entries
+from .claude_record import BACKGROUND_HEADER, WATCH_HEADER, inspect_entries
 from .json_record import when
 from .types import Input
 
-BACKGROUND = re.compile(r'^Command running in background with ID: \S+\. Output is being written to: (\S+)\. ')
+BACKGROUND = re.compile(r'^' + re.escape(BACKGROUND_HEADER) + r'\S+\. Output is being written to: (\S+)\. ')
 
 
 def words(value):
@@ -91,6 +91,6 @@ def inputs(record):
                 continue
             raw = '\n'.join(row[2] for row in rows)
         raw = raw.strip().removesuffix('\n[exited with code 0]').strip()
-        if raw.startswith('qd >'):
+        if raw.startswith(WATCH_HEADER):
             found.append(Input(raw, at, 'watch'))
     return found

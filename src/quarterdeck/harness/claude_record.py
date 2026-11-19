@@ -2,6 +2,7 @@
 
 from hashlib import sha256
 import codecs
+from dataclasses import dataclass
 import json
 import os
 from functools import partial
@@ -30,6 +31,21 @@ OTHER_LINES = re.compile(r'[\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]')
 SPLIT_LINES = re.compile(r'\r\n|[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]')
 HEX_DIGITS = b'0123456789abcdefABCDEF'
 MALFORMED = (None, 'json', 0)
+IMAGE_TYPES = frozenset(('image/png', 'image/jpeg', 'image/webp', 'image/gif'))
+BASE64 = re.compile(rb'[A-Za-z0-9+/]*={0,2}')
+WATCH_HEADER = 'qd >'
+BACKGROUND_HEADER = 'Command running in background with ID: '
+WATCH_HEADERS = (WATCH_HEADER, BACKGROUND_HEADER)
+WATCH_TEXT = tuple(marker.encode() for marker in WATCH_HEADERS)
+WATCH_WINDOW = max(map(len, WATCH_TEXT)) - 1
+PAYLOAD_PATHS = {
+    ('message', 'content', None, 'source', 'data'): 'image',
+    ('message', 'content', None, 'content'): 'text',
+    ('message', 'content', None, 'content', None, 'source', 'data'): 'image',
+    ('message', 'content', None, 'content', None, 'text'): 'text',
+}
+PAYLOAD_PARENTS = {path[:index] for path in PAYLOAD_PATHS for index in range(len(path))}
+MAX_PAYLOADS = 256
 
 
 class Unknown(record_file.RecordError):
@@ -54,20 +70,208 @@ class PhysicalSeparators(Exception):
     """An older text layout needs Unicode splitlines boundaries."""
 
 
-class GiantRow:
-    """Validate JSON tokens and nesting while withholding the root snapshot value."""
+class Payload(str):
+    """A validated string projected to empty text, carrying its original UTF-8 byte count."""
 
-    def __init__(self):
+    __slots__ = ('size',)
+
+    def __new__(cls, size):
+        found = super().__new__(cls, '')
+        found.size = size
+        return found
+
+    def __reduce__(self):
+        return type(self), (self.size,)
+
+
+class ProjectedRow(dict):
+    __slots__ = ('identity',)
+
+
+def path_shape(path):
+    return tuple(None if isinstance(part, int) else part for part in path)
+
+
+@dataclass(slots=True)
+class Frame:
+    state: str
+    path: tuple | None
+    key: str | None = None
+    index: int = 0
+    keys: set | None = None
+
+    def __post_init__(self):
+        if self.path is not None:
+            self.keys = set()
+
+
+class PayloadString:
+    """Validate an oversized value without retaining its body."""
+
+    def __init__(self, kind, start):
+        self.kind, self.start = kind, start
+        self.inline = bytearray()
+        self.size = self.escapes = self.padding = 0
+        self.suffix = b''
+        self.unsafe = False
+
+    def feed(self, data):
+        self.size += len(data)
+        if self.inline is not None:
+            if self.size <= CHUNK:
+                self.inline.extend(data)
+            else:
+                self.inline = None
+        if self.kind == 'image':
+            if (self.padding and data.strip(b'=')) or not BASE64.fullmatch(data):
+                self.unsafe = True
+            self.padding += data.count(b'=')
+        else:
+            checked = self.suffix + data
+            # A Unicode escape could spell part of a watch marker without containing its literal bytes.
+            if b'\\u' in checked or any(marker in checked for marker in WATCH_TEXT):
+                self.unsafe = True
+            self.suffix = checked[-WATCH_WINDOW:]
+
+    def value(self):
+        if self.unsafe or self.kind == 'image' and (self.size % 4 or self.padding > 2):
+            raise projection_error()
+        return Payload(self.size - self.escapes)
+
+
+def at_path(row, path):
+    for part in path:
+        row = row[part]
+    return row
+
+
+def native_image(block):
+    if not isinstance(block, dict):
+        return False
+    source = block.get('source')
+    return (block.get('type') == 'image' and isinstance(source, dict)
+            and source.get('type') == 'base64' and isinstance(source.get('media_type'), str)
+            and source['media_type'] in IMAGE_TYPES)
+
+
+def native_result(block):
+    return (block.get('type') == 'tool_result' and isinstance(block.get('tool_use_id'), str)
+            and bool(block['tool_use_id']) and type(block.get('is_error', False)) is bool)
+
+
+def text_or_image(block):
+    return isinstance(block, dict) and (
+        block.get('type') == 'text' and isinstance(block.get('text'), str)
+        or native_image(block) and isinstance(block['source'].get('data'), str))
+
+
+def known_content(block):
+    if text_or_image(block):
+        return True
+    if not native_result(block):
+        return False
+    content = block.get('content', '')
+    return isinstance(content, str) or isinstance(content, list) and all(map(text_or_image, content))
+
+
+def projection_error():
+    return _row_limit('required JSON row exceeds the retained-byte budget')
+
+
+def project_payloads(row, payloads, descriptor):
+    """Confirm a candidate using its enclosing native row, independent of JSON key order."""
+    message = row.get('message')
+    if (row.get('type') != 'user' or not isinstance(message, dict) or message.get('role') != 'user'
+            or not isinstance(message.get('content'), list)
+            or not all(isinstance(block, dict) for block in message['content'])):
+        raise projection_error()
+    spans = {}
+    for path, capture in payloads.items():
+        block = at_path(row, path[:3])
+        if path[3] == 'source':
+            known = native_image(block)
+        elif not native_result(block):
+            known = False
+        elif len(path) == 4:
+            known = True  # string content directly on a tool result
+        else:
+            child = at_path(row, path[:5])
+            known = native_image(child) if capture.kind == 'image' else child.get('type') == 'text'
+        if not known:
+            raise projection_error()
+        value = capture.value()
+        at_path(row, path[:-1])[path[-1]] = value
+        spans[id(value)] = capture
+    if not all(map(known_content, message['content'])):
+        raise projection_error()
+    for block in message['content']:
+        if not native_result(block) or not isinstance(block.get('content'), list):
+            continue
+        content = block['content']
+        if (any(isinstance(child.get('text'), Payload) for child in content)
+                and all(child['type'] == 'text' for child in content)
+                and any(any(marker in child['text'] for marker in WATCH_HEADERS) for child in content)):
+            # Empty text replacing a leading block must not expose a later watch header.
+            raise projection_error()
+    if not any(block.get('type') == 'tool_result' for block in message['content']):
+        row = ProjectedRow(row)
+        hasher = sha256()
+        for part in canonical_parts(row, spans, descriptor):
+            hasher.update(part)
+        row.identity = hasher.hexdigest()
+    return row
+
+
+def canonical_parts(value, spans, descriptor):
+    """Hash typed rows exactly as sorted compact JSON, streaming the original ASCII image bytes."""
+    if isinstance(value, Payload):
+        capture = spans[id(value)]
+        yield b'"'
+        start, left = capture.start, capture.size
+        while left:
+            data = os.pread(descriptor, min(CHUNK, left), start)
+            if not data:
+                raise Unknown('record ended while reading typed image identity')
+            start += len(data)
+            left -= len(data)
+            yield data
+        yield b'"'
+    elif isinstance(value, (dict, list)):
+        mapping = isinstance(value, dict)
+        yield b'{' if mapping else b'['
+        children = sorted(value) if mapping else value
+        for index, child in enumerate(children):
+            if index:
+                yield b','
+            if mapping:
+                yield json.dumps(child).encode() + b':'
+                child = value[child]
+            yield from canonical_parts(child, spans, descriptor)
+        yield b'}' if mapping else b']'
+    else:
+        yield json.dumps(value).encode()
+
+
+class GiantRow:
+    """Validate a giant JSON row while bounding snapshots and candidate payload strings."""
+
+    def __init__(self, descriptor, start):
         self.frames = []
+        self.descriptor, self.offset = descriptor, start
+        self.payload = None
+        self.payloads = {}
+        self.duplicate_key = False
         self.output = bytearray()
         self.snapshot = None
         self.in_snapshot = False
-        self.root_key = None
         self.key_bytes = None
         self.atom = None
         self.string = False
         self.escape = 0
         self.done = False
+
+    def withheld_payload(self):
+        return self.payloads or self.payload is not None and self.payload[1].inline is None
 
     def emit(self, data):
         if self.in_snapshot:
@@ -86,12 +290,17 @@ class GiantRow:
     def value(self):
         if not self.frames:
             raise ValueError('JSON value in an unexpected position')
-        if self.frames[-1] in ('array first', 'array value'):
-            self.frames[-1] = 'array next'
-        elif self.frames[-1] == 'value':
-            self.frames[-1] = 'object next'
+        frame = self.frames[-1]
+        if frame.state in ('array first', 'array value'):
+            frame.state = 'array next'
+            part = frame.index
+            frame.index += 1
+        elif frame.state == 'value':
+            frame.state = 'object next'
+            part = frame.key
         else:
             raise ValueError('JSON value in an unexpected position')
+        return None if frame.path is None else (*frame.path, part)
 
     def end_value(self):
         if len(self.frames) == 1:
@@ -101,35 +310,38 @@ class GiantRow:
         if self.done:
             raise ValueError('data after root JSON object')
         if char in b'{[':
-            if self.frames:
-                self.value()
-            elif char != ord('{'):
+            if not self.frames and char != ord('{'):
                 raise ProjectionLimit('large row does not start with a native JSON object')
+            path = self.value() if self.frames else ()
+            if path is not None and path_shape(path) not in PAYLOAD_PARENTS:
+                path = None
             if len(self.frames) >= DEPTH:
                 raise ProjectionLimit('JSON nesting exceeds the validation budget')
-            self.frames.append('object first' if char == ord('{') else 'array first')
+            self.frames.append(Frame('object first' if char == ord('{') else 'array first', path))
         elif not self.frames:
             raise ValueError('root JSON object required')
         elif char == ord(':'):
-            if self.frames[-1] != 'colon':
+            frame = self.frames[-1]
+            if frame.state != 'colon':
                 raise ValueError('unexpected JSON colon')
-            self.frames[-1] = 'value'
+            frame.state = 'value'
             self.emit(bytes((char,)))
-            if len(self.frames) == 1 and self.root_key == OMIT_KEY:
+            if len(self.frames) == 1 and frame.key == OMIT_KEY:
                 self.emit(b'null')
                 self.in_snapshot = True
                 self.snapshot = bytearray()
             return
         elif char == ord(','):
-            if self.frames[-1] == 'object next':
-                self.frames[-1] = 'key'
-            elif self.frames[-1] == 'array next':
-                self.frames[-1] = 'array value'
+            frame = self.frames[-1]
+            if frame.state == 'object next':
+                frame.state = 'key'
+            elif frame.state == 'array next':
+                frame.state = 'array value'
             else:
                 raise ValueError('unexpected JSON comma')
         else:
             wanted = ('object first', 'object next') if char == ord('}') else ('array first', 'array next')
-            if self.frames[-1] not in wanted:
+            if self.frames[-1].state not in wanted:
                 raise ValueError('incomplete JSON value')
             self.emit(bytes((char,)))
             self.frames.pop()
@@ -138,22 +350,50 @@ class GiantRow:
             return
         self.emit(bytes((char,)))
 
-    def string_start(self):
+    def string_start(self, start):
         if not self.frames:
             raise ValueError('root JSON object required')
-        if self.frames[-1] in ('key', 'object first'):
-            if len(self.frames) == 1:
+        frame = self.frames[-1]
+        if frame.state in ('key', 'object first'):
+            if frame.path is not None:
                 self.key_bytes = bytearray()
-            self.frames[-1] = 'colon'
+            frame.state = 'colon'
         else:
-            self.value()
+            path = self.value()
+            if self.descriptor is not None and path is not None:
+                kind = PAYLOAD_PATHS.get(path_shape(path))
+                if kind is not None:
+                    self.payload = path, PayloadString(kind, start)
         self.string = True
-        self.emit(b'"')
+        if self.payload is None:
+            self.emit(b'"')
+
+    def string_data(self, data):
+        if self.payload is None:
+            self.emit(data)
+        elif data:
+            self.payload[1].feed(data)
 
     def string_end(self):
-        if self.frames[-1] == 'colon':
+        if self.payload is not None:
+            path, capture = self.payload
+            self.payload = None
+            if capture.inline is not None:
+                self.emit(b'"' + capture.inline + b'"')
+            else:
+                if len(self.payloads) >= MAX_PAYLOADS:
+                    raise projection_error()
+                self.emit(b'null')
+                self.payloads[path] = capture
+        else:
+            self.emit(b'"')
+        frame = self.frames[-1]
+        if frame.state == 'colon':
             if self.key_bytes is not None:
-                self.root_key = json.loads(self.key_bytes.decode())
+                frame.key = json.loads(self.key_bytes.decode())
+                if frame.key in frame.keys:
+                    self.duplicate_key = True
+                frame.keys.add(frame.key)
                 self.key_bytes = None
         else:
             self.end_value()
@@ -169,6 +409,8 @@ class GiantRow:
         self.atom = None
 
     def feed(self, data):
+        offset = self.offset
+        self.offset += len(data)
         at = 0
         while at < len(data):
             if self.string:
@@ -178,26 +420,29 @@ class GiantRow:
                         if char not in b'"\\/bfnrtu':
                             raise ValueError('invalid JSON escape')
                         self.escape = 4 if char == ord('u') else 0
+                        if self.payload is not None:
+                            self.payload[1].escapes += 1
                     else:
                         if char not in HEX_DIGITS:
                             raise ValueError('invalid JSON Unicode escape')
                         self.escape -= 1
-                    self.emit(data[at:at + 1])
+                    self.string_data(data[at:at + 1])
                     at += 1
                     continue
                 special = SPECIAL.search(data, at)
                 if special is None:
-                    self.emit(data[at:])
+                    self.string_data(data[at:])
                     return
-                self.emit(data[at:special.end()])
-                at = special.end()
                 char = data[special.start()]
                 if char == ord('"'):
+                    self.string_data(data[at:special.start()])
                     self.string_end()
                 elif char == ord('\\'):
+                    self.string_data(data[at:special.end()])
                     self.escape = -1
                 else:
                     raise ValueError('unescaped control byte in JSON string')
+                at = special.end()
             elif self.atom is not None:
                 stop = ATOM_END.search(data, at)
                 end = stop.start() if stop else len(data)
@@ -212,7 +457,7 @@ class GiantRow:
                 if char in b' \t':
                     at += 1
                 elif char == ord('"'):
-                    self.string_start()
+                    self.string_start(offset + at + 1)
                     at += 1
                 elif char in b'{}[]:,':
                     self.punct(char)
@@ -229,22 +474,28 @@ class GiantRow:
         if not self.done or self.string or self.frames:
             raise ValueError('incomplete JSON object')
         row = json.loads(self.output.decode())
-        if OMIT_KEY not in row:
+        if OMIT_KEY not in row and not self.payloads:
             raise ProjectionLimit('large row had no discardable value')
-        if row.get('type') == OMIT_TYPE:
-            del row[OMIT_KEY]
-        elif self.snapshot is None:
-            raise _row_limit('required snapshot value exceeds the retained-byte budget')
-        else:
-            row[OMIT_KEY] = json.loads(self.snapshot.decode())
-        return row, None, retained_size(row)
+        if OMIT_KEY in row:
+            if row.get('type') == OMIT_TYPE:
+                del row[OMIT_KEY]
+            elif self.snapshot is None:
+                raise _row_limit('required snapshot value exceeds the retained-byte budget')
+            else:
+                row[OMIT_KEY] = json.loads(self.snapshot.decode())
+        if self.payloads:
+            if self.duplicate_key:
+                raise projection_error()
+            row = project_payloads(row, self.payloads, self.descriptor)
+        return row, None, retained_size(row, len(self.payloads) * 16)
 
 
-def retained_size(row):
+def retained_size(row, metadata=0):
     data = json.dumps(row, ensure_ascii=False, separators=(',', ':')).encode('utf-8', errors='surrogatepass')
-    if len(data) > ROW_BYTES:
+    size = len(data) + metadata
+    if size > ROW_BYTES:
         raise _row_limit('required projection exceeds the per-row budget')
-    return len(data)
+    return size
 
 
 def decoded_size(row):
@@ -253,6 +504,10 @@ def decoded_size(row):
     while pending:
         value = pending.pop()
         size += sys.getsizeof(value)
+        if isinstance(value, Payload):
+            size += sys.getsizeof(value.size)
+        if isinstance(value, ProjectedRow):
+            size += sys.getsizeof(value.identity)
         if isinstance(value, dict):
             pending.extend(value)
             pending.extend(value.values())
@@ -271,10 +526,11 @@ def projection_usage(snapshot):
 
 
 class Line:
-    def __init__(self):
+    def __init__(self, descriptor=None, start=0):
         self.small = bytearray()
         self.giant = None
         self.malformed = False
+        self.descriptor, self.start = descriptor, start
 
     def feed(self, data):
         if self.malformed:
@@ -284,11 +540,13 @@ class Line:
             return
         try:
             if self.giant is None:
-                self.giant = GiantRow()
+                self.giant = GiantRow(self.descriptor, self.start)
                 self.giant.feed(self.small)
                 self.small.clear()
             self.giant.feed(data)
         except ValueError:
+            if self.giant.withheld_payload():
+                raise projection_error() from None
             self.malformed = True
 
     def finish(self):
@@ -298,6 +556,8 @@ class Line:
             try:
                 return self.giant.finish()
             except (ValueError, RecursionError):
+                if self.giant.withheld_payload():
+                    raise projection_error() from None
                 return MALFORMED
         if not self.small.strip():
             return None, None, 0
@@ -354,7 +614,7 @@ def scan(descriptor, size, cached, *, splitlines=False):
 
     prefix_bytes, prefix = offset, hasher.copy()
     decoder = codecs.getincrementaldecoder('utf-8')()
-    line = Line()
+    line = Line(None if splitlines else descriptor, offset)
     trailing_cr = ends_lf = False
 
     def finish_line():
@@ -401,10 +661,12 @@ def scan(descriptor, size, cached, *, splitlines=False):
             if OTHER_LINES.search(text):
                 raise PhysicalSeparators
             parts = data.split(b'\n')
+            next_start = offset
             for part in parts[:-1]:
                 line.feed(part)
                 finish_line()
-                line = Line()
+                next_start += len(part) + 1
+                line = Line(descriptor, next_start)
             if len(parts) > 1:
                 boundary = len(data) - len(parts[-1])
                 hasher.update(data[:boundary])

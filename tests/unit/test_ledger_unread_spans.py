@@ -15,15 +15,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import ledger, ledger_reading, post, record_owner, trusted_files
-from quarterdeck.harness import claude_record, get, record_file
+from quarterdeck import human_wake, ledger, ledger_reading, post, record_owner, trusted_files
+from quarterdeck.harness import claude_record, get, json_record, record_file
 from quarterdeck.ledger import Ledger
-from quarterdeck.seat import Launched
+from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship
 from tests.compaction_shapes import Native
 
 from .test_ledger import accounting_example, sql_writes
+from .test_claude_picture_projection import image, text
 
 MiB = 1024 * 1024
 
@@ -319,6 +320,87 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
         assert book.ingested(old) == 2 and book.ingested(fresh) == 1
         assert book.unread_spans() == book.incomplete_records() == []
         assert book.projection_usage(old).exhausted is None
+
+
+def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path, monkeypatch):
+    session = Session('synthetic-session', 'Synthetic', human=True)
+    pool = Pool('synthetic-pool', 'anthropic')
+    spec = SeatSpec('synthetic-seat', session.name, 'office', 'claude', (pool.name,))
+    ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, {pool.name: pool},
+                {session.name: session}, {spec.name: spec})
+    tmux = SimpleNamespace(pane=lambda _: None)
+    trusted = trusted_files.make(ship.runtime, spec.name)
+    pointer, launch = trusted / trusted_files.RECORD, trusted / trusted_files.LAUNCH
+    path = ship.runtime / 'seats' / spec.name / 'home' / 'projects' / 'synthetic' / 'record.jsonl'
+    native = Native(path, 'claude')
+    native.finish()
+    record_owner.register(trusted, path, 'claude')
+    pointer.write_text(str(path) + '\n')
+    Launched('%1', 1234, '2029-12-31T00:00:00+00:00', pool.name, None, ['claude'], None, 'claude').write(launch)
+    files = pointer.read_bytes(), launch.read_bytes()
+    inode = path.stat().st_dev, path.stat().st_ino
+
+    def unexpected(*args, **kwargs):
+        pytest.fail('accounting tried to act on an operator-owned seat')
+
+    for action in ('up', 'restart', 'fresh', 'move_to'):
+        monkeypatch.setattr(Seat, action, unexpected)
+    monkeypatch.setattr(Service, 'request_fresh_handoff', unexpected)
+    monkeypatch.setattr(Service, 'deliver', unexpected)
+
+    def account(service, book, *, observed=False):
+        _, _, human_readings = service.account_records(process_table={})
+        assert [record for _, record, *_ in human_readings] == ([path] if observed else [])
+        assert service.store.all() == []
+        return book.db.execute('SELECT turn,started,ended FROM turns WHERE record=? ORDER BY turn',
+                               (str(path),)).fetchall()
+
+    service = Service(ship, tmux)
+    with service.ledger as book:
+        before = account(service, book, observed=True)
+        assert len(before) == 1
+        # Construct the rest elsewhere, then append it without rewriting the observed prefix.
+        first_rows = len(native.rows)
+        native.path = tmp_path / 'made-suffix.jsonl'
+        native.add('user', version='2.1.325', message=dict(role='user', content=[
+            image(MiB), text('Synthetic pasted-image prompt')]))
+        native.finish()
+        padding = json.dumps({'type': 'file-history-snapshot', 'snapshot': 'x' * (4 * MiB)}).encode() + b'\n'
+        with path.open('ab') as stream:
+            for row in native.rows[first_rows:]:
+                stream.write(json.dumps(row).encode() + b'\n')
+            for _ in range(32):
+                stream.write(padding)
+        size = path.stat().st_size
+        assert size > 128 * MiB
+        with monkeypatch.context() as older:
+            older.setattr(record_file, 'CLAUDE_STREAM_BOUND', 128 * MiB)
+            assert account(service, book) == before
+        [raw] = book.unread_spans()
+        assert (raw['record'], raw['size'], raw['bound'], raw['counted']) == (str(path), size, 128 * MiB, 1)
+
+    json_record.release(path)
+    with monkeypatch.context() as earlier_reader:
+        earlier_reader.setattr(claude_record, 'PAYLOAD_PATHS', {})
+        service = Service(ship, tmux)
+        with service.ledger as book:
+            assert account(service, book) == before
+            [blocked] = book.unread_spans()
+            assert blocked['bound'] == raw['bound']
+            assert blocked['projection']['resource'] == 'retained bytes per row'
+            assert blocked['projection']['counted'] == 1
+
+    service = Service(ship, tmux)
+    with service.ledger as book:
+        after = account(service, book, observed=True)
+        assert after[:1] == before and len(after) == 2
+        assert book.unread_spans() == book.incomplete_records() == []
+        assert account(service, book) == after
+        [seat] = service.resolved_seats()
+        assert human_wake.owned_record(seat) == path
+        assert (pointer.read_bytes(), launch.read_bytes()) == files
+        assert (path.stat().st_dev, path.stat().st_ino) == inode
+        assert path.stat().st_size == size
 
 
 def test_qd_ledger_and_the_pool_reading_name_each_span(tmp_path):

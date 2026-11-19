@@ -174,6 +174,9 @@ def compactions(record: Path):
                     self.history.complete = self.native_turn is not None and ancestor == self.native_turn
                 elif kind == 'user' and prompt_text(row) is not None:
                     self.history.work(row, turn=True)
+                    if isinstance(row, claude_record.ProjectedRow):
+                        # The guarded stream hashed the complete typed row, including image bytes.
+                        self.history.turn = self.history.frontier[-1] = row.identity
                     self.native_turn = key
                 elif kind == 'queue-operation' and row.get('operation') == 'enqueue':
                     self.history.work(row)
