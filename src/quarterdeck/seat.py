@@ -1756,10 +1756,13 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
     with pending.transient_lock(ship.runtime, seat.name) as owned:
         if not owned:
             raise ShipError(f"{seat.name}: temporary seat ownership is busy; retry {purpose}")
+        # A held renewal's record is unlinked after its home is gone. A stop between the two leaves the
+        # record with no home, so that name stays taken until the record itself is gone.
         if (spec.name in ship.seats or spec.session in ship.sessions or tmux.has_session(session.title)
                 or seat.folder.exists() or seat.trusted.exists() or (ship.runtime / "post" / "pending" / seat.name).exists()
                 or store.for_seat(seat.name)
-                or any(a.seat == seat.name for a in post.Attempts(ship.runtime).all())):
+                or any(a.seat == seat.name for a in post.Attempts(ship.runtime).all())
+                or _held_for_renewal(ship, spec.name)):
             raise ShipError(f"{seat.name}: temporary seat/session/history already exists; retry {purpose}")
         seat.folder.mkdir(parents=True, exist_ok=False)
         trusted_files.make(ship.runtime, seat.name)

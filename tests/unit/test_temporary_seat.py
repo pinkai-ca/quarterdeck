@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import check, doctor, pending, post, seat as seatmod
+from quarterdeck import check, credential, doctor, pending, post, seat as seatmod
 from quarterdeck.drill import Check
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.service import Service
@@ -183,6 +183,24 @@ def test_temporary_names_never_claim_existing_resources(tmp_path, existing):
         assert journal.read_text() == "unreadable retained evidence"
     if existing == "folder":
         assert (folder / "marker").read_text() == "keep"
+
+
+def test_a_stale_held_record_refuses_its_name_and_an_unrelated_name_starts(tmp_path, monkeypatch):
+    ship, tmux = synthetic_ship(tmp_path), Sessions()
+    monkeypatch.setattr(seatmod.Seat, "down", lambda seat: None)
+    held = ship.runtime / credential.HELD / "temporary.json"
+    held.parent.mkdir(parents=True)
+    held.write_text('{"seat": "temporary", "pool": "fake"}\n')
+    named = SeatSpec("temporary", "temporary-session", "worker", "fake", ("fake",))
+    with pytest.raises(ShipError, match="already exists"):
+        with seatmod.temporary_seat(ship, tmux, named, [], "synthetic check"):
+            pytest.fail("a name a held renewal still names was claimed")
+    assert held.read_text() == '{"seat": "temporary", "pool": "fake"}\n'
+    assert not (ship.runtime / "seats" / "temporary").exists()
+    other = SeatSpec("unrelated", "unrelated-session", "worker", "fake", ("fake",))
+    with seatmod.temporary_seat(ship, tmux, other, [], "synthetic check") as seat:
+        assert seat.name == "unrelated" and seat.folder.is_dir()
+    assert held.is_file() and not (ship.runtime / credential.HELD / "unrelated.json").exists()
 
 
 @pytest.mark.parametrize("caller", ["check", "doctor"])
