@@ -210,6 +210,8 @@ def sample(mib, shape, phase, mode):
                 replaced = case.record.with_suffix('.replacement')
                 write_record(replaced, target, shape, alternate)
                 os.replace(replaced, case.record)
+        with case.record.open('rb') as source:
+            rows = sum(piece.count(b'\n') for piece in iter(lambda: source.read(CHUNK), b''))
         work.update(raw_work_bytes=0, slice_max=0, full_bytes=0, full_reads=0)
         wall, cpu = perf_counter(), process_time()
         try:
@@ -236,7 +238,7 @@ def sample(mib, shape, phase, mode):
             assert len(result['turns']) == len(result['totals']) == len(expected)
             assert all(row[1:] == (7, 11, 5, 0) for row in result['totals'])
             work.update(outcome='read', turns=len(result['turns']), semantic_digest=semantic_digest(result))
-        work.update(mib=mib, shape=shape, phase=phase, mode=mode,
+        work.update(mib=mib, raw_bytes=target, rows=rows, shape=shape, phase=phase, mode=mode,
                     wall_s=round(perf_counter() - wall, 5), cpu_s=round(process_time() - cpu, 5),
                     rss_mib=peak_rss_mib())
         print(json.dumps(work), flush=True)

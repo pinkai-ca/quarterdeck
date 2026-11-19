@@ -223,30 +223,29 @@ ROW_RETAINED_BYTES = 'retained bytes per row'
 def _first_projection_limit(sample: ProjectionUsage | None, info) -> tuple[int, str, str | None]:
     """Project the first limit by density. Only a matching observation proves an exhausted resource."""
     current = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-    matching_file = (sample is not None and sample.stamp[:2] == current[:2]
-                     and 0 < sample.stamp[2] <= info.st_size)
+    exact = sample is not None and sample.stamp == current
+    grown = sample is not None and sample.stamp[:2] == current[:2] and 0 < sample.stamp[2] < info.st_size
     # Before per-row byte limits had their own label, they used the generic projection label.
-    if (matching_file and (sample.stamp == current or sample.stamp[2] < info.st_size)
-            and (sample.compatibility or sample.exhausted in (ROW_RETAINED_BYTES, 'native projection'))):
-        exhausted = sample.exhausted if sample.stamp == current else None
+    if ((exact or grown) and (sample.exhausted in (ROW_RETAINED_BYTES, 'native projection')
+                             or (sample.compatibility and sample.exhausted is None))):
+        exhausted = sample.exhausted if exact else None
         if info.st_size > LINES_BOUND:
             exhausted = COMPATIBILITY_READ
         return LINES_BOUND, COMPATIBILITY_READ, exhausted
-    if matching_file and sample.stamp == current and sample.exhausted is not None:
+    if exact and sample.exhausted is not None:
         return info.st_size, sample.exhausted, sample.exhausted
     candidates = [(CLAUDE_STREAM_BOUND, 'raw size')]
     defaults = (CLAUDE_DENSE_ROWS_PER_MIB, CLAUDE_DENSE_RETAINED_PER_MIB, CLAUDE_DENSE_MEMORY_PER_MIB)
     resources = ('physical lines', 'retained bytes', 'retained memory')
     budgets = (CLAUDE_STREAM_ROWS, CLAUDE_STREAM_BYTES, CLAUDE_STREAM_MEMORY)
     for name, limit, default, field in zip(resources, budgets, defaults, ('lines', 'retained', 'memory')):
-        observed = getattr(sample, field) if matching_file and sample.exhausted is None else None
+        observed = getattr(sample, field) if (exact or grown) and sample.exhausted is None else None
         if observed is None:
             input_bytes, consumed = MiB, default
         else:
             input_bytes, consumed = sample.stamp[2], observed
         if consumed:
-            # The compatibility reader remains eligible through the ordinary JSON-lines limit.
-            candidates.append((max(LINES_BOUND, limit * input_bytes // consumed), name))
+            candidates.append((limit * input_bytes // consumed, name))
     first, resource = min(candidates, key=lambda item: item[0])
     return first, resource, None
 

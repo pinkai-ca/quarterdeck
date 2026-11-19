@@ -29,7 +29,7 @@ def held():
 
 
 def test_a_sweep_of_many_records_leaves_the_working_set_held(tmp_path, monkeypatch):
-    monkeypatch.setattr(json_record, '_CACHE_COUNT', 4)
+    monkeypatch.setattr(json_record, '_CLAUDE_CACHE_COUNT', 4)
     working = records(tmp_path, 3, 'working')
     for path in working:
         claude.read(path)
@@ -42,13 +42,14 @@ def test_a_sweep_of_many_records_leaves_the_working_set_held(tmp_path, monkeypat
     assert swept[0] in held(), 'outside the sweep the cache admits as before'
 
 
-def test_the_count_bound_evicts_the_least_recent(tmp_path, monkeypatch):
-    monkeypatch.setattr(json_record, '_CACHE_COUNT', 3)
+@pytest.mark.parametrize(('read', 'limit'), [
+    (json_record.entries, '_CACHE_COUNT'), (claude.read, '_CLAUDE_CACHE_COUNT'),
+], ids=['ordinary', 'claude'])
+def test_the_count_bound_evicts_the_least_recent(tmp_path, monkeypatch, read, limit):
+    monkeypatch.setattr(json_record, limit, 3)
     one, two, three, four = records(tmp_path, 4)
-    for path in (one, two, three):
-        claude.read(path)
-    claude.inputs(one)  # used again: now the most recent
-    claude.read(four)
+    for path in (one, two, three, one, four):
+        read(path)
     assert held() == [three, one, four] or set(held()) == {three, one, four}
     assert two not in held(), 'the least recently used went'
 
@@ -56,8 +57,8 @@ def test_the_count_bound_evicts_the_least_recent(tmp_path, monkeypatch):
 def test_the_byte_ceiling_still_holds(tmp_path, monkeypatch):
     one, two = records(tmp_path, 2)
     monkeypatch.setattr(json_record, '_CACHE_BYTES', one.stat().st_size + two.stat().st_size - 1)
-    claude.read(one)
-    claude.read(two)
+    json_record.entries(one)
+    json_record.entries(two)
     assert held() == [two]
 
 

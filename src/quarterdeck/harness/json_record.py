@@ -68,12 +68,12 @@ class _Snapshot:
     kept: '_Snapshot | None' = None  # a view's cached entry
     source: Path | None = None  # a view's record, read again only for a view served from the cache
     raw_digest: str | None = None
-    claude_full: bool = False  # a stable ordinary Claude read outside the projection budget
+    claude_full: bool = False  # a stable ordinary Claude read after a per-row or shape refusal
     previous_prefix: tuple | None = None
     retained_bytes: int = 0
     projected_bytes: int | None = None
     decoded_bytes: int | None = None  # decoded charge for the complete lines, carried on an exact append
-    retained_cost: int | None = None  # large Claude streams keep a projection, never the raw record
+    retained_cost: int | None = None  # Claude streams keep a charged projection
 
 
 _snapshots = OrderedDict()
@@ -82,12 +82,12 @@ _snapshots = OrderedDict()
 # entry keeps no text, and its resident cost per byte of record ran from 0.02 (Codex) to 1.94 (Claude), measured on a
 # copy of the crew's records; the two idle Codex records held 109 MB of the old 256 MiB bound and cost 1.7 MB.
 _CACHE_COUNT = 96
-# Ordinary entries count their record bytes toward the 768 MiB safety ceiling. Larger Claude streams have a separate
+# Ordinary entries count their record bytes toward the 768 MiB safety ceiling. Claude streams have a separate
 # aggregate charge for projections and reader state. For ordinary entries, today's mix of
 # 326 MB costs about 140 to 280 MB resident; at Claude's worst 1.94 B per byte the ceiling costs about 1.5 GB.
 _CACHE_BYTES_CEILING = 768 * 1024 * 1024
 _CACHE_BYTES = _CACHE_BYTES_CEILING
-# Do not evict ordinary records to admit a large projection, or the reverse. Two at the source limit fit.
+# Keep ordinary records and Claude projections in separate budgets. Two at the source limit fit.
 _CLAUDE_CACHE_BYTES = 1536 * record_file.MiB
 _CLAUDE_CACHE_COUNT = 16
 # A read in passing (passing()) admits no new entry: a sweep of many records, such as the seat-token fallback reading
@@ -128,7 +128,7 @@ def cache_size() -> tuple[int, int]:
 
 
 def release(record: Path, *, keep_projection: bool = False) -> None:
-    """Release a sweep's parsed text, optionally keeping a large bounded Claude projection."""
+    """Release a sweep's parsed text, optionally keeping a charged Claude projection."""
     with _read_lock:
         key = Path(record)
         entry = _snapshots.get(key)

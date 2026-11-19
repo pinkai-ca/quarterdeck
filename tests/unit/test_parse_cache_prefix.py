@@ -1,7 +1,7 @@
 """The record cache keeps a proved prefix and the adapter-specific retained data.
 
 An appended record decodes only its new lines; a prefix rewritten to other bytes of the same length parses whole; the
-bound, in bytes of record, evicts; the readers' state equals a whole parse's; the accounting child keeps rows as
+cache charge evicts; the readers' state equals a whole parse's; the accounting child keeps rows as
 before. Synthetic records only.
 """
 import json
@@ -85,11 +85,17 @@ def test_a_prefix_rewritten_to_other_bytes_of_the_same_length_parses_whole(tmp_p
 
 def test_the_bound_in_bytes_evicts(tmp_path, monkeypatch):
     one, two = record_with(tmp_path, name='one'), record_with(tmp_path, name='two')
-    monkeypatch.setattr(json_record, '_CACHE_BYTES', one.path.stat().st_size + two.path.stat().st_size - 1)
     claude.read(one.path)
     claude.read(two.path)
-    assert list(json_record._snapshots) == [two.path], 'the oldest went to keep the bytes under the bound'
-    monkeypatch.setattr(json_record, '_CACHE_BYTES', one.path.stat().st_size - 1)
+    one_charge = json_record._snapshots[one.path].retained_cost
+    two_charge = json_record._snapshots[two.path].retained_cost
+    assert one_charge > 0 and two_charge > 0
+    json_record._snapshots.clear()
+    monkeypatch.setattr(json_record, '_CLAUDE_CACHE_BYTES', one_charge + two_charge - 1)
+    claude.read(one.path)
+    claude.read(two.path)
+    assert list(json_record._snapshots) == [two.path], 'the oldest went to keep the charge under the bound'
+    monkeypatch.setattr(json_record, '_CLAUDE_CACHE_BYTES', one_charge - 1)
     json_record._snapshots.clear()
     claude.read(one.path)
     assert not json_record._snapshots, 'a record past the bound is not kept at all'

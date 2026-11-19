@@ -291,11 +291,29 @@ def test_forecast_and_status_warn_for_the_first_claude_resource(world, monkeypat
     assert len(world.calls) == (0 if human else 1)
 
 
+def test_claude_density_forecasts_below_the_compatibility_bound(world):
+    seat, path = claude_seat(world, False)
+    sized(path, 48)
+    usage = projection(path, lines=record_file.CLAUDE_STREAM_ROWS * 3 // 4, retained=1, memory=1)
+    observe = lambda _: usage
+    pressure = record_file.pressure(seat, path, observe)
+    assert pressure.first_bound == 64 * record_file.MiB
+    assert pressure.raw_bound == record_file.CLAUDE_STREAM_BOUND
+    [alarm] = record_file.alarms([seat], observation=observe)
+    assert 'Claude physical lines may reach its limit at about 64.0 MiB' in alarm
+
+    # A same-sized rewrite invalidates the measured density.
+    with path.open('r+b') as stream:
+        stream.write(b'\n')
+    assert record_file.alarms([seat], observation=observe) == []
+
+
 @pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
 def test_past_projection_limit_reports_once_from_accounted_scalars(world, human):
     seat, path = claude_seat(world, human)
-    sized(path, 250)
-    usage = projection(path, exhausted='physical lines')
+    sized(path, 100)
+    # Older accounting could mark a failed aggregate fallback as compatibility.
+    usage = projection(path, exhausted='physical lines', compatibility=True)
     service = world.service()
     service.ledger = SimpleNamespace(projection_usage=lambda _: usage)
     [alarm] = record_file.alarms([seat], owned=human_wake.owned_record, observation=service.ledger.projection_usage)

@@ -17,9 +17,7 @@ from ..record_location import resolve
 
 CHUNK = 64 * 1024
 ROW_BYTES = 256 * 1024
-PROJECTED_BYTES = 16 * 1024 * 1024
 COMPATIBILITY_BOUND = 128 * 1024 * 1024  # the full reader never follows a future streaming cap increase
-ROWS = 65_536
 ROW_STATE_BYTES = 1024  # kept reader, compaction and input index allowance per physical line
 DEPTH = 96
 ATOM_BYTES = 8192
@@ -141,7 +139,7 @@ class Unknown(record_file.RecordError):
 
 
 class ProjectionLimit(Unknown):
-    """A record might need the existing bounded full reader."""
+    """A guarded read exhausted a projection resource."""
 
     def __init__(self, reason, resource='native projection', *, limit=None, unit=None, row_refusal=None):
         super().__init__(reason)
@@ -151,11 +149,15 @@ class ProjectionLimit(Unknown):
         self.row_refusal = row_refusal
 
 
+class CompatibilityRefusal(ProjectionLimit):
+    """A per-row or shape refusal eligible for the bounded whole-file reader."""
+
+
 def _row_limit(reason, row_refusal=None):
     if row_refusal is not None and row_refusal.reason is None:
         row_refusal = replace(row_refusal, reason='budget', value_type='?')
-    return ProjectionLimit(reason, record_file.ROW_RETAINED_BYTES, limit=ROW_BYTES, unit='bytes',
-                           row_refusal=row_refusal)
+    return CompatibilityRefusal(reason, record_file.ROW_RETAINED_BYTES, limit=ROW_BYTES, unit='bytes',
+                                row_refusal=row_refusal)
 
 
 class PhysicalSeparators(Exception):
@@ -550,12 +552,12 @@ class GiantRow:
             raise ValueError('data after root JSON object')
         if char in b'{[':
             if not self.frames and char != ord('{'):
-                raise ProjectionLimit('large row does not start with a native JSON object')
+                raise CompatibilityRefusal('large row does not start with a native JSON object')
             path = self.value() if self.frames else ()
             if path is not None and not mirror_path(path) and path_shape(path) not in PAYLOAD_PARENTS:
                 path = None
             if len(self.frames) >= DEPTH:
-                raise ProjectionLimit('JSON nesting exceeds the validation budget')
+                raise CompatibilityRefusal('JSON nesting exceeds the validation budget')
             self.frames.append(Frame('object first' if char == ord('{') else 'array first', path,
                                      self.value_schema, offset))
         elif not self.frames:
@@ -710,7 +712,7 @@ class GiantRow:
                 stop = ATOM_END.search(data, at)
                 end = stop.start() if stop else len(data)
                 if len(self.atom) + end - at > ATOM_BYTES:
-                    raise ProjectionLimit('JSON atom exceeds the validation budget')
+                    raise CompatibilityRefusal('JSON atom exceeds the validation budget')
                 self.atom.extend(data[at:end])
                 at = end
                 if stop:
@@ -738,7 +740,7 @@ class GiantRow:
             raise ValueError('incomplete JSON object')
         row = json.loads(self.output.decode())
         if OMIT_KEY not in row and not self.payloads:
-            raise ProjectionLimit('large row had no discardable value')
+            raise CompatibilityRefusal('large row had no discardable value')
         if OMIT_KEY in row:
             if row.get('type') == OMIT_TYPE:
                 del row[OMIT_KEY]
@@ -835,7 +837,7 @@ class Line:
         try:
             row = json.loads(text)
         except RecursionError:
-            raise ProjectionLimit('JSON nesting exceeds the validation budget') from None
+            raise CompatibilityRefusal('JSON nesting exceeds the validation budget') from None
         except (ValueError, UnicodeError):
             return MALFORMED
         if not isinstance(row, dict):
@@ -851,9 +853,9 @@ def scan(descriptor, size, cached, *, splitlines=False):
     """Yield after each 64 KiB read; return a snapshot after all required rows."""
     hasher = sha256()
     offset = number = retained = decoded = 0
-    large = size > COMPATIBILITY_BOUND
-    rows_bound = record_file.CLAUDE_STREAM_ROWS if large else ROWS
-    retained_bound = record_file.CLAUDE_STREAM_BYTES if large else PROJECTED_BYTES
+    rows_bound = record_file.CLAUDE_STREAM_ROWS
+    retained_bound = record_file.CLAUDE_STREAM_BYTES
+    memory_bound = record_file.CLAUDE_STREAM_MEMORY
     rows, skipped = [], []
     proof = None
     if cached is not None and 0 < cached.prefix_bytes <= size:
@@ -868,10 +870,7 @@ def scan(descriptor, size, cached, *, splitlines=False):
             rows = cached.rows[:cached.row_count]
             skipped = [item for item in cached.skipped if item[0] <= number]
             retained = cached.retained_bytes
-            if large:
-                decoded = cached.decoded_bytes
-                if decoded is None:
-                    decoded = sum(decoded_size(row) for _, row in rows)
+            decoded = cached.decoded_bytes
             proof = offset, hasher.hexdigest()
         else:
             cached = None
@@ -899,12 +898,11 @@ def scan(descriptor, size, cached, *, splitlines=False):
         if retained > retained_bound:
             raise ProjectionLimit('native record exceeds its retained-byte budget', 'retained bytes',
                                   limit=retained_bound, unit='bytes')
-        if large:
-            if row is not None:
-                decoded += decoded_size(row)
-            if decoded + number * ROW_STATE_BYTES > record_file.CLAUDE_STREAM_MEMORY:
-                raise ProjectionLimit('native record exceeds its retained memory budget', 'retained memory',
-                                      limit=record_file.CLAUDE_STREAM_MEMORY, unit='bytes')
+        if row is not None:
+            decoded += decoded_size(row)
+        if decoded + number * ROW_STATE_BYTES > memory_bound:
+            raise ProjectionLimit('native record exceeds its retained memory budget', 'retained memory',
+                                  limit=memory_bound, unit='bytes')
         if row is not None:
             rows.append((number, row))
         elif diagnostic is not None:
@@ -970,8 +968,8 @@ def scan(descriptor, size, cached, *, splitlines=False):
         last_complete_row=rows[complete_rows - 1] if complete_rows else None,
         ends_newline=ends_lf if splitlines else size > 0 and size == prefix_bytes, line_count=number,
         raw_digest=hasher.hexdigest(), previous_prefix=proof, retained_bytes=complete_bytes,
-        projected_bytes=retained, decoded_bytes=complete_decoded if large else None,
-        retained_cost=decoded + number * ROW_STATE_BYTES if large else None,
+        projected_bytes=retained, decoded_bytes=complete_decoded,
+        retained_cost=decoded + number * ROW_STATE_BYTES,
     ), cached
 
 
@@ -1041,14 +1039,14 @@ def _parse(record):
             try:
                 try:
                     entry, reused = _scan_layout(descriptor, info.st_size, previous)
-                except ProjectionLimit as error:
+                except CompatibilityRefusal as error:
                     bound = min(COMPATIBILITY_BOUND, raw_bound)
                     if info.st_size > bound:
                         raise
                     # A traceback would retain the abandoned projection while
                     # the legacy reader allocates its own buffer and rows.
-                    limit = ProjectionLimit(str(error), error.resource, limit=error.limit, unit=error.unit,
-                                            row_refusal=error.row_refusal)
+                    limit = CompatibilityRefusal(str(error), error.resource, limit=error.limit, unit=error.unit,
+                                                  row_refusal=error.row_refusal)
                 if limit is not None:
                     full = record_file.read_from(descriptor, info, source, bound)
             except (OSError, UnicodeError) as error:

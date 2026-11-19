@@ -2456,7 +2456,8 @@ class Service:
                     except OSError:
                         stable = False
                     if (stable and getattr(owned.reader, 'native_status_stream', False)
-                            and (usage := getattr(state, 'projection_usage', None)) is not None):
+                            and (usage := getattr(state, 'projection_usage', None)) is not None
+                            and ledger.projection_matches(usage, stamp)):
                         projections[record] = usage
                     # A stable record read whole is accounted: one with turns and a known turn state, or one that reads
                     # as no turns with no turn open, a complete reading of nothing. A record whose turn state is
@@ -2470,13 +2471,11 @@ class Service:
                     message = str(error)
                     if (getattr(owned.reader, 'native_status_stream', False)
                             and (usage := getattr(error, 'projection_usage', None)) is not None):
-                        pass_stamp = stamp
-                        if getattr(usage, 'row_refusal', None) is not None:
-                            try:
-                                pass_stamp = ledger.record_stamp(owned)
-                            except OSError:
-                                pass_stamp = None
-                        if pass_stamp is not None and pass_stamp == stamp:
+                        try:
+                            pass_stamp = ledger.record_stamp(owned)
+                        except OSError:
+                            pass_stamp = None
+                        if pass_stamp == stamp and ledger.projection_matches(usage, stamp):
                             projections[record] = usage
                             if usage.exhausted is not None and getattr(error, 'limit', None) is not None:
                                 spans[record] = usage.stamp[2], error.limit, usage.exhausted, error.unit

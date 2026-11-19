@@ -79,7 +79,7 @@ def test_payload_projection_matches_the_full_native_readers(tmp_path, monkeypatc
                 adapter.person_inputs(record.path, ()), adapter.compactions(record.path))
 
     with monkeypatch.context() as full:
-        full.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        full.setattr(claude_record, 'DEPTH', 1)
         ordinary = consumers()
     json_record.release(record.path)
     streamed = consumers()
@@ -164,7 +164,7 @@ def test_assistant_images_preserve_native_evidence(tmp_path, monkeypatch, layout
                 input_receipt.confirmed(adapter, path, 'Synthetic TASK', AT))
 
     with monkeypatch.context() as full:
-        full.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        full.setattr(claude_record, 'DEPTH', 1)
         ordinary = observations()
     for source in (path, child):
         json_record.release(source)
@@ -276,7 +276,7 @@ def test_non_native_row_projects_only_verified_message_image(tmp_path, monkeypat
                 input_receipt.confirmed(adapter, path, 'Synthetic task', AT))
 
     with monkeypatch.context() as full:
-        full.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        full.setattr(claude_record, 'DEPTH', 1)
         expected = observations()
         assert claude_record.projection_usage(claude_record.parse(path)).compatibility
     json_record.release(path)
@@ -304,7 +304,7 @@ def test_non_native_work_rows_keep_the_exact_compaction_frontier(tmp_path, monke
               else dict(operation='enqueue', content='Exact queued input'))
     row = native.add(row_type, message=dict(role='user', content=[image(PAYLOAD_BYTES)]), **fields)
     with monkeypatch.context() as full:
-        full.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        full.setattr(claude_record, 'DEPTH', 1)
         expected = claude.compactions(native.path)
     assert expected.reason is None
     json_record.release(native.path)
@@ -377,7 +377,7 @@ def test_duplicate_mirror_is_compatible_with_native_evidence(tmp_path, monkeypat
                 input_receipt.confirmed(adapter, path, 'Synthetic TASK', AT))
 
     with monkeypatch.context() as baseline:
-        baseline.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        baseline.setattr(claude_record, 'DEPTH', 1)
         ordinary = observations()
     json_record.release(path)
     streamed = observations()
@@ -471,7 +471,7 @@ def test_mirrored_bash_output_preserves_the_background_handle_and_exact_stop_mes
     streamed = get('claude').read(record.path)
     json_record.release(record.path)
     with monkeypatch.context() as ordinary:
-        ordinary.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        ordinary.setattr(claude_record, 'DEPTH', 1)
         assert get('claude').read(record.path) == streamed
     assert streamed[0].pending_tools == ()
     json_record.release(record.path)

@@ -144,6 +144,19 @@ def test_compatibility_observation_coexists_with_older_ledger_writers(tmp_path):
     with Ledger.reading(path) as book:
         assert book.projection_usage(record).compatibility
     with sqlite3.connect(path) as earlier_writer:
+        legacy = json.dumps(dict(stamp=earlier.stamp, compatibility=True))
+        earlier_writer.execute('INSERT OR REPLACE INTO record_projection_usage VALUES (?,?,?,?,?,?)',
+                               (str(record), legacy, None, None, None, None))
+    with Ledger.reading(path) as book:
+        assert book.projection_usage(record) == record_file.ProjectionUsage(earlier.stamp)
+    with sqlite3.connect(path) as earlier_writer:
+        legacy = json.dumps(dict(stamp=earlier.stamp, compatibility=True, row_refusal=dict(path=[], size=123)))
+        earlier_writer.execute('INSERT OR REPLACE INTO record_projection_usage VALUES (?,?,?,?,?,?)',
+                               (str(record), legacy, None, None, None, None))
+    with Ledger.reading(path) as book:
+        usage = book.projection_usage(record)
+        assert usage.compatibility and not hasattr(usage, 'row_refusal')
+    with sqlite3.connect(path) as earlier_writer:
         earlier_writer.execute('INSERT OR REPLACE INTO record_projection_usage VALUES (?,?,?,?,?,?)', earlier_sql)
     with Ledger.reading(path) as book:
         assert book.projection_usage(record) == earlier
@@ -179,7 +192,7 @@ def test_a_raised_claude_bound_reconciles_the_same_owned_record_after_reopening(
 
     monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', old_bound)
     if fallback:
-        monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        monkeypatch.setattr(claude_record, 'ROW_BYTES', 128)
     with Ledger(ledger_path) as book:
         service = actor(book)
         account(service)
@@ -193,7 +206,7 @@ def test_a_raised_claude_bound_reconciles_the_same_owned_record_after_reopening(
 
     new_bound = record.stat().st_size
     monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', new_bound)
-    monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 16 * MiB)
+    monkeypatch.setattr(claude_record, 'ROW_BYTES', 256 * 1024)
     with Ledger(ledger_path) as book:
         service = actor(book)
         assert book.unread_spans() == [before]
@@ -242,7 +255,8 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
     native = Native(old, 'claude')
     native.finish()
     launch(old, 1)
-    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    if field is None:
+        monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
     budget_module = claude_record if field is None else record_file
     production_limit = getattr(budget_module, budget)
     service = Service(ship, tmux)
@@ -261,6 +275,28 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
                 assert raw['bound'] == old.stat().st_size - 1
             with old.open('ab') as stream:
                 stream.write(b'\n')
+        if field is not None:
+            # A successful stability check in the reader can precede another write
+            # before the accounting pass saves the exhausted observation.
+            initial_usage = book.projection_usage(old)
+            current_stamp = ledger.record_stamp
+            old_checks = 0
+
+            def append_before_failure_is_saved(owned):
+                nonlocal old_checks
+                if owned.path == old:
+                    old_checks += 1
+                    if old_checks == 2:
+                        with old.open('ab') as stream:
+                            stream.write(b'\n')
+                return current_stamp(owned)
+
+            with monkeypatch.context() as probe:
+                probe.setattr(ledger, 'record_stamp', append_before_failure_is_saved)
+                account(service)
+            assert old_checks == 2
+            assert book.projection_usage(old) == initial_usage
+            assert book.unread_spans() == []
         account(service)
         [span] = book.unread_spans()
         projection = span['projection'] if field is None else span

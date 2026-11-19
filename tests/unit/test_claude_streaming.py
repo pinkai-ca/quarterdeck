@@ -11,6 +11,7 @@ import pytest
 from quarterdeck import record_location
 from quarterdeck.harness import claude, claude_record, json_record, record_file
 from tests.compaction_shapes import Native
+from tests.measure_claude_reader import Case, semantic_digest
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +24,16 @@ def native(path):
     record = Native(path, 'claude')
     record.finish()
     return record
+
+
+def require_full_read(record, monkeypatch):
+    """Put required evidence over a small per-row budget."""
+    row_bytes = 1024
+    monkeypatch.setattr(claude_record, 'ROW_BYTES', row_bytes)
+    with record.path.open('ab') as stream:
+        stream.write(json.dumps({'type': 'file-history-snapshot',
+                                 'message': {'content': 'x' * row_bytes}}).encode() + b'\n')
+    return row_bytes
 
 
 @pytest.mark.parametrize('type_first', [False, True])
@@ -42,34 +53,57 @@ def test_large_history_keeps_raw_identity_and_other_fields(tmp_path, type_first)
     assert claude.state(record.path).turn_open is False
 
 
-@pytest.mark.parametrize('budget', ['row', 'total', 'lines'])
 @pytest.mark.parametrize('keep_rows', [False, True])
-def test_valid_under_bound_required_evidence_has_a_complete_fallback(tmp_path, monkeypatch, budget, keep_rows):
+def test_valid_under_bound_required_evidence_has_a_complete_fallback(tmp_path, monkeypatch, keep_rows):
     record = native(tmp_path / 'synthetic.jsonl')
     monkeypatch.setattr(json_record, '_KEEP_ROWS', False)
     json_record.release(record.path)
     if keep_rows:
         json_record.keep_rows()
-    if budget == 'row':
-        with record.path.open('ab') as stream:
-            stream.write(json.dumps({'type': 'file-history-snapshot',
-                                     'message': {'content': 'x' * claude_record.ROW_BYTES}}).encode() + b'\n')
-    elif budget == 'total':
-        monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 1)
-    else:
-        monkeypatch.setattr(claude_record, 'ROWS', 1)
+    row_bytes = require_full_read(record, monkeypatch)
     expected = json_record.object_lines(record.path)
+    read_from, full_reads = record_file.read_from, []
+
+    def counted(*args):
+        data = read_from(*args)
+        full_reads.append(len(data))
+        return data
+
+    monkeypatch.setattr(record_file, 'read_from', counted)
     snapshot = claude_record.parse(record.path)
+    assert full_reads == [record.path.stat().st_size]
     assert json_record._entry(snapshot).claude_full and list(snapshot.rows) == expected
     state = claude.state(record.path)
     assert state.turn_open is False
-    if budget == 'row':
-        assert state.projection_usage == claude_record.RefusedProjectionUsage(
-            snapshot.stamp, compatibility=True,
-            row_refusal=claude_record.RowRefusal(('message', 'content'), claude_record.ROW_BYTES, 'newline', 'budget', '?'))
-    else:
-        assert state.projection_usage == record_file.ProjectionUsage(snapshot.stamp, compatibility=True)
+    assert state.projection_usage == claude_record.RefusedProjectionUsage(
+        snapshot.stamp, compatibility=True,
+        row_refusal=claude_record.RowRefusal(('message', 'content'), row_bytes, 'newline', 'budget', '?'))
     assert claude.compactions(record.path).reason is None
+
+
+def test_dense_required_rows_preserve_reader_and_accounting_evidence(tmp_path, monkeypatch):
+    case = Case(tmp_path)
+    core, _ = case.turns(0)
+    dense_row = json.dumps({'type': 'file-history-snapshot', 'message': {'content': 'x' * 2048}}).encode() + b'\n'
+    case.record.write_bytes(dense_row * 64 + core)
+    monkeypatch.setattr(json_record, '_KEEP_ROWS', True)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(claude_record, 'ROW_BYTES', 1024)
+        full = case.observe(case.record)
+    assert full['state'].projection_usage.compatibility
+    json_record.release(case.record)
+
+    monkeypatch.setattr(record_file, 'read_from', lambda *_: pytest.fail('dense projection opened the whole reader'))
+    streamed = case.observe(case.record)
+    usage = streamed['state'].projection_usage
+    assert not usage.compatibility and usage.lines == 64 + core.count(b'\n')
+    assert usage.retained >= 64 * 2048 and usage.memory >= usage.retained
+    assert semantic_digest(streamed) == semantic_digest(full)
+    assert streamed['receipts'] == ['delivered', None] and streamed['foreign'] is None
+    assert streamed['account_errors'] == []
+    assert streamed['totals'] and streamed['attribution']
+    json_record.release(case.record)
 
 
 def test_fallback_read_releases_the_abandoned_projection(tmp_path, monkeypatch):
@@ -82,7 +116,7 @@ def test_fallback_read_releases_the_abandoned_projection(tmp_path, monkeypatch):
     def scan(*args):
         projection = Projection()
         projections.append(ref(projection))
-        raise claude_record.ProjectionLimit('synthetic projection limit')
+        raise claude_record.CompatibilityRefusal('synthetic shape refusal')
 
     read_from = record_file.read_from
 
@@ -98,11 +132,11 @@ def test_fallback_read_releases_the_abandoned_projection(tmp_path, monkeypatch):
 @pytest.mark.parametrize('tail', [b'!\n', b'{"type":\n', b'[]\n'])
 def test_fallback_preserves_ordinary_diagnostics_and_partial_reading(tmp_path, monkeypatch, tail):
     record = native(tmp_path / 'synthetic.jsonl')
+    require_full_read(record, monkeypatch)
     with record.path.open('ab') as stream:
         stream.write(tail)
     baseline = json_record._parsed(record.path)
     assert len(baseline.skipped) == 1
-    monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 1)
     parsed = claude_record.parse(record.path)
     assert parsed.skipped == baseline.skipped
     assert list(parsed.rows) == list(baseline.rows)
@@ -114,11 +148,11 @@ def test_fallback_preserves_ordinary_diagnostics_and_partial_reading(tmp_path, m
 
 def test_fallback_keeps_the_ordinary_whole_file_refusal(tmp_path, monkeypatch):
     record = native(tmp_path / 'synthetic.jsonl')
+    require_full_read(record, monkeypatch)
     with record.path.open('ab') as stream:
         stream.write(b' ' * (claude_record.CHUNK + 1) + b'\xff\n')
     with pytest.raises(record_file.RecordError) as baseline:
         json_record._parsed(record.path)
-    monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 1)
     for read in (claude.state, claude.inputs):
         with pytest.raises(record_file.RecordError) as refused:
             read(record.path)
@@ -129,14 +163,14 @@ def test_fallback_keeps_the_ordinary_whole_file_refusal(tmp_path, monkeypatch):
 
 def test_larger_synthetic_stream_cannot_enter_the_full_compatibility_reader(tmp_path, monkeypatch):
     record = native(tmp_path / 'synthetic.jsonl')
-    monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BYTES', 1)
-    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    require_full_read(record, monkeypatch)
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', record.path.stat().st_size - 1)
 
     def unexpected(*_):
         pytest.fail('compatibility reader exceeded its own raw bound')
 
     monkeypatch.setattr(record_file, 'read_from', unexpected)
-    with pytest.raises(claude_record.ProjectionLimit):
+    with pytest.raises(claude_record.CompatibilityRefusal):
         claude.state(record.path)
 
 
@@ -169,7 +203,7 @@ def test_row_diagnostic_measures_the_first_crossing_value_to_its_end(tmp_path, m
 @pytest.mark.parametrize('continuous', [False, True])
 def test_full_compatibility_observation_retries_only_a_stable_source(tmp_path, monkeypatch, continuous):
     record = native(tmp_path / 'synthetic.jsonl')
-    monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 1)
+    require_full_read(record, monkeypatch)
     original = record_file.read_from
     calls = 0
 
@@ -217,7 +251,7 @@ def test_a_replacement_during_refusal_cannot_publish_the_old_value(tmp_path, mon
 def test_identical_replacement_refreshes_the_guarded_compaction_proof(tmp_path, monkeypatch, use_full):
     record = native(tmp_path / 'synthetic.jsonl')
     if use_full:
-        monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        require_full_read(record, monkeypatch)
     first = claude.compactions(record.path)
     replacement = record.path.with_suffix('.replacement')
     replacement.write_bytes(record.path.read_bytes())
@@ -300,9 +334,8 @@ def test_production_bound_refuses_before_scanning_any_body(tmp_path, monkeypatch
     assert refusal.value.size == refusal.value.bound + 1
 
 
-def test_large_projection_is_kept_for_certified_reads_with_accounting_rows(tmp_path, monkeypatch):
+def test_projection_is_kept_for_certified_reads_with_accounting_rows(tmp_path, monkeypatch):
     record = native(tmp_path / 'synthetic.jsonl')
-    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
     monkeypatch.setattr(json_record, '_KEEP_ROWS', True)
     monkeypatch.setattr(json_record, '_KEPT_BYTES', 1)
     info = record.path.stat()
@@ -318,9 +351,8 @@ def test_large_projection_is_kept_for_certified_reads_with_accounting_rows(tmp_p
     json_record.release(record.path)
 
 
-def test_projected_charge_bounds_the_cache_across_large_records(tmp_path, monkeypatch):
+def test_projected_charge_bounds_the_cache_across_records(tmp_path, monkeypatch):
     paths = [native(tmp_path / f'synthetic-{i}.jsonl').path for i in range(2)]
-    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
     first = claude_record.parse(paths[0])
     monkeypatch.setattr(json_record, '_CLAUDE_CACHE_BYTES', first.retained_cost)
     second = claude_record.parse(paths[1])
@@ -329,18 +361,24 @@ def test_projected_charge_bounds_the_cache_across_large_records(tmp_path, monkey
     json_record.release(paths[1])
 
 
-@pytest.mark.parametrize(('budget', 'resource'), [
-    ('CLAUDE_STREAM_ROWS', 'physical lines'), ('CLAUDE_STREAM_BYTES', 'retained bytes'),
-    ('CLAUDE_STREAM_MEMORY', 'retained memory'),
+@pytest.mark.parametrize(('budget', 'resource', 'unit'), [
+    ('CLAUDE_STREAM_ROWS', 'physical lines', 'lines'), ('CLAUDE_STREAM_BYTES', 'retained bytes', 'bytes'),
+    ('CLAUDE_STREAM_MEMORY', 'retained memory', 'bytes'),
 ])
-def test_a_large_stream_with_an_exhausted_projection_reports_its_first_resource(tmp_path, monkeypatch, budget, resource):
+@pytest.mark.parametrize('above_compatibility', [False, True])
+def test_exhausted_projection_reports_its_resource_without_a_whole_read(
+        tmp_path, monkeypatch, budget, resource, unit, above_compatibility):
     record = native(tmp_path / 'synthetic.jsonl')
-    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    if above_compatibility:
+        monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
     monkeypatch.setattr(record_file, budget, 1)
+    monkeypatch.setattr(record_file, 'read_from', lambda *_: pytest.fail('aggregate limit opened the whole reader'))
     with pytest.raises(claude_record.ProjectionLimit) as refused:
         claude.state(record.path)
-    assert refused.value.projection_usage.exhausted == resource
-    assert refused.value.projection_usage.stamp[2] == record.path.stat().st_size
+    usage = refused.value.projection_usage
+    assert usage.exhausted == resource and not usage.compatibility
+    assert (refused.value.limit, refused.value.unit) == (1, unit)
+    assert usage.stamp == json_record._stamp(record.path.stat())
     assert record.path not in json_record._snapshots
 
 

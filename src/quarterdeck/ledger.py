@@ -466,6 +466,8 @@ class Ledger:
         stamp = usage.stamp
         if refusal is not None or usage.compatibility:
             stamp = dict(stamp=stamp, compatibility=usage.compatibility)
+            if usage.compatibility:
+                stamp['row_or_shape'] = True
             if refusal is not None:
                 stamp['row_refusal'] = {key: value for key, value in asdict(refusal).items() if value is not None}
         values = (json.dumps(stamp), usage.lines, usage.retained, usage.memory, usage.exhausted)
@@ -493,12 +495,16 @@ class Ledger:
             identity = metadata.get('stamp') if metadata else document
             if (isinstance(identity, list) and len(identity) == 5 and all(type(n) is int for n in identity)
                     and all(n is None or type(n) is int and n >= 0 for n in (lines, retained, memory))):
-                fields = (tuple(identity), lines, retained, memory, exhausted, metadata.get('compatibility') is True)
+                detail = None
                 if isinstance(refusal := metadata.get('row_refusal'), dict):
                     from .harness.claude_record import RefusedProjectionUsage, RowRefusal
                     detail = RowRefusal.read(refusal)
-                    if detail is not None and _current_projection_stamp(record) == fields[0]:
-                        return RefusedProjectionUsage(*fields, row_refusal=detail)
+                # Earlier writers also used the flag for aggregate fallback, with no refusal detail.
+                compatibility = (metadata.get('compatibility') is True
+                                 and (detail is not None or metadata.get('row_or_shape') is True))
+                fields = (tuple(identity), lines, retained, memory, exhausted, compatibility)
+                if detail is not None and _current_projection_stamp(record) == fields[0]:
+                    return RefusedProjectionUsage(*fields, row_refusal=detail)
                 return ProjectionUsage(*fields)
         except (ValueError, TypeError):
             return None  # an unreadable observation supplies no measured counts
@@ -766,6 +772,14 @@ def tools_table(ledger: Ledger) -> list[str]:
 def pools_table(ledger: Ledger, ship: Ship | None = None) -> list[str]:
     from .ledger_reading import collect, render
     return render(collect(ledger, ship))
+
+
+def projection_matches(usage, stamp):
+    """Match the guarded projection's source to the accounting observation."""
+    if stamp is None:
+        return False
+    dev, ino, size, mtime, ctime = usage.stamp
+    return stamp[1][0] == (True, ino, size, mtime, dev, ctime)
 
 
 def record_stamp(owned) -> tuple:
