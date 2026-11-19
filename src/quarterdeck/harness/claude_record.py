@@ -46,6 +46,48 @@ PAYLOAD_PATHS = {
 }
 PAYLOAD_PARENTS = {path[:index] for path in PAYLOAD_PATHS for index in range(len(path))}
 MAX_PAYLOADS = 256
+MIRROR = 'toolUseResult'
+# These top-level fields are read by the task, monitor and child interpreters.
+# An unexpected type is evidence too, including any values nested inside it.
+MIRROR_EVIDENCE = frozenset(('taskId', 'agentId', 'isAsync', 'status', 'backgroundTaskId',
+                             'task_type', 'message', 'task_id'))
+IMAGE_FIELDS = frozenset(('data', 'base64'))
+IMAGE_FORMATS = IMAGE_TYPES | {'png', 'jpeg', 'jpg', 'webp', 'gif'}
+SCHEMA_KEYS = MIRROR_EVIDENCE | IMAGE_FIELDS | frozenset((
+    MIRROR, OMIT_KEY, 'type', 'role', 'content', 'text', 'source', 'media_type',
+    'mimeType', 'file', 'originalSize', 'size', 'stdout', 'stderr', 'output',
+    'tool_use_id', 'is_error', 'sessionId', 'uuid', 'parentUuid', 'isSidechain',
+    'timestamp', 'version', 'usage', 'attachment',
+))
+DIAGNOSTIC_KEY_BYTES = 6 * max(map(len, SCHEMA_KEYS))
+
+
+@dataclass(frozen=True)
+class RowRefusal:
+    """Only schema labels and a value's encoded byte count may leave the reader."""
+
+    path: tuple[str, ...]
+    size: int
+
+    @classmethod
+    def read(cls, path, size):
+        if (isinstance(path, list) and len(path) <= DEPTH
+                and all(isinstance(part, str) and (part == '?' or part in SCHEMA_KEYS) for part in path)
+                and type(size) is int and size >= 0):
+            return cls(tuple(path), size)
+        return None
+
+
+@dataclass(frozen=True)
+class RefusedProjectionUsage(record_file.ProjectionUsage):
+    row_refusal: RowRefusal | None = None
+
+
+def refusal_usage(stamp, limit, *, compatibility=False):
+    if limit.row_refusal is not None:
+        return RefusedProjectionUsage(stamp, exhausted=limit.resource, compatibility=compatibility,
+                                      row_refusal=limit.row_refusal)
+    return record_file.ProjectionUsage(stamp, exhausted=limit.resource, compatibility=compatibility)
 
 
 class Unknown(record_file.RecordError):
@@ -55,15 +97,17 @@ class Unknown(record_file.RecordError):
 class ProjectionLimit(Unknown):
     """A record might need the existing bounded full reader."""
 
-    def __init__(self, reason, resource='native projection', *, limit=None, unit=None):
+    def __init__(self, reason, resource='native projection', *, limit=None, unit=None, row_refusal=None):
         super().__init__(reason)
         self.resource = resource
         self.limit = limit
         self.unit = unit
+        self.row_refusal = row_refusal
 
 
-def _row_limit(reason):
-    return ProjectionLimit(reason, record_file.ROW_RETAINED_BYTES, limit=ROW_BYTES, unit='bytes')
+def _row_limit(reason, row_refusal=None):
+    return ProjectionLimit(reason, record_file.ROW_RETAINED_BYTES, limit=ROW_BYTES, unit='bytes',
+                           row_refusal=row_refusal)
 
 
 class PhysicalSeparators(Exception):
@@ -73,15 +117,16 @@ class PhysicalSeparators(Exception):
 class Payload(str):
     """A validated string projected to empty text, carrying its original UTF-8 byte count."""
 
-    __slots__ = ('size',)
+    __slots__ = ('size', 'image_bytes')
 
-    def __new__(cls, size):
+    def __new__(cls, size, image_bytes=None):
         found = super().__new__(cls, '')
         found.size = size
+        found.image_bytes = image_bytes
         return found
 
     def __reduce__(self):
-        return type(self), (self.size,)
+        return type(self), (self.size, self.image_bytes)
 
 
 class ProjectedRow(dict):
@@ -92,11 +137,22 @@ def path_shape(path):
     return tuple(None if isinstance(part, int) else part for part in path)
 
 
+def schema_path(path):
+    return tuple(part if part in SCHEMA_KEYS else '?' for part in path if isinstance(part, str))
+
+
+def mirror_path(path):
+    return bool(path and path[0] == MIRROR and (len(path) == 1 or path[1] not in MIRROR_EVIDENCE))
+
+
 @dataclass(slots=True)
 class Frame:
     state: str
     path: tuple | None
+    schema: tuple
+    start: int
     key: str | None = None
+    label: str = '?'
     index: int = 0
     keys: set | None = None
 
@@ -113,7 +169,7 @@ class PayloadString:
         self.inline = bytearray()
         self.size = self.escapes = self.padding = 0
         self.suffix = b''
-        self.unsafe = False
+        self.unsafe_image = self.unsafe_text = False
 
     def feed(self, data):
         self.size += len(data)
@@ -122,20 +178,24 @@ class PayloadString:
                 self.inline.extend(data)
             else:
                 self.inline = None
-        if self.kind == 'image':
+        if self.kind != 'text':
             if (self.padding and data.strip(b'=')) or not BASE64.fullmatch(data):
-                self.unsafe = True
+                self.unsafe_image = True
             self.padding += data.count(b'=')
-        else:
+        if self.kind != 'image':
             checked = self.suffix + data
             # A Unicode escape could spell part of a watch marker without containing its literal bytes.
             if b'\\u' in checked or any(marker in checked for marker in WATCH_TEXT):
-                self.unsafe = True
+                self.unsafe_text = True
             self.suffix = checked[-WATCH_WINDOW:]
 
-    def value(self):
-        if self.unsafe or self.kind == 'image' and (self.size % 4 or self.padding > 2):
-            raise projection_error()
+    def value(self, kind, refusal):
+        if kind == 'image':
+            if self.unsafe_image or self.size % 4 or self.padding > 2:
+                raise projection_error(refusal)
+            return Payload(self.size, self.size // 4 * 3 - self.padding)
+        if self.unsafe_text:
+            raise projection_error(refusal)
         return Payload(self.size - self.escapes)
 
 
@@ -174,19 +234,52 @@ def known_content(block):
     return isinstance(content, str) or isinstance(content, list) and all(map(text_or_image, content))
 
 
-def projection_error():
-    return _row_limit('required JSON row exceeds the retained-byte budget')
+def projection_error(refusal=None):
+    return _row_limit('required JSON row exceeds the retained-byte budget', refusal)
+
+
+def mirror_image_kind(row, path, result_has_image):
+    """Validate typed and Read-style image carriers before withholding their encoded data."""
+    if len(path) == 1:
+        return 'image' if result_has_image else 'text'
+    if path[-1] not in IMAGE_FIELDS:
+        return 'text'
+    parent = at_path(row, path[:-1])
+    if (path[-1] == 'base64'
+            or path[-2:-1] == ('source',) and native_image(at_path(row, path[:-2]))
+            or parent.get('type') in ('base64', 'image') or any(
+                isinstance(parent.get(key), str) and parent[key] in IMAGE_FORMATS
+                for key in ('type', 'media_type', 'mimeType'))):
+        return 'image'
+    ancestor_is_image = any(isinstance(item := at_path(row, path[:depth]), dict) and item.get('type') == 'image'
+                            for depth in range(1, len(path) - 1))
+    if ancestor_is_image or result_has_image:
+        # The envelope identifies an image, and this candidate is one of its data fields.
+        return 'image'
+    return 'text'
 
 
 def project_payloads(row, payloads, descriptor):
     """Confirm a candidate using its enclosing native row, independent of JSON key order."""
     message = row.get('message')
+    first_path, first_capture = next(iter(payloads.items()))
+    first_refusal = RowRefusal(schema_path(first_path), first_capture.size)
     if (row.get('type') != 'user' or not isinstance(message, dict) or message.get('role') != 'user'
             or not isinstance(message.get('content'), list)
             or not all(isinstance(block, dict) for block in message['content'])):
-        raise projection_error()
+        raise projection_error(first_refusal)
+    results = [block for block in message['content'] if native_result(block)]
+    result_has_image = any(isinstance(block.get('content'), list)
+                           and any(map(native_image, block['content'])) for block in results)
     spans = {}
     for path, capture in payloads.items():
+        refusal = RowRefusal(schema_path(path), capture.size)
+        if capture.kind == 'mirror':
+            if not results:
+                raise projection_error(refusal)
+            kind = mirror_image_kind(row, path, result_has_image)
+            at_path(row, path[:-1])[path[-1]] = capture.value(kind, refusal)
+            continue
         block = at_path(row, path[:3])
         if path[3] == 'source':
             known = native_image(block)
@@ -198,12 +291,12 @@ def project_payloads(row, payloads, descriptor):
             child = at_path(row, path[:5])
             known = native_image(child) if capture.kind == 'image' else child.get('type') == 'text'
         if not known:
-            raise projection_error()
-        value = capture.value()
+            raise projection_error(refusal)
+        value = capture.value(capture.kind, refusal)
         at_path(row, path[:-1])[path[-1]] = value
         spans[id(value)] = capture
     if not all(map(known_content, message['content'])):
-        raise projection_error()
+        raise projection_error(first_refusal)
     for block in message['content']:
         if not native_result(block) or not isinstance(block.get('content'), list):
             continue
@@ -212,7 +305,7 @@ def project_payloads(row, payloads, descriptor):
                 and all(child['type'] == 'text' for child in content)
                 and any(any(marker in child['text'] for marker in WATCH_HEADERS) for child in content)):
             # Empty text replacing a leading block must not expose a later watch header.
-            raise projection_error()
+            raise projection_error(first_refusal)
     if not any(block.get('type') == 'tool_result' for block in message['content']):
         row = ProjectedRow(row)
         hasher = sha256()
@@ -263,29 +356,39 @@ class GiantRow:
         self.duplicate_key = False
         self.output = bytearray()
         self.snapshot = None
+        self.snapshot_size = 0
         self.in_snapshot = False
         self.key_bytes = None
+        self.value_schema = ()
+        self.string_size = 0
+        self.string_exhausted = False
+        self.refused_frame = None
         self.atom = None
         self.string = False
         self.escape = 0
         self.done = False
 
     def withheld_payload(self):
-        return self.payloads or self.payload is not None and self.payload[1].inline is None
+        return (self.string_exhausted or self.refused_frame is not None or self.payloads
+                or self.payload is not None and self.payload[1].inline is None)
 
-    def emit(self, data):
+    def emit(self, data, *, scalar=False):
         if self.in_snapshot:
+            self.snapshot_size += len(data)
             if self.snapshot is not None:
-                if len(self.snapshot) + len(data) <= ROW_BYTES:
+                if self.snapshot_size <= ROW_BYTES:
                     self.snapshot.extend(data)
                 else:
                     self.snapshot = None
+        elif self.refused_frame is not None:
+            return True  # the first over-budget container is already being measured
         else:
             if len(self.output) + len(data) > ROW_BYTES:
-                raise _row_limit('required JSON row exceeds the retained-byte budget')
+                if not scalar:
+                    self.refused_frame = self.frames[-1]
+                return False
             self.output.extend(data)
-        if self.key_bytes is not None:
-            self.key_bytes.extend(data)
+        return True
 
     def value(self):
         if not self.frames:
@@ -295,9 +398,11 @@ class GiantRow:
             frame.state = 'array next'
             part = frame.index
             frame.index += 1
+            self.value_schema = frame.schema
         elif frame.state == 'value':
             frame.state = 'object next'
             part = frame.key
+            self.value_schema = (*frame.schema, frame.label)
         else:
             raise ValueError('JSON value in an unexpected position')
         return None if frame.path is None else (*frame.path, part)
@@ -306,18 +411,19 @@ class GiantRow:
         if len(self.frames) == 1:
             self.in_snapshot = False
 
-    def punct(self, char):
+    def punct(self, char, offset):
         if self.done:
             raise ValueError('data after root JSON object')
         if char in b'{[':
             if not self.frames and char != ord('{'):
                 raise ProjectionLimit('large row does not start with a native JSON object')
             path = self.value() if self.frames else ()
-            if path is not None and path_shape(path) not in PAYLOAD_PARENTS:
+            if path is not None and not mirror_path(path) and path_shape(path) not in PAYLOAD_PARENTS:
                 path = None
             if len(self.frames) >= DEPTH:
                 raise ProjectionLimit('JSON nesting exceeds the validation budget')
-            self.frames.append(Frame('object first' if char == ord('{') else 'array first', path))
+            self.frames.append(Frame('object first' if char == ord('{') else 'array first', path,
+                                     self.value_schema, offset))
         elif not self.frames:
             raise ValueError('root JSON object required')
         elif char == ord(':'):
@@ -330,6 +436,7 @@ class GiantRow:
                 self.emit(b'null')
                 self.in_snapshot = True
                 self.snapshot = bytearray()
+                self.snapshot_size = 0
             return
         elif char == ord(','):
             frame = self.frames[-1]
@@ -344,7 +451,9 @@ class GiantRow:
             if self.frames[-1].state not in wanted:
                 raise ValueError('incomplete JSON value')
             self.emit(bytes((char,)))
-            self.frames.pop()
+            closed = self.frames.pop()
+            if self.refused_frame is closed:
+                raise projection_error(RowRefusal(closed.schema, offset + 1 - closed.start))
             self.end_value()
             self.done = not self.frames
             return
@@ -354,49 +463,68 @@ class GiantRow:
         if not self.frames:
             raise ValueError('root JSON object required')
         frame = self.frames[-1]
+        self.string_size = 0
+        self.string_exhausted = False
         if frame.state in ('key', 'object first'):
-            if frame.path is not None:
+            self.value_schema = (*frame.schema, '?')
+            if self.refused_frame is None:
                 self.key_bytes = bytearray()
             frame.state = 'colon'
         else:
             path = self.value()
-            if self.descriptor is not None and path is not None:
-                kind = PAYLOAD_PATHS.get(path_shape(path))
+            if self.descriptor is not None and path is not None and self.refused_frame is None:
+                kind = 'mirror' if mirror_path(path) else PAYLOAD_PATHS.get(path_shape(path))
                 if kind is not None:
                     self.payload = path, PayloadString(kind, start)
         self.string = True
         if self.payload is None:
-            self.emit(b'"')
+            self.string_exhausted = not self.emit(b'"', scalar=True)
 
     def string_data(self, data):
+        self.string_size += len(data)
+        if self.key_bytes is not None:
+            frame = self.frames[-1]
+            bound = ROW_BYTES if frame.path is not None else DIAGNOSTIC_KEY_BYTES
+            if len(self.key_bytes) + len(data) <= bound:
+                self.key_bytes.extend(data)
+            else:
+                self.key_bytes = None
         if self.payload is None:
-            self.emit(data)
+            if not self.string_exhausted:
+                self.string_exhausted = not self.emit(data, scalar=True)
         elif data:
             self.payload[1].feed(data)
 
     def string_end(self):
+        frame = self.frames[-1]
         if self.payload is not None:
             path, capture = self.payload
             self.payload = None
             if capture.inline is not None:
-                self.emit(b'"' + capture.inline + b'"')
+                self.string_exhausted = not self.emit(b'"' + capture.inline + b'"', scalar=True)
             else:
                 if len(self.payloads) >= MAX_PAYLOADS:
-                    raise projection_error()
-                self.emit(b'null')
+                    raise projection_error(RowRefusal(self.value_schema, self.string_size))
+                self.string_exhausted = not self.emit(b'null', scalar=True)
                 self.payloads[path] = capture
-        else:
-            self.emit(b'"')
-        frame = self.frames[-1]
+        elif not self.string_exhausted:
+            self.string_exhausted = not self.emit(b'"', scalar=True)
         if frame.state == 'colon':
+            frame.key, frame.label = None, '?'
             if self.key_bytes is not None:
-                frame.key = json.loads(self.key_bytes.decode())
-                if frame.key in frame.keys:
-                    self.duplicate_key = True
-                frame.keys.add(frame.key)
+                key = json.loads(b'"' + self.key_bytes + b'"')
+                frame.label = key if key in SCHEMA_KEYS else '?'
+                if frame.path is not None:
+                    frame.key = key
+                    if key in frame.keys:
+                        self.duplicate_key = True
+                    frame.keys.add(key)
                 self.key_bytes = None
+            self.value_schema = (*frame.schema, frame.label)
         else:
             self.end_value()
+        if self.string_exhausted:
+            raise projection_error(RowRefusal(self.value_schema, self.string_size))
         self.string = False
 
     def atom_end(self):
@@ -404,7 +532,8 @@ class GiantRow:
         value = json.loads(data.decode())
         if isinstance(value, (str, list, dict)):
             raise ValueError('invalid JSON atom')
-        self.emit(data)
+        if not self.emit(data, scalar=True):
+            raise projection_error(RowRefusal(self.value_schema, len(data)))
         self.end_value()
         self.atom = None
 
@@ -460,7 +589,7 @@ class GiantRow:
                     self.string_start(offset + at + 1)
                     at += 1
                 elif char in b'{}[]:,':
-                    self.punct(char)
+                    self.punct(char, offset + at)
                     at += 1
                 else:
                     self.value()
@@ -480,12 +609,14 @@ class GiantRow:
             if row.get('type') == OMIT_TYPE:
                 del row[OMIT_KEY]
             elif self.snapshot is None:
-                raise _row_limit('required snapshot value exceeds the retained-byte budget')
+                raise _row_limit('required snapshot value exceeds the retained-byte budget',
+                                 RowRefusal((OMIT_KEY,), self.snapshot_size))
             else:
                 row[OMIT_KEY] = json.loads(self.snapshot.decode())
         if self.payloads:
             if self.duplicate_key:
-                raise projection_error()
+                path, capture = next(iter(self.payloads.items()))
+                raise projection_error(RowRefusal(schema_path(path), capture.size))
             row = project_payloads(row, self.payloads, self.descriptor)
         return row, None, retained_size(row, len(self.payloads) * 16)
 
@@ -494,7 +625,7 @@ def retained_size(row, metadata=0):
     data = json.dumps(row, ensure_ascii=False, separators=(',', ':')).encode('utf-8', errors='surrogatepass')
     size = len(data) + metadata
     if size > ROW_BYTES:
-        raise _row_limit('required projection exceeds the per-row budget')
+        raise _row_limit('required projection exceeds the per-row budget', RowRefusal((), size))
     return size
 
 
@@ -505,7 +636,7 @@ def decoded_size(row):
         value = pending.pop()
         size += sys.getsizeof(value)
         if isinstance(value, Payload):
-            size += sys.getsizeof(value.size)
+            size += sys.getsizeof(value.size) + sys.getsizeof(value.image_bytes)
         if isinstance(value, ProjectedRow):
             size += sys.getsizeof(value.identity)
         if isinstance(value, dict):
@@ -517,7 +648,10 @@ def decoded_size(row):
 
 
 def projection_usage(snapshot):
-    if json_record._entry(snapshot).claude_full:
+    entry = json_record._entry(snapshot)
+    if entry.claude_full:
+        if (refusal := getattr(entry, 'claude_row_refusal', None)) is not None:
+            return RefusedProjectionUsage(snapshot.stamp, compatibility=True, row_refusal=refusal)
         return record_file.ProjectionUsage(snapshot.stamp, compatibility=True)
     if snapshot.raw_digest is None:
         return None
@@ -771,7 +905,8 @@ def _parse(record):
                         raise
                     # A traceback would retain the abandoned projection while
                     # the legacy reader allocates its own buffer and rows.
-                    limit = ProjectionLimit(str(error), error.resource)
+                    limit = ProjectionLimit(str(error), error.resource, limit=error.limit, unit=error.unit,
+                                            row_refusal=error.row_refusal)
                 if limit is not None:
                     full = record_file.read_from(descriptor, info, source, bound)
             except (OSError, UnicodeError) as error:
@@ -781,11 +916,10 @@ def _parse(record):
             if isinstance(failure, UnicodeError):
                 raise record_file.RecordError('record is not UTF-8 JSON lines') from failure
             if failure is not None:
-                if isinstance(failure, ProjectionLimit) and info.st_size > COMPATIBILITY_BOUND:
-                    failure.projection_usage = record_file.ProjectionUsage(stamp, exhausted=failure.resource)
+                if isinstance(failure, ProjectionLimit) and limit is None:
+                    failure.projection_usage = refusal_usage(stamp, failure)
                 elif limit is not None:
-                    failure.projection_usage = record_file.ProjectionUsage(
-                        stamp, exhausted=limit.resource, compatibility=True)
+                    failure.projection_usage = refusal_usage(stamp, limit, compatibility=True)
                 raise failure
         finally:
             os.close(descriptor)
@@ -796,8 +930,7 @@ def _parse(record):
             try:
                 return _compatible(key, source, full, stamp, certified, cached, limit)
             except OSError as error:
-                error.projection_usage = record_file.ProjectionUsage(
-                    stamp, exhausted=limit.resource, compatibility=True)
+                error.projection_usage = refusal_usage(stamp, limit, compatibility=True)
                 raise
         entry.stamp, entry.source, entry.certified_at = stamp, source, certified
         if reused is not None:
@@ -837,6 +970,7 @@ def _compatible(record, source, data, stamp, certified, cached, limit):
         raise limit from None
     entry = json_record._entry(parsed)
     entry.claude_full = True
+    entry.claude_row_refusal = limit.row_refusal
     entry.source = source
     json_record._store(record, entry, cached is not None)
     return parsed

@@ -2469,9 +2469,16 @@ class Service:
                     message = str(error)
                     if (getattr(owned.reader, 'native_status_stream', False)
                             and (usage := getattr(error, 'projection_usage', None)) is not None):
-                        projections[record] = usage
-                        if usage.exhausted is not None and getattr(error, 'limit', None) is not None:
-                            spans[record] = usage.stamp[2], error.limit, usage.exhausted, error.unit
+                        pass_stamp = stamp
+                        if getattr(usage, 'row_refusal', None) is not None:
+                            try:
+                                pass_stamp = ledger.record_stamp(owned)
+                            except OSError:
+                                pass_stamp = None
+                        if pass_stamp is not None and pass_stamp == stamp:
+                            projections[record] = usage
+                            if usage.exhausted is not None and getattr(error, 'limit', None) is not None:
+                                spans[record] = usage.stamp[2], error.limit, usage.exhausted, error.unit
                     if getattr(error, 'size', None) is not None and getattr(error, 'bound', None) is not None:
                         spans[record] = error.size, error.bound, None, None
                     prior = errors.get(record)

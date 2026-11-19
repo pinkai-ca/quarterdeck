@@ -462,7 +462,12 @@ class Ledger:
     def save_projection_usage(self, record, usage):
         """Keep only the last guarded projection observation in the accounting transaction."""
         # An older copy can still write this table and treats the new observation shape as unmeasured.
-        stamp = dict(stamp=usage.stamp, compatibility=True) if usage.compatibility else usage.stamp
+        refusal = getattr(usage, 'row_refusal', None)
+        stamp = usage.stamp
+        if refusal is not None or usage.compatibility:
+            stamp = dict(stamp=stamp, compatibility=usage.compatibility)
+            if refusal is not None:
+                stamp['row_refusal'] = asdict(refusal)
         values = (json.dumps(stamp), usage.lines, usage.retained, usage.memory, usage.exhausted)
         old = self.db.execute('SELECT stamp,lines,retained,memory,exhausted FROM record_projection_usage WHERE record=?',
                               (str(record),)).fetchone()
@@ -470,23 +475,49 @@ class Ledger:
             self.db.execute('INSERT OR REPLACE INTO record_projection_usage VALUES (?,?,?,?,?,?)', (str(record), *values))
 
     def projection_usage(self, record):
-        from .harness.record_file import ProjectionUsage
-
         try:
             row = self.db.execute('SELECT stamp,lines,retained,memory,exhausted FROM record_projection_usage WHERE record=?',
                                   (str(record),)).fetchone()
-            if row is not None:
-                stamp, lines, retained, memory, exhausted = row
-                identity = json.loads(stamp)
-                compatibility = isinstance(identity, dict) and identity.get('compatibility') is True
-                if compatibility:
-                    identity = identity.get('stamp')
-                if (isinstance(identity, list) and len(identity) == 5 and all(type(n) is int for n in identity)
-                        and all(n is None or type(n) is int and n >= 0 for n in (lines, retained, memory))):
-                    return ProjectionUsage(tuple(identity), lines, retained, memory, exhausted, compatibility)
-        except (sqlite3.Error, ValueError, TypeError):
-            return None  # an earlier or unreadable ledger supplies no measured counts
+            return self._projection_usage(record, row) if row is not None else None
+        except sqlite3.Error:
+            return None  # an earlier ledger supplies no measured counts
+
+    @staticmethod
+    def _projection_usage(record, row):
+        from .harness.record_file import ProjectionUsage
+
+        try:
+            stamp, lines, retained, memory, exhausted = row
+            document = json.loads(stamp)
+            metadata = document if isinstance(document, dict) else {}
+            identity = metadata.get('stamp') if metadata else document
+            if (isinstance(identity, list) and len(identity) == 5 and all(type(n) is int for n in identity)
+                    and all(n is None or type(n) is int and n >= 0 for n in (lines, retained, memory))):
+                fields = (tuple(identity), lines, retained, memory, exhausted, metadata.get('compatibility') is True)
+                if isinstance(refusal := metadata.get('row_refusal'), dict):
+                    from .harness.claude_record import RefusedProjectionUsage, RowRefusal
+                    detail = RowRefusal.read(refusal.get('path'), refusal.get('size'))
+                    if detail is not None and _current_projection_stamp(record) == fields[0]:
+                        return RefusedProjectionUsage(*fields, row_refusal=detail)
+                return ProjectionUsage(*fields)
+        except (ValueError, TypeError):
+            return None  # an unreadable observation supplies no measured counts
         return None
+
+    def projection_refusals(self):
+        """Show only diagnostics that still describe the current owned file."""
+        try:
+            rows = self.db.execute("SELECT record,stamp,lines,retained,memory,exhausted "
+                                   "FROM record_projection_usage WHERE stamp LIKE '%\"row_refusal\"%' ORDER BY record")
+            found = []
+            for record, *row in rows:
+                usage = self._projection_usage(record, row)
+                if (detail := getattr(usage, 'row_refusal', None)) is not None:
+                    found.append(dict(record=record, path=list(detail.path), size=detail.size,
+                                      compatibility=usage.compatibility, exhausted=usage.exhausted))
+            return found
+        except sqlite3.Error:
+            return []
 
     def unread_spans(self) -> list[dict]:
         """One unread span per owned key, oldest first, with any raw and projection evidence."""
@@ -705,6 +736,19 @@ def attribution(store: Store, seat: str, turn: Turn) -> str:
 
 
 PLUS_NOTE = "a figure with + has turns beside it that the record did not measure: at least this much"
+
+
+def _current_projection_stamp(record):
+    from os import close
+    from .harness import record_file
+    from .record_location import resolve
+
+    try:
+        descriptor, info = record_file.open_record(resolve(Path(record)))
+    except OSError:
+        return None
+    close(descriptor)
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def table(ledger: Ledger, by: str) -> list[str]:

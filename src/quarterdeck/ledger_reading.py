@@ -31,9 +31,10 @@ def window_reading(row: Reading, now: datetime) -> dict:
 
 
 def uncertainty(book: Ledger) -> dict:
+    refusals = book.projection_refusals()
     return {"unknown_pool_turns": book.db.execute("SELECT COUNT(*) FROM turns WHERE pool = ?", (UNKNOWN,)).fetchone()[0],
             "incomplete_records": [dict(zip(("record", "seat", "pool", "error"), row)) for row in book.incomplete_records()],
-            "unread_spans": book.unread_spans()}
+            "unread_spans": book.unread_spans(), **({"projection_refusals": refusals} if refusals else {})}
 
 
 def _mib(count: int) -> str:
@@ -57,8 +58,14 @@ def notes(data: dict) -> list[str]:
     unknown = data["unknown_pool_turns"]
     found = ([f"{unknown} turns with unknown pool attribution: missing/ambiguous launch history or turn times, or a turn crossing pools"]
              if unknown else [])
-    return found + [f"unread record: {Path(r['record']).name} ({r['seat']}, {r['pool']}) · {r['error']}"
-                    for r in data["incomplete_records"]] + [span_note(span) for span in data.get("unread_spans", [])]
+    found.extend(f"unread record: {Path(r['record']).name} ({r['seat']}, {r['pool']}) · {r['error']}"
+                 for r in data["incomplete_records"])
+    found.extend(span_note(span) for span in data.get("unread_spans", []))
+    for row in data.get('projection_refusals', []):
+        path = '.'.join(row['path']) or 'row'
+        read = ' · read by compatibility reader' if row['compatibility'] and row['exhausted'] is None else ''
+        found.append(f"stream row limit: {Path(row['record']).name} · {path} ({row['size']:,} encoded bytes){read}")
+    return found
 
 
 def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, tools: bool = False) -> dict:

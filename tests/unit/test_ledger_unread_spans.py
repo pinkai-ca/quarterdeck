@@ -24,7 +24,7 @@ from quarterdeck.ship import Pool, SeatSpec, Session, Ship
 from tests.compaction_shapes import Native
 
 from .test_ledger import accounting_example, sql_writes
-from .test_claude_picture_projection import image, text
+from .test_claude_picture_projection import begin_tool, image, read_mirror, result, text
 
 MiB = 1024 * 1024
 
@@ -281,6 +281,10 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
         assert view['pools'][0]['unread_spans'] == 1
         assert any(f"{projection['size']:,} bytes raw, projection {resource} limit of {limit:,} {unit} exceeded" in line
                    for line in ledger_reading.render(view))
+        if field is None:
+            assert view['projection_refusals'] == [
+                dict(record=str(old), path=['message', 'content'], size=limit,
+                     compatibility=False, exhausted=resource)]
 
     new = Native(fresh, 'claude')
     new.finish()
@@ -294,6 +298,7 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
         old.write_bytes(b'\xff\n')
         account(service)
         assert book.unread_spans() == [span], 'a different failure does not clear the unread span'
+        assert book.projection_refusals() == [], 'the unread span never certifies an older field observation'
         assert book.ingested(old) == 1
 
         monkeypatch.setattr(budget_module, budget, production_limit)
@@ -322,7 +327,8 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
         assert book.projection_usage(old).exhausted is None
 
 
-def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mirror', [False, True], ids=['typed-image', 'duplicate-tool-image'])
+def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path, monkeypatch, mirror):
     session = Session('synthetic-session', 'Synthetic', human=True)
     pool = Pool('synthetic-pool', 'anthropic')
     spec = SeatSpec('synthetic-seat', session.name, 'office', 'claude', (pool.name,))
@@ -362,8 +368,15 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
         # Construct the rest elsewhere, then append it without rewriting the observed prefix.
         first_rows = len(native.rows)
         native.path = tmp_path / 'made-suffix.jsonl'
-        native.add('user', version='2.1.325', message=dict(role='user', content=[
-            image(MiB), text('Synthetic pasted-image prompt')]))
+        picture = image(MiB)
+        if mirror:
+            native.begin('Synthetic Read request')
+            begin_tool(native)
+            native.add('user', version='2.1.325', message=dict(role='user', content=[result([picture])]),
+                       toolUseResult=read_mirror(picture))
+        else:
+            native.add('user', version='2.1.325', message=dict(role='user', content=[
+                picture, text('Synthetic pasted-image prompt')]))
         native.finish()
         padding = json.dumps({'type': 'file-history-snapshot', 'snapshot': 'x' * (4 * MiB)}).encode() + b'\n'
         with path.open('ab') as stream:
@@ -381,7 +394,10 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
 
     json_record.release(path)
     with monkeypatch.context() as earlier_reader:
-        earlier_reader.setattr(claude_record, 'PAYLOAD_PATHS', {})
+        if mirror:
+            earlier_reader.setattr(claude_record, 'mirror_path', lambda _: False)
+        else:
+            earlier_reader.setattr(claude_record, 'PAYLOAD_PATHS', {})
         service = Service(ship, tmux)
         with service.ledger as book:
             assert account(service, book) == before
@@ -389,18 +405,60 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
             assert blocked['bound'] == raw['bound']
             assert blocked['projection']['resource'] == 'retained bytes per row'
             assert blocked['projection']['counted'] == 1
+            if mirror:
+                assert book.projection_refusals() == [
+                    dict(record=str(path), path=['toolUseResult', 'file', 'base64'], size=MiB,
+                         compatibility=False, exhausted='retained bytes per row')]
 
     service = Service(ship, tmux)
     with service.ledger as book:
         after = account(service, book, observed=True)
         assert after[:1] == before and len(after) == 2
         assert book.unread_spans() == book.incomplete_records() == []
+        assert book.projection_refusals() == []
         assert account(service, book) == after
         [seat] = service.resolved_seats()
         assert human_wake.owned_record(seat) == path
         assert (pointer.read_bytes(), launch.read_bytes()) == files
         assert (path.stat().st_dev, path.stat().st_ino) == inode
         assert path.stat().st_size == size
+
+
+def test_compatibility_field_evidence_is_persisted_only_for_its_exact_observation(tmp_path):
+    path, record = tmp_path / 'ledger.sqlite', tmp_path / 'synthetic.jsonl'
+    native = Native(record, 'claude')
+    native.finish()
+    size = claude_record.ROW_BYTES + 123
+    native.add('system', message={'fixture-only-name': [{'fixture-private-name': 'x' * size}]})
+    state, _ = get('claude').read(record)
+    assert state.turn_open is False and state.projection_usage.compatibility
+    usage = state.projection_usage
+    with Ledger(path) as book:
+        book.save_projection_usage(record, usage)
+        book.db.commit()
+    with Ledger.reading(path) as reader:
+        assert reader.projection_usage(record) == usage
+        assert reader.projection_refusals() == [
+            dict(record=str(record), path=['message', '?', '?'], size=size,
+                 compatibility=True, exhausted=None)]
+        view = ledger_reading.collect(reader, by='seat')
+        assert any(f'message.?.? ({size:,} encoded bytes) · read by compatibility reader' in line
+                   for line in ledger_reading.render(view))
+        assert reader.incomplete_records() == reader.unread_spans() == []
+        with record.open('ab') as stream:
+            stream.write(b'\n')
+        assert reader.projection_refusals() == []
+        assert reader.projection_usage(record).compatibility
+    refreshed, _ = get('claude').read(record)
+    with Ledger(path) as book:
+        book.save_projection_usage(record, refreshed.projection_usage)
+        book.db.commit()
+    with Ledger.reading(path) as reader:
+        assert reader.projection_refusals()
+        replacement = record.with_suffix('.replacement')
+        replacement.write_bytes(record.read_bytes())
+        replacement.replace(record)
+        assert reader.projection_refusals() == []
 
 
 def test_qd_ledger_and_the_pool_reading_name_each_span(tmp_path):

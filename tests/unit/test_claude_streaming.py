@@ -57,7 +57,12 @@ def test_valid_under_bound_required_evidence_has_a_complete_fallback(tmp_path, m
     assert json_record._entry(snapshot).claude_full and list(snapshot.rows) == expected
     state = claude.state(record.path)
     assert state.turn_open is False
-    assert state.projection_usage == record_file.ProjectionUsage(snapshot.stamp, compatibility=True)
+    if budget == 'row':
+        assert state.projection_usage == claude_record.RefusedProjectionUsage(
+            snapshot.stamp, compatibility=True,
+            row_refusal=claude_record.RowRefusal(('message', 'content'), claude_record.ROW_BYTES))
+    else:
+        assert state.projection_usage == record_file.ProjectionUsage(snapshot.stamp, compatibility=True)
     assert claude.compactions(record.path).reason is None
 
 
@@ -136,9 +141,23 @@ def test_oversized_row_refuses_a_stream_with_guarded_row_evidence(tmp_path, monk
         stream.write(json.dumps({'type': 'system', 'content': 'x' * claude_record.ROW_BYTES}).encode() + b'\n')
     with pytest.raises(claude_record.ProjectionLimit, match='required JSON row exceeds the retained-byte budget') as refused:
         claude.state(record.path)
-    assert refused.value.projection_usage == record_file.ProjectionUsage(
-        json_record._stamp(record.path.stat()), exhausted='retained bytes per row')
+    assert refused.value.projection_usage == claude_record.RefusedProjectionUsage(
+        json_record._stamp(record.path.stat()), exhausted='retained bytes per row',
+        row_refusal=claude_record.RowRefusal(('content',), claude_record.ROW_BYTES))
     assert (refused.value.limit, refused.value.unit) == (claude_record.ROW_BYTES, 'bytes')
+
+
+def test_row_diagnostic_measures_the_first_crossing_value_to_its_end(tmp_path, monkeypatch):
+    record = native(tmp_path / 'synthetic.jsonl')
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    size = 3 * claude_record.ROW_BYTES // 4
+    row = {'type': 'system', 'message': {'content': ['x' * size], 'fixture-name': [{'text': 'y' * size}]},
+           'attachment': {'text': 'z' * size}}
+    with record.path.open('ab') as stream:
+        stream.write(json.dumps(row).encode() + b'\n')
+    with pytest.raises(claude_record.ProjectionLimit) as refused:
+        claude_record.parse(record.path)
+    assert refused.value.row_refusal == claude_record.RowRefusal(('message', '?', 'text'), size)
 
 
 @pytest.mark.parametrize('continuous', [False, True])
@@ -165,6 +184,27 @@ def test_full_compatibility_observation_retries_only_a_stable_source(tmp_path, m
     else:
         assert claude.state(record.path).turn_open is False
         assert calls == 2
+
+
+def test_a_replacement_during_refusal_cannot_publish_the_old_value(tmp_path, monkeypatch):
+    record = native(tmp_path / 'synthetic.jsonl')
+    clean = record.path.read_bytes()
+    with record.path.open('ab') as stream:
+        stream.write(json.dumps({'type': 'system', 'private-field': 'x' * claude_record.ROW_BYTES}).encode() + b'\n')
+    same = claude_record._same_stamp
+
+    def replace_before_check(descriptor, source, stamp):
+        replacement = source.with_suffix('.replacement')
+        if source.stat().st_size > len(clean):
+            replacement.write_bytes(clean)
+            replacement.replace(source)
+        return same(descriptor, source, stamp)
+
+    monkeypatch.setattr(claude_record, '_same_stamp', replace_before_check)
+    state = claude.state(record.path)
+    assert state.turn_open is False
+    assert state.projection_usage.stamp == json_record._stamp(record.path.stat())
+    assert getattr(state.projection_usage, 'row_refusal', None) is None
 
 
 @pytest.mark.parametrize('use_full', [False, True])
