@@ -1,14 +1,17 @@
 """Restart through the real CLI and service with made-up records and simulated panes."""
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
 import json
+from threading import Event
 from uuid import uuid4
 
 import pytest
 
-from quarterdeck import cli, fresh_handoff, post, quota, relaunch_intent, shutdown
+from quarterdeck import alarms, cli, fresh_handoff, post, quota, relaunch_intent, ship_locks, shutdown
 from quarterdeck.harness import get, record_file, resume_target
+from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.harness.synthetic_record import CodexShape
 from quarterdeck.harness.types import Screen
@@ -430,10 +433,8 @@ def test_open_pool_select_of_a_missing_record_stages_the_chosen_pool(running):
     assert 'handoff order' in again and len(r.launches) == launches and r.seat.launched() == before
 
 
-@pytest.mark.parametrize('later_wall', [False, True], ids=['open', 'wall-then-open'])
-def test_open_pool_select_rechecks_the_chosen_pool_after_report_and_idle(running, monkeypatch, later_wall):
-    from quarterdeck import idle, watch
-    r = running
+def stage_ready_move(r, monkeypatch):
+    from quarterdeck import idle
     s = r.seat
     r.svc.failover()
     assert s.pool.name == 'second' and not quota.current_walled(s, r.svc.ledger)
@@ -458,6 +459,17 @@ def test_open_pool_select_rechecks_the_chosen_pool_after_report_and_idle(running
             continue
         r.svc.attempts.close(r.svc.attempts.open(message, s.name, launched.pane, launched.pid, launched.at),
                              'delivered')
+    return data, order, handoff
+
+
+@pytest.mark.parametrize('later_wall', [False, True], ids=['open', 'wall-then-open'])
+def test_open_pool_select_rechecks_the_chosen_pool_after_report_and_idle(running, monkeypatch, later_wall):
+    from quarterdeck import watch
+    r = running
+    s = r.seat
+    data, order, handoff = stage_ready_move(r, monkeypatch)
+    launched, before = s.launched(), len(r.launches)
+    journal = alarms.path(r.svc.runtime, s.name, 'staged-move')
     if later_wall:
         s.ship.seats['sentry'] = replace(s.spec, name='sentry', role='systems')
         usage(r.svc, 'third', 1.0)
@@ -471,7 +483,16 @@ def test_open_pool_select_rechecks_the_chosen_pool_after_report_and_idle(running
                    for line in watch.facts(s.ship, s.tmux).seat_holds)
         [alert] = r.svc.store.for_seat('sentry')
         assert alert.body == 'worker: staged pool move held. third is walled'
+        assert journal.is_file()
         usage(r.svc, 'third', 0.0)
+
+    start = s._fresh_on_pool
+
+    def start_after_clearing(pool):
+        assert not journal.exists()
+        return start(pool)
+
+    monkeypatch.setattr(s, '_fresh_on_pool', start_after_clearing)
     r.svc.fresh_handoffs()
     assert s.pool.name == 'third' and s.launched().resume is None
     assert len(r.launches) == before + 1 and '--resume' not in r.launches[-1]
@@ -483,6 +504,106 @@ def test_open_pool_select_rechecks_the_chosen_pool_after_report_and_idle(running
     moved = 'moved to pool third from second by qd set and started a new conversation'
     assert [message.body for message in r.svc.store.for_seat(s.name) if message.body == moved] == [moved]
     assert all('third is walled' not in line for line in watch.facts(s.ship, s.tmux).seat_holds)
+
+
+@pytest.mark.parametrize('during', ['post', 'handoff', 'destination', 'launch'])
+def test_staged_move_rechecks_after_an_unlocked_usage_read(running, monkeypatch, during):
+    r = running
+    s, svc = r.seat, r.svc
+    data, order, handoff = stage_ready_move(r, monkeypatch)
+    before, launches = s.launched(), len(r.launches)
+    old = post.now() - timedelta(days=1)
+    svc.ledger.record_usage('third', Usage((), old, 'synthetic usage unavailable'))
+    usage(svc, 'first', 0.0)
+    monkeypatch.setattr(ship_locks, 'WAIT', 0)  # an incorrectly held admission lock fails without a timing race
+    finished = Event()
+
+    def change():
+        if during == 'post':
+            message = post.Store(svc.runtime).new('order', 'issuer', s.name, 'Made-up work posted during usage read')
+            with s._lifecycle(automatic=True):
+                return message  # this lock must also be available while the provider waits
+        if during == 'handoff':
+            record = r.created[-1]
+            record.begin('Made-up preparation of replacement notes', s.spec.model, 'high')
+            store = post.Store(svc.runtime)
+            attempts = post.Attempts(svc.runtime)
+            attempts.close(attempts.open(handoff, s.name, before.pane, before.pid, before.at), 'delivered')
+            store.new('report', s.name, post.SHIP, 'Made-up notes superseded', re=handoff.id)
+            replacement = store.new('order', s.name, s.name, 'Made-up replacement notes', re=order.id)
+            store.new('report', s.name, post.SHIP, f'Handoff: {replacement.id}', re=order.id)
+            record.end('Made-up replacement is ready')
+            return replacement
+        if during == 'destination':
+            return fresh_handoff.request(s, reason='synthetic retarget', expected_launch=before,
+                                         pool='first', immediate=False)
+        return s.fresh()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        def read_usage(_reader, pool):
+            assert pool.name == 'third' and not finished.is_set()
+            intervening = executor.submit(change)
+            intervening.add_done_callback(lambda _: finished.set())
+            finished.wait()
+            changed.append(intervening.result())
+            at = post.now()
+            return Usage((Window('5h', 0.0, at + timedelta(hours=1)),), at)
+
+        changed = []
+        monkeypatch.setattr(ClaudeHarness, 'usage', read_usage)
+        fresh_handoff.tick(svc, s)
+
+    [result] = changed
+    waiting = fresh_handoff.load(svc.runtime, s.name)
+    assert waiting['phase'] == 'waiting' and s.pool.name == 'second'
+    if during == 'post':
+        assert waiting == data and s.launched() == before and len(r.launches) == launches
+        assert svc.store.get(result.id) == result
+        svc.attempts.close(svc.attempts.open(result, s.name, before.pane, before.pid, before.at), 'delivered')
+    elif during == 'handoff':
+        assert waiting == data and s.launched() == before and len(r.launches) == launches
+        assert svc.store.is_open(result) and not svc.store.is_open(handoff)
+    elif during == 'destination':
+        assert result.disposition == 'already-staged' and waiting == dict(data, pool='first')
+        assert s.launched() == before and len(r.launches) == launches
+    else:
+        assert waiting == data and s.launched() != before and len(r.launches) == launches + 1
+
+    fresh_handoff.tick(svc, s)
+    if during == 'launch':
+        assert fresh_handoff.load(svc.runtime, s.name)['phase'] == 'superseded'
+        assert len(r.launches) == launches + 1
+    else:
+        assert fresh_handoff.load(svc.runtime, s.name)['phase'] == 'done'
+        assert s.pool.name == ('first' if during == 'destination' else 'third')
+        assert len(r.launches) == launches + 1
+
+
+@pytest.mark.parametrize('interrupted', [False, True], ids=['settled', 'cleanup-retried'])
+def test_a_superseded_staged_move_clears_its_alarm(running, monkeypatch, interrupted):
+    r = running
+    s, svc = r.seat, r.svc
+    stage_ready_move(r, monkeypatch)
+    s.ship.seats['sentry'] = replace(s.spec, name='sentry', role='systems')
+    usage(svc, 'third', 1.0)
+    svc.fresh_handoffs()
+    journal = alarms.path(svc.runtime, s.name, 'staged-move')
+    assert journal.is_file()
+    [alert] = svc.store.for_seat('sentry')
+
+    def fail_removal(*_):
+        raise OSError('synthetic removal failure after settlement')
+
+    s.fresh()
+    with monkeypatch.context() as cut:
+        if interrupted:
+            cut.setattr(fresh_handoff, '_clear_move_alarm', fail_removal)
+        svc.fresh_handoffs()
+    assert fresh_handoff.load(svc.runtime, s.name)['phase'] == 'superseded'
+    assert journal.exists() == interrupted
+    svc.fresh_handoffs()
+    assert not journal.exists()
+    assert svc.store.for_seat('sentry') == [alert]
 
 
 def plain_claude(r, model):

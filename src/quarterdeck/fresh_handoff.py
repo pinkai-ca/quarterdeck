@@ -1,10 +1,11 @@
 """One crew handoff and fresh start for a launch that needs a new conversation."""
 
+from contextlib import suppress
 from dataclasses import dataclass
 import json
 import re
 
-from . import compaction, idle, pending, post, post_dir, recovery, relaunch_intent
+from . import alarms, compaction, idle, pending, post, post_dir, recovery, relaunch_intent
 from .harness import resume_target
 from .ship import ShipError
 
@@ -51,6 +52,11 @@ def load(runtime, name):
 def save(runtime, name, data):
     post_dir.ensure_directory(folder(runtime))
     post_dir.replace_bytes(path(runtime, name), (json.dumps(data) + '\n').encode())
+
+
+def _clear_move_alarm(runtime, name):
+    with suppress(FileNotFoundError):
+        post_dir.remove(alarms.path(runtime, name, 'staged-move'))
 
 
 def active(runtime, name):
@@ -158,6 +164,8 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                         data['order'] = store.prepare('order', post.SHIP, name, body, subject=SUBJECT).to_json()
                     if pool is not None:
                         data['pool'] = pool
+                    if not current:
+                        _clear_move_alarm(runtime, name)
                     save(runtime, name, data)  # publish the intent before the immutable post
                     order = _publish_order(store, data)
                     disposition = 'already-staged' if current else 'staged'
@@ -226,6 +234,7 @@ def _start(service, seat, store, data, *, unable=False, pool=None, enclosed=Fals
 
     def begin():
         try:
+            _clear_move_alarm(runtime, name)
             proof = seat._fresh_on_pool(pool) if pool is not None else seat._fresh()
         except (OSError, ShipError) as error:
             data['phase'] = 'failed'
@@ -254,7 +263,34 @@ def _interrupted(service, seat, data):
     data.update(phase='failed', problem=explanation, failed_launch=compaction.launch_key(seat))
     save(runtime, name, data)
     _notice(service.store, seat, data, explanation)
+    _clear_move_alarm(runtime, name)
     raise ShipError(explanation)
+
+
+def _can_prepare(seat):
+    runtime, name = seat.ship.runtime, seat.name
+    return seat.spec.up and not recovery.held(seat) and not compaction.lifecycle_pending(runtime, name)
+
+
+def _ready(service, seat, data, order, launched):
+    """Return the unavailable flag and the report/notes proof, or None while the handoff waits."""
+    pane = seat._lifecycle_pane(launched)
+    if _unavailable(seat, launched, pane):
+        return (True, None) if data['restart'] else None  # a forecast never reopens a stopped seat
+    result = _reported_handoff(service.store, order)
+    if result is None or pane is None or pending.active(seat):
+        return None
+    report, handoff = result
+    if data['record'] is not None and _current_record(seat) != data['record']:
+        return None
+    state, hold = idle.reading(seat)
+    if hold is not None or service.handoff_quiet(seat, state, hold) is not None:
+        return None
+    if state.completed_turns[-1].ended < report.at:
+        return None  # the turn in which the seat reported has not yet proved its end
+    if any(message.id != handoff.id for message in service.attempts.undelivered(service.store, seat.name)):
+        return None
+    return False, result
 
 
 def tick(service, seat):
@@ -262,53 +298,58 @@ def tick(service, seat):
     data = None if seat.session.human else load(runtime, name)
     if data is None:
         return
-    if data['phase'] == 'failed' and 'problem' in data and data['failed_launch'] == compaction.launch_key(seat):
-        raise ShipError(data['problem'])  # the status line keeps the hold until another launch establishes a new outcome
     if data['phase'] not in ('waiting', 'starting'):
+        if post_dir.exists(alarms.path(runtime, name, 'staged-move')):
+            with seat._lifecycle(automatic=True):
+                if load(runtime, name) == data:
+                    _clear_move_alarm(runtime, name)  # recover cleanup after a stop between settlement and removal
+        if data['phase'] == 'failed' and 'problem' in data and data['failed_launch'] == compaction.launch_key(seat):
+            raise ShipError(data['problem'])  # keep the hold until another launch establishes a new outcome
         return
+    observed, readiness, destination = data, None, None
+    pool = observed.get('pool')
+    if observed['phase'] == 'waiting' and pool is not None:
+        launched = seat.launched()
+        if observed['launch'] == compaction.key_for(launched) and _can_prepare(seat):
+            readiness = _ready(service, seat, observed, compaction.decode(observed['order']), launched)
+        if readiness is not None and observed['launch'] == compaction.launch_key(seat):
+            # This can refresh usage with a provider call. Reprove readiness before using its result.
+            destination = service.select_destination(seat, pool)
     with seat._lifecycle(automatic=True):
         data = active(runtime, name)
         if data is None:
             return
         if data['phase'] == 'starting':
-            _interrupted(service, seat, data)
+            if destination is None:
+                _interrupted(service, seat, data)
+            return
         with post.admission(runtime, name):
-            if data['launch'] != compaction.launch_key(seat):
+            if destination is not None and data != observed:
+                return
+            launched = seat.launched()
+            if data['launch'] != compaction.key_for(launched):
+                if destination is not None:
+                    return  # let the next pass settle the superseded handoff
                 data['phase'] = 'superseded'
                 save(runtime, name, data)
+                _clear_move_alarm(runtime, name)
                 return
-            if not seat.spec.up or recovery.held(seat) or compaction.lifecycle_pending(runtime, name):
+            if not _can_prepare(seat):
                 return
             order = _publish_order(service.store, data)
-            result = _reported_handoff(service.store, order)
-            launched = seat.launched()
-            pane = seat._lifecycle_pane(launched)
-            unable = _unavailable(seat, launched, pane)
-            if unable and not data['restart']:
-                return  # a forecast never reopens a stopped seat
-            if not unable:
-                if result is None or pane is None or pending.active(seat):
-                    return
-                report, handoff = result
-                if data['record'] is not None and _current_record(seat) != data['record']:
-                    return
-                state, hold = idle.reading(seat)
-                if hold is not None or service.handoff_quiet(seat, state, hold) is not None:
-                    return
-                if state.completed_turns[-1].ended < report.at:
-                    return  # the turn in which the seat reported has not yet proved its end
-                if any(message.id != handoff.id for message in service.attempts.undelivered(service.store, name)):
-                    return
-                if data['launch'] != compaction.launch_key(seat):
-                    return
             pool = data.get('pool')
-            refusal, unknown = service.select_destination(seat, pool) if pool is not None else (None, False)
+            if pool is not None and destination is None:
+                return
+            ready = _ready(service, seat, data, order, launched)
+            if (ready is None or (pool is not None and ready != readiness)
+                    or data['launch'] != compaction.launch_key(seat)):
+                return
+            unable, _ = ready
+            refusal, unknown = destination if pool is not None else (None, False)
             if refusal is None:
                 data['phase'] = 'starting'
                 save(runtime, name, data)  # claim under the same admission used by input delivery and post
         if refusal is not None:
-            from . import alarms
-
             reason = f'staged pool move held. {refusal}'
             systems = [spec.name for spec in seat.ship.seats.values() if spec.role == 'systems' and spec.name != name]
             alarms.notify(service, name, None, [order.id, pool, refusal], f'{name}: {reason}',
