@@ -144,7 +144,7 @@ def test_a_yes_from_a_persons_terminal_is_recorded_told_to_the_desk_and_shown_un
     assert any(told[0].id in line for line in result["lines"])
     shown = f"ship mission raised from {terminal}: the desk's report on {told[0].short} clears this"
     assert raise_notice.unseen(office.runtime, store) == [shown]
-    assert shown in status(office, tmux)
+    assert '1 raises' in status(office, tmux)
     store.new("report", told[0].to, post.SHIP, "seen", re=told[0].id)
     assert raise_notice.unseen(office.runtime, post.Store(office.runtime)) == []
-    assert "raised from" not in status(office, tmux)
+    assert "raised from" not in status(office, tmux) and "1 raises" not in status(office, tmux)

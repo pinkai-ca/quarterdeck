@@ -17,7 +17,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `doctor.py` | `qd doctor`, the installation checked and handed to a seat to fix |
 | `endpoint.py` | endpoint pools: what a server serves, the model a seat takes from it, the key beside it |
 | `fakeharness.py` | the entry point installed as `qd-fakeharness`, for the simulator under `harness/` |
-| `headlines.py` | operational status-line formatting; provider allowances belong in detailed readings |
+| `headlines.py` | priority and display-column budgeting for live, cached and annotated status lines |
 | `input_receipt.py` | the one rule that matches a delivery to the record's evidence of its input |
 | `install.py` | `qd sync`: the framework at one commit installed as the ship's own copy, which every `qd` then hands off to |
 | `ledger_recovery.py` | preserves malformed accounting databases, starts fresh replay and keeps named recovery alarms until acknowledged |

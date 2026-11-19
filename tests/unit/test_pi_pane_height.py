@@ -112,7 +112,7 @@ def test_status_names_the_short_pane_even_when_alerts_overflow(overflow):
     assert 'synthetic-seat: pane 4 rows; pi 0.79.0 draws its box from 5 rows' in line
     assert 'unknown dialog' not in line and '0.74.2' not in line
     if overflow:
-        assert 'details: qd status' in line
+        assert 'qd status' in line
 
 
 def test_missing_pi_screen_parts_do_not_claim_the_old_renderer_version():

@@ -29,7 +29,7 @@ def test_unverified_publications_keep_alerts_with_explicit_staleness(live, monke
     before = path.read_bytes()
     monkeypatch.setattr(watch, 'facts', no_collection)
     line = presentation.command_line(['--ship', str(ship.folder), 'status', '--line'])
-    assert 'status stale:' in line and line.endswith('2 blind · worker needs a human')
+    assert 'status stale:' in line and line.endswith('2 blind · worker needs a human · qd status')
     assert line.startswith('service ok')
     if change == 'old':
         assert 'published 46s ago' in line
@@ -112,8 +112,9 @@ def test_valid_publication_never_loads_store_even_when_heartbeat_is_late(live, m
     assert presentation.command_line(['--ship', str(ship.folder), 'status', '--line']) == data['line']
     monkeypatch.setattr(servicectl, 'read_heartbeat', lambda runtime: (os.getpid(), 20.))
     line = presentation.command_line(['--ship', str(ship.folder), 'status', '--line'])
-    assert line.startswith('service busy 20s · status stale:')
-    assert line.endswith(data['line'].partition(' · ')[2])
+    assert line.startswith('service busy 20s · ') and 'status stale:' in line
+    assert line.endswith(' · qd status')
+    assert all(item in line for item in data['line'].split(' · ')[1:])
 
 
 @pytest.mark.parametrize('field,value', [('wall', 'unknown'), ('monotonic', None),
@@ -162,7 +163,8 @@ def test_publication_recency_uses_write_time_instead_of_collection_start(
         assert line == data['line'] and 'status stale' not in line
     else:
         assert f'status stale: published {int(written_age)}s ago' in line
-        assert line.endswith(data['line'].partition(' · ')[2])
+        assert line.endswith(' · qd status')
+        assert all(item in line for item in data['line'].split(' · ')[1:])
     assert path.read_bytes() == before
 
 

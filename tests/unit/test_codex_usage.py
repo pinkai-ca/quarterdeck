@@ -178,7 +178,7 @@ def test_status_headlines_preserve_both_windows_outside_the_text_line(tmp_path, 
     assert 'one 5h usage unknown' in full and 'one 7d 42% used' in full
     facts = watch.Facts('ok', 0, 0, 0, walls=['synthetic quota wall with reset 2032-01-01 05:00 UTC padding long padding'], usage=entries)
     line = facts.line()
-    assert line == 'service ok · 0 waiting'
+    assert line == 'service ok · 0 waiting · qd status'
     assert len(output.value(facts)['usage']) == 2
     svc.ledger.close()
 
@@ -301,7 +301,7 @@ def test_crowded_codex_cli_keeps_both_windows_in_full_text_and_json(tmp_path, mo
         assert cli.main(['--ship', str(tmp_path), *verb]) == 0
         text = capsys.readouterr().out
         if '--line' in verb:
-            assert text.rstrip() == 'service ok · 0 waiting'
+            assert text.rstrip() == 'service ok · 0 waiting · qd status'
         else:
             assert 'one 7d 42%' in text and 'one 5h usage unknown' in text
         assert cli.main(['--ship', str(tmp_path), '--json', *verb]) == 0

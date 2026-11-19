@@ -145,7 +145,7 @@ def test_unresolved_selection_reads_unknown_without_reading_a_guessed_record(mig
     facts = watch.facts(r.ship, r.tmux)
     assert 'saved pool missing' in facts.unknown[0]
     overflow = replace(facts, needs_human=['synthetic-name' * 30]).line()
-    assert '1 selection unknown' in overflow and 'qd status' in overflow
+    assert 'worker: selection unknown' in overflow and overflow.endswith(' · qd status')
     assert not (r.worker.trusted/'pool').exists(), 'a reading must not persist a guessed selection'
 
 

@@ -105,7 +105,7 @@ def test_alert_overflow_counts_held_seats_and_keeps_allowance_facts(tmp_path, mo
     rows = watch.headline_readings(ship)
     ordinary = watch.Facts('ok', 0, 0, 0, usage=rows)
     assert len(ordinary.line()) <= 160
-    assert ordinary.line() == 'service ok · 0 waiting'
+    assert ordinary.line() == 'service ok · 0 waiting · qd status'
     many = watch.Facts('down', 2, 4, 1, needs_human=['long-seat-name' * 20],
                        held=['worker'], walls=['long wall reason' * 20], pending=['pending uncertain' * 20],
                        unarmed=['other'], disks=[('disk', 95)], login=[('pool', 'soon')],

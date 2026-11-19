@@ -171,7 +171,8 @@ def test_recovery_alarm_keeps_its_path_when_status_line_overflows(tmp_path):
         pass
     alarm, = ledger_recovery.alarms(tmp_path)
     facts = watch.Facts('ok', 1, 0, 0, pending=['synthetic long wait ' * 30], ledger_recovery=[alarm])
-    assert alarm in facts.line()
+    from quarterdeck.headlines import details
+    assert '1 ledger recovery alert' in facts.line() and alarm in details(facts)
 
 
 @pytest.mark.parametrize('damaged', [False, True], ids=['healthy-hot-journal', 'corrupt-hot-journal'])

@@ -73,7 +73,7 @@ def test_two_tools_keep_lines_on_overflow_and_omit_expired_and_foreign(evidence,
     overflow = watch.Facts('ok', 0, 0, 0, operational_notices=[FIRST, SECOND],
                            needs_human=['worker' * 40]).line()
     assert f'{FIRST} · {SECOND}' in overflow
-    assert '1 need human' in overflow and 'details: qd status' in overflow
+    assert '1 need human' in overflow and overflow.endswith(' · qd status')
 
 
 def test_maximum_notices_share_one_display_budget_after_required_alerts():
@@ -81,7 +81,7 @@ def test_maximum_notices_share_one_display_budget_after_required_alerts():
                         pending=['post withheld'], disks=[('data', 95)])
     required = facts.line()
     line = replace(facts, operational_notices=['a' * notices.MAX_TEXT_BYTES, 'b' * notices.MAX_TEXT_BYTES]).line()
-    assert line == required + ' · 2 tool notices'
+    assert line == required.removesuffix(' · qd status') + ' · 2 tool notices · qd status'
     window = line[:160]
     for alert in ('service ok', 'ops needs a human', 'post withheld', '1 blind', 'worker held at limit',
                   'disk: data 95%', '2 tool notices'):
@@ -92,28 +92,28 @@ def test_notices_follow_required_categories_in_ordinary_overflow():
     facts = watch.Facts('down', 1, 2, 1, needs_human=['ops' * 60], held=['worker'],
                         pending=['post withheld'], disks=[('data', 95)])
     line = replace(facts, operational_notices=['a' * notices.MAX_TEXT_BYTES, 'b' * notices.MAX_TEXT_BYTES]).line()
-    assert line == facts.line() + ' · 2 tool notices'
-    assert line[:160].split(' · ') == [
-        'SERVICE DOWN', '1 waiting', '1 blind', '1 need human', '1 held', '1 pending',
-        '1 disk alerts', 'details: qd status', '2 tool notices',
-    ]
+    assert line == facts.line().removesuffix(' · qd status') + ' · 2 tool notices · qd status'
+    assert line.index('disk: data 95%') < line.index('1 waiting') < line.index('2 tool notices')
 
 
-def test_long_overflow_detail_is_preserved_when_notice_does_not_fit():
+def test_oversized_detail_is_counted_and_still_available_in_full_status():
     facts = watch.Facts('down', 1, 2, 1, needs_human=['ops'], held=['worker'],
                         pending=['post withheld'], disks=[('data', 95)], ledger_recovery=['ledger ' + 'x' * 160])
     line = replace(facts, operational_notices=[FIRST]).line()
-    assert line == facts.line()
-    assert facts.ledger_recovery[0] in line and 'details: qd status' in line
+    from quarterdeck.headlines import columns, details
+    assert columns(line) <= 160 and line.endswith(' · qd status')
+    assert '+1 more' in line and facts.ledger_recovery[0] in details(facts)
 
 
 def test_single_notice_uses_display_columns_and_keeps_literal_text_when_it_fits():
     facts = watch.Facts('ok', 0, 0, 0, needs_human=['worker-' + 'x' * 55])
     required = facts.line()
-    assert replace(facts, operational_notices=[FIRST]).line() == required + ' · ' + FIRST
+    assert replace(facts, operational_notices=[FIRST]).line() == (
+        required.removesuffix(' · qd status') + ' · ' + FIRST + ' · qd status')
     wide = '界' * 42
     assert len(required + ' · ' + wide) < 160 < len(required + ' · ') + 2 * len(wide)
-    assert replace(facts, operational_notices=[wide]).line() == required + ' · 1 tool notice'
+    assert replace(facts, operational_notices=[wide]).line() == (
+        required.removesuffix(' · 0 waiting · qd status') + ' · 1 tool notice · qd status')
 
 
 @pytest.mark.parametrize('which', ['folder', 'writer'])

@@ -145,7 +145,7 @@ def test_alert_names_use_the_room_released_by_allowance_text():
     assert "provider" not in text and "usage" not in text and "reset" not in text
 
 
-def test_all_category_overflow_counts_held_seats_and_keeps_the_existing_soft_budget():  # law: nothing-waits-silently
+def test_crowded_status_counts_immediate_alerts_and_groups_the_rest():  # law: nothing-waits-silently
     facts = watch.Facts("down", 1, 2, 1, needs_human=["long" * 40], unarmed=["watch" * 40],
                         held=["a", "b"], walls=["ignored reset"], disks=[("disk" * 40, 95)],
                         login=[("grant" * 40, "soon")], queued=1, pending=["pending" * 40],
@@ -153,11 +153,12 @@ def test_all_category_overflow_counts_held_seats_and_keeps_the_existing_soft_bud
                         compactions=["compaction" * 40], usage=[dict(pool="ignored", reading=None, reason="unknown")])
     text = facts.line()
     print(len(text), text)
+    from quarterdeck.headlines import columns
     for category in ("SERVICE DOWN", "1 waiting", "1 queued", "1 blind", "1 need human", "1 unarmed",
-                     "2 held", "1 pending", "1 disk alerts", "1 login needed", "1 on fallback",
-                     "1 selection unknown", "1 queue unknown", "1 compaction readings", "details: qd status"):
+                     "held at limit", "1 pending", "1 disk alerts", "1 login needed", "more"):
         assert category in text
-    assert len(text) > 160 and "walls" not in text and "usage" not in text and "reset" not in text
+    assert columns(text) <= 160 and text.endswith(" · qd status")
+    assert "walls" not in text and "usage" not in text and "reset" not in text
 
 
 def test_grant_expiry_remains_visible_without_subscription_reset_text():

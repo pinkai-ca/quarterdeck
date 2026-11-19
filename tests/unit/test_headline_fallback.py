@@ -65,7 +65,7 @@ def test_a_good_read_without_a_five_hour_figure_heads_with_the_seven_day_window(
     assert text(ship).startswith("claude-primary 7d 45% used") and NO_5H in text(ship)
     assert "unknown" not in text(ship)
     status = line(ship)
-    assert status == "service ok · 0 waiting"
+    assert status == "service ok · 0 waiting · qd status"
     assert "unknown" not in status
 
 
@@ -75,12 +75,12 @@ def test_a_five_hour_figure_that_stops_coming_falls_back_and_returns_as_the_head
     read(ship, "claude-primary", week(.5), at=AT + timedelta(minutes=1))
     row = headline(ship)
     assert row["reading"].window == "7d" and row["note"] == NO_5H and row["reading"].used == .5
-    assert line(ship) == "service ok · 0 waiting"
+    assert line(ship) == "service ok · 0 waiting · qd status"
     read(ship, "claude-primary", five(.3), week(.5), at=AT + timedelta(minutes=2))
     row = headline(ship)
     assert row["reading"].window == "5h" and row["reading"].used == .3 and "note" not in row
     assert text(ship).startswith("claude-primary 5h 30% used") and NO_5H not in text(ship)
-    assert line(ship) == "service ok · 0 waiting"
+    assert line(ship) == "service ok · 0 waiting · qd status"
 
 
 @pytest.mark.parametrize("before", [(), ("7d",), ("5h", "7d")], ids=["never-read", "7d-only", "both"])
@@ -94,7 +94,7 @@ def test_a_failed_read_still_reads_as_unknown(ship, before):
     assert NO_5H not in text(ship) and NO_5H not in line(ship)
     if not before or before == ("7d",):
         assert "claude-primary 5h usage unknown: " in text(ship) and "HTTP 429, retry-after 120" in text(ship)
-        assert line(ship) == "service ok · 0 waiting"
+        assert line(ship) == "service ok · 0 waiting · qd status"
     else:
         assert "LAST KNOWN" in text(ship)
 
@@ -104,7 +104,7 @@ def test_an_hour_old_good_read_without_five_hours_keeps_the_seven_day_headline_l
     CLOCK["now"] = AT + timedelta(minutes=61)
     row = headline(ship)
     assert row["reading"].window == "7d" and not row["current"] and row["note"] == NO_5H
-    assert "LAST KNOWN" in text(ship) and line(ship) == "service ok · 0 waiting"
+    assert "LAST KNOWN" in text(ship) and line(ship) == "service ok · 0 waiting · qd status"
 
 
 def test_the_wall_rule_is_unchanged_by_the_headline(ship):

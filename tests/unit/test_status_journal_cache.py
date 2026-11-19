@@ -170,28 +170,31 @@ def test_next_service_status_shows_and_clears_a_changed_journal_alarm(tmp_path, 
     svc = object.__new__(Service)
     svc.ship, svc.tmux, svc.status_framework = seat.ship, None, None
     svc.store, svc.attempts = post.Store(runtime), post.Attempts(runtime)
-    lines = []
+    lines, pending_details = [], []
 
     def publish(*args):
         with post.reading_pass():
             held = pending.held(seat, None)
             facts = watch.Facts('ok', 0, 0, 0, pending=[held[0]] if held else [])
             lines.append(facts.line())
+            pending_details.append(facts.pending)
 
     monkeypatch.setattr(presentation, 'publish', publish)
     svc.publish_status()
-    assert 'paste/submit' not in lines[-1]
+    assert not pending_details[-1] and '1 pending' not in lines[-1]
     data['phase'] = 'prepared'
     path.write_text(json.dumps(data))
     svc.publish_status()
-    assert 'paste/submit outcome uncertain' in lines[-1]
+    assert 'paste/submit outcome uncertain' in pending_details[-1][0]
+    assert pending_details[-1][0] in lines[-1]
     data['phase'] = 'delivered'
     path.write_text(json.dumps(data))
     svc.publish_status()
-    assert 'paste/submit' not in lines[-1]
+    assert not pending_details[-1] and '1 pending' not in lines[-1]
     path.write_text('{ malformed')
     svc.publish_status()
-    assert 'pending delivery journal unreadable' in lines[-1]
+    assert 'pending delivery journal unreadable' in pending_details[-1][0]
+    assert 'pending' in lines[-1]
     assert pending._JOURNAL_READER.get() is None
 
 

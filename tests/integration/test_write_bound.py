@@ -423,7 +423,8 @@ def test_the_status_line_names_a_seat_stopped_at_its_write_bound(ship, tmux):
     assert facts.write_bounds == [words] and words in facts.line()  # law: nothing-waits-silently
     crowded = SimpleNamespace(**{**vars(facts), 'pending': [f'pending line {n} ' + 'x' * 40 for n in range(10)]})
     short = headlines.status_line(crowded, ['service ok', *crowded.pending, *crowded.write_bounds])
-    assert 'details: qd status' in short and words in short, 'kept by name when the line overflows'
+    assert '1 at write bound' in short and short.endswith(' · qd status')
+    assert words in headlines.details(crowded)
 
 
 # -- a real seat ---------------------------------------------------------------------------------------

@@ -11,7 +11,7 @@ def request():
                 since='2030-01-01T00:00:00+00:00', reason='tools unknown', claimed=False)
 
 
-@pytest.mark.parametrize('width', [20, 2000])
+@pytest.mark.parametrize('width', [160, 2000])
 def test_request_signin_and_move_names_survive_both_status_line_forms(monkeypatch, width):
     monkeypatch.setattr(headlines, 'WIDTH', width)
     row = request()
@@ -25,7 +25,7 @@ def test_request_signin_and_move_names_survive_both_status_line_forms(monkeypatc
     assert signin in line
     assert move in line
     assert row['id'] not in line
-    assert ('details: qd status' in line) == (width == 20)
+    assert line.endswith(' · qd status')
 
 
 def test_request_details_keep_id_wait_and_cancel_beside_signin_in_status_and_watch():

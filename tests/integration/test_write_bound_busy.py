@@ -458,8 +458,10 @@ def test_the_floor_stops_only_seats_unmeasured_or_grown_on_its_disk_and_names_wh
     assert write_bound.unmeasured_read(ship.runtime, 'cut') is None, 'the stop ends its count'
     stops = [data for event, data in logs if event == 'write-bound' and data.get('floor')]
     assert [data['seat'] for data in stops] == ['cut', 'grower'] and all(data['why'].startswith(fell) for data in stops)
-    line = watch.facts(ship, tmux).line()
-    assert "cut: stopped by its disk's free-space floor" in line and "grower: stopped by its disk's" in line
+    facts = watch.facts(ship, tmux)
+    assert any("cut: stopped by its disk's free-space floor" in item for item in facts.write_bounds)
+    assert any("grower: stopped by its disk's" in item for item in facts.write_bounds)
+    assert '2 write-bound alerts' in facts.line()
 
     # Under the floor itself, the seats left are judged the same way: unchanged stays up, grown is stopped.
     del running['cut'], running['grower']
@@ -593,7 +595,8 @@ def test_a_device_whose_free_space_goes_unread_two_looks_running_is_named_on_the
     folder = write_bound.seat_folder(ship, 'worker-1')
     named = f'write bound: free space unread on {folder}, 2 looks running (PermissionError); its floor is not watched there'
     assert write_bound.status(ship) == [named]
-    assert named in watch.facts(ship, tmux).line()
+    facts = watch.facts(ship, tmux)
+    assert named in facts.write_bounds and '1 write-bound alerts' in facts.line()
     kept = write_bound.floor_unread_path(ship.runtime)
     first = kept.stat().st_mtime_ns, kept.stat().st_ino
     write_bound.floor_unread_write(ship.runtime, state.unread, log)

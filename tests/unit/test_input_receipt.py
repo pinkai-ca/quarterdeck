@@ -160,8 +160,8 @@ def test_corrupt_journal_does_not_block_another_seats_confirmation(setup, broken
     assert len(svc.attempts.for_message(second.id)) == 1
     facts = watch.facts(svc.ship, svc.tmux, walls=[], login=[])
     assert "worker" in facts.needs_human
-    assert "need human" in facts.line() and "pending" in facts.line()
+    assert "worker needs a human" in facts.line() and "pending" in facts.line()
     assert any("journal unreadable" in reason for reason in facts.pending)
-    assert "details: qd status" in facts.line()
+    assert "qd status" in facts.line()
     svc.deliveries()
     assert live["pasted"] == live["submitted"] == 1

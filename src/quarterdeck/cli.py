@@ -795,20 +795,21 @@ def cmd_status(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     if args.line:
         warning = copy_state.select(ship.folder, mode=ship.code, mode_known=True).warning
+        from .headlines import note
         from .presentation import collected_line
+        notes = (note(warning, 'copy warning'),) if warning else ()
         publication_age = None
         if not getattr(args, 'json', False):
             from .presentation import published_reading
-            line, publication_age = published_reading(ship.folder, status_refresh=ship.status_refresh)
+            line, publication_age = published_reading(ship.folder, status_refresh=ship.status_refresh, notes=notes)
             if line is not None:
-                return Reading(dict(line=line, copy_warning=warning),
-                               lambda d: d['line'] + (' · ' + warning if warning else ''))
+                return Reading(dict(line=line, copy_warning=warning), lambda d: d['line'])
         try:
             facts = watch.facts(ship, Tmux.for_ship(ship))
             if warning:
                 return Reading({**output.value(facts), 'copy_warning': warning},
-                               lambda _: collected_line(facts.line(), publication_age) + ' · ' + warning)
-            return Reading(facts, lambda f: collected_line(f.line(), publication_age))
+                               lambda _: collected_line(facts, publication_age, notes=notes))
+            return Reading(facts, lambda f: collected_line(f, publication_age))
         except sqlite3.DatabaseError as error:
             from .ledger_recovery import malformed
             if not malformed(error):
@@ -817,14 +818,13 @@ def cmd_status(args: argparse.Namespace) -> Reading:
             lead = 'SERVICE DOWN' if state == 'down' else f'service {state}'
             reason = 'ledger malformed; stop the service, then qd ledger --recover'
             return Reading(dict(service=state, facts=None, error=reason),
-                           lambda _: collected_line(lead + ' · ' + reason, publication_age))
+                           lambda _: collected_line(lead + ' · ' + reason, publication_age, notes=notes))
         except (OSError, ValueError, TypeError, KeyError):
             state = watch.service_state(ship.runtime)
             lead = 'SERVICE DOWN' if state == 'down' else f'service {state}'
             return Reading(dict(service=state, facts=None, error='status evidence unavailable', copy_warning=warning),
-                           lambda _: collected_line(lead + ' · status unknown: evidence unavailable; inspect qd status',
-                                                   publication_age)
-                           + (' · ' + warning if warning else ''))
+                           lambda _: collected_line(lead + ' · status unknown: evidence unavailable',
+                                                   publication_age, notes=notes))
     if getattr(args, 'json', False):
         from . import status_snapshot
         import time

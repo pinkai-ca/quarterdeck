@@ -199,9 +199,9 @@ def test_a_seat_a_killed_check_left_is_named_in_the_status_line_and_qd_down_remo
                                 "requests": [], "programs": [], "programs_error": None,
                                 "check_outcomes": [], "check_outcome_errors": []})
     assert table[1] == words[0], "qd status names it at the head of its table"
-    from quarterdeck import headlines
     crowded = watch.Facts("up", 0, 0, 0, leftover_seats=words, pending=["synthetic " * 30] * 3)
-    assert f"qd down {name}" in headlines.status_line(crowded, ["x" * 200]), "kept when the line overflows"
+    line = crowded.line()
+    assert "3 pending" in line and f"qd down {name}" in line and line.endswith(" · qd status")
 
     monkeypatch.setattr(cli.Tmux, "for_ship", classmethod(lambda cls, ship: server))
     monkeypatch.setattr(cli, "load_ship", lambda args: ship)

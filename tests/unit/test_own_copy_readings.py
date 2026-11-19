@@ -126,7 +126,7 @@ def test_line_and_json_status_include_same_copy_warning(vessel, monkeypatch, cap
     result = cli.cmd_status(SimpleNamespace(line=True))
     assert result.data['copy_warning'] == warning
     output.emit(result)
-    assert capsys.readouterr().out == 'SERVICE DOWN · ' + warning + '\n'
+    assert capsys.readouterr().out == 'SERVICE DOWN · ' + warning + ' · qd status\n'
     output.emit(result, json_output=True)
     assert json.loads(capsys.readouterr().out)['copy_warning'] == warning
     assert snapshot(vessel.folder) == before

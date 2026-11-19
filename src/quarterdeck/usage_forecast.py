@@ -6,7 +6,7 @@ never bridge a reset, a decreasing meter, an identity change or an hour-long gap
 Forecasts notify people only and supply no pool-selection or lifecycle evidence.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import json
 import math
@@ -70,10 +70,14 @@ class Forecast:
     first_at: datetime
     read_at: datetime
     samples: int
+    at_wall: bool = False
 
     @property
     def warning(self):
         return self.spent_at < self.resets_at
+
+    def headline(self):
+        return f'{self.pool} spent by {self.spent_at.astimezone():%d %b %H:%M}'
 
     def describe(self, *, detail=False):
         spent = self.spent_at.astimezone()
@@ -144,15 +148,18 @@ def collect(book, now, pools=None):
     return [found[pool] for pool in sorted(found)]
 
 
-def readings(ship, now=None):
+def readings(ship, now=None, *, wall_state=False):
     from .ledger import Ledger
     try:
         book = Ledger.reading(ship.runtime / 'ledger.sqlite')
         if book is None:
             return []
         with book:
-            return collect(book, now or post.now(),
-                           {pool.name for pool in ship.pools.values() if pool.kind == 'subscription'})
+            now = now or post.now()
+            forecasts = collect(book, now, {pool.name for pool in ship.pools.values() if pool.kind == 'subscription'})
+            if wall_state:
+                return [replace(item, at_wall=bool(book.walls(ship, now, pool=item.pool))) for item in forecasts]
+            return forecasts
     except (OSError, sqlite3.Error):
         return []  # unavailable history proves no rate
 

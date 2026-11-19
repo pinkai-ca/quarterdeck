@@ -27,7 +27,7 @@ def test_allowance_facts_do_not_enter_the_text_line_or_change_their_order(state)
     rows = [item("first", state), item("second", state)]
     facts = watch.Facts("ok", 0, 0, 0, walls=[WALL], usage=rows)
     before = output.value(facts)
-    assert facts.line() == "service ok · 0 waiting"
+    assert facts.line() == "service ok · 0 waiting · qd status"
     assert output.value(facts) == before
     assert [row["pool"] for row in before["usage"]] == ["first", "second"]
 
@@ -35,14 +35,14 @@ def test_allowance_facts_do_not_enter_the_text_line_or_change_their_order(state)
 @pytest.mark.parametrize("extra_room", [-1, 0, 1])
 def test_alert_only_overflow_uses_the_whole_presentation_budget(monkeypatch, extra_room):
     name = "synthetic-worker"
-    expected = f"service ok · 0 waiting · {name} needs a human"
+    expected = f"service ok · {name} needs a human · 0 waiting · qd status"
     facts = watch.Facts("ok", 0, 0, 0, needs_human=[name], usage=[item("unused", "current")])
     monkeypatch.setattr(headlines, "WIDTH", len(expected) + extra_room)
     line = facts.line()
     if extra_room >= 0:
         assert line == expected
     else:
-        assert "1 need human" in line and "details: qd status" in line
+        assert line == expected.replace(" · 0 waiting", "")
     assert "unused" not in line and "usage" not in line
 
 
@@ -58,7 +58,7 @@ def test_crowded_cli_json_retains_all_wall_and_usage_facts(tmp_path, monkeypatch
     monkeypatch.setattr(watch, "facts", lambda *args: facts)
     assert cli.main(["--ship", str(tmp_path), "status", "--line"]) == 0
     text = capsys.readouterr().out
-    assert text.rstrip() == "service ok · 0 waiting · worker held at limit"
+    assert text.rstrip() == "service ok · worker held at limit · 0 waiting · qd status"
     assert cli.main(["--ship", str(tmp_path), "--json", "status", "--line"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data == output.value(facts)

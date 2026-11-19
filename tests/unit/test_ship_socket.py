@@ -349,6 +349,6 @@ def test_only_grok_launches_without_the_operators_vte_version(tmp_path, program,
 def test_a_ship_still_on_the_default_server_keeps_its_alert_when_the_status_line_overflows():
     from quarterdeck import watch
     cutover = "tmux: still on the default server /tmp/tmux-1/default; qd down, then qd up, moves it"
-    assert watch.Facts("ok", 0, 0, 0, cutover=cutover).line() == f"service ok · 0 waiting · {cutover}"
+    assert watch.Facts("ok", 0, 0, 0, cutover=cutover).line() == f"service ok · 0 waiting · {cutover} · qd status"
     crowded = watch.Facts("ok", 0, 0, 0, cutover=cutover, pending=["x" * 400]).line()
-    assert "tmux: default server, qd down then qd up" in crowded and "details: qd status" in crowded
+    assert cutover in crowded and crowded.endswith(" · qd status")

@@ -438,7 +438,7 @@ def test_bad_group_is_held_once_while_another_group_finishes_same_pass(forum, mo
     assert facts.group_held == alerts
     assert alerts[0] in facts.line()
     crowded = replace(facts, pending=['x' * 200])
-    assert '1 groups held' in crowded.line()
+    assert 'group held: group evidence is malformed JSON' in crowded.line()
     service.Service.groups(observe())
     assert len(events) == 1, 'a new service instance does not repeat an unchanged error'
     path.write_text('[')

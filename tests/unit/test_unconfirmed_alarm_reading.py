@@ -242,7 +242,7 @@ def test_corrupt_alarm_isolated_in_real_delivery_pass_and_cleared(alarm, monkeyp
     assert 'alarm journal unreadable' in hold and 'synthetic corrupt journal' not in hold
     assert facts.line().count(hold) == 1
     overflow = replace(facts, pending=['synthetic pending reason ' * 12]).line()
-    assert 'details: qd status' in overflow and overflow.count(hold) == 1
+    assert 'qd status' in overflow and overflow.count(hold) == 1
 
     state[seat.name] = []
     journal.write_text(json.dumps(dict(version=1, key=None, reports=[])))

@@ -44,13 +44,14 @@ def test_an_unreadable_record_pointer_reads_unknown_with_its_reason(drydock, mon
 
 def test_the_status_line_says_everything_that_waits():  # law: nothing-waits-silently
     quiet = Facts(service="ok", waiting=0, oldest=0, blind=0)
-    assert quiet.line() == "service ok · 0 waiting"
-    assert Facts(service="busy 23s", waiting=0, oldest=0, blind=0).line() == "service busy 23s · 0 waiting", "busy is not dead"
+    assert quiet.line() == "service ok · 0 waiting · qd status"
+    assert Facts(service="busy 23s", waiting=0, oldest=0, blind=0).line() == "service busy 23s · 0 waiting · qd status", "busy is not dead"
     loud = Facts(service="down", waiting=2, oldest=14, blind=1, needs_human=["unit"], unarmed=["desk"],
                  held=["worker"], walls=["claude-primary 7d"], disks=[("root", 94)], login=[("claude-secondary", "11-13 22:24")],
                  queued=1, oldest_queued=31)
-    assert loud.line() == ("SERVICE DOWN · 2 waiting · 1 queued · 1 blind · 1 need human · 1 unarmed"
-                           " · 1 held · 1 disk alerts · 1 login needed · details: qd status")
+    assert loud.line() == ("SERVICE DOWN · unit needs a human · 1 login needed · disk: root 94%"
+                           " · worker held at limit · 2 waiting, oldest 14m · 1 queued · 1 blind · 1 unarmed"
+                           " · qd status")
 
 
 def test_disks_names_only_the_nearly_full_filesystems(tmp_path: Path, monkeypatch):

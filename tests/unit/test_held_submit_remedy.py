@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from quarterdeck import pending, post, watch
+from quarterdeck import headlines, pending, post, watch
 from quarterdeck.door import Door
 from .test_pending_delivery import send, setup  # noqa: F401
 
@@ -36,15 +36,17 @@ def test_watch_and_status_name_submit_only_for_one_exact_pending_message(setup, 
     monkeypatch.setattr(seat.tmux, "keys", lambda *args: pytest.fail("a reading must not press keys"))
 
     reading = watch.reading(seat).door
-    status = watch.facts(svc.ship, svc.tmux, walls=[], login=[]).line()
+    facts = watch.facts(svc.ship, svc.tmux, walls=[], login=[])
+    status = facts.line()
+    detail = '\n'.join(headlines.details(facts))
     hint = "; qd submit worker sends it"
     assert (hint in reading.reason) == (box == "exact")
-    assert (hint in status) == (box == "exact")
+    assert (hint in detail) == (box == "exact")
     if box == "exact":
         reason = ("pending delivery exceeded 600s; not resent; box and record need inspection"
                   if phase == "submitted" else "paste/submit outcome uncertain; never resent")
         assert reading.reason == f"{reason} (worker, {message.short}); inspect with qd watch worker{hint}"
-        assert reading.reason in status
+        assert reading.reason in detail and '1 pending' in status
     assert {path: path.read_bytes() for folder in (proof.path.parent, svc.attempts.dir)
             for path in folder.glob("*.json")} == before
     assert live["pasted"] == live["submitted"] == 1

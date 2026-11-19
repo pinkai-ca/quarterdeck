@@ -359,7 +359,7 @@ def test_an_unreadable_barrier_holds_start_and_recovery_and_stays_visible(tmp_pa
     assert len(lines) == 1 and str(target) in lines[0] and 'unreadable' in lines[0]
     facts = watch.Facts(service='down', waiting=0, oldest=0, blind=0, server_recovery=lines,
                         pending=['synthetic long detail ' * 30])
-    assert lines[0] in facts.line(), 'the named barrier survives status overflow'
+    assert '1 service stop barrier' in facts.line() and lines[0] in facts.server_recovery
     assert presentation.cached_line(tmp_path) is None
     assert presentation.published_reading(tmp_path) == (None, None)
     assert status_snapshot.served(ship) is None

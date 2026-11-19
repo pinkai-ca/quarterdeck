@@ -326,7 +326,7 @@ def test_new_launch_empty_door_progresses_but_old_uncertainty_remains_visible(se
     assert Door(seat).reading().open
     facts = watch.facts(svc.ship, svc.tmux, walls=[], login=[])
     assert any("prior launch" in reason for reason in facts.pending)
-    assert "pending" in facts.line() and "details: qd status" in facts.line()
+    assert "pending" in facts.line() and "qd status" in facts.line()
     assert old.short in pending.detached(seat)[0]
     assert pending.detached(seat)[0].endswith("inspect with qd watch worker")
     assert svc.attempts.latest()[old.id] == "pending"

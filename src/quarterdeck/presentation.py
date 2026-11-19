@@ -8,6 +8,7 @@ import sys
 import time
 
 from . import copy_state, operational_notices, servicectl, ship as shipmod
+from . import headlines
 from .procstat import EXITED
 
 NAME = 'status-line.json'
@@ -43,6 +44,21 @@ def fresh(wall, monotonic):
         return False
     wall_age, age = time.time_ns() - wall, time.monotonic_ns() - monotonic
     return 0 <= wall_age <= MAX_AGE_NS and 0 <= age <= MAX_AGE_NS and abs(wall_age - age) <= CLOCK_SKEW_NS
+
+
+def _render(data, *, lead=None, notes=()):
+    line = data['line']
+    if (lead is None and not notes and line.endswith(headlines.SEPARATOR + headlines.POINTER)
+            and headlines.columns(line) <= headlines.WIDTH):
+        return line
+    if data.get('headline') is not None:
+        try:
+            document = headlines.recover_document(data['headline'])
+            if headlines.render(document) == line:
+                return headlines.render(document, lead=lead, notes=notes)
+        except (ValueError, TypeError):
+            pass  # an older or malformed layout still has its plain publication
+    return headlines.bound_text(line, lead=lead, notes=notes)
 
 
 def cached_line(folder):
@@ -85,7 +101,7 @@ def cached_line(folder):
         if ('accounting' not in data or current == accounting_health.UNKNOWN
                 or data['accounting'] != current):
             return None  # derived text cannot outrank changed or unavailable accounting evidence
-        return line if fresh(data['wall'], data['monotonic']) else None
+        return _render(data) if fresh(data['wall'], data['monotonic']) else None
     except (OSError, ValueError, TypeError, KeyError, UnicodeError):
         return None
 
@@ -95,7 +111,7 @@ def published_line(folder):
     return published_reading(folder)[0]
 
 
-def published_reading(folder, *, status_refresh=None):
+def published_reading(folder, *, status_refresh=None, notes=()):
     """Return text and, when a publication expired, its age for the collector's lead.
 
     The lock/heartbeat are read independently even when the publication is old.
@@ -106,7 +122,7 @@ def published_reading(folder, *, status_refresh=None):
     runtime = folder / 'runtime'
     if stop_barrier.status(runtime):
         return None, None
-    line = cached_line(folder)
+    line = cached_line(folder) if not notes else None
     if line is not None:
         return line, None
     lead = service_lead(runtime)
@@ -147,19 +163,26 @@ def published_reading(folder, *, status_refresh=None):
                     and process_start(beat[0]) == data['process_start']
                     and data['ship'] == fingerprint(folder / 'ship.toml')
                     and data['framework'] == framework_stamp()):
-                return line, None
+                return _render(data, notes=notes), None
         dated = f'published {age // 1_000_000_000}s ago'
-        return f'{lead} · status stale: {dated}; inspect qd status · {line.partition(" · ")[2]}', None
+        freshness = headlines.note(f'status stale: {dated}', 'status stale')
+        return _render(data, lead=lead, notes=(freshness, *notes)), None
     except (OSError, ValueError, TypeError, KeyError, UnicodeError):
         return None, None
 
 
-def collected_line(line, publication_age):
+def collected_line(value, publication_age, *, notes=()):
     """Keep fresh alerts, explicitly saying why the independent collector ran."""
-    if publication_age is None:
-        return line
-    lead, separator, alerts = line.partition(' · ')
-    return f'{lead} · publication {publication_age}s old, collected here' + separator + alerts
+    if publication_age is not None:
+        age = f'publication {publication_age}s old'
+        freshness = headlines.note(f'{age}, collected here', age)
+        notes = (freshness, *notes)
+    if isinstance(value, str):
+        return headlines.bound_text(value, notes=notes)
+    from .watch import Facts
+    if isinstance(value, Facts):
+        return headlines.status_line(value, notes=notes)
+    return headlines.bound_text(value.line(), notes=notes)
 
 
 def publish(ship, tmux, framework, store, attempts, keep: list | None = None) -> bool:
@@ -206,14 +229,15 @@ def _publish(ship, tmux, framework, store, attempts, kept=None, door_seats=froze
         facts = watch.refresh_post(kept, store=store, attempts=attempts, door_seats=door_seats)
         if facts is None:
             return None, kept
-    line = facts.line()
+    headline = headlines.cache_document(facts) if isinstance(facts, watch.Facts) else None
+    line = headlines.render(headline) if headline is not None else headlines.bound_text(facts.line())
     beat = servicectl.read_heartbeat(ship.runtime)
     start = process_start(os.getpid())
     if (facts.service != 'ok' or beat is None or beat[0] != os.getpid() or start is None
             or not servicectl.alive(ship.runtime) or fingerprint(ship.file) != stamp):
         return False, None
     data = dict(format=1, wall=wall, written=time.time_ns(), monotonic=monotonic, pid=os.getpid(), process_start=start,
-                ship=stamp, framework=framework, line=line, accounting=getattr(facts, 'accounting', None),
+                ship=stamp, framework=framework, line=line, headline=headline, accounting=getattr(facts, 'accounting', None),
                 ledger_recovery=getattr(facts, 'ledger_recovery', []),
                 retirement=getattr(facts, 'retirement', None),
                 operational_notices=getattr(facts, 'operational_notices', []))
@@ -265,7 +289,7 @@ def command_line(argv):
     from .tmux import Tmux, TmuxError
 
     try:
-        return collected_line(watch.facts(ship, Tmux.for_ship(ship)).line(), publication_age)
+        return collected_line(watch.facts(ship, Tmux.for_ship(ship)), publication_age)
     except (TmuxError, shipmod.ShipError):
         return None  # preserve the CLI's native failure exit and independent alarm
     except (OSError, ValueError, KeyError, TypeError):
@@ -301,4 +325,4 @@ def unavailable_line(argv):
     except OSError:
         lead = 'service unknown'
         publication_age = None
-    return collected_line(lead + ' · status unknown: reading unavailable; inspect qd status', publication_age)
+    return collected_line(lead + ' · status unknown: reading unavailable', publication_age)

@@ -233,10 +233,12 @@ def test_sparse_oversize_record_is_visible_without_a_forecast_or_move_hold(world
     [alarm] = record_file.alarms([seat], owned=human_wake.owned_record)
     facts = watch.Facts('ok', 0, 0, 0, record_bounds=[alarm],
                         needs_human=[f'synthetic-long-seat-{i}' for i in range(15)])
-    assert 'details: qd status' in facts.line()  # the abbreviated route
+    assert 'qd status' in facts.line()  # the abbreviated route
     assert 'operator-media: record past the read bound (295.0 MiB, bound 128.0 MiB)' in facts.line()
     facts = replace(facts, move_holds=['builder: move held: its record is unavailable'])
-    assert facts.line().index(alarm) < facts.line().index(facts.move_holds[0])
+    line = facts.line()
+    move = next(item for item in (facts.move_holds[0], '1 move alert', '+1 more') if item in line)
+    assert line.index(alarm) < line.index(move)
 
 
 def test_forecast_requires_a_recent_positive_rate_for_the_same_file(world):

@@ -79,7 +79,7 @@ def test_the_table_and_the_line(ship: shipmod.Ship, tmux: Tmux, capsys):
     assert "obstructed: a human's session, its watch delivers" in table["desk"]
     assert rows[listed] == "open orders: 1" and rows[listed + 1].startswith(f"  {order.short} desk → worker-1")
     line = qd(capsys, "status", "--line")
-    assert line.startswith("SERVICE DOWN · 2 waiting, oldest 0m · worker-1 needs a human · desk: no watch armed")  # law: nothing-waits-silently
+    assert line == "SERVICE DOWN · worker-1 needs a human · 2 waiting, oldest 0m · desk: no watch armed · qd status"
     facts = watch.facts(ship, tmux)
     assert facts.needs_human == ["worker-1"] and facts.unarmed == ["desk"] and facts.blind == 0
     full = qd(capsys, "watch", "worker-1")

@@ -385,14 +385,17 @@ def render_table(data: dict) -> list[str]:
     from .harness import claude_extra_usage as extra_usage
     state = data["service"]
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
-    recovery_lines = list(getattr(data.get("facts"), "server_recovery", None) or [])  # law: nothing-waits-silently
-    if startup_delivery := getattr(data.get("facts"), "startup_delivery", None):
+    from .headlines import details
+    facts = data.get("facts")
+    alerts = details(facts) if isinstance(facts, Facts) else []
+    recovery_lines = list(getattr(facts, "server_recovery", None) or [])
+    if startup_delivery := getattr(facts, "startup_delivery", None):
         recovery_lines.append(startup_delivery)
-    recovery_lines += list(getattr(data.get("facts"), "leftover_seats", None) or [])  # a temporary seat left behind
-    recovery_lines += list(getattr(data.get("facts"), "post_waits", None) or [])
-    recovery_lines += list(getattr(data.get("facts"), "pool_forecasts", None) or [])
+    recovery_lines += list(getattr(facts, "leftover_seats", None) or [])
+    recovery_lines += list(getattr(facts, "post_waits", None) or [])
+    recovery_lines += list(getattr(facts, "pool_forecasts", None) or [])
     rows = [head, *recovery_lines, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
-    if accounting := getattr(data.get('facts'), 'accounting', None):
+    if accounting := getattr(facts, 'accounting', None):
         rows.insert(1, accounting)
     if data.get('accounting_note'):
         rows.insert(1, data['accounting_note'])
@@ -414,6 +417,8 @@ def render_table(data: dict) -> list[str]:
     rows += check_outcome.alarms(data.get('check_outcomes', []))
     rows += check_outcome.unknown_alarms(data.get('check_outcomes', []))
     rows += data.get('check_outcome_errors', [])
+    if extra := [line for line in dict.fromkeys(alerts) if line not in rows]:
+        rows.extend(['  operational alerts:', *(f'    {line}' for line in extra)])
     rows.append(f"open orders: {len(data['open_orders'])}")
     for m in data["open_orders"]:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
@@ -606,65 +611,11 @@ class Facts:
     post_held: list[str] = field(default_factory=list)  # an error that stops the store listing, or a link at imports
     post_waits: list[str] = field(default_factory=list)
     pool_forecasts: list[str] = field(default_factory=list)
+    pool_forecast_headlines: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
-        parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
-        if self.retirement:
-            parts.append(self.retirement)
-        parts += self.ledger_recovery
-        if self.accounting:
-            parts.append(self.accounting)
-        if self.startup_delivery:
-            parts.append(self.startup_delivery)
-        parts.append(f"{self.waiting} waiting" + (f", oldest {self.oldest}m" if self.waiting else ""))
-        if self.queued:
-            parts.append(f"{self.queued} queued behind a turn, oldest {self.oldest_queued}m")
-        if self.blind:
-            parts.append(f"{self.blind} blind")
-        if self.unsettled:
-            parts.append(f"{self.unsettled} unsettled after an error")  # law: nothing-waits-silently
-        parts += self.unknown
-        parts += self.seat_holds
-        parts += self.screening
-        parts += self.brief_git
-        parts += self.queue_unknown
-        parts += [detail for detail in self.compactions
-                  if not any(fallback.startswith(detail + ';') for fallback in self.manual_fresh)]
-        parts += self.manual_fresh
-        parts += self.model_mismatches
-        parts += self.turn_errors
-        parts += self.output_limits
-        parts += self.sign_in_failures
-        parts += self.pane_obstructions
-        parts += self.post_held
-        parts += self.post_waits
-        parts += self.pool_forecasts
-        parts += self.group_held
-        parts += self.drop_held
-        parts += self.cascade_held
-        parts += self.structure_waiting
-        parts += self.check_failed
-        parts += self.check_unknown
-        parts += [f"{name} needs a human" for name in self.needs_human]
-        parts += [f"{name}: no watch armed" for name in self.unarmed]
-        parts += [f"{name} held at limit" for name in self.held]
-        parts += self.move_holds
-        parts += self.ending
-        parts += self.leftover_seats
-        parts += self.raises
-        parts += self.request_waits
-        parts += self.server_recovery
-        parts += self.relaunches
-        parts += self.write_bounds
-        parts += self.jail_sweeps
-        parts += self.record_bounds
-        parts += self.routes
-        parts += self.pending
-        parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
-        parts += [f"{pool} · login needed by {when}" for pool, when in self.login]
-        parts += [self.cutover] if self.cutover else []
         from .headlines import status_line
-        return status_line(self, parts)
+        return status_line(self)
 
 
 SCHEMA_BEHIND = "ledger written by an older service; qd up restarts it"
@@ -1242,8 +1193,10 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
     from . import usage_forecast
     lists = _replay(reading)
     fields = _post_fields(ship, store, attempts, post_held, records, latest, lists['waiting'], reading)
+    forecasts = [forecast for forecast in usage_forecast.readings(ship, now, wall_state=True) if forecast.warning]
     reading.slow = dict(
-        pool_forecasts=[forecast.describe() for forecast in usage_forecast.readings(ship, now) if forecast.warning],
+        pool_forecasts=[forecast.describe() for forecast in forecasts],
+        pool_forecast_headlines=[forecast.headline() for forecast in forecasts if not forecast.at_wall],
         manual_fresh=compaction_alert.unrouted(ship, readable),
         server_recovery=server_recovery.status(ship.runtime) + stop_barrier.status(ship.runtime),
         write_bounds=write_bound.status(ship),

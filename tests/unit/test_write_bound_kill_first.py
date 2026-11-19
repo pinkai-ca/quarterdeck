@@ -91,7 +91,8 @@ def test_a_hold_that_cannot_be_written_still_ends_the_jail_and_is_named(world, m
     [line] = write_bound.status(world.ship)
     assert line == (f'{SEAT}: jail stopped at its write bound (workspace 3.00 GiB of 2.00 GiB), its hold unrecorded '
                     '(OSError: No space left on device); written at the next look, the seat kept down meanwhile')
-    assert line in watch.Facts('up', 0, 0, 0, write_bounds=write_bound.status(world.ship)).line()
+    facts = watch.Facts('up', 0, 0, 0, write_bounds=write_bound.status(world.ship))
+    assert line in facts.write_bounds and '1 at write bound' in facts.line()
     assert write_bound._held(SimpleNamespace(name=SEAT, ship=world.ship)) == line.split(': ', 1)[1], 'launches refuse'
     assert ('error', dict(step='write-bound', seat=SEAT, error='hold unrecorded: OSError: No space left on device')) \
         in world.logs

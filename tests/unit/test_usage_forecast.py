@@ -254,10 +254,10 @@ def test_no_system_recipient_keeps_the_warning_without_claiming_an_alarm(book, m
 def test_warning_is_preserved_in_normal_and_overflow_status_lines(book):
     record(book, [(0, .1), (.5, .3), (1, .5)])
     result, = forecast.collect(book, AT + timedelta(hours=1))
-    text = result.describe()
-    facts = Facts('ok', 0, 0, 0, pool_forecasts=[text])
-    assert text in facts.line()
-    assert text in replace(facts, needs_human=['synthetic-seat-' + str(n) for n in range(25)]).line()
+    text, detail = result.headline(), result.describe()
+    facts = Facts('ok', 0, 0, 0, pool_forecasts=[detail], pool_forecast_headlines=[text])
+    for line in (facts.line(), replace(facts, needs_human=['synthetic-seat-' + str(n) for n in range(25)]).line()):
+        assert text in line and 'reset' not in line and '%/h' not in line
 
 
 def test_ledger_detail_exposes_rate_and_observation_span(book, monkeypatch):

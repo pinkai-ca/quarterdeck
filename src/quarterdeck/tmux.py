@@ -887,6 +887,8 @@ class Tmux:
 
     def status_line(self, session: str, command: str, interval: int = 5) -> None:
         """Have tmux itself refresh the ship's one line on every session, on its own timer."""
+        from .headlines import WIDTH
+
         self._invoke("set-option", "-t", _session(session), "status-interval", str(interval))
-        self._invoke("set-option", "-t", _session(session), "status-right-length", "160")
+        self._invoke("set-option", "-t", _session(session), "status-right-length", str(WIDTH))
         self._invoke("set-option", "-t", _session(session), "status-right", f"#({command})")

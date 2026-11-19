@@ -243,8 +243,9 @@ def test_no_systems_has_named_status_even_on_overflow(env):
                   compactions=[f'{SUBJECT}: compactions 2/2: {MANUAL}'], manual_fresh=[fallback])
     assert SUBJECT in facts.line() and MANUAL in facts.line()
     crowded = replace(facts, pending=['synthetic pending detail ' * 20])
-    assert SUBJECT in crowded.line() and MANUAL in crowded.line()
-    assert 'details: qd status' in crowded.line()
+    from quarterdeck.headlines import details
+    assert fallback in crowded.line() and crowded.line().endswith(' · qd status')
+    assert fallback in details(crowded)
     env.seats[SYSTEMS].is_up = True
     step(env)
     assert len(reports(env)) == 1

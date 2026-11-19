@@ -95,7 +95,7 @@ def test_changed_retirement_wait_invalidates_cached_healthy_line(tmp_path, monke
     from quarterdeck import accounting_health, ledger_recovery
     monkeypatch.setattr(accounting_health, 'reading', lambda _: None)
     monkeypatch.setattr(ledger_recovery, 'alarms', lambda _: [])
-    line = 'service ok · 0 waiting'
+    line = 'service ok · 0 waiting · qd status'
     (runtime / presentation.NAME).write_text(json.dumps(dict(format=1, line=line, wall=1, monotonic=1,
         ship=[], framework=[], pid=1, process_start='1', accounting=None, ledger_recovery=[], retirement=None)))
     assert presentation.cached_line(folder) == line

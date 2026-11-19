@@ -213,9 +213,12 @@ def test_status_names_the_seat_and_short_pane_even_when_other_alerts_overflow(ov
                         pane_obstructions=['invented-seat: ' + REASON],
                         unknown=['synthetic ordinary alert ' * 20] if overflow else [])
     line = facts.line()
-    assert 'invented-seat: ' + REASON in line
     if overflow:
-        assert 'details: qd status' in line
+        from quarterdeck.headlines import details
+        assert 'invented-seat: ' + REASON in line and line.endswith(' · qd status')
+        assert 'invented-seat: ' + REASON in details(facts)
+    else:
+        assert 'invented-seat: ' + REASON in line
 
 
 @pytest.mark.parametrize('program,adapter', PROGRAMS)
