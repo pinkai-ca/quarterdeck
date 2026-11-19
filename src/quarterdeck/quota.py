@@ -406,6 +406,9 @@ def read_usage(service, pool, reader) -> Usage | None:
     if not getattr(reader, "private_usage_home", False):
         return reader.usage(pool)
     from . import credential
+    from .ship import program_adapter
+
+    reader = program_adapter(service.ship, reader)
 
     def reconcile():
         for proof in credential.reseed(service.ship, list(service.resolved_seats())):

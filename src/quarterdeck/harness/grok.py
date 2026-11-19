@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..ship import Pool, SeatSpec, ShipError, literal
+from ..ship import Pool, ProgramPin, SeatSpec, ShipError, literal
 from .. import durable
 from .base import Harness, program_version
 from .home import credential, key_environment, merged, ship_template
@@ -296,6 +296,12 @@ def program_privacy(path: Path) -> dict | None:
 
 
 class GrokHarness(Harness):
+    def __init__(self, program_pin: ProgramPin | None = None):
+        self.program_pin = program_pin
+
+    def with_program_pin(self, pin: ProgramPin) -> GrokHarness:
+        return type(self)(pin)
+
     box_geometry_known = True  # box_columns below declares the established text area
     # A seat's terminal is tmux, yet it inherits VTE_VERSION from the operator's own terminal, and 1.0.77 reads
     # a VTE of 8200 or later as one that tells Shift+Enter apart: it then draws another hint row under the
@@ -417,11 +423,13 @@ class GrokHarness(Harness):
         return grok_notice.inventory(cwd, private_environment(home))
 
     def selected_program(self) -> Path | None:
-        """The one Grok program this ship runs: the first ``grok`` on the PATH a seat launches with.
+        """The declared executable, or the first ``grok`` on the PATH a seat launches with.
 
         A seat's launch, doctor's reading and qd check all take it from here, and the launch names it by its
         absolute path, so the program a seat runs is the one doctor showed and the check proved.
         """
+        if self.program_pin is not None:
+            return self.program_pin.verified()
         from ..seat import program_path
 
         selected = shutil.which(self.program, path=program_path())
@@ -432,7 +440,7 @@ class GrokHarness(Harness):
         if selected is None:
             return None
         try:
-            program = selected.resolve(strict=True)
+            program = selected if self.program_pin is not None else selected.resolve(strict=True)
             if home is None:
                 match = re.fullmatch(r"grok-(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9][A-Za-z0-9.+_-]*)?)-linux-x86_64", program.name)
                 return match[1] if match else None
@@ -441,6 +449,10 @@ class GrokHarness(Harness):
         except (OSError, RuntimeError):
             return None
         environment = {**ENV, "HOME": str(home), "GROK_HOME": str(home)}
+        if self.program_pin is not None:
+            build_private_user_home(home)
+            durable.replace_file(home / "config.toml", config_text(SETTINGS))
+            environment = private_environment(home)
         return program_version(("env", "-i", f"PATH={os.environ.get('PATH', '')}",
                                 *(f"{key}={value}" for key, value in environment.items()), str(program), "--version"))
 
@@ -493,11 +505,12 @@ class GrokHarness(Harness):
         return attached
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
+        program = self.selected_program() if self.program_pin is not None else None
         workspace_args = grok_workspace.launch_args(seat.cwd)
         self.preflight(home, seat.cwd)
         launch_home(home, seat)
         privacy_notice = acknowledge_cached_opt_out(home, pool)
-        program = self.selected_program()
+        program = program or self.selected_program()
         if program is None:
             raise ShipError(f"{self.program} is not on the PATH qd runs with; install it, or put it on that PATH")
         argv = [str(program), "--fullscreen", "--always-approve", "--sandbox", "off", "--no-memory",
@@ -522,6 +535,7 @@ class GrokHarness(Harness):
 
     def usage_in_home(self, pool: Pool, home: Path) -> Usage:
         try:
+            program = self.selected_program() if self.program_pin is not None else None
             self.preflight(home)
         except ShipError as error:
             return Usage((), datetime.now(timezone.utc), str(error), called=False)
@@ -536,7 +550,7 @@ class GrokHarness(Harness):
             self.preflight(home, home)
         except ShipError as error:
             return Usage((), datetime.now(timezone.utc), str(error), called=False)
-        return grok_usage.billing(str(self.selected_program() or self.program), home, private_environment(home))
+        return grok_usage.billing(str(program or self.selected_program() or self.program), home, private_environment(home))
 
     def screen(self, text: str) -> Screen:
         screen = grok_screen.read(text)

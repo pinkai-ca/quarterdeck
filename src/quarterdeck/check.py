@@ -146,11 +146,21 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
     pool, refused = check_pool(ship, harness)
     if pool is None:
         return [ProbeCheck('pool', False, refused or f'no compatible declared pool for {name}', 'pool')], None
-    version = _version_in_runtime(harness, ship.runtime)
-    where = program_where(harness)
-    selected = harness.selected_program() if where is not None else None
+    harness = shipmod.program_adapter(ship, harness)
+    pin = getattr(harness, 'program_pin', None)
+    try:
+        version = _version_in_runtime(harness, ship.runtime)
+    except shipmod.ProgramPinError as error:
+        return [ProbeCheck("installed", False, str(error), 'installed')], None
+    if pin is not None:
+        where, selected = str(pin.path), pin.path
+        missing = "version could not be read from the pin"
+    else:
+        where = program_where(harness)
+        selected = harness.selected_program() if where is not None else None
+        missing = "not found on the PATH"
     checks = [ProbeCheck("installed", version is not None,
-                    f"{name} {version or 'not found on the PATH'} · provider {providers.display(pool.provider)} · pool {pool.name}"
+                    f"{name} {version or missing} · provider {providers.display(pool.provider)} · pool {pool.name}"
                     + (f" · runs {where}" if where else ""), 'installed')]
     if version is None:
         return checks, version
@@ -169,7 +179,7 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
         checks += probe(seat.ship, seat, orders, **options)
         if selected is not None:
             launched = seat.launched()
-            ran = launched is not None and str(selected) in launched.argv
+            ran = launched is not None and str(selected) in (launched.argv[:1] if pin is not None else launched.argv)
             checks.append(ProbeCheck("the seat ran the program doctor shows", ran,
                                      f"{selected} in launch.json" if ran else f"{selected} not in the seat's launch", 'program'))
     if not all(c.passed is True for c in checks):
@@ -201,13 +211,13 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
     if all(c.passed is not False for c in checks):
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)
-        (proven / f"{name}-{version}").write_text(f"{post.now().isoformat(timespec='seconds')}\n"
-                                                  + (f"{where}\n" if where else ""))
+        mark = pin.proof(ship.runtime, version) if pin is not None else proven / f"{name}-{version}"
+        mark.write_text(f"{post.now().isoformat(timespec='seconds')}\n" + (f"{where}\n" if where else ""))
         label = "proven: launch, door, paste, task, turn read"
         if inapplicable is None:
             label += ", human-session wake and inbox answer"
         checks.append(Check(label, True,
-                            f"{proven / f'{name}-{version}'}"))
+                            str(mark)))
     return checks, version
 
 

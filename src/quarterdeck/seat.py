@@ -371,7 +371,7 @@ class Seat:
         self._prepared_observation: tuple[str | None, str | None] | None = None
         try:
             self.spec = replace(spec.for_pool(self.pool.name), human_session=self.session.human)
-            self.harness: Harness = harnesses.get(self.spec.harness)
+            self.harness = self._adapter_for(self.spec)
             if self.spec.pool_choices and (launched := self.launched()) is not None:
                 if launched.pool != self.pool.name or record_owner.launch_reader(launched) != self.spec.harness:
                     raise ShipError(f"{self.name}: saved launch and selected program disagree; restore its pool declaration/selection")
@@ -382,6 +382,9 @@ class Seat:
     @property
     def name(self) -> str:
         return self.spec.name
+
+    def _adapter_for(self, spec: SeatSpec) -> Harness:
+        return shipmod.program_adapter(self.ship, harnesses.get(spec.harness))
 
     @property
     def session(self) -> shipmod.Session:
@@ -509,7 +512,7 @@ class Seat:
         self.move_to(pool)
         self.spec = selected
         if not same_program:
-            self.harness = harnesses.get(selected.harness)
+            self.harness = self._adapter_for(selected)
         proof = stopped + '\n' + self._up(resume=resume, observation=observation, target=target)
         return proof if resume else f'{proof} · {resume_target.NEW_CONVERSATION}'
 
@@ -922,7 +925,7 @@ class Seat:
         self.move_to(target, explicit=None)
         self.spec = selected
         if not same_program:
-            self.harness = harnesses.get(selected.harness)
+            self.harness = self._adapter_for(selected)
         started = proof(self._up(resume=resume, observation=observation, target=prepared))
         if not resume and target != current:
             started += f' · {resume_target.NEW_CONVERSATION}'
@@ -965,7 +968,7 @@ class Seat:
     def _accept_pool(self, spec: SeatSpec | None = None, pool: Pool | None = None) -> None:
         selected = spec or self.spec
         paid = pool or self.pool
-        reader = harnesses.get(selected.harness)
+        reader = self._adapter_for(selected)
         if reason := reader.accepts(paid):
             raise ShipError(f"{self.name}: {reason}")
         if reason := shipmod.key_refusal(paid):  # every launch door passes here, before anything of a launch is made
@@ -977,7 +980,7 @@ class Seat:
         """Reuse the normal version observation before any retirement or startup."""
         selected = spec or self.spec
         self._accept_pool(selected, pool)
-        reader = harnesses.get(selected.harness)
+        reader = self._adapter_for(selected)
         if reader.private_version_home:
             shipmod.fence(self.ship)
         if self._prepared_observation is not None and spec is None:
@@ -1725,7 +1728,7 @@ class Seat:
         self.move_to(target)
         self.spec = selected
         if not same_program:
-            self.harness = harnesses.get(selected.harness)
+            self.harness = self._adapter_for(selected)
         proof = self._up(resume=resume, observation=observation, target=prepared)
         if not resume:
             proof += f' · {resume_target.NEW_CONVERSATION}'

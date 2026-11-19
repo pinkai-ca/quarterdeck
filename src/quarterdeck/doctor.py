@@ -45,8 +45,10 @@ def checks(ship: Ship) -> list[Check]:
         found.append(Check(program, version is not None, f"{program} {version}" if version else f"{program} is not on the PATH; install it"))
     found.append(framework_check(ship))
     versions = {}
-    for name in sorted({seat.for_pool(pool).harness for seat in ship.seats.values() for pool in seat.pools}):
-        row, version = program_observation(name, ship.runtime)
+    programs = {seat.for_pool(pool).harness for seat in ship.seats.values() for pool in seat.pools}
+    programs.update(ship.program_pins)  # billing may use a pin before a seat is declared
+    for name in sorted(programs):
+        row, version = program_observation(name, ship.runtime, ship=ship)
         found.append(row)
         versions[name] = version
 
@@ -88,6 +90,9 @@ def checks(ship: Ship) -> list[Check]:
 
 def selected_program(ship: Ship, name: str | None, versions: dict[str, str | None]) -> str:
     """Beside a pool: the program its adapter settles once, the path a seat launches by, and its version."""
+    if (pin := getattr(ship, "program_pins", {}).get(name)) is not None:
+        version = versions.get(name)  # the program row already verified this pin
+        return f" · runs {pin.path} · {name} {version}" if version else ""
     harness = harnesses.get(name) if name else None
     where = program_where(harness) if harness is not None else None
     if where is None:
@@ -108,15 +113,24 @@ def shell_check() -> Check | None:
                  "the ship is moved or another is chosen; unset it there")
 
 
-def program_observation(name: str, runtime: Path | None = None) -> tuple[Check, str | None]:
+def program_observation(name: str, runtime: Path | None = None, *, ship: Ship | None = None) -> tuple[Check, str | None]:
     """One program/version observation shared by doctor and setup readiness."""
-    reader = harnesses.get(name)
-    if shutil.which(reader.program, path=program_path()) is None:
+    reader = shipmod.program_adapter(ship, harnesses.get(name))
+    pin = getattr(reader, 'program_pin', None)
+    if pin is None and shutil.which(reader.program, path=program_path()) is None:
         return (Check(f"program {name}", False,
                       f"{reader.program} is not on the PATH qd runs with; install it, or put it on that PATH"), None)
-    version = _version_in_runtime(reader, runtime) if runtime is not None else reader.version()
-    proven = runtime is not None and version is not None and (runtime / "proven" / f"{name}-{version}").exists()
+    try:
+        version = _version_in_runtime(reader, runtime) if runtime is not None else reader.version()
+    except shipmod.ProgramPinError as error:
+        return Check(f"program {name}", False, str(error)), None
+    if pin is not None and version is None:
+        return Check(f"program {name}", False, f"{name} pin {pin.path}: version could not be read"), None
+    proven = runtime is not None and version is not None and (
+        pin.proof(runtime, version) if pin is not None else runtime / "proven" / f"{name}-{version}").exists()
     note = "synthetic program" if reader.synthetic else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
+    if pin is not None:
+        note += f" · runs {pin.path}"
     return Check(f"program {name}", True, f"{reader.program} {version or 'version unknown'} · {note}"), version
 
 

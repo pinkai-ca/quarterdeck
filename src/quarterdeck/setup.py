@@ -125,7 +125,7 @@ class Operations:
             return []
 
     def readiness(self, ship: Ship, selected: list[str]) -> list[Check]:
-        observations = {name: doctor.program_observation(name, ship.runtime) for name in selected}
+        observations = {name: doctor.program_observation(name, ship.runtime, ship=ship) for name in selected}
         rows = [row for row, _ in observations.values()]
         versions = {name: version for name, (_, version) in observations.items()}
         pools = {pool for seat in ship.seats.values() for pool in seat.pools

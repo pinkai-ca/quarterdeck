@@ -8,7 +8,7 @@ installed version is marked proven by adding fixtures.
 
 | Contract | Implementation and evidence | Remaining limits |
 | --- | --- | --- |
-| Version context | Normal selected executable, never a PATH redirect. One selection: the first `grok` on the PATH a seat launches with (the folder holding `qd` first). The seat's launch names it by that absolute path, so `launch.json` records it; doctor shows it beside the Grok pool with the file a link there reaches and its version; `qd check` names it, proves that its seat ran it, and writes it into the proven mark. On a machine with two Grok programs on the PATH, the first one is the one every seat runs. Existing eligible runtime supplies a fresh empty version-call home; both HOME variables are replaced. No-context lookup reads only the selected resolved basename and executes nothing. | No operator version cache is adopted. Missing runtime remains missing; installed version proof still belongs to the check. |
+| Version context | Launch, doctor, `qd check` and native billing share the ship's verified pin when declared. With no pin, they use the first `grok` on the launch PATH (the folder holding `qd` first). Launch records the absolute program path, and `qd check` proves that its seat ran it. An eligible runtime supplies a private, temporary version-call home. Without that context, version lookup reads the selected executable's basename. | Installed evidence belongs to the ship that ran the check. Pin proofs are specific to their artifact digest. |
 | Home and launch | Private `GROK_HOME`, nested private `HOME`/XDG, native configuration, brief through `--rules`, updater off and normal credential linkage. Native `--trust` grants the whole repository root, or cwd outside a repository. The measured native store schema has one `folders."<absolute root>"` table with `trusted=true` and `decided_at` Unix seconds. The exact-grant guard never rewrites it; project contents never refuse a workspace. | Native validation established that project instructions/rules/skills load, project hooks run and project MCP servers and project LSP processes start. Home `managed_config.toml` is deleted at every native start and supplies no enforcement; it is neither written nor accepted. Project hook/MCP imports are accepted as for a person trusting the folder; the earlier source-absent launch does not prove this contract. Public marketplace fetching and some native bundled capabilities remain, as listed in the card. No blanket background-work absence claim. |
 | Workspace notice | Doctor adds a passing information row per declared seat/pool. Grok launch carries the same names/source-only inventory into the optional launch record notice and its proof line. Read-only snapshots name direct hook events, MCP declarations and direct/plugin LSP source paths, with escaped paths. | LSP serialization is unestablished: readable standard files are declared by path with unknown shape, never parsed or assigned guessed server names. Unknown scope, unreadable/unrecognized sources, unresolved manifest layout/activation/path overrides and indirect plugin/agent imports remain explicitly unknown; inventory does not prove native activation. It never refuses, prompts or changes the jail. No command/URL/header/environment/token values are rendered. |
 | Records and unknowns | Native ACP envelopes through the shared JSON-lines snapshot/cache. Ordinary input chunks, completed/cancelled turns, tool invocation/update identity, malformed/foreign/empty/unknown evidence and incomplete physical-line diagnostics have synthetic cases. | An unknown row cannot establish tool-set clearance. Missing or malformed information stays unknown. |
@@ -104,3 +104,19 @@ independent validation owner, with verdict and private evidence path only.
 This paragraph stood in the README until 12 November 2026. The contract table above holds each of its facts with its evidence and limits.
 
 Grok Build uses provider `xai` and harness `grok`. It grants native trust to the whole repository containing the seat's workspace, or the workspace itself outside a repository. Project instructions, rules and skills load; project hooks run, project MCP servers start and project LSP processes start. The ship's brief takes precedence over project instructions. These project imports follow the maker's trusted-folder behavior; the operator's home files stay out of the seat. Doctor and launch report declared hook/MCP/LSP source paths and established names, with incomplete inventory shown as unknown. LSP formats are unestablished, so their notices report source paths with unknown shape. Its [contract inventory](#grok-build-contract) distinguishes measured 1.0.77 behavior from remaining limits and installed acceptance.
+
+### Pin a ship's executable
+
+Stage the reviewed executable as a regular file owned by the user who runs the
+ship, with mode `0500`, in that ship's owned `runtime/programs` directory with
+mode `0700`. Use real directories and one filename directly under
+`runtime/programs`. In `ship.toml`, set `path` and the reviewed 64-digit
+`sha256` under `[programs.grok]`. The path is relative to `ship.toml`, for
+example `runtime/programs/grok-1.0.77-linux-x86_64`. This is one pin for the
+whole ship across all Grok subscription pools.
+
+The framework verifies the file and digest for each launch, version probe and
+native billing invocation. A problem with the pin holds that invocation and
+reports the file or digest problem. Version probes use a temporary private
+configuration with updates and leader adoption disabled, as do seat launches
+and billing. The usual launch rules for subscription seats apply.

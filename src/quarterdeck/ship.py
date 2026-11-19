@@ -9,12 +9,15 @@ above it out of the ship's state.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
+import stat
 import subprocess
 import tomllib
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -32,6 +35,62 @@ class ShipError(Exception):
 
 class KeyRefused(ShipError):
     """A launch refused because a key pays for its pool (key_refusal): the one seat stays down, no other."""
+
+
+class ProgramPinError(ShipError):
+    """The declared program could not be verified."""
+
+
+@dataclass(frozen=True)
+class ProgramPin:
+    name: str
+    path: Path
+    sha256: str
+
+    def verified(self) -> Path:
+        """Verify the ship's private copy before handing its absolute path to a caller."""
+        folder = self.path.parent
+
+        def refuse(reason: str) -> ProgramPinError:
+            return ProgramPinError(f"{self.name} pin {self.path}: {reason}. Restore the declared runtime copy.")
+
+        directory = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        try:
+            with ExitStack() as opened:
+                runtime_fd = os.open(folder.parent, directory)
+                opened.callback(os.close, runtime_fd)
+                folder_fd = os.open(folder.name, directory, dir_fd=runtime_fd)
+                opened.callback(os.close, folder_fd)
+                parent = os.fstat(folder_fd)
+                if parent.st_uid != os.getuid() or stat.S_IMODE(parent.st_mode) != 0o700:
+                    raise refuse("runtime/programs must belong to this user and have mode 0700")
+                fd = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder_fd)
+                with os.fdopen(fd, "rb") as binary:
+                    before = os.fstat(fd)
+                    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                            or stat.S_IMODE(before.st_mode) != 0o500):
+                        raise refuse("needs an owned regular executable with mode 0500")
+                    digest = hashlib.file_digest(binary, "sha256").hexdigest()
+                    after = self.path.lstat()
+                    if (not os.path.samestat(before, after) or before.st_ctime_ns != after.st_ctime_ns
+                            or not os.path.samestat(parent, folder.lstat())):
+                        raise refuse("file changed during verification")
+                    if digest != self.sha256:
+                        raise refuse("SHA-256 does not match ship.toml")
+        except FileNotFoundError:
+            raise refuse("file is missing") from None
+        except OSError:
+            raise refuse("cannot open the executable and its directories without following links") from None
+        return self.path
+
+    def proof(self, runtime: Path, version: str) -> Path:
+        return runtime / "proven" / f"{self.name}-{version}-{self.sha256}"
+
+
+def program_adapter(ship, adapter):
+    """Give a program consumer its ship's pin, if it has one."""
+    pins = getattr(ship, "program_pins", None)
+    return adapter.with_program_pin(pin) if pins and (pin := pins.get(adapter.name)) is not None else adapter
 
 
 @dataclass(frozen=True)
@@ -187,6 +246,7 @@ class Ship:
     # The workspace as the declaration writes it, joined to the ship folder but never resolved: ``workspace`` is
     # resolved at load when relative. The jail's work check walks a seat's declared cwd from this one.
     declared_workspace: Path | None = field(default=None, compare=False)
+    program_pins: dict[str, ProgramPin] = field(default_factory=dict)
 
     @property
     def file(self) -> Path:
@@ -431,7 +491,29 @@ def _from_text(text: str, folder: Path) -> Ship:
         forward=_forward(data.get('forward', {})),
         push_reminder=_push_reminder(head.get("push_reminder")),
         pr_screen=_pr_screen(data.get("pr_screen")),
+        program_pins=_program_pins(data.get("programs", {}), folder),
     )
+
+
+def _program_pins(programs: object, folder: Path) -> dict[str, ProgramPin]:
+    if not isinstance(programs, dict):
+        raise ShipError("programs must be a table of program pins")
+    from .harness import get
+
+    pins = {}
+    for name, pin in programs.items():
+        section = f"programs.{name}"
+        if not hasattr(get(name), "with_program_pin"):
+            raise ShipError(f"{section}: executable pins are unsupported for this program")
+        if not isinstance(pin, dict) or set(pin) != {"path", "sha256"}:
+            raise ShipError(f"[{section}] requires path and sha256")
+        path, digest = pin["path"], pin["sha256"]
+        if not isinstance(path, str) or not re.fullmatch(r"runtime/programs/[A-Za-z0-9][A-Za-z0-9._+-]*", path):
+            raise ShipError(f"{section}.path must be runtime/programs/<filename>, relative to ship.toml")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            raise ShipError(f"{section}.sha256 must be a 64-digit hexadecimal SHA-256")
+        pins[name] = ProgramPin(name, folder / path, digest.lower())
+    return pins
 
 
 def _pr_screen(table: object) -> PullRequestScreen | None:
