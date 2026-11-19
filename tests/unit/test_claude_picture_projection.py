@@ -1,5 +1,7 @@
 """Made payloads exercise the bounded reader and its native consumers."""
 
+from copy import deepcopy
+from datetime import timedelta
 from hashlib import sha256
 import json
 
@@ -96,6 +98,146 @@ def test_payload_projection_matches_the_full_native_readers(tmp_path, monkeypatc
         payload = (content[1]['source']['data'] if use == 'image-result'
                    else content if use == 'string-result' else content[1]['text'])
         assert payload.size == (size if use == 'image-result' else len(body.encode()))
+
+
+@pytest.mark.parametrize('layout', ['newline', 'splitlines'])
+@pytest.mark.parametrize('carrier', [None, 'tool_result', 'mcp_tool_result', 'web_fetch_tool_result'])
+def test_assistant_images_preserve_native_evidence(tmp_path, monkeypatch, layout, carrier):
+    path = tmp_path / 'synthetic.jsonl'
+    record = Native(path, 'claude', path.stem)
+    size = 384 * 1024
+    long_text = 'Ω "quote" and \\ with a newline\n' * 2000
+    reply = 'Synthetic assistant reply Ω'
+    bash = dict(type='tool_use', id='toolu_bash', name='Bash',
+                input=dict(command='synthetic command', run_in_background=True))
+    agent = dict(type='tool_use', id='toolu_agent', name='Agent',
+                 input=dict(description='synthetic agent', prompt='synthetic prompt'))
+    picture = image(size)
+    block = picture if carrier is None else dict(result([text(long_text), picture]), type=carrier)
+    content = [text(reply), block, bash, agent]
+    if carrier is None:
+        retained = image(72 * 1024)
+        retained['source']['media_type'] = 'synthetic-other-format'
+        content.append(retained)
+    row = record.add('assistant', version='2.1.325', context={'value': 'exact'},
+                     toolUseResult={'note': long_text},
+                     message=dict(content=content, role='assistant', model='synthetic',
+                                  id='msg_synthetic', stop_reason='tool_use',
+                                  usage=dict(input_tokens=11, output_tokens=3, cache_read_input_tokens=7,
+                                             cache_creation_input_tokens=5)))
+    for call, mirror in (('toolu_bash', dict(backgroundTaskId='synthetic-bash')),
+                         ('toolu_agent', dict(agentId='synthetic-agent', isAsync=True, status='async_launched'))):
+        record.add('user', version='2.1.325', toolUseResult=mirror,
+                   message=dict(role='user', content=[dict(result('Synthetic start'), tool_use_id=call)]))
+    begin_tool(record, 'Bash', {'command': 'qd inbox --wait'}, call='toolu_watch')
+    watch = 'qd > synthetic watch envelope'
+    record.add('user', version='2.1.325', message=dict(
+        role='user', content=[dict(result(watch), tool_use_id='toolu_watch')]))
+    record.finish()
+    record.compact()
+    child = path.with_suffix('') / 'subagents' / 'agent-synthetic-agent.jsonl'
+    child.parent.mkdir(parents=True)
+    child_row = dict(type='assistant', version='2.1.325', timestamp=(AT + timedelta(seconds=20)).isoformat(),
+                     sessionId=path.stem, agentId='synthetic-agent', isSidechain=True,
+                     message=dict(role='assistant', stop_reason='tool_use', content=[
+                         block, dict(type='tool_use', name='Read', id='toolu_child', input={'path': 'synthetic'})]))
+    child.write_text(json.dumps({'type': 'file-history-snapshot'}) + '\n' + json.dumps(child_row) + '\n')
+    if layout == 'splitlines':
+        for source in (path, child):
+            source.write_bytes(source.read_bytes().replace(b'\n', '\u2028'.encode(), 1))
+
+    adapter = get('claude')
+
+    def observations():
+        return (adapter.read(path), adapter.inputs(path), adapter.attribution_inputs(path),
+                adapter.person_inputs(path, ()), adapter.compactions(path),
+                input_receipt.confirmed(adapter, path, 'Synthetic task', AT),
+                input_receipt.confirmed(adapter, path, 'Synthetic TASK', AT))
+
+    with monkeypatch.context() as full:
+        full.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        ordinary = observations()
+    for source in (path, child):
+        json_record.release(source)
+    streamed = observations()
+    assert streamed == ordinary
+    (state, turns), _, attribution, _, compaction, receipt, edited = streamed
+    assert not state.turn_open
+    assert {tool.name for tool in state.active_tools} == {'Agent', 'Bash', 'Read'}
+    assert turns[0].reply.startswith(reply) and turns[0].tokens.read_cached == 14
+    assert [tool.name for tool in turns[0].tools] == ['Bash', 'Agent', 'Bash']
+    assert any(item.kind == 'watch' and item.text == watch for item in attribution)
+    assert (receipt, edited) == ('delivered', None)
+    assert (compaction.count, compaction.last_call, compaction.reason) == (1, 'toolu_watch', None)
+    snapshot = claude_record.parse(path)
+    assert snapshot.raw_digest == sha256(path.read_bytes()).hexdigest()
+    kept = snapshot.rows[1][1]
+    expected = deepcopy(row)
+    for value, raw in ((kept, expected), (claude_record.parse(child).rows[1][1], deepcopy(child_row))):
+        index = 1 if value is kept else 0
+        original = raw['message']['content'][index]
+        projected = value['message']['content'][index]
+        if carrier is not None:
+            original, projected = original['content'][1], projected['content'][1]
+        payload = projected['source']['data']
+        assert (payload.size, payload.image_bytes) == (size, size // 4 * 3)
+        original['source']['data'] = ''
+        assert value == raw
+
+
+@pytest.mark.parametrize('case,reason,path_tail,shape', [
+    ('row', 'not-a-user-row', ('source', 'data'), ('?', 'assistant', 'image', True)),
+    ('role', 'not-a-user-row', ('source', 'data'), ('assistant', '?', 'image', True)),
+    ('scalar', 'not-a-user-row', ('toolUseResult',), ('assistant', 'assistant', '?', False)),
+    ('unknown-block', 'unknown-block-type', ('source', 'data'), ('assistant', 'assistant', '?', True)),
+    ('unknown-result', 'unknown-block-type', ('source', 'data'), ('assistant', 'assistant', '?', True)),
+    ('result-envelope', 'unknown-block-type', ('source', 'data'), ('assistant', 'assistant', 'tool_result', True)),
+    ('result-text', 'unknown-block-type', ('content', 'text'), ('assistant', 'assistant', 'tool_result', True)),
+    ('text', 'budget', ('content', 'text'), (None,) * 4),
+    ('mirror', 'unknown-block-type', ('toolUseResult',), ('assistant', 'assistant', '?', True)),
+    ('media', 'image-media-type', ('source', 'data'), (None,) * 4),
+    ('base64', 'image-not-base64', ('source', 'data'), (None,) * 4),
+    ('padding', 'image-padding', ('source', 'data'), (None,) * 4),
+])
+def test_assistant_projection_refuses_unverified_oversized_values(tmp_path, monkeypatch, case, reason, path_tail, shape):
+    record = Native(tmp_path / 'synthetic.jsonl', 'claude')
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    size = 384 * 1024
+    picture = image(size)
+    row = {'type': 'assistant', 'message': {'role': 'assistant', 'content': [picture]}}
+    if case == 'row':
+        row['type'] = 'private-native-row'
+    elif case == 'role':
+        row['message']['role'] = 'private-message-role'
+    elif case in ('scalar', 'mirror'):
+        row['toolUseResult'] = 'x' * size
+        if case == 'scalar':
+            row['message']['content'] = 'Synthetic scalar content'
+    elif case == 'unknown-block':
+        picture['type'] = 'private-block'
+    elif case == 'unknown-result':
+        row['message']['content'] = [dict(result([picture]), type='private_tool_result')]
+    elif case == 'result-envelope':
+        row['message']['content'] = [dict(result([picture]), tool_use_id='')]
+    elif case == 'result-text':
+        row['message']['content'] = [result([text('x' * size), picture])]
+    elif case == 'text':
+        row['message']['content'].append(text('x' * size))
+    elif case == 'media':
+        picture['source']['media_type'] = 'private-image-compression'
+    elif case == 'base64':
+        picture['source']['data'] = '!' + picture['source']['data'][1:]
+    elif case == 'padding':
+        picture['source']['data'] += '='
+    with record.path.open('a') as stream:
+        stream.write(json.dumps(row) + '\n')
+    with pytest.raises(claude_record.ProjectionLimit) as rejected:
+        claude_record.parse(record.path)
+    detail = rejected.value.row_refusal
+    assert detail.reason == reason
+    assert detail.path[-len(path_tail):] == path_tail
+    assert detail.size >= size
+    assert (detail.row_type, detail.message_role, detail.block_type, detail.content_is_list) == shape
 
 
 @pytest.mark.parametrize('tool', ['Read', 'Bash error', 'Agent'])

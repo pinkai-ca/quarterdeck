@@ -65,6 +65,10 @@ def notes(data: dict) -> list[str]:
         path = '.'.join(row['path']) or 'row'
         read = ' · read by compatibility reader' if row['compatibility'] and row['exhausted'] is None else ''
         detail = f" · {row['layout']} · {row['reason']} ({row['value_type']})" if 'layout' in row else ''
+        if 'content_is_list' in row:
+            content = 'list' if row['content_is_list'] else 'non-list'
+            detail += (f" · row {row['row_type']}, message role {row['message_role']}, "
+                       f"block {row['block_type']}, content {content}")
         found.append(f"stream row limit: {Path(row['record']).name} · {path} ({row['size']:,} encoded bytes){read}{detail}")
     return found
 

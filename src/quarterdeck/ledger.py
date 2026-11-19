@@ -467,7 +467,7 @@ class Ledger:
         if refusal is not None or usage.compatibility:
             stamp = dict(stamp=stamp, compatibility=usage.compatibility)
             if refusal is not None:
-                stamp['row_refusal'] = asdict(refusal)
+                stamp['row_refusal'] = {key: value for key, value in asdict(refusal).items() if value is not None}
         values = (json.dumps(stamp), usage.lines, usage.retained, usage.memory, usage.exhausted)
         old = self.db.execute('SELECT stamp,lines,retained,memory,exhausted FROM record_projection_usage WHERE record=?',
                               (str(record),)).fetchone()
@@ -496,8 +496,7 @@ class Ledger:
                 fields = (tuple(identity), lines, retained, memory, exhausted, metadata.get('compatibility') is True)
                 if isinstance(refusal := metadata.get('row_refusal'), dict):
                     from .harness.claude_record import RefusedProjectionUsage, RowRefusal
-                    detail = RowRefusal.read(refusal.get('path'), refusal.get('size'), refusal.get('layout'),
-                                             refusal.get('reason'), refusal.get('value_type'))
+                    detail = RowRefusal.read(refusal)
                     if detail is not None and _current_projection_stamp(record) == fields[0]:
                         return RefusedProjectionUsage(*fields, row_refusal=detail)
                 return ProjectionUsage(*fields)

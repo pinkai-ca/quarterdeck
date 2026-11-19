@@ -70,10 +70,19 @@ REFUSAL_TYPES = IMAGE_FORMATS | {
     'image', 'text', 'tool_result', 'tool_use', 'thinking', 'redacted_thinking',
     'document', 'search_result', 'base64',
 }
+ASSISTANT_RESULTS = frozenset((
+    'tool_result', 'mcp_tool_result', 'web_search_tool_result', 'web_fetch_tool_result',
+    'tool_search_tool_result', 'code_execution_tool_result', 'bash_code_execution_tool_result',
+    'text_editor_code_execution_tool_result', 'advisor_tool_result',
+))
+REFUSAL_SHAPE_REASONS = ('not-a-user-row', 'unknown-block-type')
+REFUSAL_ROW_TYPES = frozenset(('user', 'assistant', 'system', 'summary', 'progress', 'attachment'))
+REFUSAL_ROLES = frozenset(('user', 'assistant'))
+REFUSAL_BLOCK_TYPES = ASSISTANT_RESULTS | {'image', 'text'}
 
 
-def safe_type(value):
-    return value if isinstance(value, str) and value in REFUSAL_TYPES else '?'
+def safe_type(value, allowed=REFUSAL_TYPES):
+    return value if isinstance(value, str) and value in allowed else '?'
 
 
 @dataclass(frozen=True)
@@ -85,16 +94,32 @@ class RowRefusal:
     layout: str | None = None
     reason: str | None = None
     value_type: str | None = None
+    row_type: str | None = None
+    message_role: str | None = None
+    block_type: str | None = None
+    content_is_list: bool | None = None
+
+    def with_shape(self, row_type, message_role, block_type, content_is_list):
+        return replace(self, row_type=safe_type(row_type, REFUSAL_ROW_TYPES),
+                       message_role=safe_type(message_role, REFUSAL_ROLES),
+                       block_type=safe_type(block_type, REFUSAL_BLOCK_TYPES), content_is_list=content_is_list)
 
     @classmethod
-    def read(cls, path, size, layout=None, reason=None, value_type=None):
+    def read(cls, observation):
+        path, size = observation.get('path'), observation.get('size')
         if (not isinstance(path, list) or len(path) > DEPTH
                 or not all(isinstance(part, str) and (part == '?' or part in SCHEMA_KEYS) for part in path)
                 or type(size) is not int or size < 0):
             return None
+        layout, reason = observation.get('layout'), observation.get('reason')
         if (isinstance(layout, str) and layout in REFUSAL_LAYOUTS
                 and isinstance(reason, str) and reason in REFUSAL_REASONS):
-            return cls(tuple(path), size, layout, reason, safe_type(value_type))
+            found = cls(tuple(path), size, layout, reason, safe_type(observation.get('value_type')))
+            content_is_list = observation.get('content_is_list')
+            if reason in REFUSAL_SHAPE_REASONS and type(content_is_list) is bool:
+                found = found.with_shape(observation.get('row_type'), observation.get('message_role'),
+                                         observation.get('block_type'), content_is_list)
+            return found
         return cls(tuple(path), size)  # older observations have no layout or reason
 
 
@@ -246,8 +271,9 @@ def native_image(block):
             and source['media_type'] in IMAGE_TYPES)
 
 
-def native_result(block):
-    return (block.get('type') == 'tool_result' and isinstance(block.get('tool_use_id'), str)
+def native_result(block, result_types=('tool_result',)):
+    return (isinstance(block.get('type'), str) and block['type'] in result_types
+            and isinstance(block.get('tool_use_id'), str)
             and bool(block['tool_use_id']) and type(block.get('is_error', False)) is bool)
 
 
@@ -266,15 +292,26 @@ def known_content(block):
     return isinstance(content, str) or isinstance(content, list) and all(map(text_or_image, content))
 
 
-def projection_error(refusal=None, reason='budget', value_type=None):
+def projection_error(refusal=None, reason='budget', value_type=None, *, row=None, path=()):
     if refusal is not None:
         refusal = replace(refusal, reason=reason, value_type=safe_type(value_type))
+        if row is not None and reason in REFUSAL_SHAPE_REASONS:
+            message = row.get('message')
+            role = message.get('role') if isinstance(message, dict) else None
+            content = message.get('content') if isinstance(message, dict) else None
+            content_is_list = isinstance(content, list)
+            block_type = None
+            if content_is_list and path[:2] == ('message', 'content') and len(path) > 2:
+                index = path[2]
+                if isinstance(index, int) and index < len(content) and isinstance(content[index], dict):
+                    block_type = content[index].get('type')
+            refusal = refusal.with_shape(row.get('type'), role, block_type, content_is_list)
     return _row_limit('required JSON row exceeds the retained-byte budget', refusal)
 
 
-def check_native_image(block, refusal):
+def check_native_image(block, refusal, row, path):
     if block.get('type') != 'image':
-        raise projection_error(refusal, 'unknown-block-type', block.get('type'))
+        raise projection_error(refusal, 'unknown-block-type', block.get('type'), row=row, path=path)
     source = block.get('source')
     if not isinstance(source, dict) or source.get('type') != 'base64':
         raise projection_error(refusal, 'image-not-base64', 'image')
@@ -305,16 +342,19 @@ def mirror_image_kind(row, path, result_has_image):
     return 'text'
 
 
-def project_payloads(row, payloads, descriptor):
+def project_payloads(row, payloads, descriptor, retained_bytes):
     """Confirm a candidate using its enclosing native row, independent of JSON key order."""
     message = row.get('message')
     first_path, first_capture = next(iter(payloads.items()))
     first_refusal = RowRefusal(schema_path(first_path), first_capture.size)
-    if (row.get('type') != 'user' or not isinstance(message, dict) or message.get('role') != 'user'
+    row_type = row.get('type')
+    if (row_type not in ('user', 'assistant') or not isinstance(message, dict) or message.get('role') != row_type
             or not isinstance(message.get('content'), list)):
-        raise projection_error(first_refusal, 'not-a-user-row')
+        raise projection_error(first_refusal, 'not-a-user-row', row=row, path=first_path)
     if not all(isinstance(block, dict) for block in message['content']):
-        raise projection_error(first_refusal, 'unknown-block-type')
+        raise projection_error(first_refusal, 'unknown-block-type', row=row, path=first_path)
+    if row_type == 'assistant':
+        return project_assistant_images(row, payloads, descriptor, ROW_BYTES - retained_bytes)
     results = [block for block in message['content'] if native_result(block)]
     result_has_image = any(isinstance(block.get('content'), list)
                            and any(map(native_image, block['content'])) for block in results)
@@ -323,29 +363,29 @@ def project_payloads(row, payloads, descriptor):
         refusal = RowRefusal(schema_path(path), capture.size)
         if capture.kind == 'mirror':
             if not results:
-                raise projection_error(refusal, 'unknown-block-type')
+                raise projection_error(refusal, 'unknown-block-type', row=row, path=path)
             kind = mirror_image_kind(row, path, result_has_image)
             at_path(row, path[:-1])[path[-1]] = capture.value(kind, refusal, 'image' if kind == 'image' else '?')
             continue
         block = at_path(row, path[:3])
         value_type = block.get('type')
         if path[3] == 'source':
-            value_type = check_native_image(block, refusal)
+            value_type = check_native_image(block, refusal, row, path)
         elif not native_result(block):
-            raise projection_error(refusal, 'unknown-block-type', block.get('type'))
+            raise projection_error(refusal, 'unknown-block-type', block.get('type'), row=row, path=path)
         elif len(path) > 4:
             child = at_path(row, path[:5])
             value_type = child.get('type')
             if capture.kind == 'image':
-                value_type = check_native_image(child, refusal)
+                value_type = check_native_image(child, refusal, row, path)
             elif value_type != 'text':
-                raise projection_error(refusal, 'unknown-block-type', value_type)
+                raise projection_error(refusal, 'unknown-block-type', value_type, row=row, path=path)
         value = capture.value(capture.kind, refusal, value_type)
         at_path(row, path[:-1])[path[-1]] = value
         spans[id(value)] = capture
     for block in message['content']:
         if not known_content(block):
-            raise projection_error(first_refusal, 'unknown-block-type', block.get('type'))
+            raise projection_error(first_refusal, 'unknown-block-type', block.get('type'), row=row, path=first_path)
         if not native_result(block) or not isinstance(block.get('content'), list):
             continue
         content = block['content']
@@ -363,19 +403,51 @@ def project_payloads(row, payloads, descriptor):
     return row
 
 
+def project_assistant_images(row, payloads, descriptor, remaining):
+    """Replace only verified image data, leaving each assistant evidence field intact."""
+    content = row['message']['content']
+    for path, capture in payloads.items():
+        refusal = RowRefusal(schema_path(path), capture.size)
+        block = content[path[2]] if capture.kind != 'mirror' else {}
+        try:
+            value = assistant_image_payload(row, path, block, capture, refusal)
+        except ProjectionLimit:
+            # The scanner also captures paths used by user results. Restore
+            # required candidates from the guarded source when they fit.
+            extra = capture.size - 2  # the encoded string replaces the four bytes of null
+            if extra > remaining:
+                raise
+            raw = b''.join(payload_bytes(descriptor, capture))
+            value = json.loads(b'"' + raw + b'"')
+            remaining -= extra
+        at_path(row, path[:-1])[path[-1]] = value
+    return row
+
+
+def assistant_image_payload(row, path, block, capture, refusal):
+    if capture.kind != 'image' or path[3] != 'source' and not native_result(block, ASSISTANT_RESULTS):
+        raise projection_error(refusal, 'unknown-block-type', block.get('type'), row=row, path=path)
+    image = block if path[3] == 'source' else at_path(row, path[:5])
+    media_type = check_native_image(image, refusal, row, path)
+    return capture.value('image', refusal, media_type)
+
+
+def payload_bytes(descriptor, capture):
+    start, left = capture.start, capture.size
+    while left:
+        data = os.pread(descriptor, min(CHUNK, left), start)
+        if not data:
+            raise Unknown('record ended while rereading a payload')
+        start += len(data)
+        left -= len(data)
+        yield data
+
+
 def canonical_parts(value, spans, descriptor):
     """Hash typed rows exactly as sorted compact JSON, streaming the original ASCII image bytes."""
     if isinstance(value, Payload):
-        capture = spans[id(value)]
         yield b'"'
-        start, left = capture.start, capture.size
-        while left:
-            data = os.pread(descriptor, min(CHUNK, left), start)
-            if not data:
-                raise Unknown('record ended while reading typed image identity')
-            start += len(data)
-            left -= len(data)
-            yield data
+        yield from payload_bytes(descriptor, spans[id(value)])
         yield b'"'
     elif isinstance(value, (dict, list)):
         mapping = isinstance(value, dict)
@@ -665,7 +737,7 @@ class GiantRow:
             if self.duplicate_key:
                 path, capture = next(iter(self.payloads.items()))
                 raise projection_error(RowRefusal(schema_path(path), capture.size), 'duplicate-key')
-            row = project_payloads(row, self.payloads, self.descriptor)
+            row = project_payloads(row, self.payloads, self.descriptor, len(self.output))
         return row, None, retained_size(row, len(self.payloads) * 16)
 
 

@@ -21,7 +21,7 @@ from quarterdeck.ledger import Ledger
 from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship
-from tests.compaction_shapes import Native
+from tests.compaction_shapes import AT, Native
 
 from .test_ledger import accounting_example, sql_writes
 from .test_claude_picture_projection import begin_tool, image, read_mirror, result, text
@@ -429,6 +429,107 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
         assert path.stat().st_size == size
 
 
+@pytest.mark.parametrize('layout,carrier', [('newline', None), ('splitlines', 'tool_result')])
+def test_assistant_picture_projection_recovers_owned_operator_record(tmp_path, monkeypatch, layout, carrier):
+    compatibility_bound = 32 * 1024
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', compatibility_bound)
+    monkeypatch.setattr(claude_record, 'ROW_BYTES', 4096)
+    monkeypatch.setattr(claude_record, 'CHUNK', 512)
+    session = Session('synthetic-session', 'Synthetic', human=True)
+    pool = Pool('synthetic-pool', 'anthropic')
+    spec = SeatSpec('synthetic-seat', session.name, 'office', 'claude', (pool.name,))
+    ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, {pool.name: pool},
+                {session.name: session}, {spec.name: spec})
+    tmux = SimpleNamespace(pane=lambda _: None)
+    trusted = trusted_files.make(ship.runtime, spec.name)
+    pointer, launch = trusted / trusted_files.RECORD, trusted / trusted_files.LAUNCH
+    path = ship.runtime / 'seats' / spec.name / 'home' / 'projects' / 'synthetic' / 'record.jsonl'
+    native = Native(path, 'claude')
+    native.finish()
+    record_owner.register(trusted, path, 'claude')
+    pointer.write_text(str(path) + '\n')
+    Launched('%1', 1234, '2029-12-31T00:00:00+00:00', pool.name, None, ['claude'], None, 'claude').write(launch)
+    provenance = pointer.read_bytes(), launch.read_bytes(), path.stat().st_ino, path.stat().st_dev
+
+    def unexpected(*args, **kwargs):
+        pytest.fail('accounting tried to act on an operator-owned seat')
+
+    for action in ('up', 'down', 'restart', 'fresh', 'move_to'):
+        monkeypatch.setattr(Seat, action, unexpected)
+    monkeypatch.setattr(Service, 'request_fresh_handoff', unexpected)
+    monkeypatch.setattr(Service, 'deliver', unexpected)
+    messages = []
+
+    def account(service, book, *, observed=False):
+        _, _, human_readings = service.account_records(process_table={})
+        assert [record for _, record, *_ in human_readings] == ([path] if observed else [])
+        assert service.store.all() == messages
+        return book.db.execute('SELECT turn,started,ended FROM turns WHERE record=? ORDER BY turn',
+                               (str(path),)).fetchall()
+
+    service = Service(ship, tmux)
+    with service.ledger as book:
+        before = account(service, book, observed=True)
+        assert len(before) == 1
+        first_rows = len(native.rows)
+        native.path = tmp_path / 'made-suffix.jsonl'
+        order = post.Message('ord-synthetic', 'order', 'issuer', spec.name,
+                             AT + timedelta(seconds=3, milliseconds=500), 'Synthetic image request')
+        service.store.write(order)
+        messages.append(order)
+        native.begin(post.typed(messages))
+        picture = image(48 * 1024)
+        block = picture if carrier is None else dict(result([picture]), type=carrier)
+        native.add('assistant', version='2.1.325', message=dict(content=[block, text('Synthetic reply')],
+                   role='assistant', model='synthetic', id='synthetic-image-reply',
+                   usage=dict(input_tokens=2, output_tokens=3, cache_read_input_tokens=5,
+                              cache_creation_input_tokens=7)))
+        native.finish()
+        with path.open('ab') as stream:
+            if layout == 'splitlines':
+                stream.write('\u2028'.encode())
+            for row in native.rows[first_rows:]:
+                stream.write(json.dumps(row).encode() + b'\n')
+        assert path.stat().st_size > compatibility_bound
+        with monkeypatch.context() as older:
+            older.setattr(record_file, 'CLAUDE_STREAM_BOUND', compatibility_bound)
+            assert account(service, book) == before
+        [raw] = book.unread_spans()
+        assert (raw['bound'], raw['counted']) == (compatibility_bound, 1)
+
+    def refuse_assistant(row, payloads, descriptor, remaining):
+        field, capture = next(iter(payloads.items()))
+        refusal = claude_record.RowRefusal(claude_record.schema_path(field), capture.size)
+        raise claude_record.projection_error(refusal, 'not-a-user-row')
+
+    json_record.release(path)
+    with monkeypatch.context() as prior:
+        prior.setattr(claude_record, 'project_assistant_images', refuse_assistant)
+        service = Service(ship, tmux)
+        with service.ledger as book:
+            assert account(service, book) == before
+            [blocked] = book.unread_spans()
+            assert blocked['bound'] == raw['bound'] and blocked['projection']['counted'] == 1
+            [refusal] = book.projection_refusals()
+            assert (refusal['layout'], refusal['reason']) == (layout, 'not-a-user-row')
+            assert 'content_is_list' not in refusal
+
+    service = Service(ship, tmux)
+    with service.ledger as book:
+        after = account(service, book, observed=True)
+        assert after[:1] == before and len(after) == 2
+        assert book.db.execute('SELECT read_cached,read_uncached,cache_written,written FROM turns '
+                               'WHERE record=? AND turn=1', (str(path),)).fetchone() == (5, 2, 7, 3)
+        _, attribution = book.attributions.details()
+        assert (attribution['status'], attribution['orders']) == ('attributed', [order.id])
+        assert any(item.get('message') == order.id for item in attribution['evidence'])
+        assert book.unread_spans() == book.incomplete_records() == book.projection_refusals() == []
+        assert account(service, book) == after
+        [seat] = service.resolved_seats()
+        assert human_wake.owned_record(seat) == path
+        assert (pointer.read_bytes(), launch.read_bytes(), path.stat().st_ino, path.stat().st_dev) == provenance
+
+
 @pytest.mark.parametrize('layout', ['newline', 'splitlines'])
 @pytest.mark.parametrize('legacy', [True, False])
 def test_compatibility_field_evidence_is_persisted_only_for_its_exact_observation(tmp_path, layout, legacy):
@@ -501,6 +602,36 @@ def test_projection_refusal_reader_accepts_only_fixed_schema_metadata(tmp_path):
             else:
                 assert rows[0]['layout'] == 'splitlines'
                 assert rows[0]['reason'] == 'image-media-type' and rows[0]['value_type'] == '?'
+
+
+@pytest.mark.parametrize('reason', ['not-a-user-row', 'unknown-block-type'])
+def test_projection_refusal_shape_survives_ledger_roundtrip(tmp_path, reason):
+    record = tmp_path / 'synthetic.jsonl'
+    record.write_text('{}\n')
+    stamp = json_record._stamp(record.stat())
+    base = claude_record.RowRefusal(('message', 'content'), 42, 'splitlines', reason, '?')
+    with Ledger(tmp_path / 'ledger.sqlite') as book:
+        # This format had layout, reason and scalar type before the shape fields were added.
+        book.save_projection_usage(record, claude_record.RefusedProjectionUsage(stamp, row_refusal=base))
+        assert 'content_is_list' not in book.projection_refusals()[0]
+        detail = base.with_shape('assistant', 'assistant', 'mcp_tool_result', True)
+        book.save_projection_usage(record, claude_record.RefusedProjectionUsage(stamp, row_refusal=detail))
+        assert book.projection_usage(record).row_refusal == detail
+        view = ledger_reading.collect(book, by='seat')
+        assert any(line.endswith('row assistant, message role assistant, block mcp_tool_result, content list')
+                   for line in ledger_reading.render(view))
+
+        tampered = dict(path=['message', 'content'], size=42, layout='splitlines', reason=reason, value_type='?',
+                        row_type='private-row', message_role=['private-role'], block_type='private_tool_result',
+                        content_is_list=False)
+        book.db.execute('UPDATE record_projection_usage SET stamp=?',
+                        (json.dumps(dict(stamp=stamp, row_refusal=tampered)),))
+        assert book.projection_usage(record).row_refusal == base.with_shape('?', '?', '?', False)
+        assert any(line.endswith('row ?, message role ?, block ?, content non-list')
+                   for line in ledger_reading.render(ledger_reading.collect(book, by='seat')))
+        with record.open('a') as stream:
+            stream.write('\n')
+        assert book.projection_refusals() == []
 
 
 def test_qd_ledger_and_the_pool_reading_name_each_span(tmp_path):
