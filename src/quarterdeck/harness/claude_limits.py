@@ -1,6 +1,6 @@
 """Claude's native allowance fields, model families and safe shape diagnostics."""
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 import math
@@ -180,14 +180,52 @@ REFUSED_WINDOWS = {"five_hour": ("5h", None), "seven_day": ("7d", None),
                    "seven_day_sonnet": ("sonnet / 7d", "sonnet"), "seven_day_opus": ("opus / 7d", "opus")}
 
 
-def refused_at_limit(entry: dict, key: str, at: datetime | None) -> Wall | None:
-    """The wall a recorded usage-limit refusal proves, for its pool and window until its reset; else None."""
+def rejected_limit_info(entry):
     if not (isinstance(entry, dict) and entry.get("type") == "assistant" and entry.get("isApiErrorMessage") is True
             and entry.get("error") == "rate_limit" and entry.get("apiError") == "usage_limit_reached"):
         return None
     params = entry.get("apiErrorParams")
     info = params.get("rate_limit_info") if isinstance(params, dict) else None
-    if not isinstance(info, dict) or info.get("status") != "rejected":
+    return info if isinstance(info, dict) and info.get("status") == "rejected" else None
+
+
+@dataclass(frozen=True)
+class ExtraUsage:
+    at: datetime
+    setting: str
+    detail: str | None = None
+    literals: tuple | None = None
+
+
+def reported_literal(value):
+    """Permit bounded enum words and scalar types, never prose, keys, IDs or containers."""
+    return (value is None or type(value) is bool
+            or type(value) in (int, float) and -1_000_000_000 <= value <= 1_000_000_000
+            or isinstance(value, str) and re.fullmatch(r'[A-Za-z][A-Za-z_-]{0,47}', value) is not None
+            and not value.lower().startswith(('acct_', 'account_', 'token_', 'key_', 'secret_')))
+
+
+def extra_usage_at_refusal(info, at):
+    """Take only allowlisted extra-usage scalars from a recognized refusal's metadata."""
+    if info is None or at is None:
+        return None
+    status, reason = info.get("overageStatus"), info.get("overageDisabledReason")
+    if status is None and reason is None:
+        return ExtraUsage(at, "unavailable", "setting missing")
+    if not reported_literal(status) or not reported_literal(reason):
+        return ExtraUsage(at, "unavailable", "setting malformed")
+    if status == "rejected" and reason == "org_level_disabled":
+        return ExtraUsage(at, "off", "org_level_disabled")
+    return ExtraUsage(at, "unverified", literals=(status, reason))
+
+
+def refused_at_limit(entry: dict, key: str, at: datetime | None) -> Wall | None:
+    """The wall a recorded usage-limit refusal proves, for its pool and window until its reset; else None."""
+    return limit_wall(rejected_limit_info(entry), key, at)
+
+
+def limit_wall(info, key, at):
+    if info is None:
         return None
     kind, seconds = info.get("rateLimitType"), info.get("resetsAt")
     if not isinstance(kind, str) or kind not in REFUSED_WINDOWS or type(seconds) is not int or at is None:

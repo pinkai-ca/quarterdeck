@@ -28,7 +28,8 @@ from pathlib import Path
 
 from . import record_file
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
-from .types import AUTHENTICATION, Inputs, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
+from .types import AUTHENTICATION, Inputs, State, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
+from .claude_limits import ExtraUsage, extra_usage_at_refusal, limit_wall, rejected_limit_info
 from .claude_background import notification as background_notification, BackgroundBash, user_notice
 from .claude_children import Children, fingerprint as children_fingerprint
 
@@ -456,6 +457,11 @@ def _wall_clock() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@dataclass(frozen=True)
+class _ClaudeState(State):
+    extra_usage: tuple[ExtraUsage, ...] = ()
+
+
 class _Reader(JsonLinesReader):
     kinds = ('assistant', 'queue-operation', 'system', 'user')
     label = "Claude Code"
@@ -472,6 +478,7 @@ class _Reader(JsonLinesReader):
         self.background = BackgroundBash(record)
         self.children = Children(record)
         self.walls = []
+        self.extra_usage = []
         self.notice_input = None  # accounting candidate only: a notice cannot open a turn
         self.notice_unanswered, self.notice_at = False, None  # a notice no assistant row has followed, and its time
         super().__init__(record, snapshot)
@@ -484,7 +491,11 @@ class _Reader(JsonLinesReader):
             state = replace(state, queue_error='unknown queue operation')
         if self.answering_notice():
             state = replace(state, turn_open=None)
-        return replace(state, failure=self.orphan_auth) if self.open is None and self.orphan_auth else state
+        if self.open is None and self.orphan_auth:
+            state = replace(state, failure=self.orphan_auth)
+        if self.extra_usage:
+            return _ClaudeState(**vars(state), extra_usage=tuple(self.extra_usage))
+        return state
 
     def answering_notice(self) -> bool:
         """No turn is open, the program's own notice came within the grace and no assistant row has followed it.
@@ -509,12 +520,14 @@ class _Reader(JsonLinesReader):
             self.tools_known = False
             return
         if kind == "assistant":
-            from .claude_limits import refused_at_limit
+            info = rejected_limit_info(entry)
             uuid = entry.get("uuid")
-            wall = refused_at_limit(entry, f"limit:{uuid}" if isinstance(uuid, str) and uuid else f"limit:{len(self.walls)}",
-                                    when(entry.get("timestamp")))
+            at = when(entry.get("timestamp")) if info is not None else None
+            wall = limit_wall(info, f"limit:{uuid}" if isinstance(uuid, str) and uuid else f"limit:{len(self.walls)}", at)
             if wall is not None:
                 self.walls.append(wall)  # the provider refused work at this limit, whichever branch asked
+            if (reading := extra_usage_at_refusal(info, at)) is not None:
+                self.extra_usage.append(reading)
         if not entry.get('isSidechain'):
             self.background.observe(entry, when(entry.get('timestamp')))
         if kind == "queue-operation":

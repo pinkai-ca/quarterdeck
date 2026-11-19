@@ -413,7 +413,9 @@ class Service:
 
     def pool_forecasts(self) -> None:
         from . import usage_forecast
+        from .harness import claude_extra_usage as extra_usage
         usage_forecast.notify(self)
+        extra_usage.notify(self)
 
     def record_growth(self) -> None:
         from . import record_growth
@@ -2493,10 +2495,12 @@ class Service:
                     if state is None:  # an empty record of unknown reader: settled, with nothing to account
                         book.mark_record(record, seat.name, pool, None, commit=False)
                         continue
+                    extra = getattr(state, 'extra_usage', ())
                     if source_walls is None:
-                        book.quota.record(record, seat.name, state.walls, book.provenance, post.now(), commit=False)
+                        book.quota.record(record, seat.name, state.walls, book.provenance, post.now(),
+                                          commit=False, extra_readings=extra)
                     else:
-                        source_walls(record, seat.name, state.walls, post.now())
+                        source_walls(record, seat.name, state.walls, post.now(), extra)
                     incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
                     book.mark_record(record, seat.name, pool, incomplete, commit=False)
                     if turns:

@@ -143,6 +143,8 @@ class Quotas:
         self.db = db
         self.commit_attempt = commit_attempt
         if create:  # a reading opens the book read-only and makes no table
+            from .harness import claude_extra_usage as extra_usage
+
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS wall_events (
                     source TEXT NOT NULL, event TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
@@ -155,6 +157,7 @@ class Quotas:
                     PRIMARY KEY (source, event));
                 CREATE TABLE IF NOT EXISTS usage_reads (pool TEXT PRIMARY KEY, at TEXT NOT NULL, error TEXT);
             """)
+            db.executescript(extra_usage.SCHEMA)
             if "group_name" not in self.columns():  # an older book gains the refused limit's model group
                 db.execute("ALTER TABLE wall_events ADD COLUMN group_name TEXT")
 
@@ -191,10 +194,17 @@ class Quotas:
             self.db.commit()
 
     def record(self, record, seat: str, events: tuple[Wall, ...], provenance, now: datetime,
-               *, commit: bool = True) -> None:
+               *, commit: bool = True, extra_readings=()) -> None:
         for event in events:
             owner, pool = provenance.resolve(record, event.at, event.at, seat, UNKNOWN)
             self.observe(str(record), owner, pool, event, now, commit=False)
+        if extra_readings:
+            from .harness import claude_extra_usage as extra_usage
+
+            for observation in extra_readings:
+                _, pool = provenance.resolve(record, observation.at, observation.at, seat, UNKNOWN)
+                if pool != UNKNOWN:
+                    extra_usage.remember(self.db, pool, observation)
         if commit and self.db.in_transaction:
             self.db.commit()
 

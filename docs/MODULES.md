@@ -209,6 +209,7 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | `claude_background.py` | Claude Code's root Bash background tasks, apart from turn accounting |
 | `claude_children.py` | Claude Code 2.1.325's subagent records joined to their root: a child's own background commands and its Agent call's lifetime |
 | `claude_limits.py` | Claude's native allowance fields, model families and safe shape diagnostics |
+| `claude_extra_usage.py` | timestamped refusal metadata, status and doctor wording, and durable private Desk notices |
 | `claude_statusline.py` | Claude Code's default footer, run as a standalone standard-library script |
 | `claude_watch.py` | recorded watch output that a tool consumed, for attribution only, never a receipt |
 | `closed_record.py` | whether a payload is absent from a closed launch's record |

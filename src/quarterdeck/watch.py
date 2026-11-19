@@ -357,6 +357,7 @@ def service_state(runtime: Path, *, now=None) -> str:
 @reading_scope.reading_pass()
 @record_owner.reader_pass()
 def status_reading(ship: Ship, tmux: Tmux, *, store=None, collected=None) -> dict:
+    from .harness import claude_extra_usage as extra_usage
     store, post_held = _post_listing(ship, post.Store(ship.runtime) if store is None else store)
     requests = request_queue.pending(ship.runtime)
     selected = seats(ship, tmux, False)
@@ -368,7 +369,7 @@ def status_reading(ship: Ship, tmux: Tmux, *, store=None, collected=None) -> dic
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
             "requests": requests, "facts": (collected if collected is not None else
                 facts(ship, tmux, store=store, post_held=post_held, check_reading=outcomes)),
-            "usage": headline_readings(ship), **providers.identities(ship)}
+            "usage": headline_readings(ship), "extra_usage": extra_usage.readings(ship), **providers.identities(ship)}
     try:
         book = ledger.Ledger.reading(ship.runtime / 'ledger.sqlite')
         if book is not None:
@@ -381,6 +382,7 @@ def status_reading(ship: Ship, tmux: Tmux, *, store=None, collected=None) -> dic
 
 
 def render_table(data: dict) -> list[str]:
+    from .harness import claude_extra_usage as extra_usage
     state = data["service"]
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
     recovery_lines = list(getattr(data.get("facts"), "server_recovery", None) or [])  # law: nothing-waits-silently
@@ -416,6 +418,7 @@ def render_table(data: dict) -> list[str]:
     for m in data["open_orders"]:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
     rows += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]
+    rows += [f"{row['pool']}: {extra_usage.describe(row)}" for row in data.get('extra_usage', ())]
     return rows + render_headlines(data["usage"])
 
 

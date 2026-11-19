@@ -218,9 +218,9 @@ def worker():
             def context(record, names):
                 book.db.flush()
                 send(('context', str(record) if record else None, names))
-            def walls(record, name, events, at):
+            def walls(record, name, events, at, extra):
                 book.db.flush()
-                send(('walls', str(record), name, events, at))
+                send(('walls', str(record), name, events, at, extra))
             for seat in selected:
                 service.resolved_seats = lambda seat=seat: [seat]
                 for item in sources[seat.name]:
@@ -686,7 +686,8 @@ class Driver:
                                 self.counts['discarded_statements'] += 1
                     elif packet[0] == 'walls' and self.valid(service):
                         changes = book.db.total_changes
-                        book.quota.record(Path(packet[1]), packet[2], packet[3], book.provenance, packet[4], commit=False)
+                        book.quota.record(Path(packet[1]), packet[2], packet[3], book.provenance, packet[4],
+                                          commit=False, extra_readings=packet[5])
                         self.changed |= book.db.total_changes != changes
                     elif packet[0] == 'heartbeat':
                         service.heartbeat()

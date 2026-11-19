@@ -33,6 +33,8 @@ PATIENCE = 600.0  # a fix is a turn of real work
 
 def checks(ship: Ship) -> list[Check]:
     """Every check, passed or failed, each with what it found or what would lift it."""
+    from .harness import claude_extra_usage as extra_usage
+
     found = [Check("ship file", True, f"{ship.file.name}: {len(ship.seats)} seats, {len(ship.pools)} pools, {len(ship.sessions)} sessions; "
                    f"carry_bytes={getattr(ship, 'carry_bytes', CARRY_BYTES)} UTF-8 bytes (first message and index-page policy bound)")]
     shell = shell_check()
@@ -48,11 +50,15 @@ def checks(ship: Ship) -> list[Check]:
         found.append(row)
         versions[name] = version
 
+    account_readings = {row['pool']: extra_usage.describe(row) for row in extra_usage.readings(ship)}
     for pool in ship.pools.values():
         checked = pool_check(pool)
         native = harnesses.native_name(pool.provider)
         identity = f"provider {providers.display(pool.provider)} · {pool.kind} · native harness {native or 'none'}"
-        found.append(Check(checked.name, checked.passed, f"{identity} · {checked.detail}{selected_program(ship, native, versions)}"))
+        detail = f"{identity} · {checked.detail}{selected_program(ship, native, versions)}"
+        if pool.name in account_readings:
+            detail += f" · {account_readings[pool.name]}"
+        found.append(Check(checked.name, checked.passed, detail))
         if pool.declared_provider != pool.provider:
             found.append(Check(f"provider spelling {pool.name}", True,
                                f'in [pools.{pool.name}] change provider = "{pool.declared_provider}" to provider = "{pool.provider}"; '
