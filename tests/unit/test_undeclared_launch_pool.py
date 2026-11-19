@@ -8,7 +8,7 @@ from quarterdeck import cli, credential, post, quota, ship as shipmod, watch
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.types import Screen
-from quarterdeck.seat import Seat, SelectionError
+from quarterdeck.seat import EXPLICIT, Seat, SelectionError
 from quarterdeck.service import Service
 from quarterdeck.ship import ShipError
 from .test_cross_program_failover import usage
@@ -106,6 +106,18 @@ def test_explicit_fresh_applies_the_new_plain_declaration(withdrawn):
     assert 'up in' in cli.relaunch(r.ship, 'worker', False)
     launch = r.worker.launched()
     assert (launch.pool, launch.harness, launch.resume) == ('second', 'claude', None)
+
+
+def test_explicit_fresh_ignores_a_marker_for_the_withdrawn_pool(withdrawn):
+    r = withdrawn
+    marker = r.worker.trusted / EXPLICIT
+    marker.write_text('first\n')
+    before = r.worker.launched()
+    assert 'up in' in cli.relaunch(r.ship, 'worker', False)
+    launch = r.worker.launched()
+    assert launch.pane != before.pane
+    assert (launch.pool, launch.harness, launch.resume) == ('second', 'claude', None)
+    assert not marker.exists()
 
 
 def test_post_reaches_the_original_program_and_is_confirmed_by_its_record(withdrawn, monkeypatch):

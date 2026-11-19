@@ -488,7 +488,7 @@ class Seat:
     def launch_choice(self, *, current_walled: bool = False) -> tuple[str, str]:
         """The pool a launch of this down seat takes, and why: the ship file is the Admiral's order.
 
-        A person's explicit choice for this launch (``qd set pool=`` on a down seat) is taken as it is. Otherwise
+        A person's explicit choice for this launch (``qd set pool=`` on a down seat) is taken while declared. Otherwise
         the first declared choice with room wins over the saved choice: a saved choice later in the list than a
         choice with room, or one the ship file no longer declares, gives way. Room is what the service routes by
         (``quota.cached_open``): a choice whose room is unknown, with no ledger, its usage not yet read or its
@@ -504,7 +504,7 @@ class Seat:
             explicit = (self.trusted / EXPLICIT).read_text().strip()
         except FileNotFoundError:
             explicit = None
-        if explicit is not None and explicit == current:
+        if explicit == current and explicit in pools:
             return current, 'chosen for this launch by qd set'
         from . import ledger, quota
         book = ledger.Ledger.reading(self.ship.runtime / 'ledger.sqlite')
