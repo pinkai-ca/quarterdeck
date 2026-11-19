@@ -588,7 +588,7 @@ class Facts:
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
     startup_delivery: str | None = None
-    seat_holds: list[str] = field(default_factory=list)  # one seat held alone by a bad file or a refused record
+    seat_holds: list[str] = field(default_factory=list)  # named holds that affect one seat
     screening: list[str] = field(default_factory=list)  # a hand screening a pull request: its posts are held (pr_screen)
     brief_git: list[str] = field(default_factory=list)  # the ship folder's git unanswered past its passes (brief_change)
     relaunches: list[str] = field(default_factory=list)  # a relaunch a stopped service left unfinished (relaunch_intent)
@@ -1095,6 +1095,8 @@ def _run_step(step: str, seat, ctx: dict, store, attempts, latest) -> _Step:
                 ops.append(('pane_obstructions', f"{name}: {diagnostic}", 'append'))
             if obstruction and not authentication_waiting(ctx.get('authentication')):
                 ops.append(('needs_human', name, 'once'))
+                if door.named_hold:
+                    ops.append(('seat_holds', f"{name}: {obstruction}", 'append'))  # law: nothing-waits-silently
             if door.waiting or "pending" in door.reason or "; qd submit " in door.reason:
                 ops.append(('pending', f"{name}: {door.reason}", 'append'))
         elif step == 'detached':

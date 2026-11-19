@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import ship as shipmod
+from quarterdeck import ship as shipmod, watch
 from quarterdeck.door import Door, choice_cell
 from quarterdeck.harness import grok_screen
 from quarterdeck.seat import Launched, Seat
@@ -93,11 +93,32 @@ def test_a_screen_that_does_not_clear_is_held_with_nothing_more_pressed(grok):
     assert door.reading().clears == "needs a human"
 
 
-@pytest.mark.parametrize("modes", [None, dict(SGR_ON, sgr=False), dict(SGR_ON, button=False, all=False, standard=False)])
-def test_no_click_without_sgr_mouse_reports(grok, modes):
+@pytest.mark.parametrize(("modes", "reason"), [
+    (None, "SGR mouse reporting could not be read"),
+    (dict(SGR_ON, sgr=False), "SGR mouse reporting is off"),
+    (dict(SGR_ON, button=False, all=False, standard=False), "SGR mouse reporting is off"),
+], ids=["unreadable", "sgr-off", "tracking-off"])
+def test_missing_mouse_reporting_names_the_held_question_with_no_message(grok, monkeypatch, modes, reason):
+    # law: nothing-waits-silently
+    seat = grok.seat
     grok.modes[0] = modes
-    Door(grok.seat).clear_known()
-    assert grok.clicks == [] and grok.seat.launched().answered is None
+    monkeypatch.setattr(watch, "seats", lambda *args: [seat])
+    monkeypatch.setattr(watch, "disks", lambda *args: [])
+    logs = []
+    service = SimpleNamespace(resolved_seats=lambda: [seat], log=lambda *args, **kwargs: logs.append(args))
+
+    Service.answers(service)
+    reading = Door(seat).reading()
+    assert reading.clears == "needs a human" and reason in reading.reason
+    facts = watch.facts(seat.ship, seat.tmux, login=[])
+    assert facts.waiting == 0 and facts.needs_human == [seat.name]
+    assert f"{seat.name}: {grok_screen.TRAINING_QUESTION.name}; {reason}" in facts.line()
+    assert not grok.clicks and not logs and seat.launched().answered is None
+
+    grok.modes[0] = SGR_ON
+    facts = watch.facts(seat.ship, seat.tmux, login=[])
+    assert not facts.needs_human and grok_screen.TRAINING_QUESTION.name not in facts.line()
+    assert not grok.clicks and seat.launched().answered is None
 
 
 def test_nothing_is_pressed_in_a_human_session(grok, monkeypatch):

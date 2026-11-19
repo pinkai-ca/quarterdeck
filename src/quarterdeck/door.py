@@ -69,6 +69,15 @@ def cannot_become(box, drawn: str | None) -> bool:
     return not (head and (shown.startswith(head) or head.startswith(shown)))
 
 
+def mouse_reporting_hold(modes: dict[str, bool] | None) -> str | None:
+    """A mouse press needs both SGR encoding and a mode that reports button presses."""
+    if not modes:
+        return "SGR mouse reporting could not be read"
+    if not modes["sgr"] or not (modes["button"] or modes["all"] or modes["standard"]):
+        return "SGR mouse reporting is off"
+    return None
+
+
 @dataclass(frozen=True)
 class Reading:
     """Can the typing path deliver: open, or obstructed with the reason and what clears it."""
@@ -80,6 +89,7 @@ class Reading:
     waiting: bool = False
     diagnostic: str = ""  # reason metadata only; never changes whether the door is open
     display_reason: str = ""  # presentation only; admission and repeated-frame confirmation keep reason
+    named_hold: bool = False  # retain the reason in the ship status line
 
     def __str__(self) -> str:
         if self.open:
@@ -291,7 +301,7 @@ class Door:
             return Reading(False, wall, "quota reset or another pool")
         if screen.interruption is not None:
             if screen.interruption.click is not None:
-                return Reading(False, *self._question(screen))
+                return self._question(screen)
             return Reading(False, screen.interruption.name,
                            "dismissable" if screen.interruption.dismissable else "needs a human")
         screen = self.known(screen)
@@ -419,20 +429,28 @@ class Door:
         launched = self.seat.launched()
         return launched is not None and self.harness.seeded_acknowledgement(question, launched, getattr(self.seat, 'home', None))
 
-    def _question(self, screen: Screen) -> tuple[str, str]:
-        """A question the framework answers: once per launch, on a screen that reads not working with its box read;
-        after that a screen still showing it needs a human."""
+    def _question(self, screen: Screen) -> Reading:
+        """Read whether the framework can answer the account holder's question."""
         question = screen.interruption
         launched = self.seat.launched()
         done = self.last_answer(launched, question)
         if done is not None and not (question.recurs and done.get("outcome") == "cleared"):
-            return (f"{question.name}: {done.get('choice')} was pressed at {done.get('at')} and the question did not clear; "
-                    "nothing more is pressed", "needs a human")
+            return Reading(False,
+                           f"{question.name}: {done.get('choice')} was pressed at {done.get('at')} and the question did not clear; "
+                           "nothing more is pressed", "needs a human")
         if screen.unknown is not None:
-            return f"{question.name}; {screen.unknown}; nothing is pressed", "needs a human"
+            return Reading(False, f"{question.name}; {screen.unknown}; nothing is pressed", "needs a human")
         if screen.working:
-            return f"{question.name}; answered {question.click} once the turn under it ends", "time"
-        return f"{question.name}; the framework answers it {question.click}", "dismissable"
+            return Reading(False, f"{question.name}; answered {question.click} once the turn under it ends", "time")
+        if not question.by_label:
+            pane = self.captured_pane
+            try:
+                modes = self.tmux.mouse_modes(pane.id, pane.pid) if pane is not None else None
+            except TmuxError:
+                modes = None
+            if reason := mouse_reporting_hold(modes):
+                return Reading(False, f"{question.name}; {reason}", "needs a human", named_hold=True)
+        return Reading(False, f"{question.name}; the framework answers it {question.click}", "dismissable")
 
     @staticmethod
     def last_answer(launched, question) -> dict | None:
@@ -467,7 +485,7 @@ class Door:
                 return current  # the choice not found once by its own text: nothing is pressed
         else:
             modes = self.tmux.mouse_modes(pane.id, pane.pid)
-            if cell is None or not modes or not modes["sgr"] or not (modes["button"] or modes["all"] or modes["standard"]):
+            if cell is None or mouse_reporting_hold(modes):
                 return current
         at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         entry = dict(question=question.name, choice=question.click, at=at, outcome="pressed")
