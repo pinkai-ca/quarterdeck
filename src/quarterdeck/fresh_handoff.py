@@ -100,12 +100,14 @@ def _unavailable(seat, launched, pane):
 
 
 def request(seat, *, reason, caller=None, expected_launch=None, service=None, restart=False,
-            pool=None, enclosed=False):
-    """Stage once per live launch, or start immediately after an independently proved stop.
+            pool=None, enclosed=False, immediate=None):
+    """Stage once per live launch, or start immediately when this program cannot take a turn.
 
-    ``pool`` is a destination the caller already chose. The program is still up and cannot take a turn to write
-    its handoff, so the fresh start runs at once on that pool, and a later request for the same launch does not
-    start another. ``enclosed`` means the caller already holds this seat's relaunch section.
+    ``pool`` is a destination the caller already chose. ``immediate`` defaults to that choice being set, which is
+    how a walled program starts at once: it cannot write its handoff. A caller whose current pool is still open
+    passes ``immediate=False`` so the same handoff is staged, bound to ``pool``, and started at the idle break
+    after the report. A later request for the same launch does not start another. ``enclosed`` means the caller
+    already holds this seat's relaunch section.
     """
     runtime, name = seat.ship.runtime, seat.name
     reason = reason.rstrip('.')
@@ -113,7 +115,8 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
         return FreshHandoffResult('held', str(resume_target.Unproved(name, reason)))
     if pool is not None and pool not in seat.spec.pools:
         return FreshHandoffResult('held', f'{name}: {pool} is not one of its declared choices.')
-    immediate = pool is not None
+    if immediate is None:
+        immediate = pool is not None
     store = service.store if service is not None else post.Store(runtime)
     try:
         with seat._lifecycle(automatic=True):
@@ -153,6 +156,8 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                             'End your turn without starting another task.'
                         )
                         data['order'] = store.prepare('order', post.SHIP, name, body, subject=SUBJECT).to_json()
+                    if pool is not None:
+                        data['pool'] = pool
                     save(runtime, name, data)  # publish the intent before the immutable post
                     order = _publish_order(store, data)
                     disposition = 'already-staged' if current else 'staged'
@@ -192,6 +197,26 @@ def _notice(store, seat, data, text):
         store.new('report', post.SHIP, caller, text)
 
 
+def _settle_superseded(store, seat, data):
+    """Close the handoff order this launch carried, only once its replacement has started.
+
+    A start that raises leaves the order open. Any other open order, including the seat's own handoff, stays.
+    """
+    raw = data.get('order')
+    if not isinstance(raw, str):
+        return
+    try:
+        order = compaction.decode(raw)
+        if (order.kind, order.sender, order.to, order.subject) != ('order', post.SHIP, seat.name, SUBJECT):
+            return
+        if not store.is_open(order):
+            return
+        store.new('report', seat.name, post.SHIP,
+                  f'{seat.name}: the handoff was superseded by its new conversation.', re=order.id)
+    except (OSError, ShipError):
+        return
+
+
 def _start(service, seat, store, data, *, unable=False, pool=None, enclosed=False):
     runtime, name = seat.ship.runtime, seat.name
     explanation = data['reason']
@@ -207,6 +232,7 @@ def _start(service, seat, store, data, *, unable=False, pool=None, enclosed=Fals
             save(runtime, name, data)
             _notice(store, seat, data, f'{name}: its new conversation could not start. {error}')
             raise
+        _settle_superseded(store, seat, data)  # the order was open while this launch carried it
         data['phase'] = 'done'
         save(runtime, name, data)
         _notice(store, seat, data, note)
@@ -277,4 +303,4 @@ def tick(service, seat):
                     return
             data['phase'] = 'starting'
             save(runtime, name, data)  # claim under the same admission used by input delivery and post
-        _start(service, seat, service.store, data, unable=unable)
+        _start(service, seat, service.store, data, unable=unable, pool=data.get('pool'))

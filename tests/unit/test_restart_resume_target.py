@@ -315,6 +315,151 @@ def test_later_launch_supersedes_a_staged_handoff(running):
     assert fresh_handoff.load(r.svc.runtime, s.name)['phase'] == 'superseded'
 
 
+def conceal_session(record):
+    """Keep a finished Claude record readable while its session id cannot be resumed."""
+    lines = []
+    for line in record.path.read_text().splitlines():
+        if not line:
+            continue
+        row = json.loads(line)
+        if 'sessionId' in row:
+            row['sessionId'] = '-synthetic'
+        lines.append(json.dumps(row))
+    record.path.write_text('\n'.join(lines) + '\n')
+    record.session = '-synthetic'
+
+
+def report_shape(r, order, record):
+    s = r.seat
+    launched = s.launched()
+    r.svc.attempts.close(r.svc.attempts.open(order, s.name, launched.pane, launched.pid, launched.at), 'delivered')
+    record.begin('Made-up handoff preparation', s.spec.model, 'high')
+    handoff = r.svc.store.new('order', s.name, s.name, 'Made-up notes to carry in full', re=order.id)
+    r.svc.store.new('report', s.name, post.SHIP, f'Handoff: {handoff.id}', re=order.id)
+    record.end('Made-up final response')
+    return handoff
+
+
+def _staged_before_wall(r):
+    on_the_open_program(r)
+    result = r.svc.request_fresh_handoff(r.seat, reason='the record is nearing its limit',
+                                        expected_launch=r.seat.launched())
+    assert result.disposition == 'staged'
+    [order] = handoff_orders(r)
+    other = r.svc.store.new('order', 'issuer', 'worker', 'synthetic other open order')
+    notes = r.svc.store.new('order', r.seat.name, r.seat.name, 'Made-up notes that stay open', re=order.id)
+    damage_record(r.seat, 'missing')
+    return order, other, notes
+
+
+def test_held_fresh_move_names_the_seat_and_keeps_the_staged_handoff(running, monkeypatch):
+    from quarterdeck import watch
+    r = running
+    order, other, notes = _staged_before_wall(r)
+    before = r.seat.launched()
+
+    def held(*_args, **_kwargs):
+        return fresh_handoff.FreshHandoffResult('held', 'worker: synthetic hold before a start')
+
+    monkeypatch.setattr(fresh_handoff, 'request', held)
+    launches = len(r.launches)
+    r.svc.failover()
+    assert r.seat.pool.name == 'second' and r.seat.launched() == before and len(r.launches) == launches
+    assert r.svc.store.is_open(order) and r.svc.store.is_open(other) and r.svc.store.is_open(notes)
+    assert fresh_handoff.load(r.svc.runtime, r.seat.name)['phase'] == 'waiting'
+    named = watch.facts(r.seat.ship, r.seat.tmux, login=[]).move_holds
+    assert any('move held for third: its conversation could not be identified' in line for line in named), named
+
+
+def test_failed_fresh_move_names_the_outcome_and_keeps_open_orders(running, monkeypatch):
+    from quarterdeck import watch
+    from quarterdeck.ship import ShipError
+    r = running
+    order, other, notes = _staged_before_wall(r)
+    before = r.seat.launched()
+
+    def refuse(_pool):
+        raise ShipError('synthetic start refused before a move')
+
+    monkeypatch.setattr(r.seat, '_fresh_on_pool', refuse)
+    launches = len(r.launches)
+    r.svc.failover()
+    assert r.seat.pool.name == 'second' and r.seat.launched() == before and len(r.launches) == launches
+    assert fresh_handoff.load(r.svc.runtime, r.seat.name)['phase'] == 'failed'
+    assert r.svc.store.is_open(order) and r.svc.store.is_open(other) and r.svc.store.is_open(notes)
+    named = watch.facts(r.seat.ship, r.seat.tmux, login=[]).move_holds
+    assert any('third was chosen: move outcome unknown' in line for line in named), named
+
+
+def test_immediate_fresh_settles_a_carried_handoff_after_the_replacement_starts(running):
+    r = running
+    order, other, notes = _staged_before_wall(r)
+    before = len(r.launches)
+    r.svc.failover()
+    assert r.seat.pool.name == 'third' and r.seat.launched().resume is None
+    assert len(r.launches) == before + 1 and '--resume' not in r.launches[-1]
+    assert order.id in r.launches[-1][-1] and other.id in r.launches[-1][-1]
+    assert not r.svc.store.is_open(order)
+    assert r.svc.store.is_open(other) and r.svc.store.is_open(notes)
+    assert fresh_handoff.load(r.svc.runtime, r.seat.name)['phase'] == 'done'
+    closed = [m for m in r.svc.store.replies(order) if m.sender == r.seat.name and m.kind == 'report']
+    assert closed and all(fresh_handoff.REPORT.fullmatch(m.body.strip()) is None for m in closed)
+
+
+def test_open_pool_select_of_a_missing_record_stages_the_chosen_pool(running):
+    r = running
+    r.svc.failover()
+    assert r.seat.pool.name == 'second' and not quota.current_walled(r.seat, r.svc.ledger)
+    damage_record(r.seat, 'missing')
+    before, launches = r.seat.launched(), len(r.launches)
+    answer = r.svc.select(r.seat, 'third')
+    assert 'handoff order' in answer and 'moved to third' not in answer
+    assert r.seat.launched() == before and r.seat.pool.name == 'second' and len(r.launches) == launches
+    data = fresh_handoff.load(r.svc.runtime, r.seat.name)
+    assert data['phase'] == 'waiting' and data['pool'] == 'third'
+    [order] = handoff_orders(r)
+    assert r.svc.store.is_open(order)
+    again = r.svc.select(r.seat, 'third')
+    assert 'handoff order' in again and len(r.launches) == launches and r.seat.launched() == before
+
+
+def test_open_pool_select_starts_on_the_chosen_pool_after_report_and_idle(running, monkeypatch):
+    from quarterdeck import idle
+    r = running
+    s = r.seat
+    r.svc.failover()
+    assert s.pool.name == 'second' and not quota.current_walled(s, r.svc.ledger)
+    record = r.created[-1]
+    conceal_session(record)
+    assert resume_target.identify(s.harness, record.path) is None
+    assert idle.reading(s).hold is None
+    before = len(r.launches)
+    launched = s.launched()
+    answer = r.svc.select(s, 'third')
+    assert 'handoff order' in answer and 'moved to third' not in answer
+    assert s.launched() == launched and s.pool.name == 'second' and len(r.launches) == before
+    data = fresh_handoff.load(r.svc.runtime, s.name)
+    assert data['phase'] == 'waiting' and data['pool'] == 'third'
+    [order] = handoff_orders(r)
+    assert r.svc.store.is_open(order)
+    monkeypatch.setattr(s.harness, 'screen', lambda *_: Screen('', '', working=False))
+    handoff = report_shape(r, order, record)
+    launched = s.launched()
+    for message in r.svc.attempts.undelivered(r.svc.store, s.name):
+        if message.id == handoff.id:
+            continue
+        r.svc.attempts.close(r.svc.attempts.open(message, s.name, launched.pane, launched.pid, launched.at),
+                             'delivered')
+    r.svc.fresh_handoffs()
+    assert s.pool.name == 'third' and s.launched().resume is None
+    assert len(r.launches) == before + 1 and '--resume' not in r.launches[-1]
+    assert handoff.body in r.launches[-1][-1]
+    assert not r.svc.store.is_open(order) and r.svc.store.is_open(handoff)
+    started = s.launched()
+    r.svc.fresh_handoffs()
+    assert s.launched() == started and len(r.launches) == before + 1
+
+
 def plain_claude(r, model):
     r.svc.failover()
     s = r.seat
