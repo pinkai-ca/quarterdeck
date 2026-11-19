@@ -251,6 +251,9 @@ INTENT_MALFORMED = 'group intent malformed'
 INTENT_OTHER_ROOT = 'group intent names another root'
 NO_GROUP = 'group not declared'
 ROOT_MISSING = 'group root not found'
+ROOT_UNREADABLE = 'group root unreadable'
+ROOT_MALFORMED = 'group root malformed'
+ROOT_ID_MISMATCH = 'group root id does not match its filename'
 ROOT_ID_MALFORMED = 'group root id malformed'
 ROOT_NOT_LEADS_ORDER = "group root not an order to the lead"
 FORWARD_NOT_OPEN_STORED = 'forward of an order not open in the store'
@@ -258,9 +261,9 @@ LINK_HELD = 'link held in the post folder'
 PUBLICATION_REFUSED = 'group publication refused'
 PUBLICATION_IO = 'group publication I/O error'
 JOURNAL_MALFORMED = 'group journal malformed'
-INTENT_REASONS = (INTENT_UNREADABLE, INTENT_MALFORMED, INTENT_OTHER_ROOT, NO_GROUP, ROOT_MISSING, ROOT_ID_MALFORMED,
-                  ROOT_NOT_LEADS_ORDER, FORWARD_NOT_OPEN_STORED, LINK_HELD, PUBLICATION_REFUSED, PUBLICATION_IO,
-                  JOURNAL_MALFORMED)
+INTENT_REASONS = (INTENT_UNREADABLE, INTENT_MALFORMED, INTENT_OTHER_ROOT, NO_GROUP, ROOT_MISSING, ROOT_UNREADABLE,
+                  ROOT_MALFORMED, ROOT_ID_MISMATCH, ROOT_ID_MALFORMED, ROOT_NOT_LEADS_ORDER, FORWARD_NOT_OPEN_STORED,
+                  LINK_HELD, PUBLICATION_REFUSED, PUBLICATION_IO, JOURNAL_MALFORMED)
 
 
 def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path, taken: set[str]) -> str | None:
@@ -289,22 +292,24 @@ def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path, taken: se
     group = ship.groups[data['group']]
     drop_root = path.with_name(f"{data['root']}.json")
     stored = store.dir / f"{data['root']}.json"
-    message, root_text = _staged_root(store, drop_root, stored, data['root'])
-    if message is None:
-        return ROOT_MISSING
-    if root_text is not None:
-        named = post.id_sender(message.id)
-        if named is None or message.id[:3] != message.kind[:3]:
-            return ROOT_ID_MALFORMED
-        if named != message.sender:
-            return 'from names another seat'  # a staged root's id names its sender, as an ordinary drop does
-    if message.kind != 'order' or message.to != group.lead:
-        return ROOT_NOT_LEADS_ORDER
-    forward = seat == group.lead and message.sender != seat
-    if message.sender != seat and not forward:
-        return 'from names another seat'
-    if forward and (root_text is not None or not post._regular(stored) or not store.is_open(message)):
-        return FORWARD_NOT_OPEN_STORED  # a forward is of an open order already in the store, never a new root
+    with post.reading_pass(store=store):
+        root = _staged_root(store, drop_root, stored, data['root'])
+        if isinstance(root, str):
+            return root
+        message, root_text = root
+        if root_text is not None:
+            named = post.id_sender(message.id)
+            if named is None or message.id[:3] != message.kind[:3]:
+                return ROOT_ID_MALFORMED
+            if named != message.sender:
+                return 'from names another seat'  # a staged root's id names its sender, as an ordinary drop does
+        if message.kind != 'order' or message.to != group.lead:
+            return ROOT_NOT_LEADS_ORDER
+        forward = seat == group.lead and message.sender != seat
+        if message.sender != seat and not forward:
+            return 'from names another seat'
+        if forward and (root_text is not None or not post._regular(stored) or not store.is_open(message)):
+            return FORWARD_NOT_OPEN_STORED  # a forward is of an open order already in the store, never a new root
     journal = _folder(ship) / f'{message.id}.json'
     saved = None
     try:  # the journal already saved, read on its own: what it holds is never a refusal of the publication
@@ -347,25 +352,51 @@ def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path, taken: se
     return None
 
 
-def _staged_root(store: post.Store, drop_root: Path, stored: Path, root_id: str):
-    """The root message and, when it is still a drop, the exact bytes to file."""
-    if post._regular(drop_root):
-        text = post._read_regular(drop_root, limit=post.DROP_MAX_BYTES)
-        if text is None:
-            return None, None
-        try:
-            message = post.Message.from_json(text)
-        except (ValueError, KeyError, TypeError):
-            return None, None
-        if message.id != root_id:
-            return None, None
-        return message, text
-    if not post._regular(stored):
-        return None, None
+def _staged_root(store: post.Store, drop_root: Path, stored: Path, root_id: str) -> tuple[post.Message, str | None] | str:
+    """Return the root and any exact drop text to file, or the fixed reason it is held."""
+    root = _read_root(drop_root, root_id, limit=post.DROP_MAX_BYTES)
+    if root != ROOT_MISSING:
+        return root
+    root = _read_root(stored, root_id)
+    if isinstance(root, str):
+        return root
+    # The exact file supports this id. Keep the store's validation and its view of imported and routed messages.
     try:
-        return store.get(root_id), None
-    except ShipError:
-        return None, None
+        message = store.get(root_id)
+    except ShipError as error:
+        return LINK_HELD if str(error).startswith(post_dir.LINK_HELD) else ROOT_UNREADABLE
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError):
+        return ROOT_UNREADABLE
+    if message.id != root_id:
+        return ROOT_ID_MISMATCH
+    return message, None
+
+
+def _read_root(path: Path, root_id: str, *, limit: int | None = None) -> tuple[post.Message, str] | str:
+    """Read one exact root through the post folder's guarded reader and distinguish absent from unusable evidence."""
+    try:
+        text = post_dir.read_text(path, limit=limit)
+    except post_dir.ReadLimit:
+        raise  # the shared drop size hold
+    except FileNotFoundError:
+        return ROOT_MISSING if post_dir.gone(path) else ROOT_UNREADABLE
+    except ShipError as error:
+        return LINK_HELD if str(error).startswith(post_dir.LINK_HELD) else ROOT_UNREADABLE
+    except OSError:
+        return ROOT_UNREADABLE
+    except UnicodeDecodeError:
+        return ROOT_MALFORMED
+    try:
+        message = post.Message.from_json(text)
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        return ROOT_MALFORMED
+    if (any(not isinstance(value, str) for value in (message.id, message.kind, message.sender, message.to, message.body))
+            or any(value is not None and not isinstance(value, str)
+                   for value in (message.re, message.subject, message.due, message.speed))):
+        return ROOT_MALFORMED
+    if message.id != root_id:
+        return ROOT_ID_MISMATCH
+    return message, text
 
 
 def advance(ship: Ship, store: post.Store, failures=None, *, outcomes=None) -> list[tuple[str, str]]:

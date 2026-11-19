@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
 import pytest
 
-from quarterdeck import group_post, post, ship as shipmod
+from quarterdeck import group_post, post, post_dir, ship as shipmod
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,6 +51,14 @@ def test_unreadable_and_malformed_intents_are_named_apart(forum):
     assert held(forum, 'operator') == [group_post.INTENT_MALFORMED]
 
 
+def test_a_refused_intent_read_keeps_the_regular_file_reason(forum, monkeypatch):
+    intent = stage(forum, 'operator', ident('aaaa'))
+    read = post._read_regular
+    monkeypatch.setattr(post, '_read_regular', lambda path, **kwargs: None if path == intent else read(path, **kwargs))
+    assert held(forum, 'operator') == ['not a regular file']
+    assert intent.is_file()
+
+
 def test_an_intent_naming_another_root_or_an_undeclared_group(forum):
     root = ident('bbbb')
     stage(forum, 'operator', root, {'format': 1, 'group': 'reviewers', 'root': ident('cccc')})
@@ -65,6 +74,62 @@ def test_a_root_that_is_nowhere_or_not_the_leads_order(forum):
     other = store.new('order', 'operator', 'reviewer-1', 'not to the lead')
     stage(forum, 'operator', other.id)
     assert group_post.ROOT_NOT_LEADS_ORDER in held(forum, 'operator')
+
+
+@pytest.mark.parametrize('location', ['drop', 'store'])
+@pytest.mark.parametrize(('outcome', 'reason'), [
+    ('unreadable', group_post.ROOT_UNREADABLE),
+    ('link', group_post.LINK_HELD),
+    ('invalid-encoding', group_post.ROOT_MALFORMED),
+    ('invalid-json', group_post.ROOT_MALFORMED),
+    ('wrong-shape', group_post.ROOT_MALFORMED),
+    ('wrong-field-type', group_post.ROOT_MALFORMED),
+    ('wrong-id', group_post.ROOT_ID_MISMATCH),
+])
+def test_unusable_root_evidence_holds_the_intent(forum, monkeypatch, location, outcome, reason):
+    root = post.Message(ident('aaaa'), 'order', 'operator', 'lead', post.now(), 'synthetic body')
+    intent = stage(forum, 'operator', root.id)
+    folder = intent.parent if location == 'drop' else post.Store(forum.runtime).dir
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f'{root.id}.json'
+    content = {
+        'invalid-encoding': b'\xff',
+        'invalid-json': b'{not json',
+        'wrong-shape': b'null',
+        'wrong-field-type': replace(root, body=[]).to_json().encode(),
+        'wrong-id': replace(root, id=ident('bbbb')).to_json().encode(),
+    }.get(outcome, root.to_json().encode())
+    path.write_bytes(content)
+    read_text = post_dir.read_text
+    if outcome in ('unreadable', 'link'):
+        def read(candidate, **kwargs):
+            if candidate == path:
+                if outcome == 'link':
+                    raise shipmod.ShipError(post_dir.LINK_HELD + 'synthetic path')
+                raise PermissionError('synthetic read refusal')
+            return read_text(candidate, **kwargs)
+
+        monkeypatch.setattr(post_dir, 'read_text', read)
+
+    assert held(forum, 'operator') == [reason]
+    assert post.drop_alarms(forum.runtime) == [f'post drop held: drop/operator: {reason}']
+    assert intent.is_file() and path.read_bytes() == content
+    assert not list((forum.runtime / 'post' / 'groups').glob('*.json'))
+
+
+def test_root_id_syntax_has_its_own_reason(forum):
+    root = post.Message('synthetic-root', 'order', 'operator', 'lead', post.now(), 'synthetic body')
+    intent = stage(forum, 'operator', root.id)
+    intent.with_name(f'{root.id}.json').write_text(root.to_json())
+    assert held(forum, 'operator') == [group_post.ROOT_ID_MALFORMED]
+
+
+def test_a_different_root_with_an_already_stored_id_holds_as_a_conflict(forum):
+    root = post.Store(forum.runtime).new('order', 'operator', 'lead', 'already filed')
+    intent = stage(forum, 'operator', root.id)
+    intent.with_name(f'{root.id}.json').write_text(replace(root, body='different body').to_json())
+    assert held(forum, 'operator') == ['id already stored']
+    assert intent.is_file()
 
 
 def test_a_forward_of_a_closed_order_is_named(forum):
