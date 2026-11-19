@@ -250,8 +250,6 @@ def claude_seat(world, human):
     path = seat.home / 'synthetic-claude.jsonl'
     pointer.write_text(str(path))
     record_owner.register(seat.trusted, path, 'claude')
-    if not human:
-        seat.record = seat.lookup_record
     return seat, path
 
 

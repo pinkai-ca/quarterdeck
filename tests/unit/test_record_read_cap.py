@@ -213,7 +213,7 @@ def test_the_status_line_names_a_record_near_and_past_its_bound_by_lstat_alone(s
     size = path.stat().st_size
 
     def seat(human=False):
-        return SimpleNamespace(name='worker-example', session=SimpleNamespace(human=human), record=lambda: path)
+        return SimpleNamespace(name='worker-example', session=SimpleNamespace(human=human), lookup_record=lambda: path)
     monkeypatch.setattr(record_file, 'read_from', lambda *args, **kwargs: pytest.fail('the alarm read the record'))
     monkeypatch.setattr(record_file, 'LINES_BOUND', size * 2)
     assert record_file.alarms([seat()]) == [], 'half the bound: nothing to say'
@@ -224,6 +224,40 @@ def test_the_status_line_names_a_record_near_and_past_its_bound_by_lstat_alone(s
     [past] = record_file.alarms([seat()])
     assert past.startswith('worker-example: record past the read bound') and past.endswith('not read; start it fresh')
     assert record_file.alarms([seat(human=True)]) == [], "a seat the operator owns: never its conversation"
+
+
+def test_crew_alarm_uses_a_pinned_record_without_discovering_one(seats, monkeypatch):
+    from quarterdeck import record_owner, trusted_files
+    from quarterdeck.seat import Launched, Seat
+    from quarterdeck.ship import Pool, SeatSpec, Session, Ship
+
+    path = record_of(seats)
+    folder = seats.parent.parent
+    pool = Pool('synthetic', 'claude')
+    spec = SeatSpec('worker-example', 'crew', 'worker', 'claude', (pool.name,))
+    ship = Ship(folder, 'synthetic', 'operator', folder, {pool.name: pool},
+                {'crew': Session('crew', 'crew')}, {spec.name: spec})
+    seat = Seat(ship, spec, None)
+    Launched('%1', 101, '2000-01-01T00:00:00+00:00', pool.name, None,
+             ['claude'], 'synthetic', 'claude').write(seat.trusted / trusted_files.LAUNCH)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('the alarm tried to join, read or publish a record')
+
+    def alarms():
+        with monkeypatch.context() as patch:
+            patch.setattr(seat, 'join', forbidden)
+            patch.setattr(record_file, 'open_record', forbidden)
+            patch.setattr(record_owner, 'register', forbidden)
+            return record_file.alarms([seat])
+
+    assert alarms() == []
+    assert not (seat.trusted / trusted_files.RECORD).exists()
+    assert seat.record() == path
+    monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', path.stat().st_size)
+    [alarm] = alarms()
+    assert alarm.startswith(f'{seat.name}: record ')
+    assert alarm.endswith('read bound; start it fresh at a natural break')
 
 
 def test_the_accounting_names_a_record_past_its_bound(seats):

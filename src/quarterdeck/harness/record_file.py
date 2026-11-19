@@ -345,9 +345,11 @@ def pressure(seat, path: Path, observation=None) -> Pressure | None:
 
 
 def alarms(seats, owned=None, observation=None) -> list[str]:  # law: nothing-waits-silently
-    """One line for each seat whose current record nears or passes its read bound. A seat the operator owns (the
-    desk, the office) is named from its owned record pointer (``owned(seat)``), never by reading its conversation:
-    those are the longest conversations on the ship, and so the likeliest to reach the bound first."""
+    """Name records near or past their read bound from existing joins alone.
+
+    The operator's seats use their owned pointers (``owned(seat)``). Crew seats use the read-only pinned lookup.
+    Discovering a new join can read conversation content and belongs to the seat's ordinary record path.
+    """
     lines = []
     for seat in seats:
         try:
@@ -359,8 +361,8 @@ def alarms(seats, owned=None, observation=None) -> list[str]:  # law: nothing-wa
                 if owned is None:
                     continue
                 record = owned(seat)
-            elif callable(getattr(seat, 'record', None)):
-                record = seat.record()
+            elif callable(getattr(seat, 'lookup_record', None)):
+                record = seat.lookup_record()
             else:
                 continue
         except (OSError, ValueError):
