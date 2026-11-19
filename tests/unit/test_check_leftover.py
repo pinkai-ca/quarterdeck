@@ -4,6 +4,7 @@ Synthetic ship, fake harness, a stand-in tmux; the "program" is a short-lived ch
 """
 
 import argparse
+import json
 import signal
 import subprocess
 import sys
@@ -227,6 +228,21 @@ def test_a_program_that_outlives_qd_down_keeps_its_home_and_its_name_until_it_ha
     no_seat_left(ship, server)
 
 
+def test_a_check_launch_with_only_legacy_fields_is_still_readable(world):
+    ship, server = world
+    name, program = leaked(ship, server)
+    stop(program)
+    path = ship.runtime / "trusted" / name / "launch.json"
+    launch = json.loads(path.read_text())
+    for field in ("harness", "records_before", "start"):
+        del launch[field]
+    path.write_text(json.dumps(launch))
+
+    assert seatmod.leftover_seats(ship) == [f"{name} outlived its qd check: its program has ended; qd down {name}"]
+    assert "home removed" in seatmod.down_leftover(ship, server, name)
+    no_seat_left(ship, server)
+
+
 def test_a_running_checks_seat_is_neither_named_nor_taken_down(world, monkeypatch):
     ship, server = world
     seen = {}
@@ -333,4 +349,30 @@ def test_an_unreadable_launch_still_retires_transport_and_its_line_says_what_the
     launch_file.rename(launch_file.with_name("launch.json.aside"))  # the line's own step
     assert seatmod.leftover_seats(ship) == [f"{name} outlived its qd doctor: its program has ended; qd down {name}"]
     assert "home removed" in seatmod.down_leftover(ship, server, name)
+    assert not seat.folder.exists() and seatmod.leftover_seats(ship) == []
+
+
+@pytest.mark.parametrize(("name", "purpose"), [("check-fake-1234", "qd check"), ("doctor-1234", "qd doctor")])
+@pytest.mark.parametrize("content", ["null", "[1]", "[]", '"launch"', "7", '{"pid": 1}'])
+def test_invalid_launch_shapes_are_named_and_qd_down_gives_the_same_cure(world, monkeypatch, name, purpose, content):
+    ship, server = world
+    seat, program = raised(ship, server, name, purpose, monkeypatch)
+    launch_file = seat.trusted / "launch.json"
+    launch_file.write_text(content)
+    cure = (f"its launch is unreadable: end its program, move runtime/trusted/{name}/launch.json aside, "
+            f"then qd down {name}")
+    monkeypatch.setattr(cli.Tmux, "for_ship", classmethod(lambda cls, ship: server))
+    monkeypatch.setattr(cli, "load_ship", lambda args: ship)
+    args = argparse.Namespace(ship=None, seat=name)
+
+    assert watch.facts(ship, server, walls=[], login=[]).leftover_seats == [f"{name} outlived its {purpose}: {cure}"]
+    with pytest.raises(ShipError) as refused:
+        cli.cmd_down(args)
+    assert str(refused.value) == f"{name}: {cure}"
+    assert program.poll() is None and seat.home.is_dir() and launch_file.read_text() == content
+
+    stop(program)
+    launch_file.rename(launch_file.with_name("launch.json.aside"))
+    assert seatmod.leftover_seats(ship) == [f"{name} outlived its {purpose}: its program has ended; qd down {name}"]
+    assert "home removed" in cli.cmd_down(args)
     assert not seat.folder.exists() and seatmod.leftover_seats(ship) == []

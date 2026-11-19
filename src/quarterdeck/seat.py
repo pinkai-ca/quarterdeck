@@ -1887,21 +1887,27 @@ def _unreadable_launch(name: str) -> str:
             f"aside, then qd down {name}")
 
 
-def _leftover(ship: Ship, name: str) -> tuple[dict | str, dict | None] | None:
+def _temporary_launch(ship: Ship, name: str) -> dict | str | None:
+    """Read launch evidence, distinguishing an absent file from one that cannot be used."""
+    path = trusted_files.path(ship.runtime, name, trusted_files.LAUNCH)
+    try:
+        return parse_launch(path.read_text(), name)
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, LaunchUnreadable):
+        return UNREADABLE
+
+
+def _leftover(ship: Ship, name: str) -> tuple[dict | str, dict | str | None] | None:
     """A temporary seat's record and the launch it left, when no live run owns the seat; None otherwise."""
     record = _temporary(ship, name)
     if record is None or _held_for_renewal(ship, name):
         return None
-    try:
-        launch = json.loads(trusted_files.path(ship.runtime, name, trusted_files.LAUNCH).read_text())
-    except FileNotFoundError:
-        launch = None  # its program was proved ended: only its home is left
-    except (OSError, ValueError):
-        launch = {}
+    launch = _temporary_launch(ship, name)
     with pending.transient_lock(ship.runtime, name) as unowned:
         if not unowned:
             return None  # its run is live and owns it; it takes its own seat down
-    return record, (launch if isinstance(launch, dict) or launch is None else {})
+    return record, launch
 
 
 def leftover_seats(ship: Ship) -> list[str]:
@@ -1919,14 +1925,12 @@ def leftover_seats(ship: Ship) -> list[str]:
             words.append(f"{path.name}: a temporary seat's record is unreadable; inspect "
                          f"runtime/trusted/{path.name}/{TEMPORARY}")  # law: nothing-waits-silently
             continue
-        pid, start = (launch or {}).get("pid"), (launch or {}).get("start")
-        pool = (launch or {}).get("pool") or record["pool"]
-        if launch is not None and not isinstance(pid, int):
+        if launch == UNREADABLE:
             state = _unreadable_launch(path.name)
-        elif pool is not None and pool not in ship.pools:
+        elif (pool := (launch or {}).get("pool") or record["pool"]) is not None and pool not in ship.pools:
             state = f"its pool {pool} is not declared: declare it again, then qd down {path.name}"
         else:
-            running = launch is not None and process_alive(pid, start)
+            running = launch is not None and process_alive(launch["pid"], launch.get("start"))
             state = f"its program {'still runs' if running else 'has ended'}; qd down {path.name}"
         words.append(f"{path.name} outlived its {record['purpose']}: {state}")  # law: nothing-waits-silently
     return words
@@ -1950,12 +1954,9 @@ def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
     with pending.transient_lock(ship.runtime, name) as owned:
         if not owned:
             raise ShipError(f"{name}: its {record['purpose']} is still running and takes its own seat down; nothing done")
-        try:
-            launch = json.loads(trusted_files.path(ship.runtime, name, trusted_files.LAUNCH).read_text())
-        except FileNotFoundError:
-            launch = None
-        except (OSError, ValueError):
-            raise ShipError(f"{name}: {_unreadable_launch(name)}") from None
+        launch = _temporary_launch(ship, name)
+        if launch == UNREADABLE:
+            raise ShipError(f"{name}: {_unreadable_launch(name)}")
         harness_name = (launch or {}).get("harness") or record["harness"]
         pool = (launch or {}).get("pool") or record["pool"] or next(
             (p.name for p in ship.pools.values() if harnesses.get(harness_name).accepts(p) is None), None)
