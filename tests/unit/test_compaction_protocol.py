@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+from hashlib import sha256
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -119,6 +120,51 @@ def test_report_without_control_never_arms_then_exact_completion_freshens_once(w
     assert w.calls == ['down', 'fresh']
     assert compaction.load(w.svc.runtime, w.seat.name)['count'] == 0
     assert w.svc.store.is_open(hand)
+
+
+@pytest.mark.parametrize('world', ['claude'], indirect=True)
+@pytest.mark.parametrize('races', [1, 2])
+def test_tick_retries_a_prefix_proof_after_a_native_append(world, monkeypatch, races):
+    w = world
+    native = w.source[0]
+    native.compact()
+    compaction.tick(w.seat)
+    prior = compaction.load(w.svc.runtime, w.seat.name)
+    assert prior['count'] == 1 and prior['request'] is None
+
+    original = compaction.current
+    counts = []
+
+    def read_then_append(seat):
+        observation = original(seat)
+        reading = observation[1]
+        counts.append(reading.count)
+        if len(counts) <= races:
+            serial = native.serial + len(counts)
+            row = dict(type='system', subtype='compact_boundary', compactMetadata={'trigger': 'auto'},
+                       uuid=f'synthetic-append-{serial}', sessionId=native.conversation, isSidechain=False,
+                       timestamp=(AT + timedelta(seconds=serial)).isoformat(), parentUuid=None,
+                       logicalParentUuid=native.previous if len(counts) == 1 else f'synthetic-append-{serial - 1}')
+            with native.path.open('a') as stream:
+                stream.write(json.dumps(row) + '\n')
+        return observation
+
+    monkeypatch.setattr(compaction, 'current', read_then_append)
+    compaction.tick(w.seat)
+    assert counts == [1, 2]
+    data = compaction.load(w.svc.runtime, w.seat.name)
+    assert data['error'] is None
+    if races == 2:
+        assert data['reading_unknown'] and data['request'] is None
+        assert data['count'] == prior['count'] and data['digest'] == prior['digest']
+        assert 'count unknown' in compaction.status(w.seat)
+        compaction.tick(w.seat)
+        assert counts == [1, 2, 3]
+        data = compaction.load(w.svc.runtime, w.seat.name)
+    assert data['count'] == 1 + races and not data['reading_unknown']
+    raw = native.path.read_bytes()
+    assert (data['extent'], data['digest']) == (len(raw), sha256(raw).hexdigest())
+    assert data['request'] is not None and w.calls == []
 
 
 def test_ordinary_report_prose_cannot_arm_or_close_reserved_handoff(world):

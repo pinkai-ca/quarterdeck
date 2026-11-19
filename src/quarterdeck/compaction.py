@@ -353,6 +353,10 @@ def current(seat):
     return joined.record, reading, launched
 
 
+class _PrefixUnproved(ShipError):
+    """The observed prefix could not be checked against the same native bytes."""
+
+
 def observe(seat, data, record, reading, launched):
     if seat.launched() != launched:
         raise ShipError('launch changed before compaction observation')
@@ -385,7 +389,7 @@ def observe(seat, data, record, reading, launched):
         try:
             same_prefix = reading.matches_prefix(extent, data.get('digest'))
         except OSError as error:
-            raise ShipError('native history changed during its prefix proof; count unknown') from error
+            raise _PrefixUnproved('native history changed during its prefix proof; count unknown') from error
         if not same_prefix:
             data['error'] = 'native history rewritten or truncated; count unknown'
             raise ShipError(data['error'])
@@ -651,8 +655,23 @@ def tick(seat):
             with post.admission(runtime, seat.name):
                 disarm_locked(seat, 'compaction automation disabled', disabled=True, keep_manual=True)
         return
+
+    retry_available = True
+
+    def proved_observation(data, observation):
+        nonlocal retry_available
+        try:
+            observe(seat, data, *observation)
+        except _PrefixUnproved:
+            if not retry_available:
+                raise
+            retry_available = False
+            observation = current(seat)
+            observe(seat, data, *observation)
+        return observation
+
     try:
-        record, reading, launched = current(seat)
+        observation = current(seat)
         with post.admission(runtime, seat.name):
             data = load(runtime, seat.name) or new()
             if data.get('disabled') and seat.ship.file.is_file():
@@ -660,7 +679,7 @@ def tick(seat):
                 declared = load_ship(seat.ship.folder).seats.get(seat.name)
                 if declared is None or not declared.fresh_after_compactions:
                     return  # a declaration edit won admission before this tick's older view
-            observe(seat, data, record, reading, launched)
+            _, reading, _ = proved_observation(data, observation)
             recover(runtime, data, seat.name)
             if reading.count >= seat.spec.fresh_after_compactions:
                 threshold(seat, data)
@@ -678,8 +697,7 @@ def tick(seat):
         with seat._lifecycle(automatic=True):
             with post.admission(runtime, seat.name):
                 data = load(runtime, seat.name)
-                record, reading, launched = current(seat)
-                observe(seat, data, record, reading, launched)
+                record, reading, launched = proved_observation(data, current(seat))
                 reason = obstruction(seat, data, record, reading)
                 if reason:
                     data['reason'] = reason

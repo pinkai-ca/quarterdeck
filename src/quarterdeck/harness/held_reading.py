@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import claude
-from .json_record import _parsed, _read_lock
+from .json_record import _read_lock
 from ..record_location import resolve
 
 
@@ -57,20 +57,19 @@ def unknown_until(owned) -> Hold | None:
     record = resolve(Path(owned.path))
     try:
         with _read_lock:
-            parsed = _parsed(record)
-            state, _ = reader.read_snapshot(record, parsed)  # advances the cached reader to these exact bytes
+            parsed = reader.parse_snapshot(record)
+            state, _ = reader.read_snapshot(record, parsed)
             found = parsed.readers.get(reader)
+            if found is None or found[1] != len(parsed.rows) or state.turn_open:
+                return None
+            instance = found[0]
+            at = instance.notice_at
+            if not instance.notice_unanswered or instance.open is not None or at is None or at.tzinfo is None:
+                return None  # an untimed notice follows the ordinary rule
+            hold = Hold(at + timedelta(seconds=claude.NOTICE_GRACE_SECONDS), reader)
+            if state.turn_open is None:
+                return hold if instance.answering_notice() else None
+            # The grace passed between the two readings. Leave a hold due at once for the next pass.
+            return hold if hold.due() else None
     except (OSError, ValueError):
         return None
-    if found is None or found[1] != len(parsed.rows) or state.turn_open:
-        return None
-    instance = found[0]
-    at = instance.notice_at
-    if not instance.notice_unanswered or instance.open is not None or at is None or at.tzinfo is None:
-        return None  # no notice window, or an untimed one, unknown until a row follows it: the ordinary rule
-    hold = Hold(at + timedelta(seconds=claude.NOTICE_GRACE_SECONDS), reader)
-    if state.turn_open is None:
-        return hold if instance.answering_notice() else None
-    # The pass read the record inside the window and this second reading finds it already passed: the grace ended
-    # between the two. The hold is due at once, so the next pass reads the record again.
-    return hold if hold.due() else None

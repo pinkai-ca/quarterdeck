@@ -12,7 +12,7 @@ import json
 import pytest
 
 from quarterdeck import record_owner
-from quarterdeck.harness import claude, held_reading
+from quarterdeck.harness import claude, claude_record, held_reading, json_record, record_file
 from quarterdeck.harness.base import State
 from tests.unit.test_ledger_pass_boundaries import world
 from tests.unit.test_resume_notice_ordinary import AT, completed_background_turn, notice, row
@@ -53,8 +53,28 @@ def ledger_state(w, path):
     return (mark[0] if mark else None), checkpoint is not None, turns
 
 
-def test_a_fresh_notice_is_marked_and_read_again_once_its_grace_has_passed(tmp_path, monkeypatch):
-    w, path = claude_world(tmp_path, monkeypatch, completed_background_turn() + [notice()])
+@pytest.fixture(params=[False, True], ids=['ordinary', 'above-compatibility-ceiling'])
+def notice_world(tmp_path, monkeypatch, request):
+    """Use the accounting child's retained-row mode for the above-ceiling case."""
+    rows = completed_background_turn() + [notice()]
+    if request.param:
+        ceiling = 256
+        monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', ceiling)
+        monkeypatch.setattr(record_file, 'LINES_BOUND', ceiling)
+        rows.insert(0, dict(type='file-history-snapshot', snapshot={'value': 'x' * (2 * ceiling)}))
+        monkeypatch.setattr(json_record, '_KEEP_ROWS', False)
+        json_record.keep_rows()
+    w, path = claude_world(tmp_path, monkeypatch, rows)
+    if request.param:
+        assert path.stat().st_size > ceiling
+        with pytest.raises(record_file.PastBound):
+            json_record._parsed(path)
+    yield w, path
+    json_record.release(path)
+
+
+def test_a_fresh_notice_is_marked_and_read_again_once_its_grace_has_passed(notice_world, monkeypatch):
+    w, path = notice_world
     at_clock(monkeypatch, NOTICE_SECOND + 1)
     w.svc.account_records()
     assert ledger_state(w, path) == ('incomplete turn state in record', False, 1)
@@ -78,13 +98,13 @@ def test_a_fresh_notice_is_marked_and_read_again_once_its_grace_has_passed(tmp_p
     assert len(w.claude_reads) == 2
 
 
-def test_the_grace_ending_between_the_two_reads_leaves_a_due_hold(tmp_path, monkeypatch):
+def test_the_grace_ending_between_the_two_reads_leaves_a_due_hold(notice_world, monkeypatch):
     """The pass reads the record inside the window and marks it; the grace ends before the hold is asked for.
 
     The second reading finds the window already passed. It still returns the hold, due at once, so the next pass
     reads the unchanged record again rather than leaving the mark until the bytes change.
     """
-    w, path = claude_world(tmp_path, monkeypatch, completed_background_turn() + [notice()])
+    w, path = notice_world
     at_clock(monkeypatch, NOTICE_SECOND + GRACE - 0.001)
     original = held_reading.unknown_until
 
