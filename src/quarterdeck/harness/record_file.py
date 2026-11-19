@@ -203,6 +203,7 @@ class ProjectionUsage:
     retained: int | None = None
     memory: int | None = None
     exhausted: str | None = None
+    compatibility: bool = False
 
 
 @dataclass(frozen=True)
@@ -215,11 +216,22 @@ class Pressure:
     label: str | None = None
 
 
+COMPATIBILITY_READ = 'compatibility read'
+ROW_RETAINED_BYTES = 'retained bytes per row'
+
+
 def _first_projection_limit(sample: ProjectionUsage | None, info) -> tuple[int, str, str | None]:
     """Project the first limit by density. Only a matching observation proves an exhausted resource."""
     current = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     matching_file = (sample is not None and sample.stamp[:2] == current[:2]
                      and 0 < sample.stamp[2] <= info.st_size)
+    # Before per-row byte limits had their own label, they used the generic projection label.
+    if (matching_file and (sample.stamp == current or sample.stamp[2] < info.st_size)
+            and (sample.compatibility or sample.exhausted in (ROW_RETAINED_BYTES, 'native projection'))):
+        exhausted = sample.exhausted if sample.stamp == current else None
+        if info.st_size > LINES_BOUND:
+            exhausted = COMPATIBILITY_READ
+        return LINES_BOUND, COMPATIBILITY_READ, exhausted
     if matching_file and sample.stamp == current and sample.exhausted is not None:
         return info.st_size, sample.exhausted, sample.exhausted
     candidates = [(CLAUDE_STREAM_BOUND, 'raw size')]
@@ -357,11 +369,18 @@ def alarms(seats, owned=None, observation=None) -> list[str]:  # law: nothing-wa
         if record is None or (reading := pressure(seat, record, observation)) is None:
             continue
         if reading.exhausted is not None:
-            lines.append(f'{seat.name}: record past the read bound ({reading.label} {reading.exhausted} limit exceeded). '
-                         'Reading unknown. Start it fresh.')
+            detail = (f'{_size(reading.size)}, Claude compatibility read bound {_size(reading.first_bound)}'
+                      if reading.exhausted == COMPATIBILITY_READ
+                      else f'{reading.label} {reading.exhausted} limit exceeded')
+            lines.append(f'{seat.name}: record past the read bound ({detail}). Reading unknown. Start it fresh.')
+        elif reading.resource == COMPATIBILITY_READ:
+            if reading.size >= WARN_AT * reading.first_bound:
+                lines.append(f'{seat.name}: record {_size(reading.size)} of its {_size(reading.first_bound)} '
+                             'Claude compatibility read bound; start it fresh at a natural break')
         elif reading.resource != 'raw size' and reading.size >= WARN_AT * reading.first_bound:
             lines.append(f'{seat.name}: Claude {reading.resource} may reach its limit at about '
                          f'{_size(reading.first_bound)}; start it fresh at a natural break')
-        if (line := _raw_alarm(seat.name, reading.size, reading.raw_bound)) is not None:
+        if (reading.resource != COMPATIBILITY_READ
+                and (line := _raw_alarm(seat.name, reading.size, reading.raw_bound)) is not None):
             lines.append(line)
     return lines

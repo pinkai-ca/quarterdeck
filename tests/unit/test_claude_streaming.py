@@ -55,7 +55,9 @@ def test_valid_under_bound_required_evidence_has_a_complete_fallback(tmp_path, m
     expected = json_record.object_lines(record.path)
     snapshot = claude_record.parse(record.path)
     assert json_record._entry(snapshot).claude_full and list(snapshot.rows) == expected
-    assert claude.state(record.path).turn_open is False
+    state = claude.state(record.path)
+    assert state.turn_open is False
+    assert state.projection_usage == record_file.ProjectionUsage(snapshot.stamp, compatibility=True)
     assert claude.compactions(record.path).reason is None
 
 
@@ -125,6 +127,18 @@ def test_larger_synthetic_stream_cannot_enter_the_full_compatibility_reader(tmp_
     monkeypatch.setattr(record_file, 'read_from', unexpected)
     with pytest.raises(claude_record.ProjectionLimit):
         claude.state(record.path)
+
+
+def test_oversized_row_refuses_a_stream_with_guarded_row_evidence(tmp_path, monkeypatch):
+    record = native(tmp_path / 'synthetic.jsonl')
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    with record.path.open('ab') as stream:
+        stream.write(json.dumps({'type': 'system', 'content': 'x' * claude_record.ROW_BYTES}).encode() + b'\n')
+    with pytest.raises(claude_record.ProjectionLimit, match='required JSON row exceeds the retained-byte budget') as refused:
+        claude.state(record.path)
+    assert refused.value.projection_usage == record_file.ProjectionUsage(
+        json_record._stamp(record.path.stat()), exhausted='retained bytes per row')
+    assert (refused.value.limit, refused.value.unit) == (claude_record.ROW_BYTES, 'bytes')
 
 
 @pytest.mark.parametrize('continuous', [False, True])

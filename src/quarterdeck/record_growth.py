@@ -55,6 +55,9 @@ def _sample(seat, observation=None):
     if pressure.raw_bound != record_file.bound_of(record):
         # A notice or handoff staged under the previous limit must not resume at the old threshold.
         key += b'\0' + str(pressure.raw_bound).encode()
+    if pressure.resource == record_file.COMPATIBILITY_READ:
+        # A report for the streamed limit cannot stand in for the earlier compatibility limit.
+        key += b'\0compatibility'
     return sha256(key).hexdigest(), pressure
 
 
@@ -148,7 +151,10 @@ def observe(service, seat, now):
     if now < last[0] or now - first[0] > MAX_SPAN or size < last[1]:
         data['first'] = point
     data['last'] = point
-    if pressure.exhausted is not None:
+    if pressure.exhausted == record_file.COMPATIBILITY_READ:
+        body = (f'{seat.name}: record {size / record_file.MiB:.1f} MiB exceeds its '
+                f'{bound / record_file.MiB:.1f} MiB {pressure.label} compatibility read bound. Reading is unknown.')
+    elif pressure.exhausted is not None:
         body = (f'{seat.name}: the last {pressure.label} record read exceeded its {pressure.exhausted} limit. '
                 'Reading is unknown.')
     elif forecast is None:
@@ -159,6 +165,8 @@ def observe(service, seat, now):
         rate, hours = forecast
         if pressure.resource == 'raw size':
             size_limit = f'of its {bound / record_file.MiB:.1f} MiB read bound'
+        elif pressure.resource == record_file.COMPATIBILITY_READ:
+            size_limit = f'of its {bound / record_file.MiB:.1f} MiB {pressure.label} compatibility read bound'
         else:
             size_limit = (f'with {pressure.label} {pressure.resource} expected to reach its limit at about '
                           f'{bound / record_file.MiB:.1f} MiB')

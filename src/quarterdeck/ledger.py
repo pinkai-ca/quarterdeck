@@ -460,8 +460,10 @@ class Ledger:
             self.db.commit()
 
     def save_projection_usage(self, record, usage):
-        """Keep just the last guarded projection counts in the current accounting transaction."""
-        values = (json.dumps(usage.stamp), usage.lines, usage.retained, usage.memory, usage.exhausted)
+        """Keep only the last guarded projection observation in the accounting transaction."""
+        # An older copy can still write this table and treats the new observation shape as unmeasured.
+        stamp = dict(stamp=usage.stamp, compatibility=True) if usage.compatibility else usage.stamp
+        values = (json.dumps(stamp), usage.lines, usage.retained, usage.memory, usage.exhausted)
         old = self.db.execute('SELECT stamp,lines,retained,memory,exhausted FROM record_projection_usage WHERE record=?',
                               (str(record),)).fetchone()
         if old != values:
@@ -476,9 +478,12 @@ class Ledger:
             if row is not None:
                 stamp, lines, retained, memory, exhausted = row
                 identity = json.loads(stamp)
+                compatibility = isinstance(identity, dict) and identity.get('compatibility') is True
+                if compatibility:
+                    identity = identity.get('stamp')
                 if (isinstance(identity, list) and len(identity) == 5 and all(type(n) is int for n in identity)
                         and all(n is None or type(n) is int and n >= 0 for n in (lines, retained, memory))):
-                    return ProjectionUsage(tuple(identity), lines, retained, memory, exhausted)
+                    return ProjectionUsage(tuple(identity), lines, retained, memory, exhausted, compatibility)
         except (sqlite3.Error, ValueError, TypeError):
             return None  # an earlier or unreadable ledger supplies no measured counts
         return None

@@ -47,7 +47,7 @@ class ProjectionLimit(Unknown):
 
 
 def _row_limit(reason):
-    return ProjectionLimit(reason, 'retained bytes per row', limit=ROW_BYTES, unit='bytes')
+    return ProjectionLimit(reason, record_file.ROW_RETAINED_BYTES, limit=ROW_BYTES, unit='bytes')
 
 
 class PhysicalSeparators(Exception):
@@ -262,8 +262,10 @@ def decoded_size(row):
 
 
 def projection_usage(snapshot):
+    if json_record._entry(snapshot).claude_full:
+        return record_file.ProjectionUsage(snapshot.stamp, compatibility=True)
     if snapshot.raw_digest is None:
-        return None  # the compatibility reader did not measure a bounded projection
+        return None
     return record_file.ProjectionUsage(snapshot.stamp, snapshot.line_count, snapshot.projected_bytes,
                                        snapshot.retained_cost)
 
@@ -507,7 +509,7 @@ def _parse(record):
                         raise
                     # A traceback would retain the abandoned projection while
                     # the legacy reader allocates its own buffer and rows.
-                    limit = ProjectionLimit(str(error))
+                    limit = ProjectionLimit(str(error), error.resource)
                 if limit is not None:
                     full = record_file.read_from(descriptor, info, source, bound)
             except (OSError, UnicodeError) as error:
@@ -519,6 +521,9 @@ def _parse(record):
             if failure is not None:
                 if isinstance(failure, ProjectionLimit) and info.st_size > COMPATIBILITY_BOUND:
                     failure.projection_usage = record_file.ProjectionUsage(stamp, exhausted=failure.resource)
+                elif limit is not None:
+                    failure.projection_usage = record_file.ProjectionUsage(
+                        stamp, exhausted=limit.resource, compatibility=True)
                 raise failure
         finally:
             os.close(descriptor)
@@ -526,7 +531,12 @@ def _parse(record):
         finished = time.time_ns()
         certified = started if max(stamp[-2:]) + json_record._TIMESTAMP_TICK_NS < started <= checked <= finished else None
         if full is not None:
-            return _compatible(key, source, full, stamp, certified, cached, limit)
+            try:
+                return _compatible(key, source, full, stamp, certified, cached, limit)
+            except OSError as error:
+                error.projection_usage = record_file.ProjectionUsage(
+                    stamp, exhausted=limit.resource, compatibility=True)
+                raise
         entry.stamp, entry.source, entry.certified_at = stamp, source, certified
         if reused is not None:
             if entry.raw_digest == reused.raw_digest:

@@ -8,6 +8,7 @@ figure is made for them. The table is additive: existing rows and readers are un
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
@@ -126,8 +127,30 @@ def test_the_service_keeps_a_span_past_the_bound_and_clears_it_when_read_whole(t
     svc.ledger.close()
 
 
+def test_compatibility_observation_coexists_with_older_ledger_writers(tmp_path):
+    path, record = tmp_path / 'ledger.sqlite', tmp_path / 'synthetic.jsonl'
+    earlier = record_file.ProjectionUsage((1, 2, 3, 4, 5), exhausted='native projection')
+    earlier_sql = (str(record), json.dumps(earlier.stamp), None, None, None, earlier.exhausted)
+    with Ledger(path) as book:
+        book.db.execute('INSERT INTO record_projection_usage VALUES (?,?,?,?,?,?)', earlier_sql)
+        book.db.commit()
+    with Ledger.reading(path) as book:
+        assert book.projection_usage(record) == earlier
+    with Ledger(path) as book:
+        assert book.projection_usage(record) == earlier
+        book.save_projection_usage(record, record_file.ProjectionUsage(earlier.stamp, compatibility=True))
+        book.db.commit()
+    with Ledger.reading(path) as book:
+        assert book.projection_usage(record).compatibility
+    with sqlite3.connect(path) as earlier_writer:
+        earlier_writer.execute('INSERT OR REPLACE INTO record_projection_usage VALUES (?,?,?,?,?,?)', earlier_sql)
+    with Ledger.reading(path) as book:
+        assert book.projection_usage(record) == earlier
+
+
 @pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
-def test_a_raised_claude_bound_reconciles_the_same_owned_record_after_reopening(tmp_path, monkeypatch, human):
+@pytest.mark.parametrize('fallback', [False, True], ids=['stream', 'compatibility'])
+def test_a_raised_claude_bound_reconciles_the_same_owned_record_after_reopening(tmp_path, monkeypatch, human, fallback):
     runtime = tmp_path / 'runtime'
     name = 'synthetic-seat'
     trusted = trusted_files.make(runtime, name)
@@ -154,10 +177,13 @@ def test_a_raised_claude_bound_reconciles_the_same_owned_record_after_reopening(
         service.account_records(source_records={name: [owned]}, process_table={}, source_screens={}, replay=False)
 
     monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', old_bound)
+    if fallback:
+        monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 1)
     with Ledger(ledger_path) as book:
         service = actor(book)
         account(service)
         assert book.ingested(record) == 1 and book.unread_spans() == []
+        assert book.projection_usage(record).compatibility is fallback
         native.begin('Another synthetic prompt')
         native.finish()
         account(service)
@@ -166,12 +192,14 @@ def test_a_raised_claude_bound_reconciles_the_same_owned_record_after_reopening(
 
     new_bound = record.stat().st_size
     monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', new_bound)
+    monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 16 * MiB)
     with Ledger(ledger_path) as book:
         service = actor(book)
         assert book.unread_spans() == [before]
         account(service)
         assert book.ingested(record) == 2 and book.unread_spans() == []
         assert book.projection_usage(record).lines == len(native.rows)
+        assert not book.projection_usage(record).compatibility
         with record.open('ab') as stream:
             stream.write(b'\n')
         account(service)
@@ -244,6 +272,10 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
             assert span['passed_at'] == span['seen_at']
         assert book.ingested(old) == 1
         assert book.projection_usage(old).exhausted == resource
+        [seat] = service.resolved_seats()
+        pressure = record_file.pressure(seat, old, book.projection_usage)
+        assert pressure.first_bound == (128 * MiB if field is None else old.stat().st_size)
+        assert pressure.exhausted == resource
         view = ledger_reading.collect(book, ship)
         assert view['pools'][0]['unread_spans'] == 1
         assert any(f"{projection['size']:,} bytes raw, projection {resource} limit of {limit:,} {unit} exceeded" in line

@@ -313,6 +313,70 @@ def test_past_projection_limit_reports_once_from_accounted_scalars(world, human)
 
 
 @pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
+def test_compatibility_forecast_and_96_mib_warning_follow_appends(world, human):
+    seat, path = claude_seat(world, human)
+    service = world.service()
+    sized(path, 92)
+    usage = projection(path, compatibility=True)
+    service.ledger = SimpleNamespace(projection_usage=lambda _: usage)
+
+    def alarms():
+        return record_file.alarms([seat], owned=human_wake.owned_record, observation=service.ledger.projection_usage)
+
+    def extend(mib):
+        with path.open('ab') as stream:
+            stream.truncate(mib * record_file.MiB)
+
+    record_growth.observe(service, seat, AT)
+    extend(95)
+    assert alarms() == []
+    extend(96)
+    [alarm] = alarms()
+    assert '96.0 MiB of its 128.0 MiB Claude compatibility read bound' in alarm
+    record_growth.observe(service, seat, AT + 3600)
+    record_growth.observe(service, seat, AT + 3900)
+    [report] = service.store.all()
+    assert report.to == ('operator-desk' if human else 'systems-seat')
+    assert '96.0 MiB of its 128.0 MiB Claude compatibility read bound' in report.body
+    assert 'in 8.0 h' in report.body
+    assert len(world.calls) == (0 if human else 1)
+
+    extend(128)
+    assert '128.0 MiB of its 128.0 MiB' in alarms()[0]
+    with path.open('ab') as stream:
+        stream.write(b'\n')
+    [alarm] = alarms()
+    assert 'record past the read bound' in alarm and 'Reading unknown' in alarm
+    assert '128.0 MiB' in alarm
+    record_growth.observe(service, seat, AT + 4200)
+    assert len(world.calls) == (0 if human else 1)
+
+    usage = projection(path, lines=1000, retained=1000, memory=1000)
+    assert alarms() == []  # a later guarded stream supersedes the fallback
+    usage = projection(path, compatibility=True)
+    replacement = path.with_suffix('.replacement')
+    sized(replacement, 130)
+    replacement.replace(path)
+    assert alarms() == []  # the old inode can no longer define the first bound
+
+
+@pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
+@pytest.mark.parametrize('resource', ['native projection', 'retained bytes per row'])
+def test_row_exhaustion_has_an_immediate_compatibility_warning(world, human, resource):
+    seat, path = claude_seat(world, human)
+    service = world.service()
+    sized(path, 295)
+    usage = projection(path, exhausted=resource)
+    service.ledger = SimpleNamespace(projection_usage=lambda _: usage)
+    record_growth.observe(service, seat, AT)
+    record_growth.observe(service, seat, AT + 300)
+    [report] = service.store.all()
+    assert report.to == ('operator-desk' if human else 'systems-seat')
+    assert '295.0 MiB exceeds its 128.0 MiB Claude compatibility read bound. Reading is unknown.' in report.body
+    assert world.calls == []
+
+
+@pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
 def test_claude_raw_alarm_uses_768_mib_floor_and_actual_stream_bound(world, human):
     seat, path = claude_seat(world, human)
 
