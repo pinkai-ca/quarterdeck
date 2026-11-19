@@ -149,6 +149,71 @@ def test_explicit_attestation_flag_required_before_publishing_report(world, monk
     assert compaction.load(w.svc.runtime, w.seat.name)['attestation'] is None
 
 
+@pytest.fixture
+def readiness_cli(world, monkeypatch):
+    from quarterdeck import cli
+
+    monkeypatch.setenv('QD_SEAT', world.seat.name)
+    monkeypatch.setattr(cli, 'load_ship', lambda _: world.seat.ship)
+    monkeypatch.setattr(cli, 'seat_of', lambda *_: world.seat)
+    monkeypatch.setattr(cli, 'handoff', lambda *_: None)
+
+    def invoke(*options):
+        return cli.main(['--ship', str(world.seat.ship.folder), 'fresh-ready', *options])
+
+    return invoke
+
+
+def test_manual_readiness_cli_records_an_open_handoff_without_a_request(world, readiness_cli, monkeypatch, capsys):
+    w = world
+    w.seat.spec = replace(w.seat.spec, fresh_after_compactions=None)
+    hand = w.svc.store.new('order', w.seat.name, w.seat.name, 'Synthetic manual handoff')
+    assert readiness_cli('--handoff', hand.short, '--at-break') == 0
+    assert f'ready for manual fresh: attested with {hand.short}' in capsys.readouterr().out
+    compaction.tick(w.seat)
+    data = compaction.load(w.svc.runtime, w.seat.name)
+    assert data['manual_attestation']['launch'] == compaction.launch_key(w.seat)
+    assert data['manual_attestation']['handoff'] == hand.id
+    assert data['request'] is None and data['ready'] is None and data['transition'] is None
+    assert f'attested with {hand.short}' in compaction.status(w.seat, alerts_only=True)
+    assert w.calls == [] and w.svc.store.is_open(hand)
+
+    monkeypatch.delenv('QD_SEAT')
+    assert readiness_cli(w.seat.name, '--cancel') == 0
+    assert 'cancelled' in capsys.readouterr().out
+    assert 'manual_attestation' not in compaction.load(w.svc.runtime, w.seat.name)
+    assert compaction.status(w.seat, alerts_only=True) is None
+    assert w.calls == [] and w.svc.store.is_open(hand)
+
+
+def test_manual_readiness_requires_the_handoff_to_stay_open(world, readiness_cli, capsys):
+    w = world
+    hand = w.svc.store.new('order', w.seat.name, w.seat.name, 'Synthetic manual handoff')
+    assert readiness_cli('--handoff', hand.id) == 2
+    assert 'explicit --at-break' in capsys.readouterr().err
+    w.svc.store.new('report', w.seat.name, post.SHIP, 'Synthetic handoff closed', re=hand.id)
+    assert readiness_cli('--handoff', hand.id, '--at-break') == 2
+    assert 'open self-addressed handoff' in capsys.readouterr().err
+    assert compaction.load(w.svc.runtime, w.seat.name) is None
+
+
+def test_request_readiness_cli_still_arms_the_automatic_control(world, readiness_cli, monkeypatch, capsys):
+    from quarterdeck import service
+
+    w = world
+    request = threshold(w)
+    hand = handoff(w, request)
+    w.source[0].call()
+    monkeypatch.setattr(service, 'alive', lambda _: True)
+    monkeypatch.setattr(w.svc, 'seat', lambda _: w.seat)
+    monkeypatch.setattr(service, 'request', lambda _, kind, **act: w.svc.answer(dict(kind=kind, **act)))
+    assert readiness_cli('--request', request.short, '--handoff', hand.short, '--at-break') == 0
+    assert 'waiting for exact turn completion' in capsys.readouterr().out
+    data = compaction.load(w.svc.runtime, w.seat.name)
+    assert data['ready']['handoff'] == hand.id and 'manual_attestation' not in data
+    assert w.svc.store.is_open(hand) and w.calls == []
+
+
 @pytest.mark.parametrize('change', ['input', 'compaction'])
 def test_new_input_or_compaction_invalidates_and_releases_reservation(world, change):
     w = world

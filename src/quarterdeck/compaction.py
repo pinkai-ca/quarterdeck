@@ -57,6 +57,10 @@ def load(runtime, name):
             or data['attestation'] is not None and (not isinstance(data['attestation'].get('revision'), str)
                 or not isinstance(data['attestation'].get('report'), str) or not isinstance(data['attestation'].get('binding'), dict))):
         raise ShipError('compaction journal identity invalid; automatic fresh held')
+    manual = data.get('manual_attestation')
+    if manual is not None and (not isinstance(manual, dict) or not isinstance(manual.get('launch'), dict)
+                               or any(not isinstance(manual.get(key), str) for key in ('handoff', 'digest', 'at'))):
+        raise ShipError('manual fresh attestation invalid')
     for intent in [*data['intents'], data['request'], (data['attestation'] or {}).get('report')]:
         if intent is not None:
             decode(intent)
@@ -91,8 +95,9 @@ def key_for(launched):
                 harness=record_owner.launch_reader(launched)) if launched else None
 
 
-def live_identity(seat):
-    launch, pane = launch_key(seat), seat.pane()
+def live_identity(seat, launch=None):
+    launch = launch_key(seat) if launch is None else launch
+    pane = seat.pane()
     return bool(launch and pane and not pane.dead and (pane.id, pane.pid) == (launch['pane'], launch['pid']))
 
 
@@ -121,7 +126,7 @@ def disarm(seat, reason='ordinary lifecycle action; prepare a current handoff', 
         return disarm_locked(seat, reason, adopt_successor=adopt_successor)
 
 
-def disarm_locked(seat, reason, *, disabled=None, clear_transition=True, adopt_successor=False):
+def disarm_locked(seat, reason, *, disabled=None, clear_transition=True, adopt_successor=False, keep_manual=False):
     """The caller owns recipient admission (including a declaration edit)."""
     try:
         data = load(seat.ship.runtime, seat.name)
@@ -146,6 +151,8 @@ def disarm_locked(seat, reason, *, disabled=None, clear_transition=True, adopt_s
     except (OSError, ShipError):
         data['error'] = 'immutable intent publication unresolved; automatic fresh held'
     release(data, reason)
+    if not keep_manual:
+        data.pop('manual_attestation', None)
     if clear_transition:
         data['transition'] = None
     if disabled is not None:
@@ -171,6 +178,7 @@ def admitting(runtime, message):
         release(data, data['error'])
         save(runtime, message.to, data)
         return
+    manual = data.pop('manual_attestation', None) if message.kind != 'ack' else None
     request = post.Message.from_json(data['request']) if data.get('request') else None
     if (request and message.kind == 'order' and message.sender == message.to
             and message.re == request.id and not data.get('disabled')):
@@ -180,6 +188,8 @@ def admitting(runtime, message):
         save(runtime, message.to, data)  # before its immutable name is reader-visible
     elif message.kind != 'ack' and (data.get('ready') or data.get('attestation')):
         release(data, 'new incoming work; prepare a new handoff and renew readiness')
+        save(runtime, message.to, data)
+    elif manual is not None:
         save(runtime, message.to, data)
 
 
@@ -360,6 +370,9 @@ def observe(seat, data, record, reading, launched):
         replacement = new()
         recover(seat.ship.runtime, data, seat.name)
         replacement['protocol_requests'] = data['protocol_requests']
+        manual = data.get('manual_attestation')
+        if manual and manual['launch'] == key:
+            replacement['manual_attestation'] = manual
         replacement['reason'] = 'proved fresh successor'
         data.clear()
         data.update(replacement)
@@ -411,12 +424,59 @@ def valid_binding(seat, data, reading, saved):
     return saved == binding(seat, data, reading)
 
 
+def open_self_handoff(store, name, handoff):
+    return (handoff.kind, handoff.sender, handoff.to) == ('order', name, name) and store.is_open(handoff)
+
+
 def open_handoff(runtime, data):
     if not data.get('reserved'):
         return False
     store = post.Store(runtime)
     handoff = store.get(data['reserved'])
     return digest(handoff.to_json()) == data.get('handoff_digest') and store.is_open(handoff)
+
+
+def attest_manual(seat, handoff_ref):
+    """Record the seat's declaration for a person choosing an explicit fresh start."""
+    runtime, name = seat.ship.runtime, seat.name
+    with post.admission(runtime, name):
+        launch = launch_key(seat)
+        if launch is None or not live_identity(seat, launch):
+            raise ShipError('current live launch identity not proved')
+        store = post.Store(runtime)
+        handoff = store.get(handoff_ref)
+        if not open_self_handoff(store, name, handoff):
+            raise ShipError("manual readiness needs the seat's own open self-addressed handoff order")
+        if launch_key(seat) != launch:
+            raise ShipError('launch changed during manual readiness attestation')
+        data = load(runtime, name) or new()
+        data['manual_attestation'] = dict(launch=launch, handoff=handoff.id,
+                                          digest=digest(handoff.to_json()), at=post.now().isoformat())
+        save(runtime, name, data)
+    return f'{name}: {_manual_label(handoff)}'
+
+
+def _manual_label(handoff):
+    return f'{MANUAL}attested with {handoff.short}. Choose an idle break.'
+
+
+def manual_status(seat, data):
+    saved = data.get('manual_attestation')
+    if not saved:
+        return None
+    runtime, name = seat.ship.runtime, seat.name
+    store = post.Store(runtime)
+    try:
+        launch = launch_key(seat)
+        if launch != saved['launch'] or not live_identity(seat, launch):
+            return None
+        handoff = store.get(saved['handoff'])
+        if (digest(handoff.to_json()) == saved['digest'] and open_self_handoff(store, name, handoff)
+                and launch_key(seat) == launch):
+            return _manual_label(handoff)
+    except (OSError, ShipError):
+        return None
+    return None
 
 
 def prepare_ready(seat, request_ref, handoff_ref):
@@ -436,7 +496,7 @@ def prepare_ready(seat, request_ref, handoff_ref):
         request, handoff = store.get(request_ref), store.get(handoff_ref)
         if (request.to_json() != data['request'] or handoff.id != data.get('reserved')
                 or digest(handoff.to_json()) != data.get('handoff_digest') or handoff.id in data['used']
-                or not store.is_open(handoff)):
+                or not open_self_handoff(store, seat.name, handoff)):
             raise ShipError('readiness needs the current reserved open self-handoff and request')
         if reading.state.turn_open is not True or not reading.turn:
             # The seat attests inside the turn it promises to end. Its tool state is not asked here.
@@ -589,7 +649,7 @@ def tick(seat):
     if not seat.spec.fresh_after_compactions:
         if path(runtime, seat.name).exists():
             with post.admission(runtime, seat.name):
-                disarm_locked(seat, 'compaction automation disabled', disabled=True)
+                disarm_locked(seat, 'compaction automation disabled', disabled=True, keep_manual=True)
         return
     try:
         record, reading, launched = current(seat)
@@ -687,6 +747,8 @@ def status(seat, *, alerts_only=False):
     except ShipError as error:
         return str(error)
     claimed = data is not None and data['transition'] is not None
+    if data and not claimed and not data.get('ready') and (manual := manual_status(seat, data)):
+        return manual
     if not threshold:
         if claimed:
             return 'compaction automation disabled; transition already claimed'

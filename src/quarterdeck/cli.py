@@ -160,8 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "waiting for what the seat has running, which is lost")
     p = verb('fresh-ready', cmd_fresh_ready, 'attest a natural break with an open handoff, or cancel prepared readiness')
     p.add_argument('seat', nargs='?', help='default: this seat; outside-seat cancellation is supported')
-    p.add_argument('--request')
-    p.add_argument('--handoff')
+    p.add_argument('--request', help='compaction request for automatic readiness. Omit for manual fresh')
+    p.add_argument('--handoff', help="the seat's open self-addressed handoff order")
     p.add_argument('--at-break', action='store_true', help='attest no review/signature/landing is half done; finish this turn without new work')
     p.add_argument('--cancel', action='store_true')
     p = verb("stop", cmd_stop, "interrupt a seat's turn, nothing more")
@@ -446,8 +446,12 @@ def cmd_fresh_ready(args: argparse.Namespace) -> str:
     if args.cancel:
         with seat._lifecycle():
             return compaction.disarm(seat, 'readiness cancelled; handoffs remain open')
-    if os.environ.get('QD_SEAT') != seat.name or not args.at_break or not args.request or not args.handoff:
-        raise ShipError('fresh-ready requires the seat itself, --request, --handoff and explicit --at-break')
+    if os.environ.get('QD_SEAT') != seat.name or not args.at_break or not args.handoff:
+        raise ShipError('fresh-ready requires the seat itself, --handoff and explicit --at-break')
+    if args.request is None:
+        return compaction.attest_manual(seat, args.handoff)
+    if not args.request:
+        raise ShipError('--request requires a compaction request id')
     if not service.alive(ship.runtime):
         raise ShipError('service down; readiness not confirmed')
     act = compaction.prepare_ready(seat, args.request, args.handoff)
