@@ -19,7 +19,7 @@ import stat
 import subprocess
 import time
 
-from . import FORMAT
+from . import FORMAT, procs
 
 ROOT_NAME = '.testruns'
 SOCKETS = 's'      # the fixed short anchor for native test sockets, shared with tests/conftest.py
@@ -318,6 +318,8 @@ class Slot:
 
     def describe(self, note: dict) -> None:
         """Publish the current run identity in every slot this caller already holds."""
+        if note.get('verb') == 'run' and note.get('run'):
+            note = {**note, 'owner': _slot_owner(os.getpid())}
         for index, fd in enumerate(self.fds):
             if fd in self.held:
                 os.ftruncate(fd, 0)
@@ -341,7 +343,7 @@ def _proc_locks() -> str:
     The kernel hands it out a page per read() whatever the size asked (measured: 4,068 bytes of 5,136 in the first),
     walking its lock list again from a saved position at each read, so a lock released elsewhere between two reads
     can move a held lock's line past the walk. No single read can prevent that; run_holds_slot treats an absent line
-    as no answer, and lets the slot's own lock decide."""
+    as no answer, and reads the noted owner's descriptors instead."""
     fd = os.open('/proc/locks', os.O_RDONLY | os.O_CLOEXEC)
     try:
         parts = []
@@ -352,31 +354,85 @@ def _proc_locks() -> str:
     return b''.join(parts).decode('ascii', 'replace')
 
 
-def _flock_inodes() -> set[int]:
-    """The inodes whose flock line /proc/locks shows; a waiter's line ('->') holds nothing. Raises OSError.
+def _flock_file(fields: list[str]) -> tuple[int, int] | None:
+    """The device and inode of a held exclusive flock, as shown by procfs."""
+    if len(fields) >= 6 and fields[1:4] == ['FLOCK', 'ADVISORY', 'WRITE']:
+        try:
+            major, minor, inode = fields[5].split(':')
+            return os.makedev(int(major, 16), int(minor, 16)), int(inode)
+        except (ValueError, OverflowError):
+            pass
+    return None
 
-    A line it shows proves the lock held; a line it does not show proves nothing (_proc_locks)."""
-    held = set()
-    for line in _proc_locks().splitlines():
-        fields = line.split()
-        if len(fields) >= 6 and fields[1] == 'FLOCK':
+
+def _flock_files() -> set[tuple[int, int]]:
+    """Only a line /proc/locks shows proves anything. Raises OSError."""
+    return {key for line in _proc_locks().splitlines() if (key := _flock_file(line.split())) is not None}
+
+
+def _slot_owner(pid: int) -> dict | None:
+    """This live owner in the caller's PID namespace, or no usable process identity."""
+    try:
+        if os.readlink('/proc/self') != str(os.getpid()):
+            return None  # the proc mount interprets PID names in a different namespace
+        namespace = os.stat(f'/proc/{pid}/ns/pid')
+        caller = os.stat('/proc/self/ns/pid')
+        if (namespace.st_dev, namespace.st_ino) != (caller.st_dev, caller.st_ino):
+            return None
+        fields = procs.stat_fields(pid)
+        if fields and len(fields) > 19 and fields[0] not in procs.EXITED:
+            return {'boot': procs.boot_id(), 'start': fields[19], 'pidns': [namespace.st_dev, namespace.st_ino]}
+    except OSError:
+        pass
+    return None
+
+
+def _owner_flock(note: dict, key: tuple[int, int]) -> bool | None:
+    """Read fdinfo on a pinned proc entry. None means the note's owner could not be verified."""
+    pid = note.get('pid')
+    if type(pid) is not int or pid <= 0:
+        return None
+    process = f'/proc/{pid}'
+    try:
+        owner_fd = os.open(process, DIRECTORY)
+        try:
+            before = _slot_owner(pid)
+            directory = os.open('fdinfo', DIRECTORY, dir_fd=owner_fd)
             try:
-                held.add(int(fields[5].rsplit(':', 1)[1]))
-            except (IndexError, ValueError):
-                continue
-    return held
+                for name in os.listdir(directory):
+                    try:
+                        opened = os.stat(f'fd/{name}', dir_fd=owner_fd)
+                        if (opened.st_dev, opened.st_ino) != key:
+                            continue
+                        fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory)
+                    except FileNotFoundError:
+                        continue  # an unrelated fd closed; a continuously held flock fd stays listed
+                    with os.fdopen(fd) as info:
+                        for line in info:
+                            fields = line.split()
+                            if fields[:1] == ['lock:'] and fields[2:3] == ['FLOCK']:
+                                # Some filesystems report different device numbers through stat and procfs.
+                                return True if _flock_file(fields[1:]) == key else None
+            finally:
+                os.close(directory)
+            # Only the original live controller can establish absence. Slot descriptors are CLOEXEC;
+            # the tool passes only the scratch lock to its children. An exited controller may still
+            # have a pre-exec child, and an old note cannot distinguish its writer from PID reuse.
+            if (before is not None and note.get('owner') == before == _slot_owner(pid)
+                    and identity(os.stat(process)) == identity(os.fstat(owner_fd))):
+                return False
+        finally:
+            os.close(owner_fd)
+    except (OSError, UnicodeError):
+        pass
+    return None
 
 
 def run_holds_slot(root: Root, run: str) -> bool:
     """An older tool may not hold the new result-directory guard yet.
 
-    A slot's note is read first, without any lock, and only a note naming this run is asked about, so a free slot
-    with an empty or other note is never locked and a run starting at that moment is never refused because of the
-    question. /proc/locks may only say HELD: the inode's flock line there proves the run holds it. Its absence proves
-    nothing, since the file can skip a held lock's line while locks elsewhere come and go (_proc_locks), so then, and
-    where /proc/locks cannot be read, the slot's own non-blocking lock decides: blocked is held; taken is free, and
-    let go at once. A false 'not held' cannot come out. The lock is taken only on a slot whose note still names this
-    run and whose line is absent: a crashed run's, or, rarely, a live one's whose line the file skipped."""
+    Only read a matching slot note, the global flock table and the noted owner's fdinfo. When those cannot
+    establish whether its flock is held, hold cleanup and leave admission free to reuse the slot."""
     for index in range(SLOT_COUNT):
         name = SLOT if index == 0 else f'slot-{index + 1}.lock'
         try:
@@ -387,27 +443,31 @@ def run_holds_slot(root: Root, run: str) -> bool:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
                 raise Refused(f'{root.path / name}: not this user\'s regular slot file')
+            raw = os.pread(fd, 4096, 0)
             try:
-                data = json.loads(os.pread(fd, 4096, 0))
+                data = json.loads(raw)
             except ValueError:
                 continue  # empty (a free slot, or one being described) or partly written: names no run
             if not (isinstance(data, dict) and data.get('verb') == 'run' and data.get('run') == run):
                 continue
+            key = (info.st_dev, info.st_ino)
             try:
-                if info.st_ino in _flock_inodes():
+                if key in _flock_files():
                     return True
             except OSError:
-                pass  # unreadable: the lock decides, as for an absent line
-            probe = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root.fd)
+                pass  # unreadable, just as inconclusive as a missing line
+            held = _owner_flock(data, key)
+            if held is True:
+                return True
             try:
-                if os.fstat(probe).st_ino != info.st_ino:
-                    continue  # replaced while read: not the slot whose note was read
-                try:
-                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    return True
-            finally:
-                os.close(probe)
+                unchanged = (os.pread(fd, 4096, 0) == raw
+                             and identity(os.stat(name, dir_fd=root.fd, follow_symlinks=False)) == identity(info))
+            except FileNotFoundError:
+                unchanged = False
+            if not unchanged:
+                raise Refused(f'run {run}: slot note {root.path / name} changed while read; left alone')
+            if held is None:
+                raise Refused(f'run {run}: cannot verify the owner of {root.path / name}; left alone')
         finally:
             os.close(fd)
     return False

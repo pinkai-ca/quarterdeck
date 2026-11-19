@@ -7,7 +7,9 @@ anything in it is never removed. (2) A storage record that cannot be read names 
 import fcntl
 import json
 import os
+import signal
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -31,8 +33,9 @@ def three_held(root):
 
 
 def crashed_note(folder, run_id):
-    """The fourth slot's file as a crashed run leaves it: its note names the run, and no process holds its lock."""
-    (folder / 'slot-4.lock').write_text(json.dumps({'verb': 'run', 'run': run_id}))
+    """A matching note with a verifiable original owner and no flock."""
+    note = {'verb': 'run', 'run': run_id, 'pid': os.getpid(), 'owner': layout._slot_owner(os.getpid())}
+    (folder / 'slot-4.lock').write_text(json.dumps(note))
 
 
 class _Os:
@@ -49,18 +52,19 @@ class _Os:
         os.close(fd)
 
 
-def test_a_probe_never_takes_a_free_slot_from_a_run_starting_at_that_moment(tmp_path, monkeypatch):
-    """A free slot whose note names another run is never locked by the question. (One whose note still names the
-    asked run, a crashed run's, is confirmed by its own lock for that moment: /proc/locks cannot prove it free.)"""
+@pytest.mark.parametrize('run_id', [RUN, '20000101-000000-00d4'])
+def test_a_probe_never_takes_a_free_slot_from_a_run_starting_at_that_moment(tmp_path, monkeypatch, run_id):
+    """Even a matching stale note leaves the fourth slot available to a wait-0 contender during the probe."""
     root = root_at(tmp_path)
     held = three_held(root)
-    crashed_note(tmp_path, '20000101-000000-00d4')
-    fourth = os.stat(tmp_path / 'slot-4.lock').st_ino
+    crashed_note(tmp_path, run_id)
+    monkeypatch.setattr(layout, '_flock_files', lambda: set())
+    fourth = layout.identity(os.stat(tmp_path / 'slot-4.lock'))
     outcome = {}
 
     def starting(fd):
         # When the probe lets go of the fourth slot's file, a wait-0 run tries to start: it must find that slot free.
-        if outcome or os.fstat(fd).st_ino != fourth:
+        if outcome or layout.identity(os.fstat(fd)) != fourth:
             return
         outcome['tried'] = True
         competitor = layout.Slot(root)
@@ -89,7 +93,7 @@ def test_a_live_holder_is_seen_and_a_crashed_one_is_not(tmp_path, monkeypatch, l
     if locks == 'unreadable':
         def unreadable():
             raise OSError('no /proc/locks here')
-        monkeypatch.setattr(layout, '_flock_inodes', unreadable)
+        monkeypatch.setattr(layout, '_flock_files', unreadable)
     root = root_at(tmp_path)
     live = layout.Slot(root)
     try:
@@ -124,6 +128,21 @@ def setup_run(tmp_path, monkeypatch):
         return sorted(path.name for path in folder.iterdir()) if folder.exists() else []
 
     return tmp_path, results
+
+
+@pytest.mark.parametrize('has_results', [True, False])
+def test_retire_missing_run_reports_a_refusal(setup_run, monkeypatch, capsys, has_results):
+    tmp_path, results = setup_run
+    monkeypatch.chdir(tmp_path)
+    root = layout.Root(tmp_path)
+    try:
+        if has_results:
+            os.close(root.child(RESULTS))
+        assert cli.main(['retire', RUN], []) == 2
+        assert capsys.readouterr().err == f'testrun: refused: run {RUN}: no recorded result directory; nothing removed\n'
+        assert results() == []
+    finally:
+        root.close()
 
 
 def test_a_refused_registration_leaves_no_empty_results_folder(setup_run, monkeypatch):
@@ -185,8 +204,8 @@ def test_an_unreadable_storage_record_names_itself_and_how_to_clear_it(tmp_path)
 
 
 def test_a_live_holder_whose_line_is_missing_from_proc_locks_is_held(tmp_path, monkeypatch):
-    """/proc/locks may only say held: a live holder's absent line is confirmed by the slot's own lock."""
-    monkeypatch.setattr(layout, '_flock_inodes', lambda: set())  # the line skipped, at its exact step
+    """A live holder's missing global row is confirmed by its fdinfo."""
+    monkeypatch.setattr(layout, '_flock_files', lambda: set())  # the line skipped, at its exact step
     root = root_at(tmp_path)
     live = layout.Slot(root)
     try:
@@ -197,13 +216,15 @@ def test_a_live_holder_whose_line_is_missing_from_proc_locks_is_held(tmp_path, m
         root.close()
 
 
-def test_a_crashed_slot_with_its_line_missing_stays_free(tmp_path, monkeypatch):
-    monkeypatch.setattr(layout, '_flock_inodes', lambda: set())
+def test_another_device_with_the_same_inode_does_not_hold_the_slot(tmp_path, monkeypatch):
     root = root_at(tmp_path)
     try:
         crashed_note(tmp_path, RUN)
+        slot = (tmp_path / 'slot-4.lock').stat()
+        major, other_minor = os.major(slot.st_dev), os.minor(slot.st_dev) ^ 1
+        monkeypatch.setattr(layout, '_proc_locks',
+                            lambda: f'1: FLOCK ADVISORY WRITE 42 {major:x}:{other_minor:x}:{slot.st_ino} 0 EOF\n')
         assert layout.run_holds_slot(root, RUN) is False
-        assert layout.run_holds_slot(root, RUN) is False, 'the confirming lock was let go'
     finally:
         root.close()
 
@@ -216,12 +237,66 @@ def test_a_free_slot_with_an_empty_or_other_note_is_never_locked(tmp_path, monke
     locked = []
     real = layout.fcntl.flock
     monkeypatch.setattr(layout.fcntl, 'flock', lambda fd, op: locked.append(op) or real(fd, op))
-    monkeypatch.setattr(layout, '_flock_inodes', lambda: set())
+    monkeypatch.setattr(layout, '_flock_files', lambda: set())
     try:
         assert layout.run_holds_slot(root, RUN) is False
         assert locked == [], 'no free slot was locked by the question'
     finally:
         monkeypatch.undo()
+        root.close()
+
+
+def test_a_stopped_legacy_holder_is_seen_and_its_unverified_note_holds_cleanup(tmp_path, monkeypatch):
+    root = root_at(tmp_path)
+    monkeypatch.setattr(layout, '_flock_files', lambda: set())
+    holder = subprocess.Popen([sys.executable, '-B', '-c', '''
+import json, os, signal, sys
+from tests.testrunner import layout
+from tests.unit.test_run_slots_ordinary import root_at
+root = root_at(sys.argv[1])
+slot = layout.Slot(root)
+slot.acquire({"verb": "run", "run": sys.argv[2]})
+note = json.dumps({"verb": "run", "run": sys.argv[2], "pid": os.getpid()}).encode()
+os.ftruncate(slot.fd, 0)
+os.pwrite(slot.fd, note, 0)
+os.kill(os.getpid(), signal.SIGSTOP)
+''', str(tmp_path), RUN])
+    competitor = layout.Slot(root)
+    try:
+        _, status = os.waitpid(holder.pid, os.WUNTRACED)
+        assert os.WIFSTOPPED(status)
+        assert layout.run_holds_slot(root, RUN) is True
+        holder.kill()
+        holder.wait()
+        with pytest.raises(Refused, match='cannot verify the owner of .*slot.lock'):
+            layout.run_holds_slot(root, RUN)
+        competitor.acquire({'verb': 'run', 'run': 'replacement'}, wait=0)
+        assert competitor.selected == 0
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait()
+        competitor.release()
+        root.close()
+
+
+def test_unreadable_owner_evidence_holds_cleanup(tmp_path, monkeypatch):
+    root = root_at(tmp_path)
+    os.close(root.child(RESULTS, RUN))
+    monkeypatch.setattr(layout, '_flock_files', lambda: set())
+    crashed_note(tmp_path, RUN)
+    real_open = os.open
+
+    def denied(name, *args, **kwargs):
+        if name == 'fdinfo':
+            raise PermissionError('synthetic unreadable fdinfo')
+        return real_open(name, *args, **kwargs)
+
+    monkeypatch.setattr(layout.os, 'open', denied)
+    try:
+        with pytest.raises(Refused, match='cannot verify the owner of .*slot-4.lock'):
+            layout.run_active(root, RUN)
+    finally:
         root.close()
 
 

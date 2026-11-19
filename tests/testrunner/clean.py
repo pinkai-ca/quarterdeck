@@ -261,9 +261,7 @@ def retire_within(root: Root, run: str, *, releasing=False) -> int:
     try:
         guard = RunGuard(root, run)
     except FileNotFoundError:
-        if releasing:
-            raise Refused(f'run {run}: no recorded result directory; nothing removed') from None
-        raise
+        raise Refused(f'run {run}: no recorded result directory; nothing removed') from None
     try:
         guard.acquire()
         return _retire_within(root, run, releasing=releasing)
