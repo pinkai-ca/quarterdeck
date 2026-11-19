@@ -7,9 +7,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 
-from .json_record import _entry, _parsed, _read_lock, _snapshots, snapshot_bytes
+from .json_record import _held, _parsed, _read_lock, _stamp, snapshot_bytes
+from . import record_file
+from ..record_location import resolve
 from .types import State
 
 
@@ -19,6 +22,44 @@ def digest(value: bytes) -> str:
 
 def identity(row: dict) -> str:
     return digest(json.dumps(row, sort_keys=True, separators=(',', ':')).encode())
+
+
+@dataclass(frozen=True)
+class PrefixProof:
+    record: Path
+    source: Path
+    stamp: tuple
+    previous: tuple | None = None
+
+    def matches(self, extent, expected, current_digest):
+        if type(extent) is not int or extent < 0:
+            return False
+        with record_file.Opened(self.source, record_file.LINES_BOUND) as stream:
+            if resolve(self.record) != self.source or _stamp(stream.stat) != self.stamp:
+                raise record_file.RecordError('record changed after observing its compactions')
+            if extent > self.stamp[2]:
+                found = None
+            elif extent == self.stamp[2]:
+                found = current_digest
+            elif self.previous and extent == self.previous[0]:
+                found = self.previous[1]
+            else:
+                hasher, left = hashlib.sha256(), extent
+                while left:
+                    data = stream.read(min(left, 64 * 1024))
+                    if not data:
+                        raise record_file.RecordError('record ended during its prefix proof')
+                    hasher.update(data)
+                    left -= len(data)
+                found = hasher.hexdigest()
+            named, info = record_file.open_record(self.source)
+            try:
+                if (resolve(self.record) != self.source or _stamp(info) != self.stamp
+                        or _stamp(record_file.restat(stream.descriptor)) != self.stamp):
+                    raise record_file.RecordError('record changed during its prefix proof')
+            finally:
+                os.close(named)
+        return found is not None and found == expected
 
 
 @dataclass(frozen=True)
@@ -33,8 +74,13 @@ class Compactions:
     complete: bool = False
     last_call: str | None = None
     origin: datetime | None = None
-    raw: bytes = field(default=b'', repr=False)
+    prefix: PrefixProof | None = field(default=None, repr=False, compare=False)
     state: State | None = field(default=None, repr=False)
+
+    def matches_prefix(self, extent, expected) -> bool:
+        if self.prefix is None:
+            raise record_file.RecordError('no guarded native prefix proof')
+        return self.prefix.matches(extent, expected, self.digest)
 
 
 class History:
@@ -58,18 +104,22 @@ class History:
             self.last_call = call
 
 
-def read(record: Path, interpreter, reader) -> Compactions:
+def read(record: Path, interpreter, reader, *, parse=_parsed) -> Compactions:
     """The record's compaction reading. ``interpreter()`` makes the adapter's history, fed rows in turn; it is kept
     with the record (json_record's ``interpreters``) and fed only the rows an append adds, so a changed record is not
     interpreted whole again. A history it refused stays refused until the record is rewritten."""
     try:
         with _read_lock:
-            parsed = _parsed(record)
+            parsed = parse(record)
             if reader in parsed.compactions:
                 return parsed.compactions[reader]
-            raw = snapshot_bytes(parsed)  # this reading's bytes, in hand: digested whole, never parsed for it
-            if not raw or not raw.endswith(b'\n') or parsed.skipped:
+            if not parsed.ends_newline or parsed.skipped:
                 raise ValueError('incomplete or malformed native history')
+            extent, checksum = parsed.total_bytes, parsed.raw_digest
+            if checksum is None:
+                raw = snapshot_bytes(parsed)
+                extent, checksum = len(raw), digest(raw)
+            prefix = PrefixProof(Path(record), parsed.source or resolve(record), parsed.stamp, parsed.previous_prefix)
             kept = parsed.interpreters.get(reader)
             if kept is None or kept[1] > len(parsed.rows):
                 kept = interpreter(), 0, None
@@ -79,7 +129,7 @@ def read(record: Path, interpreter, reader) -> Compactions:
                     interpret.feed(row for _, row in parsed.rows[count:])
                 except (ValueError, TypeError, KeyError, AttributeError):
                     refused = 'native compaction history unreadable or incomplete'
-            if _snapshots.get(Path(record)) is _entry(parsed) and parsed.ends_newline:
+            if _held(record, parsed) and parsed.ends_newline:
                 parsed.interpreters[reader] = interpret, len(parsed.rows), refused
             if refused is not None:
                 raise ValueError(refused)
@@ -87,9 +137,9 @@ def read(record: Path, interpreter, reader) -> Compactions:
             if not history.conversation or not history.turn or history.origin is None:
                 raise ValueError('native conversation origin not proved')
             state, _ = reader.read_snapshot(record, parsed)
-            found = Compactions(history.conversation, history.count, None, len(raw), digest(raw),
+            found = Compactions(history.conversation, history.count, None, extent, checksum,
                                 digest(''.join(history.frontier).encode()), history.turn,
-                                history.complete, history.last_call, history.origin, raw, state)
+                                history.complete, history.last_call, history.origin, prefix, state)
             parsed.compactions[reader] = found
             return found
     except (OSError, ValueError, TypeError, KeyError, AttributeError):

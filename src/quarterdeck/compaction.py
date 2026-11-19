@@ -369,7 +369,11 @@ def observe(seat, data, record, reading, launched):
         if data.get('error'):
             raise ShipError(data['error'])
         extent = data.get('extent', 0)
-        if len(reading.raw) < extent or hashlib.sha256(reading.raw[:extent]).hexdigest() != data.get('digest'):
+        try:
+            same_prefix = reading.matches_prefix(extent, data.get('digest'))
+        except OSError as error:
+            raise ShipError('native history changed during its prefix proof; count unknown') from error
+        if not same_prefix:
             data['error'] = 'native history rewritten or truncated; count unknown'
             raise ShipError(data['error'])
     if prior == source and data.get('transition'):

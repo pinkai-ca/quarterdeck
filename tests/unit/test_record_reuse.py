@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck.harness import claude, codex, json_record, record_file
+from quarterdeck.harness import claude, claude_record, codex, json_record, record_file
 from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape
 
 
@@ -33,7 +33,7 @@ def test_append_reuses_parsed_prefix_across_state_and_input_reads(tmp_path, monk
     assert len(decoded)<=1, 'unchanged native rows must not be JSON-decoded for every state/receipt walk'
 
 
-@pytest.mark.parametrize('change', ['rewrite', 'truncate', 'replace', 'same-size'])
+@pytest.mark.parametrize('change', ['rewrite', 'rewrite-grow', 'truncate', 'replace', 'same-size'])
 def test_source_mutation_rebuilds_proof_instead_of_trusting_an_append(tmp_path, change):
     record=ClaudeShape(tmp_path/'home',tmp_path,'synthetic','synthetic')
     record.begin('First synthetic input', 'synthetic','low');record.end('Finished')
@@ -41,6 +41,8 @@ def test_source_mutation_rebuilds_proof_instead_of_trusting_an_append(tmp_path, 
     raw=record.path.read_text().replace('First synthetic input','Other synthetic input')
     if change=='truncate':
         raw=raw.splitlines()[0]+'\n'
+    if change=='rewrite-grow':
+        raw+='\n'
     if change=='replace':
         other=record.path.with_suffix('.new');other.write_text(raw);os.replace(other,record.path)
     else:
@@ -61,7 +63,7 @@ def test_partial_row_completion_and_public_mutation_do_not_poison_cached_native_
         out.write('{"role":"assistant","content":[{"type":"text","text":"Synthetic reply"}]}}\n')
     assert claude.state(record.path).pending_tools==()
     assert claude.inputs(record.path).diagnostics()['total']==0
-    exposed=json_record.object_lines(record.path)
+    exposed=claude_record.object_lines(record.path)
     exposed[0][1]['message']['content']='caller mutation'
     assert claude.state(record.path).last_input=='Synthetic input'
 
@@ -159,18 +161,19 @@ def test_racy_equal_stamps_need_a_new_read_before_certification_and_clock_revers
     record.begin('First synthetic input','synthetic','low')
     stamp=record.path.stat();clock=[stamp.st_ctime_ns+100]
     initial=record.path.read_text()
-    opened=record_file.open_record;read=record_file.read_from;reads=[];mine=set()
+    opened=record_file.open_record;read=claude_record.read_piece;reads=[];mine=set()
     def coarse(path,*args,**kwargs):
         descriptor,info=opened(path,*args,**kwargs)
         if path!=record.path:return descriptor,info
         mine.add(descriptor);return descriptor,stamp
     def restat(descriptor):return stamp if descriptor in mine else os.fstat(descriptor)
-    def observed(descriptor,info,path,*args,**kwargs):
-        if path==record.path:reads.append(True)
-        return read(descriptor,info,path,*args,**kwargs)
+    def observed(descriptor, size):
+        if descriptor in mine:
+            reads.append(True)
+        return read(descriptor, size)
     monkeypatch.setattr(record_file,'open_record',coarse)
     monkeypatch.setattr(record_file,'restat',restat)
-    monkeypatch.setattr(record_file,'read_from',observed)
+    monkeypatch.setattr(claude_record, 'read_piece', observed)
     monkeypatch.setattr(json_record.time,'time_ns',lambda:clock[0])
     assert claude.state(record.path).last_input=='First synthetic input'
     record.path.write_text(initial.replace('First synthetic input','Other synthetic input'))
@@ -209,11 +212,10 @@ def test_a_racing_record_read_requires_a_stable_fresh_snapshot(tmp_path, monkeyp
     record = ClaudeShape(tmp_path/'home', tmp_path, 'synthetic', 'synthetic')
     record.begin('First synthetic input', 'synthetic', 'low')
     assert claude.state(record.path).last_input == 'First synthetic input'
-    read = record_file.read_from
+    same_stamp = claude_record._same_stamp
     reads = []
 
-    def concurrent(descriptor, info, path, *args, **kwargs):
-        raw = read(descriptor, info, path, *args, **kwargs)
+    def concurrent(descriptor, path, stamp):
         if path == record.path:
             reads.append(True)
             if continuous:
@@ -221,13 +223,13 @@ def test_a_racing_record_read_requires_a_stable_fresh_snapshot(tmp_path, monkeyp
                     stream.write(b'\n')
             elif len(reads) == 1:
                 record.begin('Second synthetic input', 'synthetic', 'low')
-        return raw
+        return same_stamp(descriptor, path, stamp)
 
-    monkeypatch.setattr(record_file, 'read_from', concurrent)
+    monkeypatch.setattr(claude_record, '_same_stamp', concurrent)
     if continuous:
         with pytest.raises(json_record.RecordError, match='changed while being read'):
             claude.state(record.path)
         assert len(reads) <= 3, 'continuous mutation must refuse within the bounded snapshot read'
-        monkeypatch.setattr(record_file, 'read_from', read)
+        monkeypatch.setattr(claude_record, '_same_stamp', same_stamp)
         record.begin('Second synthetic input', 'synthetic', 'low')
     assert claude.state(record.path).last_input == 'Second synthetic input'

@@ -1,4 +1,4 @@
-"""The record cache keeps reader state and a proof of each record's prefix, never its text or lines (json_record).
+"""The record cache keeps a proved prefix and the adapter-specific retained data.
 
 An appended record decodes only its new lines; a prefix rewritten to other bytes of the same length parses whole; the
 bound, in bytes of record, evicts; the readers' state equals a whole parse's; the accounting child keeps rows as
@@ -9,8 +9,8 @@ import os
 
 import pytest
 
-from quarterdeck.harness import claude, json_record
-from quarterdeck.harness.synthetic_record import ClaudeShape
+from quarterdeck.harness import claude, codex, json_record
+from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape
 
 
 @pytest.fixture(autouse=True)
@@ -21,8 +21,8 @@ def fresh_cache(monkeypatch):
     json_record._snapshots.clear()
 
 
-def record_with(tmp_path, turns=5, name='home'):
-    record = ClaudeShape(tmp_path / name, tmp_path, 'synthetic', 'synthetic')
+def record_with(tmp_path, turns=5, name='home', *, shape=ClaudeShape):
+    record = shape(tmp_path / name, tmp_path, 'synthetic', 'synthetic')
     for index in range(turns):
         record.begin(f'Synthetic input {index}', 'synthetic', 'low')
         record.end('Finished')
@@ -44,10 +44,10 @@ def lines_of(path):
     return sum(1 for line in path.read_text().splitlines() if line.strip())
 
 
-def test_the_cache_keeps_no_text_and_no_lines(tmp_path):
-    record = record_with(tmp_path)
-    claude.read(record.path)
-    claude.inputs(record.path)
+def test_the_generic_cache_keeps_no_text_and_no_lines(tmp_path):
+    record = record_with(tmp_path, shape=CodexShape)
+    codex.read(record.path)
+    codex.inputs(record.path)
     entry = json_record._snapshots[record.path]
     assert entry.raw == '' and entry.rows == [] and entry.data is None
     assert entry.prefix_bytes == record.path.stat().st_size and entry.row_count == lines_of(record.path)
@@ -115,12 +115,19 @@ def test_the_readers_state_after_appends_equals_a_whole_parse(tmp_path):
     assert [item.text for item in incremental[1]] == [item.text for item in whole[1]]
 
 
-def test_the_accounting_child_keeps_rows_as_before(tmp_path, monkeypatch):
-    record = record_with(tmp_path)
+@pytest.mark.parametrize('shape,adapter', [(CodexShape, codex), (ClaudeShape, claude)])
+def test_the_accounting_child_keeps_rows_for_each_reader(tmp_path, shape, adapter):
+    record = record_with(tmp_path, shape=shape)
+    original = record.path.read_text()
     json_record.keep_rows()
-    claude.read(record.path)
+    adapter.read(record.path)
     entry = json_record._snapshots[record.path]
-    assert entry.raw == record.path.read_text() and len(entry.rows) == lines_of(record.path)
+    if adapter is claude:
+        assert entry.raw == '' and entry.data is None
+        assert entry.rows == json_record._lines(original, 0)[0]
+    else:
+        assert entry.raw == original
+    assert len(entry.rows) == lines_of(record.path)
 
 
 def test_the_cache_size_is_read_each_pass_and_written_with_the_minutes_timing_line(tmp_path):

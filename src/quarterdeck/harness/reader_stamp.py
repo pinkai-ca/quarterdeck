@@ -19,7 +19,7 @@ COMMON = (
 )
 CODEX = ('harness/codex.py', 'harness/codex_usage.py', 'harness/failures.py')
 CLAUDE = ('harness/claude.py', 'harness/claude_background.py', 'harness/claude_children.py',
-          'harness/claude_limits.py', 'harness/claude_watch.py',
+          'harness/claude_limits.py', 'harness/claude_watch.py', 'harness/claude_record.py',
           'harness/failures.py', 'seat_command.py')
 PI = ('harness/pi.py', 'harness/endpoint.py', 'harness/costs.py',
       'harness/failures.py', 'pricing.py')

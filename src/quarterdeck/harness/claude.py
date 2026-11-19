@@ -26,8 +26,9 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import record_file
-from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
+from . import claude_record, record_file
+from .json_record import JsonLinesReader, input_reader, records_matching
+from .claude_record import entries, input_rows
 from .types import AUTHENTICATION, Inputs, State, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_limits import ExtraUsage, extra_usage_at_refusal, limit_wall, rejected_limit_info
 from .claude_background import notification as background_notification, BackgroundBash, user_notice
@@ -36,7 +37,7 @@ from .claude_children import Children, fingerprint as children_fingerprint
 from .. import durable, seat_files
 from ..ship import Pool, SeatSpec
 from .base import (Box, ship_template, trimmed, record_fingerprint, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
-                   Turn, Usage, Window, credential, entries, key_environment, merged, when)
+                   Turn, Usage, Window, credential, key_environment, merged, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
@@ -180,7 +181,7 @@ def compactions(record: Path):
                         if block.get('type') == 'tool_use':
                             self.history.work(dict(row=key, call=block), call=block.get('id'))
 
-    return read(record, Interpret, _Reader)
+    return read(record, Interpret, _Reader, parse=claude_record.parse)
 
 
 class _TextlessDequeue:
@@ -214,11 +215,11 @@ class _TextlessDequeue:
 
 
 @input_reader(lambda row: row.get('type') not in ('assistant', 'system', *INPUT_IGNORED)
-              or row.get('type') == 'ai-title' and not ai_title(row))
-def inputs(record: Path) -> list[Input]:
+              or row.get('type') == 'ai-title' and not ai_title(row), parse=claude_record.parse)
+def inputs(record: Path, snapshot) -> list[Input]:
     found, queued = Inputs(), []
     dequeue = _TextlessDequeue()
-    for line, row in input_rows(record, _Reader.kinds, _Reader.label, found):
+    for line, row in input_rows(record, _Reader.kinds, _Reader.label, found, parse=lambda _: snapshot):
         row = dequeue.take(row)
         kind = row.get('type')
         if kind == 'ai-title' and not ai_title(row):
@@ -463,6 +464,7 @@ class _ClaudeState(State):
 
 
 class _Reader(JsonLinesReader):
+    parse_snapshot = staticmethod(claude_record.parse)
     kinds = ('assistant', 'queue-operation', 'system', 'user')
     label = "Claude Code"
     clock = staticmethod(_wall_clock)  # the notice grace is judged on this clock alone; a test injects its own

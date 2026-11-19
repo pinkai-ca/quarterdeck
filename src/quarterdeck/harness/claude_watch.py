@@ -9,7 +9,8 @@ import re
 import shlex
 from collections import defaultdict
 
-from .json_record import entries, when
+from .claude_record import entries
+from .json_record import when
 from .types import Input
 
 BACKGROUND = re.compile(r'^Command running in background with ID: \S+\. Output is being written to: (\S+)\. ')

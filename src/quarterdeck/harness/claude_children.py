@@ -14,7 +14,8 @@ import stat
 
 from .. import trusted_files
 from .claude_background import BackgroundBash
-from .json_record import object_lines, when
+from .claude_record import object_lines
+from .json_record import when
 from .types import ActiveTool
 
 VERSION = '2.1.325'

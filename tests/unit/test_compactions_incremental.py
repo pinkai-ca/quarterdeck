@@ -5,7 +5,8 @@ as through the readers; a history the interpretation refuses stays refused acros
 read whole again. Synthetic histories only (tests/compaction_shapes.py).
 """
 import json
-from dataclasses import astuple
+from dataclasses import replace
+import hashlib
 
 import pytest
 
@@ -24,8 +25,7 @@ def fresh_cache(monkeypatch):
 
 
 def comparable(reading):
-    values = astuple(reading)
-    return values[:-2] + (reading.raw, )  # every field but the reader state, which is compared through its own tests
+    return replace(reading, prefix=None, state=None)
 
 
 def history(tmp_path, program):
@@ -52,6 +52,10 @@ def test_the_reading_after_appends_equals_a_whole_reading(tmp_path, program, mod
     whole = module.compactions(native.path)
     assert incremental.reason is None and incremental.count == 3
     assert comparable(incremental) == comparable(whole)
+    raw = native.path.read_bytes()
+    extent = raw.index(b'\n') + 1
+    assert whole.digest == hashlib.sha256(raw).hexdigest()
+    assert whole.matches_prefix(extent, hashlib.sha256(raw[:extent]).hexdigest())
 
 
 @pytest.mark.parametrize('program,module', PROGRAMS)

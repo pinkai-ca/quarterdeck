@@ -66,6 +66,9 @@ class _Snapshot:
     data: bytes | None = None  # a view's bytes, never a cached entry's
     kept: '_Snapshot | None' = None  # a view's cached entry
     source: Path | None = None  # a view's record, read again only for a view served from the cache
+    raw_digest: str | None = None
+    previous_prefix: tuple | None = None
+    retained_bytes: int = 0
 
 
 _snapshots = OrderedDict()
@@ -144,6 +147,8 @@ def _parse(record: Path) -> _Snapshot:
     source = resolve(record)
     record = Path(record)
     cached = _snapshots.pop(record, None)  # a failed read cannot preserve a certified success
+    if cached is not None and cached.raw_digest is not None:
+        cached = None  # a projection is never a generic full-record cache entry
     for attempt in range(3):
         started = time.time_ns()
         descriptor, info = record_file.open_record(source)  # never a link, a fifo or a swapped file
@@ -380,11 +385,11 @@ def _parse_text(record: Path, data: bytes, stamp, certified, cached) -> _Snapsho
     return result
 
 
-def _object_lines(record: Path, skip=None):
+def _object_lines(record: Path, skip=None, *, parse=_parsed):
     """Only native readers receive these private rows; they do not mutate source objects. Every row, parsed whole
     where the cache keeps none."""
     with _read_lock:
-        snapshot = _parsed(record)
+        snapshot = parse(record)
         if skip is not None:
             for diagnostic in snapshot.skipped:
                 skip(*diagnostic)
@@ -396,18 +401,22 @@ def _entry(snapshot: _Snapshot) -> _Snapshot:
     return snapshot.kept if snapshot.kept is not None else snapshot
 
 
-def entries(record: Path) -> list[dict]:
+def _held(record, snapshot):
+    return _snapshots.get(Path(record)) is _entry(snapshot)
+
+
+def entries(record: Path, *, parse=_parsed) -> list[dict]:
     """Every parseable object line of the record, in order; the rest is skipped."""
-    return [entry for _, entry in object_lines(record)]
+    return [entry for _, entry in object_lines(record, parse=parse)]
 
 
-def object_lines(record: Path, skip=None) -> list[tuple[int, dict]]:
+def object_lines(record: Path, skip=None, *, parse=_parsed) -> list[tuple[int, dict]]:
     """Keep original line numbers; optional diagnostics contain no source values."""
-    return deepcopy(_object_lines(record, skip))
+    return deepcopy(_object_lines(record, skip, parse=parse))
 
 
-def input_rows(record: Path, kinds: tuple[str, ...], label: str, evidence):
-    rows = _object_lines(record, evidence.skip)
+def input_rows(record: Path, kinds: tuple[str, ...], label: str, evidence, *, parse=_parsed):
+    rows = _object_lines(record, evidence.skip, parse=parse)
     if not rows:
         evidence.skip(0, 'record', 'no recognized native history')
     if rows and not any(row.get('type') in kinds for _, row in rows):
@@ -415,20 +424,20 @@ def input_rows(record: Path, kinds: tuple[str, ...], label: str, evidence):
     return rows
 
 
-def input_reader(relevant):
+def input_reader(relevant, *, parse=_parsed):
     """An adapter classifies which appended native rows can change its input evidence."""
     def decorate(read):
         @wraps(read)
         def cached(record):
             with _read_lock:
-                snapshot = _parsed(record)
+                snapshot = parse(record)
                 old = snapshot.inputs.get(read)  # (result, rows, skipped lines, relevant)
                 if (old is not None and old[2] == len(snapshot.skipped)
                         and not any(relevant(row) for _, row in snapshot.rows[old[1]:])):
                     result = old[0]
                 else:
-                    result = read(record)
-                if _snapshots.get(Path(record)) is _entry(snapshot) and snapshot.ends_newline:
+                    result = read(record) if parse is _parsed else read(record, snapshot)
+                if _held(record, snapshot) and snapshot.ends_newline:
                     snapshot.inputs[read] = result, len(snapshot.rows), len(snapshot.skipped), relevant
                 result = deepcopy(result)
                 last = snapshot.line_count
@@ -490,10 +499,12 @@ class JsonLinesReader(RecordReader):
         """Native envelope identification; adapters need not have a top-level type."""
         return entry.get("type") in cls.kinds
 
+    parse_snapshot = staticmethod(_parsed)
+
     @classmethod
     def read(cls, record: Path):
         with _read_lock:
-            return reading_scope.read(cls, record, lambda: cls.read_snapshot(record, _parsed(record)))
+            return reading_scope.read(cls, record, lambda: cls.read_snapshot(record, cls.parse_snapshot(record)))
 
     @classmethod
     def read_snapshot(cls, record: Path, snapshot: _Snapshot):
@@ -506,7 +517,7 @@ class JsonLinesReader(RecordReader):
             if snapshot.skipped[skipped:]:
                 reader.tools_known = False
             reader.take_rows(row for _, row in snapshot.rows[count:])
-        if _snapshots.get(Path(record)) is _entry(snapshot) and snapshot.ends_newline:
+        if _held(record, snapshot) and snapshot.ends_newline:
             snapshot.readers[cls] = reader, len(snapshot.rows), len(snapshot.skipped)
         return reader.state(), list(reader.turns)
 
@@ -526,7 +537,7 @@ class JsonLinesReader(RecordReader):
         if snapshot is not None:
             for diagnostic in snapshot.skipped:
                 self.unknown_tools(*diagnostic)
-        rows = [row for _, row in (snapshot.rows if snapshot is not None else _object_lines(record, self.unknown_tools))]
+        rows = [row for _, row in (snapshot.rows if snapshot is not None else _object_lines(record, self.unknown_tools, parse=self.parse_snapshot))]
         if rows and not any(self.identifies(row) for row in rows):
             raise RecordError(f"no {self.label} entries in this record: another program's file")
         self.take_rows(rows)
