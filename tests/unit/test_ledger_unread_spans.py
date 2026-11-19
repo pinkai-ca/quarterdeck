@@ -283,8 +283,8 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
                    for line in ledger_reading.render(view))
         if field is None:
             assert view['projection_refusals'] == [
-                dict(record=str(old), path=['message', 'content'], size=limit,
-                     compatibility=False, exhausted=resource)]
+                dict(record=str(old), path=['message', 'content'], size=limit, layout='newline',
+                     reason='budget', value_type='?', compatibility=False, exhausted=resource)]
 
     new = Native(fresh, 'claude')
     new.finish()
@@ -327,8 +327,9 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
         assert book.projection_usage(old).exhausted is None
 
 
-@pytest.mark.parametrize('mirror', [False, True], ids=['typed-image', 'duplicate-tool-image'])
-def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path, monkeypatch, mirror):
+@pytest.mark.parametrize('mirror,layout', [(False, 'newline'), (True, 'newline'),
+                                           (False, 'splitlines'), (True, 'splitlines')])
+def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path, monkeypatch, mirror, layout):
     session = Session('synthetic-session', 'Synthetic', human=True)
     pool = Pool('synthetic-pool', 'anthropic')
     spec = SeatSpec('synthetic-seat', session.name, 'office', 'claude', (pool.name,))
@@ -349,7 +350,7 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
     def unexpected(*args, **kwargs):
         pytest.fail('accounting tried to act on an operator-owned seat')
 
-    for action in ('up', 'restart', 'fresh', 'move_to'):
+    for action in ('up', 'down', 'restart', 'fresh', 'move_to'):
         monkeypatch.setattr(Seat, action, unexpected)
     monkeypatch.setattr(Service, 'request_fresh_handoff', unexpected)
     monkeypatch.setattr(Service, 'deliver', unexpected)
@@ -380,6 +381,8 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
         native.finish()
         padding = json.dumps({'type': 'file-history-snapshot', 'snapshot': 'x' * (4 * MiB)}).encode() + b'\n'
         with path.open('ab') as stream:
+            if layout == 'splitlines':
+                stream.write('\u2028'.encode())
             for row in native.rows[first_rows:]:
                 stream.write(json.dumps(row).encode() + b'\n')
             for _ in range(32):
@@ -394,9 +397,9 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
 
     json_record.release(path)
     with monkeypatch.context() as earlier_reader:
-        if mirror:
+        if layout == 'splitlines' or mirror:
             earlier_reader.setattr(claude_record, 'mirror_path', lambda _: False)
-        else:
+        if layout == 'splitlines' or not mirror:
             earlier_reader.setattr(claude_record, 'PAYLOAD_PATHS', {})
         service = Service(ship, tmux)
         with service.ledger as book:
@@ -405,10 +408,12 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
             assert blocked['bound'] == raw['bound']
             assert blocked['projection']['resource'] == 'retained bytes per row'
             assert blocked['projection']['counted'] == 1
-            if mirror:
-                assert book.projection_refusals() == [
-                    dict(record=str(path), path=['toolUseResult', 'file', 'base64'], size=MiB,
-                         compatibility=False, exhausted='retained bytes per row')]
+            expected_path = ['message', 'content'] + (['content'] if mirror else []) + ['source', 'data']
+            if layout == 'newline' and mirror:
+                expected_path = ['toolUseResult', 'file', 'base64']
+            assert book.projection_refusals() == [
+                dict(record=str(path), path=expected_path, size=MiB, layout=layout, reason='budget', value_type='?',
+                     compatibility=False, exhausted='retained bytes per row')]
 
     service = Service(ship, tmux)
     with service.ledger as book:
@@ -424,26 +429,41 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
         assert path.stat().st_size == size
 
 
-def test_compatibility_field_evidence_is_persisted_only_for_its_exact_observation(tmp_path):
+@pytest.mark.parametrize('layout', ['newline', 'splitlines'])
+@pytest.mark.parametrize('legacy', [True, False])
+def test_compatibility_field_evidence_is_persisted_only_for_its_exact_observation(tmp_path, layout, legacy):
     path, record = tmp_path / 'ledger.sqlite', tmp_path / 'synthetic.jsonl'
     native = Native(record, 'claude')
     native.finish()
     size = claude_record.ROW_BYTES + 123
     native.add('system', message={'fixture-only-name': [{'fixture-private-name': 'x' * size}]})
+    if layout == 'splitlines':
+        record.write_bytes(record.read_bytes().replace(b'\n', '\u2028'.encode(), 1))
     state, _ = get('claude').read(record)
     assert state.turn_open is False and state.projection_usage.compatibility
     usage = state.projection_usage
     with Ledger(path) as book:
         book.save_projection_usage(record, usage)
+        if legacy:
+            # This is the stored format from before layout and reason were measured.
+            stamp = dict(stamp=usage.stamp, compatibility=True,
+                         row_refusal=dict(path=['message', '?', '?'], size=size))
+            book.db.execute('UPDATE record_projection_usage SET stamp=?', (json.dumps(stamp),))
         book.db.commit()
     with Ledger.reading(path) as reader:
-        assert reader.projection_usage(record) == usage
-        assert reader.projection_refusals() == [
-            dict(record=str(record), path=['message', '?', '?'], size=size,
-                 compatibility=True, exhausted=None)]
+        detail = reader.projection_usage(record).row_refusal
+        row = dict(record=str(record), path=['message', '?', '?'], size=size,
+                   compatibility=True, exhausted=None)
+        if legacy:
+            assert detail == claude_record.RowRefusal(('message', '?', '?'), size)
+        else:
+            assert detail == usage.row_refusal
+            row.update(layout=layout, reason='budget', value_type='?')
+        assert reader.projection_refusals() == [row]
         view = ledger_reading.collect(reader, by='seat')
-        assert any(f'message.?.? ({size:,} encoded bytes) · read by compatibility reader' in line
-                   for line in ledger_reading.render(view))
+        detail_note = '' if legacy else f' · {layout} · budget (?)'
+        note = f'message.?.? ({size:,} encoded bytes) · read by compatibility reader{detail_note}'
+        assert any(line.endswith(note) for line in ledger_reading.render(view))
         assert reader.incomplete_records() == reader.unread_spans() == []
         with record.open('ab') as stream:
             stream.write(b'\n')
@@ -459,6 +479,28 @@ def test_compatibility_field_evidence_is_persisted_only_for_its_exact_observatio
         replacement.write_bytes(record.read_bytes())
         replacement.replace(record)
         assert reader.projection_refusals() == []
+
+
+def test_projection_refusal_reader_accepts_only_fixed_schema_metadata(tmp_path):
+    record = tmp_path / 'synthetic.jsonl'
+    record.write_text('{}\n')
+    stamp = json_record._stamp(record.stat())
+    detail = dict(path=['message', 'content'], size=42, layout='splitlines',
+                  reason='image-media-type', value_type='some-made-up-identifier')
+    with Ledger(tmp_path / 'ledger.sqlite') as book:
+        for changes in ({}, {'reason': 'made-up-reason'}, {'layout': 'made-up-layout'},
+                        {'path': ['message', 'private-field']}, {'path': ['message', 3]}):
+            stored = dict(stamp=stamp, row_refusal=dict(detail, **changes))
+            book.db.execute('INSERT OR REPLACE INTO record_projection_usage VALUES (?,?,NULL,NULL,NULL,?)',
+                            (str(record), json.dumps(stored), 'retained bytes per row'))
+            rows = book.projection_refusals()
+            if 'path' in changes:
+                assert rows == []
+            elif changes:
+                assert 'layout' not in rows[0] and 'reason' not in rows[0] and 'value_type' not in rows[0]
+            else:
+                assert rows[0]['layout'] == 'splitlines'
+                assert rows[0]['reason'] == 'image-media-type' and rows[0]['value_type'] == '?'
 
 
 def test_qd_ledger_and_the_pool_reading_name_each_span(tmp_path):

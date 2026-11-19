@@ -37,7 +37,8 @@ def read_mirror(picture):
 
 
 @pytest.mark.parametrize('use', ['typed', 'image-result', 'string-result', 'text-block-result'])
-def test_payload_projection_matches_the_full_native_readers(tmp_path, monkeypatch, use):
+@pytest.mark.parametrize('splitlines', [False, True], ids=['newline', 'splitlines'])
+def test_payload_projection_matches_the_full_native_readers(tmp_path, monkeypatch, use, splitlines):
     record = Native(tmp_path / 'synthetic.jsonl', 'claude')
     size = 1024 * 1024
     body = 'escaped "quotes", \\ and plain text\n' * (size // 25)
@@ -57,6 +58,9 @@ def test_payload_projection_matches_the_full_native_readers(tmp_path, monkeypatc
         index = 2
     record.finish()
     source = record.path.read_bytes()
+    if splitlines:
+        source = source.replace(b'\n', '\u2028'.encode(), 1)
+        record.path.write_bytes(source)
     adapter = get('claude')
 
     def consumers():
@@ -177,7 +181,7 @@ def test_mirror_evidence_keeps_wrong_types_or_refuses_at_the_original_field(tmp_
     record.flush()
     with pytest.raises(claude_record.ProjectionLimit) as caught:
         claude_record.parse(path)
-    assert caught.value.row_refusal == claude_record.RowRefusal(('toolUseResult', key, '?'), len(large))
+    assert caught.value.row_refusal == claude_record.RowRefusal(('toolUseResult', key, '?'), len(large), 'newline', 'budget', '?')
 
 
 @pytest.mark.parametrize('unsafe', ['qd > synthetic marker', '\\u0064', 'Command running in background with ID: '])
@@ -193,7 +197,9 @@ def test_mirror_text_with_watch_markers_or_unicode_escapes_refuses(tmp_path, mon
     monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
     with pytest.raises(claude_record.ProjectionLimit) as caught:
         claude_record.parse(record.path)
-    assert caught.value.row_refusal == claude_record.RowRefusal(('toolUseResult', '?', 'text'), len(value))
+    reason = 'text-escape' if unsafe == '\\u0064' else 'text-watch-marker'
+    assert caught.value.row_refusal == claude_record.RowRefusal(
+        ('toolUseResult', '?', 'text'), len(value), 'newline', reason, '?')
     assert row['toolUseResult']['unrecognized-name'][0]['text'] == value
 
 
@@ -207,7 +213,8 @@ def test_mirror_image_requires_valid_base64_even_with_a_valid_message_copy(tmp_p
     monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
     with pytest.raises(claude_record.ProjectionLimit) as caught:
         claude_record.parse(record.path)
-    assert caught.value.row_refusal == claude_record.RowRefusal(('toolUseResult', 'file', 'base64'), claude_record.ROW_BYTES)
+    assert caught.value.row_refusal == claude_record.RowRefusal(
+        ('toolUseResult', 'file', 'base64'), claude_record.ROW_BYTES, 'newline', 'image-not-base64', 'image')
 
 
 def test_mirrored_bash_output_preserves_the_background_handle_and_exact_stop_message(tmp_path, monkeypatch):
@@ -238,10 +245,28 @@ def test_mirrored_bash_output_preserves_the_background_handle_and_exact_stop_mes
     assert projected['details'][0]['output'].size == len(large)
 
 
-@pytest.mark.parametrize('reason', ['watch', 'escaped-watch', 'watch-sibling', 'background',
-                                     'role', 'type', 'source', 'data', 'duplicate', 'partial',
-                                     'unknown-block', 'unknown-mirror', 'typed-text'])
-def test_giant_unproved_or_required_values_remain_unknown(tmp_path, monkeypatch, reason):
+@pytest.mark.parametrize('layout', ['newline', 'splitlines'])
+@pytest.mark.parametrize('case,reason,value_type', [
+    ('watch', 'text-watch-marker', 'tool_result'),
+    ('escaped-watch', 'text-escape', 'tool_result'),
+    ('watch-sibling', 'text-watch-marker', 'text'),
+    ('background', 'text-watch-marker', 'tool_result'),
+    ('role', 'not-a-user-row', '?'),
+    ('type', 'not-a-user-row', '?'),
+    ('source', 'image-not-base64', 'image'),
+    ('media', 'image-media-type', '?'),
+    ('media-short', 'image-media-type', 'png'),
+    ('data', 'image-not-base64', 'image/png'),
+    ('padding', 'image-padding', 'image/png'),
+    ('duplicate', 'duplicate-key', '?'),
+    ('partial', None, None),
+    ('unknown-block', 'unknown-block-type', '?'),
+    ('other-block', 'unknown-block-type', 'tool_use'),
+    ('unknown-mirror', 'unknown-block-type', '?'),
+    ('typed-text', 'budget', '?'),
+    ('many', 'too-many-payloads', '?'),
+])
+def test_giant_unproved_or_required_values_remain_unknown(tmp_path, monkeypatch, layout, case, reason, value_type):
     record = Native(tmp_path / 'synthetic.jsonl', 'claude')
     monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
     big = claude_record.ROW_BYTES + 4
@@ -251,45 +276,73 @@ def test_giant_unproved_or_required_values_remain_unknown(tmp_path, monkeypatch,
     content = [text('Synthetic typed input'), picture]
     message = {'role': 'user', 'content': content}
     row = {'type': 'user', 'message': message}
-    if reason in ('watch', 'escaped-watch'):
+    if case in ('watch', 'escaped-watch'):
         message['content'] = [result(watched)]
-    elif reason == 'watch-sibling':
+    elif case == 'watch-sibling':
         message['content'] = [result([text(padding), text('qd > synthetic marker')])]
-    elif reason == 'background':
+    elif case == 'background':
         message['content'] = [result('Command running in background with ID: synthetic. ' + padding)]
-    elif reason == 'role':
+    elif case == 'role':
         message['role'] = 'assistant'
-    elif reason == 'type':
+    elif case == 'type':
         row['type'] = 'system'
-    elif reason == 'source':
-        picture['source']['type'] = 'unknown'
-    elif reason == 'data':
+    elif case == 'source':
+        picture['source']['type'] = 'made-up-source'
+    elif case in ('media', 'media-short'):
+        picture['source']['media_type'] = 'made-up-media' if case == 'media' else 'png'
+    elif case == 'data':
         picture['source']['data'] += '%'
-    elif reason == 'unknown-block':
-        content.append({'type': 'unrecognized'})
-    elif reason == 'unknown-mirror':
+    elif case == 'padding':
+        picture['source']['data'] = 'QU=D' + picture['source']['data'][4:]
+    elif case in ('unknown-block', 'other-block'):
+        content.append({'type': 'made-up-block' if case == 'unknown-block' else 'tool_use'})
+    elif case == 'unknown-mirror':
         row['toolUseResult'] = {'unproved_field': padding}
-    elif reason == 'typed-text':
+    elif case == 'typed-text':
         content[0]['text'] = padding
+    elif case == 'many':
+        monkeypatch.setattr(claude_record, 'MAX_PAYLOADS', 1)
+        content.append(image(big))
     raw = json.dumps(row).encode()
-    if reason == 'escaped-watch':
+    if case == 'escaped-watch':
         raw = raw.replace(b'qd >', b'q\\u0064 >', 1)
-    elif reason == 'duplicate':
+    elif case == 'duplicate':
         raw = b'{"message": {}, ' + raw[1:]
-    elif reason == 'partial':
+    elif case == 'partial':
         raw = raw[:raw.index(b'QUJD') + big - 8]
-    with record.path.open('ab') as stream:
-        stream.write(raw + (b'' if reason == 'partial' else b'\n'))
+    prefix = record.path.read_bytes()
+    if layout == 'splitlines':
+        prefix = prefix.replace(b'\n', '\u2028'.encode(), 1)
+    record.path.write_bytes(prefix + raw + (b'' if case == 'partial' else b'\n'))
     with pytest.raises(claude_record.ProjectionLimit) as refused:
         claude_record.parse(record.path)
     assert refused.value.resource == 'retained bytes per row'
+    detail = refused.value.row_refusal
+    if reason is None:
+        assert detail is None
+    else:
+        assert (detail.layout, detail.reason, detail.value_type) == (layout, reason, value_type)
+        assert detail.size >= big
+        assert all(part == '?' or part in claude_record.SCHEMA_KEYS for part in detail.path)
     assert record.path not in json_record._snapshots
 
 
-def test_typed_identity_uses_the_same_guard_after_reading_image_bytes(tmp_path, monkeypatch):
+@pytest.mark.parametrize('layout', ['newline', 'splitlines'])
+def test_typed_identity_uses_the_same_guard_after_reading_image_bytes(tmp_path, monkeypatch, layout):
     record = Native(tmp_path / 'synthetic.jsonl', 'claude')
-    row = record.add('user', message=dict(role='user', content=[image(1024 * 1024), text('Synthetic input')]))
+    row = record.add('user', message=dict(role='user', content=[text('Synthetic Ω input'), image(1024 * 1024)]))
     record.finish()
+    raw = b'\n'.join(json.dumps(item, ensure_ascii=False).encode() for item in record.rows) + b'\n'
+    if layout == 'splitlines':
+        first, rest = raw.split(b'\n', 1)
+        chunk = claude_record.CHUNK
+        # Put a UTF-8 separator, CRLF, and a non-separator UTF-8 character across successive reads.
+        prefix = first.ljust(chunk - 1) + '\u2028'.encode()
+        prefix = prefix.ljust(2 * chunk - 1) + b'\r\n'
+        omega = rest.index('Ω'.encode())
+        raw = prefix + b' ' * (3 * chunk - 1 - len(prefix) - omega) + rest
+    record.path.write_bytes(raw)
+    image_start = raw.index(b'QUJD')
     pread = claude_record.os.pread
     reread_offsets = []
 
@@ -302,6 +355,7 @@ def test_typed_identity_uses_the_same_guard_after_reading_image_bytes(tmp_path, 
 
     monkeypatch.setattr(claude_record.os, 'pread', growing)
     observation = claude.compactions(record.path)
-    assert reread_offsets.count(reread_offsets[0]) == 2
+    assert reread_offsets[0] == image_start and reread_offsets.count(image_start) == 2
     assert observation.turn == identity(row)
-    assert observation.digest == sha256(record.path.read_bytes()).hexdigest()
+    assert observation.digest == sha256(raw + b'\n').hexdigest()
+    assert observation.extent == len(raw) + 1

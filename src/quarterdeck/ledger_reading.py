@@ -64,7 +64,8 @@ def notes(data: dict) -> list[str]:
     for row in data.get('projection_refusals', []):
         path = '.'.join(row['path']) or 'row'
         read = ' · read by compatibility reader' if row['compatibility'] and row['exhausted'] is None else ''
-        found.append(f"stream row limit: {Path(row['record']).name} · {path} ({row['size']:,} encoded bytes){read}")
+        detail = f" · {row['layout']} · {row['reason']} ({row['value_type']})" if 'layout' in row else ''
+        found.append(f"stream row limit: {Path(row['record']).name} · {path} ({row['size']:,} encoded bytes){read}{detail}")
     return found
 
 

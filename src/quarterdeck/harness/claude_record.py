@@ -2,7 +2,7 @@
 
 from hashlib import sha256
 import codecs
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from functools import partial
@@ -33,6 +33,7 @@ HEX_DIGITS = b'0123456789abcdefABCDEF'
 MALFORMED = (None, 'json', 0)
 IMAGE_TYPES = frozenset(('image/png', 'image/jpeg', 'image/webp', 'image/gif'))
 BASE64 = re.compile(rb'[A-Za-z0-9+/]*={0,2}')
+BASE64_BYTES = re.compile(rb'[A-Za-z0-9+/=]*')
 WATCH_HEADER = 'qd >'
 BACKGROUND_HEADER = 'Command running in background with ID: '
 WATCH_HEADERS = (WATCH_HEADER, BACKGROUND_HEADER)
@@ -60,22 +61,41 @@ SCHEMA_KEYS = MIRROR_EVIDENCE | IMAGE_FIELDS | frozenset((
     'timestamp', 'version', 'usage', 'attachment',
 ))
 DIAGNOSTIC_KEY_BYTES = 6 * max(map(len, SCHEMA_KEYS))
+REFUSAL_LAYOUTS = frozenset(('newline', 'splitlines'))
+REFUSAL_REASONS = frozenset((
+    'not-a-user-row', 'unknown-block-type', 'image-media-type', 'image-not-base64',
+    'image-padding', 'text-watch-marker', 'text-escape', 'duplicate-key', 'too-many-payloads', 'budget',
+))
+REFUSAL_TYPES = IMAGE_FORMATS | {
+    'image', 'text', 'tool_result', 'tool_use', 'thinking', 'redacted_thinking',
+    'document', 'search_result', 'base64',
+}
+
+
+def safe_type(value):
+    return value if isinstance(value, str) and value in REFUSAL_TYPES else '?'
 
 
 @dataclass(frozen=True)
 class RowRefusal:
-    """Only schema labels and a value's encoded byte count may leave the reader."""
+    """Fixed labels and a value's encoded byte count from one guarded observation."""
 
     path: tuple[str, ...]
     size: int
+    layout: str | None = None
+    reason: str | None = None
+    value_type: str | None = None
 
     @classmethod
-    def read(cls, path, size):
-        if (isinstance(path, list) and len(path) <= DEPTH
-                and all(isinstance(part, str) and (part == '?' or part in SCHEMA_KEYS) for part in path)
-                and type(size) is int and size >= 0):
-            return cls(tuple(path), size)
-        return None
+    def read(cls, path, size, layout=None, reason=None, value_type=None):
+        if (not isinstance(path, list) or len(path) > DEPTH
+                or not all(isinstance(part, str) and (part == '?' or part in SCHEMA_KEYS) for part in path)
+                or type(size) is not int or size < 0):
+            return None
+        if (isinstance(layout, str) and layout in REFUSAL_LAYOUTS
+                and isinstance(reason, str) and reason in REFUSAL_REASONS):
+            return cls(tuple(path), size, layout, reason, safe_type(value_type))
+        return cls(tuple(path), size)  # older observations have no layout or reason
 
 
 @dataclass(frozen=True)
@@ -106,6 +126,8 @@ class ProjectionLimit(Unknown):
 
 
 def _row_limit(reason, row_refusal=None):
+    if row_refusal is not None and row_refusal.reason is None:
+        row_refusal = replace(row_refusal, reason='budget', value_type='?')
     return ProjectionLimit(reason, record_file.ROW_RETAINED_BYTES, limit=ROW_BYTES, unit='bytes',
                            row_refusal=row_refusal)
 
@@ -169,7 +191,8 @@ class PayloadString:
         self.inline = bytearray()
         self.size = self.escapes = self.padding = 0
         self.suffix = b''
-        self.unsafe_image = self.unsafe_text = False
+        self.nonbase64 = self.bad_padding = False
+        self.text_escape = self.watch_marker = False
 
     def feed(self, data):
         self.size += len(data)
@@ -179,23 +202,32 @@ class PayloadString:
             else:
                 self.inline = None
         if self.kind != 'text':
-            if (self.padding and data.strip(b'=')) or not BASE64.fullmatch(data):
-                self.unsafe_image = True
+            if not BASE64.fullmatch(data):
+                if BASE64_BYTES.fullmatch(data):
+                    self.bad_padding = True
+                else:
+                    self.nonbase64 = True
+            elif self.padding and data.strip(b'='):
+                self.bad_padding = True
             self.padding += data.count(b'=')
         if self.kind != 'image':
             checked = self.suffix + data
             # A Unicode escape could spell part of a watch marker without containing its literal bytes.
-            if b'\\u' in checked or any(marker in checked for marker in WATCH_TEXT):
-                self.unsafe_text = True
+            self.text_escape = self.text_escape or b'\\u' in checked
+            self.watch_marker = self.watch_marker or any(marker in checked for marker in WATCH_TEXT)
             self.suffix = checked[-WATCH_WINDOW:]
 
-    def value(self, kind, refusal):
+    def value(self, kind, refusal, value_type):
         if kind == 'image':
-            if self.unsafe_image or self.size % 4 or self.padding > 2:
-                raise projection_error(refusal)
+            if self.nonbase64:
+                raise projection_error(refusal, 'image-not-base64', value_type)
+            if self.bad_padding or self.size % 4 or self.padding > 2:
+                raise projection_error(refusal, 'image-padding', value_type)
             return Payload(self.size, self.size // 4 * 3 - self.padding)
-        if self.unsafe_text:
-            raise projection_error(refusal)
+        if self.watch_marker:
+            raise projection_error(refusal, 'text-watch-marker', value_type)
+        if self.text_escape:
+            raise projection_error(refusal, 'text-escape', value_type)
         return Payload(self.size - self.escapes)
 
 
@@ -234,8 +266,22 @@ def known_content(block):
     return isinstance(content, str) or isinstance(content, list) and all(map(text_or_image, content))
 
 
-def projection_error(refusal=None):
+def projection_error(refusal=None, reason='budget', value_type=None):
+    if refusal is not None:
+        refusal = replace(refusal, reason=reason, value_type=safe_type(value_type))
     return _row_limit('required JSON row exceeds the retained-byte budget', refusal)
+
+
+def check_native_image(block, refusal):
+    if block.get('type') != 'image':
+        raise projection_error(refusal, 'unknown-block-type', block.get('type'))
+    source = block.get('source')
+    if not isinstance(source, dict) or source.get('type') != 'base64':
+        raise projection_error(refusal, 'image-not-base64', 'image')
+    media_type = source.get('media_type')
+    if not isinstance(media_type, str) or media_type not in IMAGE_TYPES:
+        raise projection_error(refusal, 'image-media-type', media_type)
+    return media_type
 
 
 def mirror_image_kind(row, path, result_has_image):
@@ -265,9 +311,10 @@ def project_payloads(row, payloads, descriptor):
     first_path, first_capture = next(iter(payloads.items()))
     first_refusal = RowRefusal(schema_path(first_path), first_capture.size)
     if (row.get('type') != 'user' or not isinstance(message, dict) or message.get('role') != 'user'
-            or not isinstance(message.get('content'), list)
-            or not all(isinstance(block, dict) for block in message['content'])):
-        raise projection_error(first_refusal)
+            or not isinstance(message.get('content'), list)):
+        raise projection_error(first_refusal, 'not-a-user-row')
+    if not all(isinstance(block, dict) for block in message['content']):
+        raise projection_error(first_refusal, 'unknown-block-type')
     results = [block for block in message['content'] if native_result(block)]
     result_has_image = any(isinstance(block.get('content'), list)
                            and any(map(native_image, block['content'])) for block in results)
@@ -276,28 +323,29 @@ def project_payloads(row, payloads, descriptor):
         refusal = RowRefusal(schema_path(path), capture.size)
         if capture.kind == 'mirror':
             if not results:
-                raise projection_error(refusal)
+                raise projection_error(refusal, 'unknown-block-type')
             kind = mirror_image_kind(row, path, result_has_image)
-            at_path(row, path[:-1])[path[-1]] = capture.value(kind, refusal)
+            at_path(row, path[:-1])[path[-1]] = capture.value(kind, refusal, 'image' if kind == 'image' else '?')
             continue
         block = at_path(row, path[:3])
+        value_type = block.get('type')
         if path[3] == 'source':
-            known = native_image(block)
+            value_type = check_native_image(block, refusal)
         elif not native_result(block):
-            known = False
-        elif len(path) == 4:
-            known = True  # string content directly on a tool result
-        else:
+            raise projection_error(refusal, 'unknown-block-type', block.get('type'))
+        elif len(path) > 4:
             child = at_path(row, path[:5])
-            known = native_image(child) if capture.kind == 'image' else child.get('type') == 'text'
-        if not known:
-            raise projection_error(refusal)
-        value = capture.value(capture.kind, refusal)
+            value_type = child.get('type')
+            if capture.kind == 'image':
+                value_type = check_native_image(child, refusal)
+            elif value_type != 'text':
+                raise projection_error(refusal, 'unknown-block-type', value_type)
+        value = capture.value(capture.kind, refusal, value_type)
         at_path(row, path[:-1])[path[-1]] = value
         spans[id(value)] = capture
-    if not all(map(known_content, message['content'])):
-        raise projection_error(first_refusal)
     for block in message['content']:
+        if not known_content(block):
+            raise projection_error(first_refusal, 'unknown-block-type', block.get('type'))
         if not native_result(block) or not isinstance(block.get('content'), list):
             continue
         content = block['content']
@@ -305,7 +353,7 @@ def project_payloads(row, payloads, descriptor):
                 and all(child['type'] == 'text' for child in content)
                 and any(any(marker in child['text'] for marker in WATCH_HEADERS) for child in content)):
             # Empty text replacing a leading block must not expose a later watch header.
-            raise projection_error(first_refusal)
+            raise projection_error(first_refusal, 'text-watch-marker', 'text')
     if not any(block.get('type') == 'tool_result' for block in message['content']):
         row = ProjectedRow(row)
         hasher = sha256()
@@ -472,7 +520,7 @@ class GiantRow:
             frame.state = 'colon'
         else:
             path = self.value()
-            if self.descriptor is not None and path is not None and self.refused_frame is None:
+            if path is not None and self.refused_frame is None:
                 kind = 'mirror' if mirror_path(path) else PAYLOAD_PATHS.get(path_shape(path))
                 if kind is not None:
                     self.payload = path, PayloadString(kind, start)
@@ -504,7 +552,7 @@ class GiantRow:
                 self.string_exhausted = not self.emit(b'"' + capture.inline + b'"', scalar=True)
             else:
                 if len(self.payloads) >= MAX_PAYLOADS:
-                    raise projection_error(RowRefusal(self.value_schema, self.string_size))
+                    raise projection_error(RowRefusal(self.value_schema, self.string_size), 'too-many-payloads')
                 self.string_exhausted = not self.emit(b'null', scalar=True)
                 self.payloads[path] = capture
         elif not self.string_exhausted:
@@ -616,7 +664,7 @@ class GiantRow:
         if self.payloads:
             if self.duplicate_key:
                 path, capture = next(iter(self.payloads.items()))
-                raise projection_error(RowRefusal(schema_path(path), capture.size))
+                raise projection_error(RowRefusal(schema_path(path), capture.size), 'duplicate-key')
             row = project_payloads(row, self.payloads, self.descriptor)
         return row, None, retained_size(row, len(self.payloads) * 16)
 
@@ -660,7 +708,7 @@ def projection_usage(snapshot):
 
 
 class Line:
-    def __init__(self, descriptor=None, start=0):
+    def __init__(self, descriptor, start):
         self.small = bytearray()
         self.giant = None
         self.malformed = False
@@ -748,7 +796,10 @@ def scan(descriptor, size, cached, *, splitlines=False):
 
     prefix_bytes, prefix = offset, hasher.copy()
     decoder = codecs.getincrementaldecoder('utf-8')()
-    line = Line(None if splitlines else descriptor, offset)
+    line = Line(descriptor, offset)
+    # The UTF-8 decoder can hold a partial code point while the splitter holds a CR.
+    # Track bytes consumed by the splitter independently of the descriptor's read offset.
+    split_at = offset
     trailing_cr = ends_lf = False
 
     def finish_line():
@@ -784,12 +835,17 @@ def scan(descriptor, size, cached, *, splitlines=False):
                 trailing_cr = text.endswith('\r')
                 if trailing_cr:
                     text = text[:-1]
-                parts = SPLIT_LINES.split(text)
-                for part in parts[:-1]:
-                    line.feed(part.encode('utf-8'))
+                text_at = 0
+                for boundary in SPLIT_LINES.finditer(text):
+                    part = text[text_at:boundary.start()].encode('utf-8')
+                    line.feed(part)
                     finish_line()
-                    line = Line()
-                line.feed(parts[-1].encode('utf-8'))
+                    split_at += len(part) + len(boundary[0].encode('utf-8'))
+                    line = Line(descriptor, split_at)
+                    text_at = boundary.end()
+                part = text[text_at:].encode('utf-8')
+                line.feed(part)
+                split_at += len(part)
             hasher.update(data)
         else:
             if OTHER_LINES.search(text):
@@ -814,9 +870,9 @@ def scan(descriptor, size, cached, *, splitlines=False):
     decoder.decode(b'', final=True)
     if trailing_cr:
         finish_line()
-        line = Line()
+        line = Line(descriptor, size)
     complete_lines, complete_rows, complete_bytes, complete_decoded = number, len(rows), retained, decoded
-    has_tail = bool(line.small or line.giant is not None) if splitlines else size != prefix_bytes
+    has_tail = line.start < size if splitlines else size != prefix_bytes
     if has_tail:
         finish_line()
     if not rows and skipped:
@@ -945,12 +1001,19 @@ def _parse(record):
 
 
 def _scan_layout(descriptor, size, previous):
+    layout = 'newline'
     try:
-        return _consume(scan(descriptor, size, previous))
-    except PhysicalSeparators:
-        # Preserve str.splitlines() for older layouts without reusing a prefix.
-        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            return _consume(scan(descriptor, size, previous))
+        except PhysicalSeparators:
+            # Preserve str.splitlines() for older layouts without reusing a prefix.
+            layout = 'splitlines'
+            os.lseek(descriptor, 0, os.SEEK_SET)
         return _consume(scan(descriptor, size, None, splitlines=True))
+    except ProjectionLimit as error:
+        if error.row_refusal is not None:
+            error.row_refusal = replace(error.row_refusal, layout=layout)
+        raise
 
 
 def _compatible(record, source, data, stamp, certified, cached, limit):

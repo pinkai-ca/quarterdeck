@@ -60,7 +60,7 @@ def test_valid_under_bound_required_evidence_has_a_complete_fallback(tmp_path, m
     if budget == 'row':
         assert state.projection_usage == claude_record.RefusedProjectionUsage(
             snapshot.stamp, compatibility=True,
-            row_refusal=claude_record.RowRefusal(('message', 'content'), claude_record.ROW_BYTES))
+            row_refusal=claude_record.RowRefusal(('message', 'content'), claude_record.ROW_BYTES, 'newline', 'budget', '?'))
     else:
         assert state.projection_usage == record_file.ProjectionUsage(snapshot.stamp, compatibility=True)
     assert claude.compactions(record.path).reason is None
@@ -143,7 +143,7 @@ def test_oversized_row_refuses_a_stream_with_guarded_row_evidence(tmp_path, monk
         claude.state(record.path)
     assert refused.value.projection_usage == claude_record.RefusedProjectionUsage(
         json_record._stamp(record.path.stat()), exhausted='retained bytes per row',
-        row_refusal=claude_record.RowRefusal(('content',), claude_record.ROW_BYTES))
+        row_refusal=claude_record.RowRefusal(('content',), claude_record.ROW_BYTES, 'newline', 'budget', '?'))
     assert (refused.value.limit, refused.value.unit) == (claude_record.ROW_BYTES, 'bytes')
 
 
@@ -157,7 +157,7 @@ def test_row_diagnostic_measures_the_first_crossing_value_to_its_end(tmp_path, m
         stream.write(json.dumps(row).encode() + b'\n')
     with pytest.raises(claude_record.ProjectionLimit) as refused:
         claude_record.parse(record.path)
-    assert refused.value.row_refusal == claude_record.RowRefusal(('message', '?', 'text'), size)
+    assert refused.value.row_refusal == claude_record.RowRefusal(('message', '?', 'text'), size, 'newline', 'budget', '?')
 
 
 @pytest.mark.parametrize('continuous', [False, True])
@@ -222,16 +222,21 @@ def test_identical_replacement_refreshes_the_guarded_compaction_proof(tmp_path, 
     assert later.matches_prefix(later.extent, later.digest)
 
 
-def test_legacy_physical_lines_preserve_their_number_and_encoding(tmp_path, monkeypatch):
+@pytest.mark.parametrize('tail', ['', '\r', '\r\n', '\u2028', '\x85', '!', '\r!'])
+def test_legacy_physical_lines_preserve_their_number_and_encoding(tmp_path, monkeypatch, tail):
     record = native(tmp_path / 'synthetic.jsonl')
     text = record.path.read_text()
     core = text.replace('\n', '\r\n', 1) + '"not an object"\u2028  \r\n\u00a0\n'
+    core += '\x0b\x0c\x1c\x1d\x1e\x85\u2029' + tail
     record.path.write_bytes(core.encode())
     expected = json_record._lines(core, 0)
     monkeypatch.setattr(claude_record, 'CHUNK', 1)
     actual = claude_record.parse(record.path)
     assert (actual.rows, actual.skipped) == expected
     assert actual.line_count == len(core.splitlines())
+    assert actual.complete_lines == len(core.splitlines()) - tail.endswith('!')
+    assert actual.ends_newline == core.endswith('\n')
+    assert actual.prefix_bytes == 0
     assert actual.raw_digest == sha256(core.encode()).hexdigest()
 
 

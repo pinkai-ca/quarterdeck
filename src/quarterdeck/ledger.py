@@ -496,7 +496,8 @@ class Ledger:
                 fields = (tuple(identity), lines, retained, memory, exhausted, metadata.get('compatibility') is True)
                 if isinstance(refusal := metadata.get('row_refusal'), dict):
                     from .harness.claude_record import RefusedProjectionUsage, RowRefusal
-                    detail = RowRefusal.read(refusal.get('path'), refusal.get('size'))
+                    detail = RowRefusal.read(refusal.get('path'), refusal.get('size'), refusal.get('layout'),
+                                             refusal.get('reason'), refusal.get('value_type'))
                     if detail is not None and _current_projection_stamp(record) == fields[0]:
                         return RefusedProjectionUsage(*fields, row_refusal=detail)
                 return ProjectionUsage(*fields)
@@ -513,8 +514,10 @@ class Ledger:
             for record, *row in rows:
                 usage = self._projection_usage(record, row)
                 if (detail := getattr(usage, 'row_refusal', None)) is not None:
-                    found.append(dict(record=record, path=list(detail.path), size=detail.size,
-                                      compatibility=usage.compatibility, exhausted=usage.exhausted))
+                    fields = {key: value for key, value in asdict(detail).items() if value is not None}
+                    fields['path'] = list(detail.path)
+                    found.append(dict(record=record, compatibility=usage.compatibility,
+                                      exhausted=usage.exhausted, **fields))
             return found
         except sqlite3.Error:
             return []
