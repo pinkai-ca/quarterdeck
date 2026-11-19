@@ -132,7 +132,7 @@ The modules that the framework table does not list, the module of each part amon
 | `fleet.py` | the fleet: an index of the project's declarations, never another configuration |
 | `fleet_post.py` | posts between ships: offered by the sender and fetched by the receiver, each writer in its own runtime |
 | `forward_post.py` | recorded forwarding routes from an old address; the original posts stay as they are |
-| `fresh_handoff.py` | durable crew order, report and idle-break proof for a new conversation |
+| `fresh_handoff.py` | durable crew order, report and idle-break proof for a new conversation; an immediate start on a chosen pool when the program cannot write the handoff |
 | `group_post.py` | declared groups: a fixed fanout to the members, and one terminal notice |
 | `human_wake.py` | the one fixed waking line for a human seat, through the door, once per watch |
 | `idle.py` | the one live idle proof that relaunch, failover and selection share |

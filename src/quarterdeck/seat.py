@@ -1682,6 +1682,24 @@ class Seat:
         relaunch_intent.record_destination(self, False)
         return self._relaunch_down() + "\n" + self._up(resume=False, observation=observation)
 
+    def _fresh_on_pool(self, pool: str) -> str:
+        """A new conversation on a pool the caller already chose. The caller holds the lifecycle claim."""
+        from .recovery import require_clear
+        require_clear(self)
+        from . import credential, relaunch_intent
+        selected = self.spec.for_pool(pool)
+        observation = self._observe_selection(selected, self.ship.pool(pool))
+        relaunch_intent.record_destination(self, False, pool=pool, harness=selected.harness)
+        self.record()
+        credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)
+        stopped = self._relaunch_down()
+        self.move_to(pool)
+        self.spec = selected
+        if selected.harness != self.harness.name:
+            self.harness = self._adapter_for(selected)
+        proof = stopped + '\n' + self._up(resume=False, observation=observation)
+        return f'{proof} · {resume_target.NEW_CONVERSATION}'
+
     def _walled_now(self) -> bool:
         """Whether the ledger shows the seat's current pool walled, under its running model's scope."""
         from . import ledger, quota

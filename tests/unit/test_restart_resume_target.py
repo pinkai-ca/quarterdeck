@@ -115,18 +115,88 @@ def test_same_program_service_relaunch_and_selection_carry_the_same_owned_sessio
     assert (seat.trusted / 'record').read_text().strip() == str(record)
 
 
-def test_unproved_same_program_move_preserves_source_without_reporting_a_move(running):
-    r = running
+def on_the_open_program(r):
+    """Move onto the second pool, then wall it so the next move stays on the same program."""
     r.svc.failover()
-    seat = r.seat
-    before, record = seat.launched(), seat.record()
-    record.unlink()
-    with pytest.raises(resume_target.Unproved, match='Use qd fresh worker'):
-        r.svc.select(seat, 'third')
+    assert r.seat.pool.name == 'second' and r.seat.harness.name == 'claude'
     usage(r.svc, 'second', 1.0)
+
+
+def damage_record(seat, case):
+    record = seat.record()
+    if case == 'missing':
+        record.unlink()
+    elif case == 'unreadable':
+        record.write_bytes(b'\xff\xfe\n')
+    else:
+        record.write_text(json.dumps({'type': 'user'}) + '\n')
+        with record.open('r+b') as stream:
+            stream.truncate(record_file.LINES_BOUND + 1)
+    return record
+
+
+@pytest.mark.parametrize('case', ['unreadable', 'oversized', 'missing'])
+def test_walled_crew_unproved_record_moves_fresh_to_the_open_pool_once(running, case):
+    from dataclasses import replace
+    r = running
+    on_the_open_program(r)
+    before = len(r.launches)
+    message = r.svc.store.new('order', 'issuer', 'worker', 'synthetic open order')
+    r.seat.ship.seats['sentry'] = replace(r.seat.ship.seat('worker'), name='sentry', role='systems', persona=None)
+    damage_record(r.seat, case)
     r.svc.failover()
-    assert seat.is_up and seat.launched() == before and len(r.launches) == 1
-    assert not any('moved to pool third' in m.body for m in r.svc.store.for_seat(seat.name))
+    assert r.seat.pool.name == 'third' and r.seat.launched().resume is None
+    assert len(r.launches) == before + 1 and '--resume' not in r.launches[-1]
+    assert message.id in r.launches[-1][-1]
+    assert any('started a new conversation' in body for body in (m.body for m in r.svc.store.for_seat('worker')))
+    told = [m.body for m in r.svc.store.for_seat('sentry')]
+    assert any('worker started a new conversation' in body for body in told)
+    launched = r.seat.launched()
+    r.svc.failover()
+    assert r.seat.launched() == launched and len(r.launches) == before + 1
+    assert fresh_handoff.active(r.seat.ship.runtime, r.seat.name) is None
+
+
+def test_crew_select_of_an_unproved_record_refuses_a_walled_pool(running):
+    r = running
+    on_the_open_program(r)
+    damage_record(r.seat, 'missing')
+    usage(r.svc, 'third', 1.0)
+    before = r.seat.launched()
+    answer = r.svc.select(r.seat, 'third')
+    assert answer == 'worker not moved: third is walled'
+    assert r.seat.launched() == before and r.seat.pool.name == 'second'
+    assert fresh_handoff.active(r.seat.ship.runtime, r.seat.name) is None
+
+
+def test_crew_select_of_an_unproved_record_starts_fresh_on_the_chosen_pool_once(running):
+    r = running
+    on_the_open_program(r)
+    damage_record(r.seat, 'missing')
+    before = len(r.launches)
+    answer = r.svc.select(r.seat, 'third')
+    assert 'moved to third from second' in answer and 'started a new conversation' in answer
+    assert r.seat.pool.name == 'third' and r.seat.launched().resume is None
+    assert len(r.launches) == before + 1 and '--resume' not in r.launches[-1]
+    again = r.svc.select(r.seat, 'third')
+    assert 'already on third' in again and len(r.launches) == before + 1
+
+
+@pytest.mark.parametrize('running', [True], indirect=True, ids=['human'])
+def test_human_unproved_record_stays_held_and_named(running):
+    from quarterdeck import watch
+    r = running
+    on_the_open_program(r)
+    before = r.seat.launched()
+    damage_record(r.seat, 'missing')
+    r.svc.failover()
+    assert r.seat.is_up and r.seat.launched() == before and r.seat.pool.name == 'second' and len(r.launches) == 1
+    assert fresh_handoff.active(r.seat.ship.runtime, r.seat.name) is None
+    named = watch.facts(r.seat.ship, r.seat.tmux, login=[]).move_holds
+    assert any(r.seat.name in line for line in named), named
+    with pytest.raises(resume_target.Unproved, match='worker'):
+        r.svc.select(r.seat, 'third')
+    assert r.seat.launched() == before and not any('moved to pool third' in m.body for m in r.svc.store.for_seat('worker'))
 
 
 def qd(seat, action):

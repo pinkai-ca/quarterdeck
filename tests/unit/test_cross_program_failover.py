@@ -291,8 +291,16 @@ def test_legacy_pool_list_also_requires_record_proof_at_the_move_boundary(tmp_pa
             seat.move_to(target)
         return 'synthetic movement'
 
+    fresh = []
+
+    def fresh_on(pool):
+        fresh.append(pool)
+        seat.move_to(pool)
+        return 'synthetic fresh'
+
     monkeypatch.setattr(seat, 'restart', move)
     monkeypatch.setattr(seat, 'failover_to', move, raising=False)
+    monkeypatch.setattr(seat, '_fresh_on_pool', fresh_on)
     monkeypatch.setattr(seat.harness, 'screen', lambda *a: Screen('', ''))
     if evidence == 'missing':
         record.unlink()
@@ -311,10 +319,13 @@ def test_legacy_pool_list_also_requires_record_proof_at_the_move_boundary(tmp_pa
         usage(svc, 'one', 1.0)
         svc.failover()
         # A queued input alone no longer holds a seat at its wall, where the program never takes its queue: the
-        # framework's own queued deliveries are carried into the new launch. Every other doubt still holds it.
+        # framework's own queued deliveries are carried into the new launch. A missing joined record cannot be
+        # proved, so a crew seat starts a new conversation on the open pool. Every other doubt still holds it.
         moves = evidence in ('terminal', 'queued')
+        fresh_moves = evidence == 'missing'
         assert bool(calls) == moves
-        assert seat.pool.name == ('two' if moves else 'one')
+        assert fresh == (['two'] if fresh_moves else [])
+        assert seat.pool.name == ('two' if moves or fresh_moves else 'one')
     finally:
         svc.ledger.close()
 

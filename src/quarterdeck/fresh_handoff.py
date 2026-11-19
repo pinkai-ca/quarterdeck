@@ -99,12 +99,21 @@ def _unavailable(seat, launched, pane):
     return pid_dead(launched.pid) is True
 
 
-def request(seat, *, reason, caller=None, expected_launch=None, service=None, restart=False):
-    """Stage once per live launch, or start immediately after an independently proved stop."""
+def request(seat, *, reason, caller=None, expected_launch=None, service=None, restart=False,
+            pool=None, enclosed=False):
+    """Stage once per live launch, or start immediately after an independently proved stop.
+
+    ``pool`` is a destination the caller already chose. The program is still up and cannot take a turn to write
+    its handoff, so the fresh start runs at once on that pool, and a later request for the same launch does not
+    start another. ``enclosed`` means the caller already holds this seat's relaunch section.
+    """
     runtime, name = seat.ship.runtime, seat.name
     reason = reason.rstrip('.')
     if seat.session.human:
         return FreshHandoffResult('held', str(resume_target.Unproved(name, reason)))
+    if pool is not None and pool not in seat.spec.pools:
+        return FreshHandoffResult('held', f'{name}: {pool} is not one of its declared choices.')
+    immediate = pool is not None
     store = service.store if service is not None else post.Store(runtime)
     try:
         with seat._lifecycle(automatic=True):
@@ -117,9 +126,9 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                 return FreshHandoffResult('held', f'{name}: the handoff is held because {held}.')
             pane = seat._lifecycle_pane(launched)
             stopped = _unavailable(seat, launched, pane)
-            if stopped and not restart:
+            if stopped and not restart and not immediate:
                 return FreshHandoffResult('held', f'{name}: the observed launch is no longer running.')
-            if not stopped and (pane is None or pane.dead):
+            if not stopped and not immediate and (pane is None or pane.dead):
                 return FreshHandoffResult('held', f'{name}: its program or pane could not be identified. The restart waits.')
             with post.admission(runtime, name):
                 data = load(runtime, name)
@@ -133,7 +142,7 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                 who = _caller(seat, caller)
                 if who and who not in data['callers']:
                     data['callers'].append(who)
-                if not stopped:
+                if not stopped and not immediate:
                     if not current:
                         body = (
                             f'{reason}. Update the notes needed to continue your work. '
@@ -150,8 +159,14 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                     return FreshHandoffResult(disposition, f'{name}: {reason}. The handoff order {order.short} '
                                               'waits for its report and an idle break before starting a new conversation.')
                 data['phase'] = 'starting'
+                if pool is not None:
+                    data['pool'] = pool
+                    for spec in seat.ship.seats.values():
+                        if spec.role == 'systems' and spec.name != name and spec.name not in data['callers']:
+                            data['callers'].append(spec.name)
                 save(runtime, name, data)
-            return FreshHandoffResult('started', _start(service, seat, store, data, unable=True))
+            return FreshHandoffResult('started', _start(service, seat, store, data, unable=not immediate,
+                                                        pool=pool, enclosed=enclosed))
     except (OSError, ShipError) as error:
         return FreshHandoffResult('held', f'{name}: the conversation handoff is held. {error}')
 
@@ -177,15 +192,16 @@ def _notice(store, seat, data, text):
         store.new('report', post.SHIP, caller, text)
 
 
-def _start(service, seat, store, data, *, unable=False):
+def _start(service, seat, store, data, *, unable=False, pool=None, enclosed=False):
     runtime, name = seat.ship.runtime, seat.name
     explanation = data['reason']
     if unable:
         explanation += ' and its old program could no longer run'
     note = f'{name} {resume_target.NEW_CONVERSATION} because {explanation}.'
-    with relaunch_intent.section(service, seat, 'fresh-handoff', resume=False):
+
+    def begin():
         try:
-            proof = seat._fresh()
+            proof = seat._fresh_on_pool(pool) if pool is not None else seat._fresh()
         except (OSError, ShipError) as error:
             data['phase'] = 'failed'
             save(runtime, name, data)
@@ -196,6 +212,13 @@ def _start(service, seat, store, data, *, unable=False):
         _notice(store, seat, data, note)
         if service is not None:
             service.log('fresh-handoff', seat=name, proof=note)
+        return proof
+
+    if enclosed:
+        proof = begin()
+    else:
+        with relaunch_intent.section(service, seat, 'fresh-handoff', resume=False):
+            proof = begin()
     return f'{proof}\n{note}'
 
 

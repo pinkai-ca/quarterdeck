@@ -2556,6 +2556,27 @@ class Service:
         """Whether a move to ``pool`` keeps the conversation, as Seat.failover_to decides."""
         return seat.spec.for_pool(pool).harness == seat.spec.harness and seat.resumable()
 
+    @staticmethod
+    def _record_identity_hold(reason: str) -> bool:
+        """A hold that means the joined conversation itself cannot be read."""
+        return reason in (idle.REASONS['record'], 'its record is unreadable', 'it has no joined record')
+
+    def _fresh_unproved_move(self, seat: Seat, error, pool: str, came_from: str, *, kind: str) -> str | None:
+        """The shared fresh handoff, at once, on the pool this move already chose. The caller holds its section."""
+        from . import fresh_handoff
+        result = fresh_handoff.request(seat, reason=error.reason, expected_launch=error.launch, service=self,
+                                       restart=True, pool=pool, enclosed=True)
+        if result.disposition != 'started':
+            self.log(kind, seat=seat.name, pool=pool, skipped=result.proof)
+            return result.proof if kind == 'select' else None
+        notice = (f"moved to pool {pool} from {came_from} at its wall" if kind == 'failover'
+                  else f"moved to pool {pool} from {came_from} by qd set")
+        self.report_pool_move(seat, notice)
+        self.log(kind, seat=seat.name, pool=pool, came_from=came_from, proof=result.proof)
+        if kind == 'select':
+            return f"{seat.name} moved to {pool} from {came_from}\n{result.proof}"
+        return None
+
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""
         for seat in self.resolved_seats():
@@ -2570,10 +2591,13 @@ class Service:
             if not quota.current_walled(seat, self.ledger):
                 continue
             binding, came_from = move_hold.generation(seat), seat.pool.name
+            identity_hold = None
             if hold := self._wall_idle_hold(seat):
-                category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
-                move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
-                continue
+                if seat.session.human or not self._record_identity_hold(hold.reason):
+                    category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
+                    move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
+                    continue
+                identity_hold = hold
             ordered = quota.candidate_pools(seat)
             target = next((p for p in ordered if self.known_open(seat, p)), None)
             if target is None:
@@ -2581,9 +2605,28 @@ class Service:
                 continue  # every pool is walled or unread: a fact the status line shows, not a move
             from . import relaunch_intent
             from .harness import resume_target
+            if identity_hold is not None:
+                if not self.resumes_on(seat, target):
+                    category = 'record-missing' if identity_hold.reason == 'it has no joined record' else identity_hold.dimension
+                    move_hold.publish_wall(seat, binding, came_from, category, detail=identity_hold.reason)
+                    continue
+                try:
+                    seat._require_resume(seat.spec.for_pool(target))
+                except resume_target.Unproved as error:
+                    with relaunch_intent.section(self, seat, 'failover', resume=False):
+                        self._fresh_unproved_move(seat, error, target, came_from, kind='failover')
+                    continue
+                move_hold.publish_wall(seat, binding, came_from, identity_hold.dimension, detail=identity_hold.reason)
+                continue  # the conversation can be proved; the idle hold still stands
             try:
                 with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
-                    proof = seat.failover_to(target)
+                    try:
+                        proof = seat.failover_to(target)
+                    except resume_target.Unproved as error:
+                        if seat.session.human:
+                            raise
+                        self._fresh_unproved_move(seat, error, target, came_from, kind='failover')
+                        proof = None
             except resume_target.Unproved as error:
                 move_hold.publish_wall(seat, binding, came_from, 'resume-unproved', target=target)
                 self.log("failover", seat=seat.name, pool=target, skipped=str(error))
@@ -2594,6 +2637,8 @@ class Service:
             except (OSError, ShipError):
                 move_hold.publish_wall(seat, binding, came_from, 'outcome-unknown', target=target)
                 raise
+            if proof is None:
+                continue
             notice = f"moved to pool {target} from {came_from} at its wall"
             self.report_pool_move(seat, notice)
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
@@ -2645,8 +2690,21 @@ class Service:
         if not seat.is_up:
             return f"{seat.name} not moved: it is down; qd up {seat.name} first"
         if reason := self.not_idle_at_wall(seat):
-            if reason in (idle.REASONS['record'], 'its record is unreadable', 'it has no joined record') and self.resumes_on(seat, pool):
-                seat._require_resume(seat.spec.for_pool(pool))
+            if self._record_identity_hold(reason) and self.resumes_on(seat, pool):
+                from .harness import resume_target
+                try:
+                    seat._require_resume(seat.spec.for_pool(pool))
+                except resume_target.Unproved as error:
+                    if seat.session.human:
+                        raise
+                    # The same wall refusal as a proved move. An unread destination stays the caller's choice.
+                    if (not self.known_open(seat, pool)
+                            and self.ledger.walled(pool, self.ship, scope=quota.model_scope(seat, pool))):
+                        return f"{seat.name} not moved: {pool} is walled"
+                    came_from = seat.pool.name
+                    from . import relaunch_intent
+                    with relaunch_intent.section(self, seat, 'select', resume=False):
+                        return self._fresh_unproved_move(seat, error, pool, came_from, kind='select')
             return f"{seat.name} not moved: {reason}; ask again when its turn has ended"
         # The destination is read as failover would read it. Only a wall refuses the explicit act: a pool
         # whose usage is unknown, such as a background provider with no seat on it to read, is the human's call.
@@ -2655,8 +2713,14 @@ class Service:
             return f"{seat.name} not moved: {pool} is walled"
         came_from = seat.pool.name
         from . import relaunch_intent
+        from .harness import resume_target
         with relaunch_intent.section(self, seat, 'select', resume=lambda: self.resumes_on(seat, pool)):
-            proof = seat.failover_to(pool)
+            try:
+                proof = seat.failover_to(pool)
+            except resume_target.Unproved as error:
+                if seat.session.human:
+                    raise
+                return self._fresh_unproved_move(seat, error, pool, came_from, kind='select')
         self.report_pool_move(seat, f"moved to pool {pool} from {came_from} by qd set")
         self.log("select", seat=seat.name, pool=pool, came_from=came_from, usage_unknown=unknown, proof=proof)
         note = f"; {pool} usage unknown; moved on the explicit act" if unknown else ""
