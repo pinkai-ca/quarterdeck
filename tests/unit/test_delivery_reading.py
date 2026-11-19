@@ -1,5 +1,6 @@
 """A crew candidate decision shares reads; every delivery/alarm action leaves that view."""
 
+from dataclasses import replace
 from datetime import timedelta
 import json
 import os
@@ -188,6 +189,56 @@ def test_uncertified_store_still_selects_from_the_current_listing(tmp_path, monk
     w.svc.deliveries()
     assert w.svc.store._delivery_recipients is None
     assert w.delivered == [message.id] and w.alarms == [w.seat.name]
+
+
+def test_message_replaced_during_delivery_read_uses_full_scan_then_index(tmp_path, monkeypatch):
+    w = world(tmp_path)
+    store = w.svc.store
+    ready = store.new('order', 'operator', w.seat.name, 'Ready for the worker')
+    original = store.new('order', 'operator', 'other', 'Initially addressed elsewhere')
+    store.new('order', 'operator', 'other', 'Stays addressed elsewhere')
+    replacement = replace(original, to=w.seat.name)
+    message_path = store.dir / f'{original.id}.json'
+    staged = tmp_path / 'replacement.json'
+    staged.write_text(replacement.to_json())
+
+    # Age the directory before each pass so the first pass fails certification on the file identity alone.
+    clock = store.dir.stat().st_ctime_ns + post.POST_TIMESTAMP_TICK_NS + 1
+    monkeypatch.setattr(post.time, 'time_ns', lambda: clock)
+    read_text = post.post_dir.read_text
+    reads = []
+
+    def read_then_replace(path, *args, **kwargs):
+        text = read_text(path, *args, **kwargs)
+        if path == message_path:
+            reads.append(post.Message.from_json(text))
+            if len(reads) == 1:
+                # The listing has already captured the old inode. The post-read stat sees the replacement.
+                staged.replace(message_path)
+        return text
+
+    full_scan = store.all
+    scans = []
+
+    def scan():
+        scans.append(True)
+        return full_scan()
+
+    monkeypatch.setattr(post.post_dir, 'read_text', read_then_replace)
+    monkeypatch.setattr(store, 'all', scan)
+
+    w.svc.deliveries()
+    assert reads == [original]
+    assert store._cache_at is None and store._delivery_recipients is None
+    assert scans == [True]
+    assert w.delivered == [ready.id]
+
+    clock = store.dir.stat().st_ctime_ns + post.POST_TIMESTAMP_TICK_NS + 1
+    w.svc.deliveries()
+    assert reads == [original, replacement]
+    assert store._cache_at is not None and store._delivery_recipients is not None
+    assert scans == [True]
+    assert w.delivered == [ready.id, replacement.id]
 
 
 def test_human_wake_stays_outside_the_crew_reading_scope(tmp_path, monkeypatch):
