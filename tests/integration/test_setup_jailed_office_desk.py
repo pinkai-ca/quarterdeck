@@ -235,8 +235,10 @@ def test_a_desk_folder_that_is_not_the_operators_own_real_folder_is_refused(tmp_
     """A link, a file, or another user's folder is refused, and the other place is left as the fixture made it.
 
     mkdir keeps the caller's umask, so the fixture is made at umask 0 and then given its mode outright. The
-    caller's umask is restored before the check. The refusal itself does not read the umask.
+    caller's umask is restored before the check. The refusal itself does not read the umask. Another user's
+    folder is work/desk itself, while work/ is this user's own, so the check is shown to reach that leaf.
     """
+    checked = []
     caller = os.umask(0)
     try:
         office_folder = tmp_path / 'office'
@@ -258,11 +260,23 @@ def test_a_desk_folder_that_is_not_the_operators_own_real_folder_is_refused(tmp_
         else:
             work.mkdir(mode=0o755)
             work.chmod(0o755)
-            monkeypatch.setattr(os, 'getuid', lambda: os.stat(work).st_uid + 1)
+            real_lstat = os.lstat
+
+            def lstat(path, *args, **kwargs):
+                checked.append(Path(path))
+                info = real_lstat(path, *args, **kwargs)
+                if Path(path) == work:
+                    return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1)
+                return info
+
+            monkeypatch.setattr(os, 'lstat', lstat)
     finally:
         os.umask(caller)
-    with pytest.raises(shipmod.ShipError, match='is a link|not this user\'s own folder'):
+    with pytest.raises(shipmod.ShipError, match='is a link|not this user\'s own folder') as caught:
         setup.make_jailed_work(office)
+    if planted == "another user's":
+        assert work.parent in checked and work in checked, checked
+        assert f'{work} is not this user\'s own folder' in str(caught.value)
     assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o755 and not any(elsewhere.iterdir()), 'nothing changed there'
 
 
