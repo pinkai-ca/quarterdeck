@@ -2591,13 +2591,22 @@ class Service:
             if not quota.current_walled(seat, self.ledger):
                 continue
             binding, came_from = move_hold.generation(seat), seat.pool.name
-            identity_hold = None
+            unproved = None
             if hold := self._wall_idle_hold(seat):
                 if seat.session.human or not self._record_identity_hold(hold.reason):
                     category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
                     move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
                     continue
-                identity_hold = hold
+                from .harness import resume_target
+                try:
+                    # A conversation that can be named keeps the idle hold. No destination is weighed first.
+                    seat._require_resume(seat.spec)
+                except resume_target.Unproved as error:
+                    unproved = error
+                else:
+                    category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
+                    move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
+                    continue
             ordered = quota.candidate_pools(seat)
             target = next((p for p in ordered if self.known_open(seat, p)), None)
             if target is None:
@@ -2605,19 +2614,14 @@ class Service:
                 continue  # every pool is walled or unread: a fact the status line shows, not a move
             from . import relaunch_intent
             from .harness import resume_target
-            if identity_hold is not None:
+            if unproved is not None:
                 if not self.resumes_on(seat, target):
-                    category = 'record-missing' if identity_hold.reason == 'it has no joined record' else identity_hold.dimension
-                    move_hold.publish_wall(seat, binding, came_from, category, detail=identity_hold.reason)
+                    category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
+                    move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
                     continue
-                try:
-                    seat._require_resume(seat.spec.for_pool(target))
-                except resume_target.Unproved as error:
-                    with relaunch_intent.section(self, seat, 'failover', resume=False):
-                        self._fresh_unproved_move(seat, error, target, came_from, kind='failover')
-                    continue
-                move_hold.publish_wall(seat, binding, came_from, identity_hold.dimension, detail=identity_hold.reason)
-                continue  # the conversation can be proved; the idle hold still stands
+                with relaunch_intent.section(self, seat, 'failover', resume=False):
+                    self._fresh_unproved_move(seat, unproved, target, came_from, kind='failover')
+                continue
             try:
                 with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
                     try:
