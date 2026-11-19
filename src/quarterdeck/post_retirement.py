@@ -178,16 +178,19 @@ class SliceEnded(Exception):
 
 
 def _settled(store, records, progress):
+    # Take one whole message snapshot and finish classifying it against the whole attempt inventory.
+    # A partial inventory cannot establish either a final attempt or closure.
+    messages = progress.read('store read', store.all)
+    return progress.read('eligibility', _settled_messages, records, messages, progress)
+
+
+def _settled_messages(records, messages, progress):
     from .pending_lifecycle import REPORTED
     latest = {}
     for index, attempt in enumerate(records):
         if index % 200 == 0:
             progress()
         latest[attempt.message] = attempt
-    # One immutable post snapshot. Repeated Store.closing calls would re-read
-    # every message while a newly written directory is inside its timestamp bucket.
-    messages = progress.read('store read', store.all)
-    progress.phase = 'eligibility'
     by_id = {m.id: m for m in messages}
     closed = set()
     reported = set()
@@ -200,10 +203,17 @@ def _settled(store, records, progress):
         if parent is not None and (parent.kind == 'question' and message.kind == 'answer'
                 or parent.kind == 'order' and message.kind == 'report' and message.sender == parent.to):
             closed.add(parent.id)
-    return {m.id for m in messages if (a := latest.get(m.id)) is not None
-            and (a.result in SETTLED or m.id in reported and a.seat == m.to
-                 and a.result == 'abandoned' and a.detail == REPORTED)
-            and (not m.obligation or m.id in closed)}
+    settled = set()
+    for index, message in enumerate(messages):
+        if index % 200 == 0:
+            progress()
+        attempt = latest.get(message.id)
+        if (attempt is not None and (attempt.result in SETTLED or message.id in reported
+                                     and attempt.seat == message.to and attempt.result == 'abandoned'
+                                     and attempt.detail == REPORTED)
+                and (not message.obligation or message.id in closed)):
+            settled.add(message.id)
+    return settled
 
 
 class _Progress:
@@ -258,7 +268,7 @@ def run(service, *, limit=BATCH, seconds=SECONDS, complete_reads=False, prior_na
     """Fresh locked evidence always decides; service inventories finish before yielding.
 
     Direct callers retain the wall-time slice. The service separately accounts for
-    complete inventories using its persistent readers, leaving the ordinary work
+    complete inventories and their settlement checks, leaving the ordinary work
     allowance for selection and whole-file moves. No partial reading is authority.
     """
     counts = dict(attempts=0, journals=0)

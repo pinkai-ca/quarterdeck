@@ -4,6 +4,7 @@ import json
 import pytest
 
 from quarterdeck import post, post_retirement as retirement, presentation
+from quarterdeck.service import Service
 from quarterdeck.watch import Facts
 
 
@@ -41,6 +42,73 @@ def test_service_moves_after_slow_mandatory_shared_reads(tmp_path, monkeypatch):
     assert len(beats) >= 2
     assert not attempt.path.exists()
     assert retirement.retired(attempt.path, s.runtime).read_bytes() == original
+
+
+@pytest.fixture
+def busy_service(tmp_path, monkeypatch):
+    s = service(tmp_path / 'runtime')
+    s.store.dir.mkdir(parents=True)
+    ship_file = tmp_path / 'ship.toml'
+    ship_file.write_text('[ship]\n')
+    s.ship = SimpleNamespace(file=ship_file, seats={})
+    s.pass_had_work = True
+    clock, beats = [0.0], []
+    s.heartbeat = lambda: beats.append(clock[0])
+    monkeypatch.setattr(retirement.time, 'monotonic', lambda: clock[0])
+    checked = retirement._Progress.__call__
+
+    def measured(progress):
+        if progress.phase == 'eligibility':
+            clock[0] += 0.25  # represent classification cost independently of host load
+        checked(progress)
+    monkeypatch.setattr(retirement._Progress, '__call__', measured)
+    at = post.now()
+    prefix = at.strftime('%Y%m%d-%H%M')
+    messages = [post.Message(f'ans-{prefix}-lead-{n:06x}', 'answer', 'lead', 'builder', at, 'Generated post')
+                for n in range(1201)]
+    for message in messages:
+        (s.store.dir / f'{message.id}.json').write_text(message.to_json())
+    return s, iter(messages), clock, beats
+
+
+def completed_attempts(s, messages, count):
+    return [s.attempts.close(s.attempts.open(next(messages), 'builder', None, None, None), 'delivered')
+            for _ in range(count)]
+
+
+def test_busy_service_finishes_large_eligibility_read_and_moves_a_batch(busy_service):
+    s, messages, _, beats = busy_service
+    attempts = completed_attempts(s, messages, 4)
+    originals = {attempt.path: attempt.path.read_bytes() for attempt in attempts}
+    Service.retire_post(s)
+    event, result = s.logs[-1]
+    assert event == 'post-retired' and result['attempts'] == result['retirable'] == 4
+    assert not result.get('paused') and result['read_seconds'] > 2 * retirement.SECONDS
+    assert len(beats) > 2 and retirement.reading(s.runtime) is None
+    for path, raw in originals.items():
+        assert not path.exists() and retirement.retired(path, s.runtime).read_bytes() == raw
+
+
+def test_steady_busy_activity_shrinks_backlog_with_a_bounded_move_slice(busy_service, monkeypatch):
+    s, messages, clock, _ = busy_service
+    completed_attempts(s, messages, 30)
+    real_move = retirement.move
+
+    def measured_move(source, destination):
+        moved = real_move(source, destination)
+        clock[0] += 0.11
+        return moved
+    monkeypatch.setattr(retirement, 'move', measured_move)
+
+    remaining = []
+    for _ in range(3):
+        completed_attempts(s, messages, 2)  # steady new deliveries keep each pass busy
+        Service.retire_post(s)
+        _, result = s.logs[-1]
+        assert result['attempts'] == 10 and result['paused'] and result['phase'] == 'moves'
+        remaining.append(len(list(s.attempts.dir.glob('*.json'))))
+    assert remaining == [22, 14, 6]
+    assert retirement.reading(s.runtime) is None
 
 
 def paused(s, **kwargs):
