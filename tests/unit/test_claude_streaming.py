@@ -3,6 +3,7 @@
 from hashlib import sha256
 import json
 import os
+from types import SimpleNamespace
 from weakref import ref
 
 import pytest
@@ -115,7 +116,7 @@ def test_fallback_keeps_the_ordinary_whole_file_refusal(tmp_path, monkeypatch):
 
 def test_larger_synthetic_stream_cannot_enter_the_full_compatibility_reader(tmp_path, monkeypatch):
     record = native(tmp_path / 'synthetic.jsonl')
-    monkeypatch.setattr(claude_record, 'PROJECTED_BYTES', 1)
+    monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BYTES', 1)
     monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
 
     def unexpected(*_):
@@ -221,7 +222,7 @@ def test_retired_location_keeps_the_logical_record_but_reestablishes_the_proof(t
 def test_production_bound_refuses_before_scanning_any_body(tmp_path, monkeypatch):
     path = tmp_path / 'synthetic.jsonl'
     with path.open('wb') as record:
-        record.truncate(128 * 1024 * 1024 + 1)
+        record.truncate(record_file.CLAUDE_STREAM_BOUND + 1)
 
     def unexpected(*_):
         pytest.fail('a past-bound record read body bytes')
@@ -229,8 +230,52 @@ def test_production_bound_refuses_before_scanning_any_body(tmp_path, monkeypatch
     monkeypatch.setattr(claude_record, 'read_piece', unexpected)
     with pytest.raises(record_file.PastBound) as refusal:
         claude.state(path)
-    assert refusal.value.bound == 128 * 1024 * 1024
+    assert refusal.value.bound == 1024 * 1024 * 1024
     assert refusal.value.size == refusal.value.bound + 1
+
+
+def test_large_projection_is_kept_for_certified_reads_with_accounting_rows(tmp_path, monkeypatch):
+    record = native(tmp_path / 'synthetic.jsonl')
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    monkeypatch.setattr(json_record, '_KEEP_ROWS', True)
+    monkeypatch.setattr(json_record, '_KEPT_BYTES', 1)
+    info = record.path.stat()
+    aged = max(info.st_mtime_ns, info.st_ctime_ns) + json_record._TIMESTAMP_TICK_NS + 1
+    monkeypatch.setattr(claude_record, 'time', SimpleNamespace(time_ns=lambda: aged))
+    first = claude_record.parse(record.path)
+    assert first.retained_cost and first.certified_at is not None
+    json_record.release(record.path, keep_projection=True)
+    monkeypatch.setattr(claude_record, 'read_piece', lambda *_: pytest.fail('a certified observation read raw bytes'))
+    assert claude_record.parse(record.path) is first
+    assert claude.state(record.path).projection_usage.lines == first.line_count
+    assert claude.compactions(record.path).extent == first.total_bytes
+    json_record.release(record.path)
+
+
+def test_projected_charge_bounds_the_cache_across_large_records(tmp_path, monkeypatch):
+    paths = [native(tmp_path / f'synthetic-{i}.jsonl').path for i in range(2)]
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    first = claude_record.parse(paths[0])
+    monkeypatch.setattr(json_record, '_CLAUDE_CACHE_BYTES', first.retained_cost)
+    second = claude_record.parse(paths[1])
+    assert second.retained_cost == first.retained_cost
+    assert paths[0] not in json_record._snapshots and paths[1] in json_record._snapshots
+    json_record.release(paths[1])
+
+
+@pytest.mark.parametrize(('budget', 'resource'), [
+    ('CLAUDE_STREAM_ROWS', 'physical lines'), ('CLAUDE_STREAM_BYTES', 'retained bytes'),
+    ('CLAUDE_STREAM_MEMORY', 'retained memory'),
+])
+def test_a_large_stream_with_an_exhausted_projection_reports_its_first_resource(tmp_path, monkeypatch, budget, resource):
+    record = native(tmp_path / 'synthetic.jsonl')
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    monkeypatch.setattr(record_file, budget, 1)
+    with pytest.raises(claude_record.ProjectionLimit) as refused:
+        claude.state(record.path)
+    assert refused.value.projection_usage.exhausted == resource
+    assert refused.value.projection_usage.stamp[2] == record.path.stat().st_size
+    assert record.path not in json_record._snapshots
 
 
 def test_large_blank_physical_line_is_ignored(tmp_path):

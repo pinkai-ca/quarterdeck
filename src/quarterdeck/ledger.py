@@ -94,6 +94,9 @@ CREATE TABLE IF NOT EXISTS unread_spans (
     record TEXT PRIMARY KEY, seat TEXT NOT NULL, pool TEXT NOT NULL, size INTEGER NOT NULL, bound INTEGER NOT NULL,
     passed_at TEXT NOT NULL, seen_at TEXT NOT NULL, counted INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS record_projection_usage (
+    record TEXT PRIMARY KEY, stamp TEXT NOT NULL, lines INTEGER, retained INTEGER, memory INTEGER, exhausted TEXT
+);
 CREATE TABLE IF NOT EXISTS accounting_progress (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL, pending INTEGER NOT NULL
 );
@@ -424,6 +427,30 @@ class Ledger:
         self.db.execute("DELETE FROM unread_spans WHERE record=?", (str(record),))
         if commit and self.db.in_transaction:
             self.db.commit()
+
+    def save_projection_usage(self, record, usage):
+        """Keep just the last guarded projection counts in the current accounting transaction."""
+        values = (json.dumps(usage.stamp), usage.lines, usage.retained, usage.memory, usage.exhausted)
+        old = self.db.execute('SELECT stamp,lines,retained,memory,exhausted FROM record_projection_usage WHERE record=?',
+                              (str(record),)).fetchone()
+        if old != values:
+            self.db.execute('INSERT OR REPLACE INTO record_projection_usage VALUES (?,?,?,?,?,?)', (str(record), *values))
+
+    def projection_usage(self, record):
+        from .harness.record_file import ProjectionUsage
+
+        try:
+            row = self.db.execute('SELECT stamp,lines,retained,memory,exhausted FROM record_projection_usage WHERE record=?',
+                                  (str(record),)).fetchone()
+            if row is not None:
+                stamp, lines, retained, memory, exhausted = row
+                identity = json.loads(stamp)
+                if (isinstance(identity, list) and len(identity) == 5 and all(type(n) is int for n in identity)
+                        and all(n is None or type(n) is int and n >= 0 for n in (lines, retained, memory))):
+                    return ProjectionUsage(tuple(identity), lines, retained, memory, exhausted)
+        except (sqlite3.Error, ValueError, TypeError):
+            return None  # an earlier or unreadable ledger supplies no measured counts
+        return None
 
     def unread_spans(self) -> list[dict]:
         """Every unread span, oldest first. A ledger an earlier copy wrote has none."""

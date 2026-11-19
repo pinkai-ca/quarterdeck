@@ -76,7 +76,7 @@ def test_oversized_owned_record_supplies_resume_to_the_native_launch(running, mo
     expected = seat.harness.session_id(owned)
     assert owned == active.path and expected
     with owned.open('r+b') as stream:
-        stream.truncate(record_file.LINES_BOUND + 1)
+        stream.truncate(record_file.bound_of(owned, program) + 1)
     with pytest.raises(record_file.PastBound):
         seat.harness.session_id(owned)
 
@@ -251,7 +251,7 @@ def test_plain_list_relaunch_moves_from_proved_wall_with_oversized_identity(runn
     before = s.launched()
     identity = s.harness.session_id(owned)
     with owned.open('r+b') as stream:
-        stream.truncate(record_file.LINES_BOUND + 1)
+        stream.truncate(record_file.bound_of(owned, s.harness.name) + 1)
     # No running model can be read from this synthetic screen or the above-bound record.
     monkeypatch.setattr(s.harness, 'screen', lambda _: Screen('', '', working=False))
     at = post.now()
@@ -287,9 +287,9 @@ def test_oversized_claude_stable_filename_and_pi_header(tmp_path):
     pi = tmp_path / 'synthetic-pi.jsonl'
     claude.write_text('{"type":"file-history-snapshot"}\n')
     pi.write_text('{"type":"session","id":"synthetic-pi"}\n')
-    for record in (claude, pi):
+    for record, reader in ((claude, 'claude'), (pi, 'pi')):
         with record.open('r+b') as stream:
-            stream.truncate(record_file.LINES_BOUND + 1)
+            stream.truncate(record_file.bound_of(record, reader) + 1)
     assert resume_target.identify(get('claude'), claude) == identity
     assert resume_target.identify(get('pi'), pi) == 'synthetic-pi'
 

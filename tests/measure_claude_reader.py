@@ -148,6 +148,7 @@ def write_record(path, size, shape, core):
 def semantic_digest(result):
     state = asdict(result['state'])
     state.pop('last_write')  # independently generated fixtures have different file times
+    state.pop('projection_usage', None)  # operational size counts are separate from native evidence
     history = {name: getattr(result['history'], name) for name in
                ('conversation', 'count', 'reason', 'extent', 'digest', 'frontier', 'turn',
                 'complete', 'last_call', 'origin')}
@@ -191,7 +192,7 @@ def sample(mib, shape, phase, mode):
             claude_record.read_piece = counted
             if mib > 128 and shape != 'dense-evidence':
                 # Synthetic-only comparison. No runtime or native records are involved.
-                record_file.LINES_BOUND = target
+                record_file.CLAUDE_STREAM_BOUND = target
 
         def observe():
             return case.observe(case.record)

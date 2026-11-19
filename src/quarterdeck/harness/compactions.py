@@ -30,11 +30,13 @@ class PrefixProof:
     source: Path
     stamp: tuple
     previous: tuple | None = None
+    bound: int | None = None
 
     def matches(self, extent, expected, current_digest):
         if type(extent) is not int or extent < 0:
             return False
-        with record_file.Opened(self.source, record_file.LINES_BOUND) as stream:
+        bound = record_file.LINES_BOUND if self.bound is None else self.bound
+        with record_file.Opened(self.source, bound) as stream:
             if resolve(self.record) != self.source or _stamp(stream.stat) != self.stamp:
                 raise record_file.RecordError('record changed after observing its compactions')
             if extent > self.stamp[2]:
@@ -104,7 +106,7 @@ class History:
             self.last_call = call
 
 
-def read(record: Path, interpreter, reader, *, parse=_parsed) -> Compactions:
+def read(record: Path, interpreter, reader, *, parse=_parsed, bound=None) -> Compactions:
     """The record's compaction reading. ``interpreter()`` makes the adapter's history, fed rows in turn; it is kept
     with the record (json_record's ``interpreters``) and fed only the rows an append adds, so a changed record is not
     interpreted whole again. A history it refused stays refused until the record is rewritten."""
@@ -119,7 +121,7 @@ def read(record: Path, interpreter, reader, *, parse=_parsed) -> Compactions:
             if checksum is None:
                 raw = snapshot_bytes(parsed)
                 extent, checksum = len(raw), digest(raw)
-            prefix = PrefixProof(Path(record), parsed.source or resolve(record), parsed.stamp, parsed.previous_prefix)
+            prefix = PrefixProof(Path(record), parsed.source or resolve(record), parsed.stamp, parsed.previous_prefix, bound)
             kept = parsed.interpreters.get(reader)
             if kept is None or kept[1] > len(parsed.rows):
                 kept = interpreter(), 0, None

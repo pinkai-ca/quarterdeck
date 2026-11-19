@@ -130,6 +130,7 @@ def test_a_record_past_its_bound_is_not_read_and_the_reading_says_so(seats, monk
     path = record_of(seats)
     bound = path.stat().st_size - 1
     monkeypatch.setattr(record_file, 'LINES_BOUND', bound)
+    monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', bound)
     json_record.release(path)
     with pytest.raises(record_file.PastBound, match=r'record past the read bound .*; not read'):
         claude.state(path)
@@ -166,7 +167,7 @@ def test_claudes_control_readers_take_no_link_and_no_more_than_the_bound(seats, 
     link = path.with_name('linked.jsonl')
     link.symlink_to(path)
     assert claude.control_origin(link, {'example': True}) is None
-    monkeypatch.setattr(record_file, 'LINES_BOUND', path.stat().st_size - 1)
+    monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', path.stat().st_size - 1)
     assert claude.control_origin(path, {'example': True}) is None
     assert claude.control_suffix(path, origin) is None
 

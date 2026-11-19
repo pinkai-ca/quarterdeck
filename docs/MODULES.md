@@ -70,7 +70,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `home.py` | building a seat's home: a pool's credential brought into it, a key pool's environment, and the ship's settings layered over a program's own |
 | `json_record.py` | JSON-lines records |
 | `remote_session.py` | which seat a commit of the ship folder came from, by the session trailer its program writes and the session that seat's home records; the service's alone, in no reader's stamp set |
-| `record_file.py` | the one opener of a seat's program record: no link at its name or on the way from the seat folder, no fifo, socket or device, only this user's own regular file with one name; one read at most a bound (128 MiB for JSON lines, 512 MiB for a SQLite record with its log), refused past it; the status line's word on a record near or past its bound |
+| `record_file.py` | the one opener of a seat's program record: no link at its name or on the way from the seat folder, no fifo, socket or device, only this user's own regular file with one name; one read at most a bound (1 GiB for streamed Claude, 128 MiB for ordinary JSON lines, 512 MiB for SQLite with its log), refused past it; the status line's word on a record near or past its bound |
 | `limits.py` | usage windows and walls |
 | `opencode_record.py` | the OpenCode database read session by session: the latest root session is the seat's, and a task's child sessions are accounted on their own |
 | `resume_target.py` | launch-only conversation identity from an already joined record, including bounded identity reads of oversized records |

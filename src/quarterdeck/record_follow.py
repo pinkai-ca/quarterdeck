@@ -10,6 +10,7 @@ An entry starts over whenever it cannot prove the record only grew: the record's
 size is below the offset, the tail no longer matches, or the seat has a new launch or a new record pointer. A
 record that ends mid-line, a reader that is not a JSON-lines reader, or any bytes this path cannot read take
 the whole reading, as before, so the state given is always the one a whole reading gives.
+Adapters with a guarded native stream supply their own status reading.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def forget(seat_name: str) -> None:
 def state(seat, record: Path):
     """The seat's record state, as ``seat.harness.state(record)`` gives it, read from where it last stopped."""
     cls = reader_class(seat.harness)
-    if cls is None:
+    if cls is None or getattr(seat.harness, 'native_status_stream', False):
         return seat.harness.state(record)
     from .turn_failure import identity
     key = (json.dumps(identity(seat), sort_keys=True), str(record))

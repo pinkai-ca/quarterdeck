@@ -2383,6 +2383,7 @@ class Service:
         marks, errors = dict(self.read_marks), dict(self.account_errors)
         holds, held = dict(getattr(self, 'read_holds', {})), {}
         spans = {}  # record -> (size, bound): read refused past its bound this pass
+        projections = {}  # scalar budget evidence from guarded native streams
         meters = deepcopy(self.meters)
         checkpoints = {}
         reader_keys = reader_stamp.readers() if source_reader_keys is None else source_reader_keys
@@ -2453,6 +2454,9 @@ class Service:
                         stable = stamp == ledger.record_stamp(owned)
                     except OSError:
                         stable = False
+                    if (stable and getattr(owned.reader, 'native_status_stream', False)
+                            and (usage := getattr(state, 'projection_usage', None)) is not None):
+                        projections[record] = usage
                     # A stable record read whole is accounted: one with turns and a known turn state, or one that reads
                     # as no turns with no turn open, a complete reading of nothing. A record whose turn state is
                     # unknown keeps its ordinary read/error checks, empty or not.
@@ -2463,6 +2467,9 @@ class Service:
                         held[record] = hold
                 except OSError as error:
                     message = str(error)
+                    if (getattr(owned.reader, 'native_status_stream', False)
+                            and (usage := getattr(error, 'projection_usage', None)) is not None):
+                        projections[record] = usage
                     if getattr(error, 'size', None) is not None and getattr(error, 'bound', None) is not None:
                         spans[record] = error.size, error.bound  # past its read bound: a span the ledger keeps
                     prior = errors.get(record)
@@ -2483,6 +2490,8 @@ class Service:
                     marks.pop(changed, None)
                 meter = meters.get(seat.name)
                 for record, pool, stamp, state, turns, error, reader, settlement in reads:
+                    if record in projections:
+                        book.save_projection_usage(record, projections[record])
                     if error is not None:
                         book.mark_accounted(record, None)
                         book.mark_record(record, seat.name, pool, error, commit=False, evidence=settlement)

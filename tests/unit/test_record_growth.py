@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import fresh_handoff, human_wake, post, record_growth, server_recovery, trusted_files, watch
-from quarterdeck.harness import record_file
+from quarterdeck import fresh_handoff, headlines, human_wake, post, record_growth, record_owner, server_recovery, trusted_files, watch
+from quarterdeck.harness import get, record_file
 
 from .test_cross_program_failover import running  # noqa: F401
 
@@ -239,6 +239,106 @@ def test_sparse_oversize_record_is_visible_without_a_forecast_or_move_hold(world
     line = facts.line()
     move = next(item for item in (facts.move_holds[0], '1 move alert', '+1 more') if item in line)
     assert line.index(alarm) < line.index(move)
+
+
+def claude_seat(world, human):
+    seat, pointer = world.make('operator-media' if human else 'builder', human)
+    seat.harness = get('claude')
+    path = seat.home / 'synthetic-claude.jsonl'
+    pointer.write_text(str(path))
+    record_owner.register(seat.trusted, path, 'claude')
+    if not human:
+        seat.record = seat.lookup_record
+    return seat, path
+
+
+def projection(path, **usage):
+    info = path.stat()
+    stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    return record_file.ProjectionUsage(stamp, **usage)
+
+
+@pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
+@pytest.mark.parametrize('resource', ['physical lines', 'retained bytes'])
+def test_forecast_and_status_warn_for_the_first_claude_resource(world, monkeypatch, human, resource):
+    seat, path = claude_seat(world, human)
+    service = world.service()
+    if resource == 'retained bytes':
+        monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BYTES', 160 * record_file.MiB)
+        evidence = lambda size: projection(path, lines=100, retained=size * record_file.MiB // 2, memory=1000)
+    else:
+        evidence = lambda size: projection(path, lines=size * record_file.CLAUDE_STREAM_ROWS // 320, retained=100, memory=1000)
+
+    def update(size):
+        sized(path, size)
+        service.ledger = SimpleNamespace(projection_usage=lambda _: evidence(size))
+        return service.ledger.projection_usage
+
+    first = update(224)
+    assert record_file.alarms([seat], owned=human_wake.owned_record, observation=first) == []
+    record_growth.observe(service, seat, AT)
+    later = update(250)
+    [alarm] = record_file.alarms([seat], owned=human_wake.owned_record, observation=later)
+    assert resource in alarm and '320.0 MiB' in alarm
+    record_growth.observe(service, seat, AT + 3600)
+    record_growth.observe(service, seat, AT + 3900)
+    [report] = service.store.all()
+    assert report.to == ('operator-desk' if human else 'systems-seat')
+    assert resource in report.body and '320.0 MiB' in report.body and '2.7 h' in report.body
+    assert len(world.calls) == (0 if human else 1)
+
+
+@pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
+def test_past_projection_limit_reports_once_from_accounted_scalars(world, human):
+    seat, path = claude_seat(world, human)
+    sized(path, 250)
+    usage = projection(path, exhausted='physical lines')
+    service = world.service()
+    service.ledger = SimpleNamespace(projection_usage=lambda _: usage)
+    [alarm] = record_file.alarms([seat], owned=human_wake.owned_record, observation=service.ledger.projection_usage)
+    assert 'Claude physical lines limit exceeded' in alarm and 'Reading unknown' in alarm
+    near = 'synthetic-other: Claude retained bytes may reach its limit at about 301.4 MiB'
+    facts = watch.Facts('down', 3, 2, 1, needs_human=['synthetic-human'], held=['synthetic-limited'],
+                        sign_in_failures=['synthetic-account: sign-in failed'], disks=[('synthetic-disk', 97)],
+                        login=[('synthetic-login', 'tomorrow')], record_bounds=[near, alarm])
+    assert '1 past read bound' in facts.line()
+    assert alarm in headlines.details(facts)
+    assert any(near in group.details for group in headlines.sections(facts).lower)
+    record_growth.observe(service, seat, AT)
+    record_growth.observe(service, seat, AT + 300)
+    [report] = service.store.all()
+    assert report.to == ('operator-desk' if human else 'systems-seat')
+    assert 'exceeded its physical lines limit' in report.body
+    assert world.calls == []
+
+
+@pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
+def test_claude_raw_alarm_uses_768_mib_floor_and_actual_stream_bound(world, human):
+    seat, path = claude_seat(world, human)
+
+    def alarms():
+        return record_file.alarms([seat], owned=human_wake.owned_record,
+                                  observation=lambda _: projection(path, lines=1000, retained=1000, memory=1000))
+
+    sized(path, 767)
+    assert alarms() == []
+    sized(path, 768)
+    assert '768.0 MiB of its 1024.0 MiB' in alarms()[0]
+    sized(path, 1024)
+    assert '1024.0 MiB of its 1024.0 MiB' in alarms()[0]
+    with path.open('ab') as stream:
+        stream.write(b'\n')
+    assert 'past the read bound' in alarms()[0]
+
+
+def test_unmeasured_claude_shape_assumes_dense_evidence(world):
+    seat, path = claude_seat(world, True)
+    sized(path, 250)
+    pressure = record_file.pressure(seat, path)
+    assert pressure.raw_bound == record_file.CLAUDE_STREAM_BOUND
+    assert pressure.resource == 'retained bytes' and 301 * record_file.MiB < pressure.first_bound < 302 * record_file.MiB
+    [alarm] = record_file.alarms([seat], owned=human_wake.owned_record)
+    assert 'Claude retained bytes may reach its limit' in alarm
 
 
 def test_forecast_requires_a_recent_positive_rate_for_the_same_file(world):

@@ -8,7 +8,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from .limits import Wall
+
+if TYPE_CHECKING:
+    from .record_file import ProjectionUsage
 
 
 @dataclass(frozen=True)
@@ -221,6 +225,7 @@ class State:
     # The latest ended turn stopped at the program's output limit: True or False where the reader has measured its
     # program's form (pi's stopReason, OpenCode's finish, both 'length'); None where it has not, never guessed.
     ended_at_limit: bool | None = None
+    projection_usage: ProjectionUsage | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

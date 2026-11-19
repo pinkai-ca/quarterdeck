@@ -71,6 +71,9 @@ class _Snapshot:
     claude_full: bool = False  # a stable ordinary Claude read outside the projection budget
     previous_prefix: tuple | None = None
     retained_bytes: int = 0
+    projected_bytes: int | None = None
+    decoded_bytes: int | None = None  # decoded charge for the complete lines, carried on an exact append
+    retained_cost: int | None = None  # large Claude streams keep a projection, never the raw record
 
 
 _snapshots = OrderedDict()
@@ -79,10 +82,14 @@ _snapshots = OrderedDict()
 # entry keeps no text, and its resident cost per byte of record ran from 0.02 (Codex) to 1.94 (Claude), measured on a
 # copy of the crew's records; the two idle Codex records held 109 MB of the old 256 MiB bound and cost 1.7 MB.
 _CACHE_COUNT = 96
-# Record bytes stay only as a SAFETY CEILING, past which the least recent entries go: 768 MiB of record. Today's mix of
+# Ordinary entries count their record bytes toward the 768 MiB safety ceiling. Larger Claude streams have a separate
+# aggregate charge for projections and reader state. For ordinary entries, today's mix of
 # 326 MB costs about 140 to 280 MB resident; at Claude's worst 1.94 B per byte the ceiling costs about 1.5 GB.
 _CACHE_BYTES_CEILING = 768 * 1024 * 1024
 _CACHE_BYTES = _CACHE_BYTES_CEILING
+# Do not evict ordinary records to admit a large projection, or the reverse. Two at the source limit fit.
+_CLAUDE_CACHE_BYTES = 1536 * record_file.MiB
+_CLAUDE_CACHE_COUNT = 16
 # A read in passing (passing()) admits no new entry: a sweep of many records, such as the seat-token fallback reading
 # every record a seat ever owned, is read whole and dropped, so it never pushes the working set out.
 _PASSING = ContextVar('json_record_passing', default=False)
@@ -120,10 +127,13 @@ def cache_size() -> tuple[int, int]:
         return len(_snapshots), sum(entry.stamp[2] for entry in _snapshots.values())
 
 
-def release(record: Path) -> None:
-    """A background sweep need not retain parsed native text after its record."""
+def release(record: Path, *, keep_projection: bool = False) -> None:
+    """Release a sweep's parsed text, optionally keeping a large bounded Claude projection."""
     with _read_lock:
-        _snapshots.pop(Path(record), None)
+        key = Path(record)
+        entry = _snapshots.get(key)
+        if not keep_projection or entry is None or entry.retained_cost is None:
+            _snapshots.pop(key, None)
 
 
 def _stamp(info):
@@ -209,12 +219,28 @@ def _store(record: Path, entry: _Snapshot, member: bool) -> None:
     record was held before this reading; a read in passing (passing()) admits only members."""
     if _PASSING.get() and not member:
         return
-    bound = _KEPT_BYTES if _KEEP_ROWS else _CACHE_BYTES
-    count = _KEPT_COUNT if _KEEP_ROWS else _CACHE_COUNT
-    if entry.stamp[2] <= bound:
-        _snapshots[record] = entry
-        while len(_snapshots) > count or sum(value.stamp[2] for value in _snapshots.values()) > bound:
-            _snapshots.popitem(last=False)
+    projected = entry.retained_cost is not None
+    if projected:
+        bound, count = _CLAUDE_CACHE_BYTES, _CLAUDE_CACHE_COUNT
+    else:
+        bound = _KEPT_BYTES if _KEEP_ROWS else _CACHE_BYTES
+        count = _KEPT_COUNT if _KEEP_ROWS else _CACHE_COUNT
+    if _cache_cost(entry) > bound:
+        return
+    _snapshots[record] = entry
+    sizes = [(path, _cache_cost(value)) for path, value in _snapshots.items()
+             if projected == (value.retained_cost is not None)]
+    total, population = sum(size for _, size in sizes), len(sizes)
+    for path, size in sizes:
+        if population <= count and total <= bound:
+            break
+        _snapshots.pop(path)
+        population -= 1
+        total -= size
+
+
+def _cache_cost(entry: _Snapshot) -> int:
+    return entry.stamp[2] if entry.retained_cost is None else entry.retained_cost
 
 
 def refresh_stamp(entry, stamp, certified):

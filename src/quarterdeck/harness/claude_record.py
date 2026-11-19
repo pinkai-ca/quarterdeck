@@ -5,6 +5,7 @@ import codecs
 import json
 import os
 from functools import partial
+import sys
 import time
 from pathlib import Path
 import re
@@ -18,6 +19,7 @@ ROW_BYTES = 256 * 1024
 PROJECTED_BYTES = 16 * 1024 * 1024
 COMPATIBILITY_BOUND = 128 * 1024 * 1024  # the full reader never follows a future streaming cap increase
 ROWS = 65_536
+ROW_STATE_BYTES = 1024  # kept reader, compaction and input index allowance per physical line
 DEPTH = 96
 ATOM_BYTES = 8192
 OMIT_TYPE = 'file-history-snapshot'
@@ -36,6 +38,10 @@ class Unknown(record_file.RecordError):
 
 class ProjectionLimit(Unknown):
     """A record might need the existing bounded full reader."""
+
+    def __init__(self, reason, resource='native projection'):
+        super().__init__(reason)
+        self.resource = resource
 
 
 class PhysicalSeparators(Exception):
@@ -235,6 +241,27 @@ def retained_size(row):
     return len(data)
 
 
+def decoded_size(row):
+    """Conservatively charge containers, keys and values, including each repeated reference."""
+    pending, size = [row], 64  # kept row pair and its slot
+    while pending:
+        value = pending.pop()
+        size += sys.getsizeof(value)
+        if isinstance(value, dict):
+            pending.extend(value)
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return size
+
+
+def projection_usage(snapshot):
+    if snapshot.raw_digest is None:
+        return None  # the compatibility reader did not measure a bounded projection
+    return record_file.ProjectionUsage(snapshot.stamp, snapshot.line_count, snapshot.projected_bytes,
+                                       snapshot.retained_cost)
+
+
 class Line:
     def __init__(self):
         self.small = bytearray()
@@ -287,7 +314,10 @@ class Line:
 def scan(descriptor, size, cached, *, splitlines=False):
     """Yield after each 64 KiB read; return a snapshot after all required rows."""
     hasher = sha256()
-    offset = number = retained = 0
+    offset = number = retained = decoded = 0
+    large = size > COMPATIBILITY_BOUND
+    rows_bound = record_file.CLAUDE_STREAM_ROWS if large else ROWS
+    retained_bound = record_file.CLAUDE_STREAM_BYTES if large else PROJECTED_BYTES
     rows, skipped = [], []
     proof = None
     if cached is not None and 0 < cached.prefix_bytes <= size:
@@ -302,6 +332,10 @@ def scan(descriptor, size, cached, *, splitlines=False):
             rows = cached.rows[:cached.row_count]
             skipped = [item for item in cached.skipped if item[0] <= number]
             retained = cached.retained_bytes
+            if large:
+                decoded = cached.decoded_bytes
+                if decoded is None:
+                    decoded = sum(decoded_size(row) for _, row in rows)
             proof = offset, hasher.hexdigest()
         else:
             cached = None
@@ -316,12 +350,19 @@ def scan(descriptor, size, cached, *, splitlines=False):
     trailing_cr = ends_lf = False
 
     def finish_line():
-        nonlocal retained, number
+        nonlocal retained, number, decoded
         number += 1
+        if number > rows_bound:
+            raise ProjectionLimit('native record exceeds its physical line budget', 'physical lines')
         row, diagnostic, weight = line.finish()
         retained += weight
-        if retained > PROJECTED_BYTES or number > ROWS:
-            raise ProjectionLimit('native record exceeds its retained-byte or line budget')
+        if retained > retained_bound:
+            raise ProjectionLimit('native record exceeds its retained-byte budget', 'retained bytes')
+        if large:
+            if row is not None:
+                decoded += decoded_size(row)
+            if decoded + number * ROW_STATE_BYTES > record_file.CLAUDE_STREAM_MEMORY:
+                raise ProjectionLimit('native record exceeds its retained memory budget', 'retained memory')
         if row is not None:
             rows.append((number, row))
         elif diagnostic is not None:
@@ -367,7 +408,7 @@ def scan(descriptor, size, cached, *, splitlines=False):
     if trailing_cr:
         finish_line()
         line = Line()
-    complete_lines, complete_rows, complete_bytes = number, len(rows), retained
+    complete_lines, complete_rows, complete_bytes, complete_decoded = number, len(rows), retained, decoded
     has_tail = bool(line.small or line.giant is not None) if splitlines else size != prefix_bytes
     if has_tail:
         finish_line()
@@ -380,6 +421,8 @@ def scan(descriptor, size, cached, *, splitlines=False):
         last_complete_row=rows[complete_rows - 1] if complete_rows else None,
         ends_newline=ends_lf if splitlines else size > 0 and size == prefix_bytes, line_count=number,
         raw_digest=hasher.hexdigest(), previous_prefix=proof, retained_bytes=complete_bytes,
+        projected_bytes=retained, decoded_bytes=complete_decoded if large else None,
+        retained_cost=decoded + number * ROW_STATE_BYTES if large else None,
     ), cached
 
 
@@ -415,6 +458,13 @@ def parse(record):
         return _parse(record)
 
 
+def inspect_entries(record):
+    """Iterate one guarded observation for a reader that only inspects native rows."""
+    with json_record._read_lock:
+        for _, row in _parse(record).rows:
+            yield row
+
+
 def _parse(record):
     key = Path(record)
     cached = json_record._snapshots.pop(key, None)
@@ -427,8 +477,9 @@ def _parse(record):
         try:
             checked = time.time_ns()
             stamp = json_record._stamp(info)
-            if info.st_size > record_file.LINES_BOUND:
-                raise record_file.past_bound(source, info.st_size, record_file.LINES_BOUND)
+            raw_bound = record_file.bound_of(source, 'claude')
+            if info.st_size > raw_bound:
+                raise record_file.past_bound(source, info.st_size, raw_bound)
             if (attempt == 0 and cached is not None and cached.stamp == stamp and cached.certified_at is not None
                     and cached.source == source and cached.certified_at <= started <= checked):
                 json_record._snapshots[key] = cached
@@ -442,7 +493,7 @@ def _parse(record):
                 try:
                     entry, reused = _scan_layout(descriptor, info.st_size, previous)
                 except ProjectionLimit as error:
-                    bound = min(COMPATIBILITY_BOUND, record_file.LINES_BOUND)
+                    bound = min(COMPATIBILITY_BOUND, raw_bound)
                     if info.st_size > bound:
                         raise
                     # A traceback would retain the abandoned projection while
@@ -457,6 +508,8 @@ def _parse(record):
             if isinstance(failure, UnicodeError):
                 raise record_file.RecordError('record is not UTF-8 JSON lines') from failure
             if failure is not None:
+                if isinstance(failure, ProjectionLimit) and info.st_size > COMPATIBILITY_BOUND:
+                    failure.projection_usage = record_file.ProjectionUsage(stamp, exhausted=failure.resource)
                 raise failure
         finally:
             os.close(descriptor)

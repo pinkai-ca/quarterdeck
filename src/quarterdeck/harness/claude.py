@@ -28,7 +28,8 @@ from pathlib import Path
 
 from . import claude_record, record_file
 from .json_record import JsonLinesReader, input_reader, records_matching
-from .claude_record import entries, input_rows
+from .claude_record import entries as entries
+from .claude_record import input_rows, inspect_entries
 from .types import AUTHENTICATION, Inputs, State, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_limits import ExtraUsage, extra_usage_at_refusal, limit_wall, rejected_limit_info
 from .claude_background import notification as background_notification, BackgroundBash, user_notice
@@ -94,11 +95,11 @@ def records(home: Path) -> list[Path]:
 
 
 def first_timestamp(record: Path) -> datetime | None:
-    return next((when(e["timestamp"]) for e in entries(record) if e.get("timestamp")), None)
+    return next((when(e["timestamp"]) for e in inspect_entries(record) if e.get("timestamp")), None)
 
 
 def session_id(record: Path) -> str | None:
-    return next((e["sessionId"] for e in entries(record) if e.get("sessionId")), None)
+    return next((e["sessionId"] for e in inspect_entries(record) if e.get("sessionId")), None)
 
 
 def prompt_text(entry: dict) -> str | None:
@@ -181,7 +182,7 @@ def compactions(record: Path):
                         if block.get('type') == 'tool_use':
                             self.history.work(dict(row=key, call=block), call=block.get('id'))
 
-    return read(record, Interpret, _Reader, parse=claude_record.parse)
+    return read(record, Interpret, _Reader, parse=claude_record.parse, bound=record_file.bound_of(record, 'claude'))
 
 
 class _TextlessDequeue:
@@ -469,6 +470,11 @@ class _Reader(JsonLinesReader):
     label = "Claude Code"
     clock = staticmethod(_wall_clock)  # the notice grace is judged on this clock alone; a test injects its own
     reading_fingerprint = staticmethod(children_fingerprint)
+
+    @classmethod
+    def read_snapshot(cls, record, snapshot):
+        state, turns = super().read_snapshot(record, snapshot)
+        return replace(state, projection_usage=claude_record.projection_usage(snapshot)), turns
 
     def __init__(self, record: Path, snapshot=None):
         self.orphan_auth = None
@@ -919,10 +925,11 @@ def control_suffix(record, origin):
     try:
         if str(record) != origin['path']:
             return None
-        with record_file.Opened(record, record_file.LINES_BOUND) as stream:  # never a link, never without end
+        bound = record_file.bound_of(record, 'claude')
+        with record_file.Opened(record, bound) as stream:  # never a link, never without end
             before = stream.stat
             offset = origin['offset']
-            if (type(offset) is not int or offset < 0 or before.st_size < offset
+            if (type(offset) is not int or not 0 <= offset <= before.st_size <= bound
                     or (before.st_dev, before.st_ino) != (origin['device'], origin['inode'])):
                 return None
             digest, left = hashlib.sha256(), offset
@@ -960,8 +967,11 @@ def control_origin(record: Path | None, display: dict, *, launch: dict | None = 
     try:
         digest = hashlib.sha256()
         tail = b''
-        with record_file.Opened(record, record_file.LINES_BOUND) as stream:  # never a link, never without end
+        bound = record_file.bound_of(record, 'claude')
+        with record_file.Opened(record, bound) as stream:  # never a link, never without end
             before = stream.stat
+            if before.st_size > bound:
+                return None
             for chunk in iter(lambda: stream.read(65536), b''):
                 digest.update(chunk)
                 tail = chunk[-1:]
@@ -1155,6 +1165,7 @@ PERMISSION_QUESTION = Interruption("permission prompt", r"Do you want to proceed
 
 class ClaudeHarness(Harness):
     reading_fingerprint = staticmethod(children_fingerprint)
+    native_status_stream = True
     box_geometry_known = True  # box_columns below declares the established text area
 
     def state_for_relaunch(self, record, launched_at):
@@ -1184,7 +1195,7 @@ class ClaudeHarness(Harness):
         before = record_fingerprint(record)
         self.state(record)  # validate this adapter's current native record envelope before walking it
         model = None
-        for row in entries(record):
+        for row in inspect_entries(record):
             if row.get('isSidechain') or row.get('isCompactSummary') is True:
                 continue
             message = row.get('message')
@@ -1359,7 +1370,7 @@ class ClaudeHarness(Harness):
 
     @staticmethod
     def _paste_measured(record: Path, since: datetime) -> bool:
-        versions = {entry.get("version") for entry in entries(record)
+        versions = {entry.get("version") for entry in inspect_entries(record)
                     if "version" in entry and (moment := when(entry.get("timestamp"))) is not None and moment >= since}
         return bool(versions) and versions <= PASTE_FORM_VERSIONS
     reads_usage = True

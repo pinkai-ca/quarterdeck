@@ -10,10 +10,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
-from quarterdeck import ledger_reading
-from quarterdeck.harness import record_file
+import pytest
+
+from quarterdeck import ledger_reading, post, record_owner, trusted_files
+from quarterdeck.harness import get, record_file
 from quarterdeck.ledger import Ledger
+from quarterdeck.service import Service
+from tests.compaction_shapes import Native
 
 from .test_ledger import accounting_example, sql_writes
 
@@ -89,6 +94,60 @@ def test_the_service_keeps_a_span_past_the_bound_and_clears_it_when_read_whole(t
     svc.account()
     assert svc.ledger.unread_spans() == [] and svc.ledger.incomplete_records() == []
     svc.ledger.close()
+
+
+@pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
+def test_a_raised_claude_bound_reconciles_the_same_owned_record_after_reopening(tmp_path, monkeypatch, human):
+    runtime = tmp_path / 'runtime'
+    name = 'synthetic-seat'
+    trusted = trusted_files.make(runtime, name)
+    home = runtime / 'seats' / name / 'home'
+    record = home / 'projects' / 'synthetic' / 'record.jsonl'
+    ledger_path = runtime / 'ledger.sqlite'
+    native = Native(record, 'claude')
+    native.finish()
+    old_bound = record.stat().st_size
+    adapter = get('claude')
+    record_owner.register(trusted, record, 'claude')
+    seat = SimpleNamespace(name=name, home=home, trusted=trusted, harness=adapter, pane=lambda: None,
+                           session=SimpleNamespace(human=human), record=lambda: record, launched=lambda: None)
+    owned = record_owner.Owned(record, 'claude', adapter)
+
+    def actor(book):
+        service = Service.__new__(Service)
+        service.runtime, service.store, service.ledger = runtime, post.Store(runtime), book
+        service.read_marks, service.account_errors, service.meters = {}, {}, {}
+        service.resolved_seats = lambda: [seat]
+        return service
+
+    def account(service):
+        service.account_records(source_records={name: [owned]}, process_table={}, source_screens={}, replay=False)
+
+    monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', old_bound)
+    with Ledger(ledger_path) as book:
+        service = actor(book)
+        account(service)
+        assert book.ingested(record) == 1 and book.unread_spans() == []
+        native.begin('Another synthetic prompt')
+        native.finish()
+        account(service)
+        [before] = book.unread_spans()
+        assert (before['record'], before['bound'], before['counted']) == (str(record), old_bound, 1)
+
+    new_bound = record.stat().st_size
+    monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', new_bound)
+    with Ledger(ledger_path) as book:
+        service = actor(book)
+        assert book.unread_spans() == [before]
+        account(service)
+        assert book.ingested(record) == 2 and book.unread_spans() == []
+        assert book.projection_usage(record).lines == len(native.rows)
+        with record.open('ab') as stream:
+            stream.write(b'\n')
+        account(service)
+        [after] = book.unread_spans()
+        assert (after['record'], after['size'], after['bound'], after['counted']) == (
+            str(record), new_bound + 1, new_bound, 2)
 
 
 def test_qd_ledger_and_the_pool_reading_name_each_span(tmp_path):

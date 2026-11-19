@@ -1162,6 +1162,19 @@ def _facts(reading: Collection, lists: dict, fields: dict) -> Facts:
     return Facts(**values)
 
 
+def _record_bounds(ship, seats):
+    from . import human_wake
+    from .harness import record_file
+
+    try:
+        if (book := ledger.Ledger.reading(ship.runtime / 'ledger.sqlite')) is not None:
+            with book:
+                return record_file.alarms(seats, owned=human_wake.owned_record, observation=book.projection_usage)
+    except (OSError, sqlite3.Error):
+        pass  # estimate with the dense shape when no scalar observation can be read
+    return record_file.alarms(seats, owned=human_wake.owned_record)
+
+
 @post.reading_pass()
 @reading_scope.reading_pass()
 def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
@@ -1187,8 +1200,6 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
     now = post.now()
     from . import brief_change, compaction_alert, jail_end, ledger_recovery, model_mismatch, pr_screen, stop_barrier, write_bound
     from . import raise_notice
-    from . import human_wake
-    from .harness import record_file
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
     from . import usage_forecast
     lists = _replay(reading)
@@ -1201,7 +1212,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         server_recovery=server_recovery.status(ship.runtime) + stop_barrier.status(ship.runtime),
         write_bounds=write_bound.status(ship),
         jail_sweeps=jail_end.status(ship),
-        record_bounds=record_file.alarms(readable, owned=human_wake.owned_record),
+        record_bounds=_record_bounds(ship, readable),
         screening=pr_screen.status(ship.runtime),
         brief_git=brief_change.status(ship.runtime),
         model_mismatches=model_mismatch.unrouted(ship, readable, pending_model=request_queue.pending_model),

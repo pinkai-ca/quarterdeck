@@ -239,12 +239,12 @@ def worker():
                         failure = replace(state.failure, inputs=()) if state.failure else None
                         send(('human', person.name, str(record), failure, stamp))
                         del person, record, state, inputs, failure, stamp, reading
-                    release(item.path)
+                    release(item.path, keep_projection=True)
                     del notices, human, observations
             last_attribution = [None]
             def attribution_context(record, names):
                 if last_attribution[0] is not None:
-                    release(last_attribution[0])
+                    release(last_attribution[0], keep_projection=True)
                 last_attribution[0] = Path(record)
                 context(record, sorted(set(names) | ({owners[record]} if record in owners else set())))
             messages = service.store._loaded()[0]
@@ -260,7 +260,7 @@ def worker():
                 if job.get('scope') is None:
                     staged.finish_catchup(job['epoch'])
             if last_attribution[0] is not None:
-                release(last_attribution[0])
+                release(last_attribution[0], keep_projection=True)
             # Every seat's attribution scope at the post this job's replay read: Threads.scope itself, at an unbounded
             # end, which holds every message any of the seat's verdicts can see. A superset: it may dirty a seat more
             # often than its turns need, never less. The parent compares them seat by seat (Partitions.record_scopes).

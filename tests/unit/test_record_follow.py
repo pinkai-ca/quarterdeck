@@ -12,7 +12,7 @@ from tests.compaction_shapes import Native
 
 
 class Seat:
-    def __init__(self, name, record, program='claude', pid=100):
+    def __init__(self, name, record, program='codex', pid=100):
         self.name, self.harness, self.pid, self.path = name, get(program), pid, record
 
     def launched(self):
@@ -29,7 +29,7 @@ def fresh():
     record_follow._followed.clear()
 
 
-def conversation(tmp_path, program='claude', turns=2):
+def conversation(tmp_path, program='codex', turns=2):
     native = Native(tmp_path / f'{program}.jsonl', program)
     for _ in range(turns):
         native.call()
@@ -47,10 +47,9 @@ def entry(seat):
     return record_follow._followed.get(seat.name)
 
 
-@pytest.mark.parametrize('program', ['claude', 'codex'])
-def test_a_grown_record_feeds_only_its_new_lines_to_the_same_reader(tmp_path, program):
-    native = conversation(tmp_path, program)
-    seat = Seat('worker', native.path, program)
+def test_a_grown_record_feeds_only_its_new_lines_to_the_same_reader(tmp_path):
+    native = conversation(tmp_path)
+    seat = Seat('worker', native.path)
     assert record_follow.state(seat, seat.path) == whole(seat)
     reader, offset = entry(seat).reader, entry(seat).offset
     native.call()
@@ -130,3 +129,20 @@ def test_a_record_another_reader_reads_takes_its_own_path(tmp_path, monkeypatch)
     seat = Seat('hand', tmp_path / 'opencode.db', 'opencode')
     monkeypatch.setattr(type(seat.harness), 'state', classmethod(lambda cls, record: 'its own reading'))
     assert record_follow.state(seat, seat.path) == 'its own reading' and entry(seat) is None
+
+
+def test_claude_status_uses_the_stream_on_a_larger_owned_record(tmp_path, monkeypatch):
+    from quarterdeck.harness import record_file
+
+    native = conversation(tmp_path, 'claude')
+    seat = Seat('worker', native.path, 'claude')
+    at_bound = native.path.stat().st_size
+    monkeypatch.setattr(record_file, 'LINES_BOUND', at_bound - 1)
+    monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', at_bound)
+    assert record_follow.state(seat, seat.path) == whole(seat)
+    assert entry(seat) is None
+    with seat.path.open('ab') as stream:
+        stream.write(b'\n')
+    with pytest.raises(record_file.PastBound) as refused:
+        record_follow.state(seat, seat.path)
+    assert refused.value.bound == at_bound

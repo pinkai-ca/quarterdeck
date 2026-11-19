@@ -36,7 +36,7 @@ def _identity(info):
     return None
 
 
-def _sample(seat):
+def _sample(seat, observation=None):
     """Only an existing owned pointer can name a record for the forecast."""
     human = seat.session.human
     owned = (lambda: human_wake.owned_record(seat)) if human else seat.lookup_record
@@ -47,12 +47,15 @@ def _sample(seat):
     identity = _identity(info)
     if identity is None:
         return None
-    size = record_file.size_of(record) if record.suffix == '.db' else info.st_size
-    if size is None or owned() != record or _identity(_stat(record)) != identity:
+    pressure = record_file.pressure(seat, record, observation)
+    if pressure is None or owned() != record or _identity(_stat(record)) != identity:
         return None
     # The path is only an input to the key. A report or journal never names a conversation file.
-    key = sha256(os.fsencode(record) + b'\0' + f'{identity[0]}:{identity[1]}'.encode()).hexdigest()
-    return key, size, record_file.bound_of(record)
+    key = os.fsencode(record) + b'\0' + f'{identity[0]}:{identity[1]}'.encode()
+    if pressure.raw_bound != record_file.bound_of(record):
+        # A notice or handoff staged under the previous limit must not resume at the old threshold.
+        key += b'\0' + str(pressure.raw_bound).encode()
+    return sha256(key).hexdigest(), pressure
 
 
 def _point(value):
@@ -122,17 +125,21 @@ def observe(service, seat, now):
     if recipient is None:
         return
     launch = None if human else seat.launched()
-    if (sample := _sample(seat)) is None:
+    observation = getattr(getattr(service, 'ledger', None), 'projection_usage', None)
+    if (sample := _sample(seat, observation)) is None:
         return
-    key, size, bound = sample
-    if launch is not None and (size >= bound or seat.launched() != launch):
+    key, pressure = sample
+    size, bound = pressure.size, pressure.first_bound
+    if launch is not None and (size >= bound or pressure.exhausted or seat.launched() != launch):
         launch = None  # a retry must prove its own current launch and pre-bound record
     path = seat.trusted / FOLDER / f'{key}.json'
     data = _read(path)
     point = [now, size]
     if data is None:
-        _save(path, dict(version=1, first=point, last=point, report=None, published=False, crew_accepted=False))
-        return
+        data = dict(version=1, first=point, last=point, report=None, published=False, crew_accepted=False)
+        if pressure.exhausted is None:
+            _save(path, data)
+            return
     if data['report'] is not None:  # the same immutable report survives a service restart or interrupted post
         _finish(service, seat, path, data, recipient, launch)
         return
@@ -141,14 +148,23 @@ def observe(service, seat, now):
     if now < last[0] or now - first[0] > MAX_SPAN or size < last[1]:
         data['first'] = point
     data['last'] = point
-    if forecast is None:
+    if pressure.exhausted is not None:
+        body = (f'{seat.name}: the last {pressure.label} record read exceeded its {pressure.exhausted} limit. '
+                'Reading is unknown.')
+    elif forecast is None:
         if point != last:
             _save(path, data)
         return
-    rate, hours = forecast
-    body = (f'{seat.name}: record {size / record_file.MiB:.1f} MiB of its {bound / record_file.MiB:.1f} MiB read bound. '
-            f'It grew at {rate:.1f} MiB/h over {(now - first[0]) / 3600:.2f} h. '
-            f'At that rate it could reach the bound in {hours:.1f} h.')
+    else:
+        rate, hours = forecast
+        if pressure.resource == 'raw size':
+            size_limit = f'of its {bound / record_file.MiB:.1f} MiB read bound'
+        else:
+            size_limit = (f'with {pressure.label} {pressure.resource} expected to reach its limit at about '
+                          f'{bound / record_file.MiB:.1f} MiB')
+        body = (f'{seat.name}: record {size / record_file.MiB:.1f} MiB {size_limit}. '
+                f'It grew at {rate:.1f} MiB/h over {(now - first[0]) / 3600:.2f} h. '
+                f'At that rate it could reach the bound in {hours:.1f} h.')
     if human:
         body += '\nAsk the Admiral for his yes before starting it fresh at a natural break.'
     else:

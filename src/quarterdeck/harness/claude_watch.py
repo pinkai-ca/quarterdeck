@@ -9,7 +9,7 @@ import re
 import shlex
 from collections import defaultdict
 
-from .claude_record import entries
+from .claude_record import inspect_entries
 from .json_record import when
 from .types import Input
 
@@ -36,7 +36,7 @@ def inputs(record):
     # The watch by the bare 'qd' or by this ship's own absolute qd (the brief's), word for word; no other path.
     watches = {tuple(words(command)) for command in ship_watch_commands(record)}
     calls, called_at, ambiguous, results = {}, {}, set(), []
-    for row in entries(record):
+    for row in inspect_entries(record):
         if row.get('isSidechain'):
             continue
         message = row.get('message')

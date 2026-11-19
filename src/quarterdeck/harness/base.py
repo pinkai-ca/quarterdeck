@@ -197,6 +197,7 @@ class Harness(ABC):
     private_usage_home: bool = False  # native usage client needs framework-owned settings and state
     private_version_home: bool = False  # version lookup needs a fresh empty runtime-owned home
     record_time_resolution: float = 0.0  # seconds; zero retains exact receipt-time comparisons
+    native_status_stream = False  # status delegates to the adapter's own guarded record reader
     efforts = EffortCapability()
     defaults = DefaultMetadata()
     model_selectors: tuple[str, ...] = ("model",)

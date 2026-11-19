@@ -18,6 +18,7 @@ database), and one copy about 3.1 times the file in memory.
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import dataclass
 import os
 from pathlib import Path
 import stat
@@ -27,6 +28,13 @@ from .. import seat_files
 
 MiB = 1024 * 1024
 LINES_BOUND = 128 * MiB  # one read of a JSON-lines record: 1.7 times the largest, about 1 s and 1.5 GB at the bound
+CLAUDE_STREAM_BOUND = 1024 * MiB  # the Claude stream holds a bounded projection of these raw bytes
+CLAUDE_STREAM_ROWS = 700_000
+CLAUDE_STREAM_BYTES = 256 * MiB
+CLAUDE_STREAM_MEMORY = 768 * MiB  # per-source decoded projection, reader and index allowance
+CLAUDE_DENSE_ROWS_PER_MIB = 630
+CLAUDE_DENSE_RETAINED_PER_MIB = 890_500
+CLAUDE_DENSE_MEMORY_PER_MIB = 2_650_000
 DATABASE_BOUND = 512 * MiB  # one read of a SQLite record and its log together: 2.5 times the largest
 _CHUNK = MiB
 # A read past this waits for any other such read in the process: a read near the bound costs some 1.5 GB, and the
@@ -186,13 +194,72 @@ class Opened:
 WARN_AT = 0.75  # a record past three quarters of its bound is named, so its seat is started fresh at a natural break
 
 
-def bound_of(path: Path) -> int:
-    """The bound for one read of this record: a SQLite database (OpenCode's, Antigravity's ``.db``) or JSON lines."""
+@dataclass(frozen=True)
+class ProjectionUsage:
+    """Scalar evidence from a guarded stream. No record text is retained here."""
+
+    stamp: tuple[int, ...]
+    lines: int | None = None
+    retained: int | None = None
+    memory: int | None = None
+    exhausted: str | None = None
+
+
+@dataclass(frozen=True)
+class Pressure:
+    size: int
+    raw_bound: int
+    first_bound: int
+    resource: str = 'raw size'
+    exhausted: str | None = None
+    label: str | None = None
+
+
+def _first_projection_limit(sample: ProjectionUsage | None, info) -> tuple[int, str, str | None]:
+    """Project the first limit by density. Only a matching observation proves an exhausted resource."""
+    current = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    matching_file = (sample is not None and sample.stamp[:2] == current[:2]
+                     and 0 < sample.stamp[2] <= info.st_size)
+    if matching_file and sample.stamp == current and sample.exhausted is not None:
+        return info.st_size, sample.exhausted, sample.exhausted
+    candidates = [(CLAUDE_STREAM_BOUND, 'raw size')]
+    defaults = (CLAUDE_DENSE_ROWS_PER_MIB, CLAUDE_DENSE_RETAINED_PER_MIB, CLAUDE_DENSE_MEMORY_PER_MIB)
+    resources = ('physical lines', 'retained bytes', 'retained memory')
+    budgets = (CLAUDE_STREAM_ROWS, CLAUDE_STREAM_BYTES, CLAUDE_STREAM_MEMORY)
+    for name, limit, default, field in zip(resources, budgets, defaults, ('lines', 'retained', 'memory')):
+        observed = getattr(sample, field) if matching_file and sample.exhausted is None else None
+        if observed is None:
+            input_bytes, consumed = MiB, default
+        else:
+            input_bytes, consumed = sample.stamp[2], observed
+        if consumed:
+            # The compatibility reader remains eligible through the ordinary JSON-lines limit.
+            candidates.append((max(LINES_BOUND, limit * input_bytes // consumed), name))
+    first, resource = min(candidates, key=lambda item: item[0])
+    return first, resource, None
+
+
+def bound_of(path: Path, reader: str | None = None) -> int:
+    """The raw bound for the established reader, or the ordinary bound for the file format."""
+    if reader == 'claude':
+        return CLAUDE_STREAM_BOUND
     return DATABASE_BOUND if Path(path).suffix == '.db' else LINES_BOUND
 
 
-def _named_size(path: Path) -> int | None:
-    """One file's size by its name, found by the same walk as the read: no link on the way from the seat folder, and
+def _claude_pointer(seat, path: Path) -> bool:
+    """An owned pointer gets the Claude limit only when its retained reader is Claude."""
+    if getattr(getattr(seat, 'harness', None), 'name', None) == 'claude':
+        from .. import record_owner
+
+        try:
+            return record_owner.lookup_reader(seat, path) == 'claude'
+        except (OSError, ValueError, seat_files.LinkRefused):
+            pass
+    return False
+
+
+def _named_stat(path: Path):
+    """One file's stat by its name, found by the same walk as the read: no link on the way from the seat folder, and
     a link, fifo, socket or device at the name gives no figure (None), never a followed one. Nothing there at all
     raises FileNotFoundError."""
     found = seat_files.seat_root(path)
@@ -211,7 +278,12 @@ def _named_size(path: Path) -> int | None:
     finally:
         if folder is not None:
             os.close(folder)
-    return named.st_size if stat.S_ISREG(named.st_mode) else None
+    return named if stat.S_ISREG(named.st_mode) else None
+
+
+def _named_size(path: Path) -> int | None:
+    info = _named_stat(path)
+    return None if info is None else info.st_size
 
 
 def size_of(path: Path) -> int | None:
@@ -233,7 +305,10 @@ def size_of(path: Path) -> int | None:
 
 def alarm(seat: str, path: Path) -> str | None:
     """The status line's word on a seat whose record nears or passes its read bound; None while it is well within."""
-    size, bound = size_of(path), bound_of(path)
+    return _raw_alarm(seat, size_of(path), bound_of(path))
+
+
+def _raw_alarm(seat: str, size: int | None, bound: int) -> str | None:
     if size is None or size < WARN_AT * bound:
         return None
     if size > bound:
@@ -241,7 +316,24 @@ def alarm(seat: str, path: Path) -> str | None:
     return f'{seat}: record {_size(size)} of its {_size(bound)} read bound; start it fresh at a natural break'
 
 
-def alarms(seats, owned=None) -> list[str]:  # law: nothing-waits-silently
+def pressure(seat, path: Path, observation=None) -> Pressure | None:
+    """Read status from the owned file's metadata and the last accounted Claude observation."""
+    if not _claude_pointer(seat, path):
+        raw = bound_of(path)
+        size = size_of(path)
+        return None if size is None else Pressure(size, raw, raw)
+    try:
+        info = _named_stat(path)
+    except FileNotFoundError:
+        return None
+    if info is None:
+        return None
+    sample = observation(path) if observation is not None else None
+    first, resource, exhausted = _first_projection_limit(sample, info)
+    return Pressure(info.st_size, bound_of(path, 'claude'), first, resource, exhausted, label='Claude')
+
+
+def alarms(seats, owned=None, observation=None) -> list[str]:  # law: nothing-waits-silently
     """One line for each seat whose current record nears or passes its read bound. A seat the operator owns (the
     desk, the office) is named from its owned record pointer (``owned(seat)``), never by reading its conversation:
     those are the longest conversations on the ship, and so the likeliest to reach the bound first."""
@@ -262,6 +354,14 @@ def alarms(seats, owned=None) -> list[str]:  # law: nothing-waits-silently
                 continue
         except (OSError, ValueError):
             continue  # the seat's own reading says why its record cannot be named
-        if record is not None and (line := alarm(seat.name, record)) is not None:
+        if record is None or (reading := pressure(seat, record, observation)) is None:
+            continue
+        if reading.exhausted is not None:
+            lines.append(f'{seat.name}: record past the read bound ({reading.label} {reading.exhausted} limit exceeded). '
+                         'Reading unknown. Start it fresh.')
+        elif reading.resource != 'raw size' and reading.size >= WARN_AT * reading.first_bound:
+            lines.append(f'{seat.name}: Claude {reading.resource} may reach its limit at about '
+                         f'{_size(reading.first_bound)}; start it fresh at a natural break')
+        if (line := _raw_alarm(seat.name, reading.size, reading.raw_bound)) is not None:
             lines.append(line)
     return lines
