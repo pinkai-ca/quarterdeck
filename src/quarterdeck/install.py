@@ -91,7 +91,7 @@ def queue_rebrief(ship: Ship, commit: str, previous: dict | None, snapshot: dict
 
 
 def write_rebrief(path: Path, data: dict) -> None:
-    """Persist notice intent before rendering/posting; reuse the existing request file."""
+    """Persist the rebrief request before rendering; reuse the existing request file."""
     durable.replace_file(path, json.dumps(data) + '\n')
 
 
@@ -648,7 +648,7 @@ def _activate(ship: Ship, data: dict, fact: dict, tmux: Tmux | None) -> list[str
             proofs.append('rebrief confirmation pending; inspect qd doctor; installed code remains active')
     else:
         proofs += ['service not running; qd up starts it on the installed copy',
-                   'rebrief pending · qd up renders current briefs and posts changed-brief notices']
+                   'rebrief pending · qd up renders current briefs']
     if tmux is not None:
         try:
             pointed = [s.title for s in ship.sessions.values() if tmux.has_session(s.title)]

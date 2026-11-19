@@ -1089,11 +1089,12 @@ class Service:
                 # typed with it as one input: the box check and the record's confirmation both take this whole text,
                 # and every matcher reads the message past the head (input_receipt.without_brief_head).
                 from . import brief_change
+                changed = None
                 if carried_head:
                     # The one look types again exactly what the first typing carried, head included; the brief it
                     # told of was marked told then, and a later change waits for the next message.
-                    text, changed = post.line_ends(carried_head) + text, None
-                elif changed := brief_change.head(self.runtime, seat.name):
+                    text = post.line_ends(carried_head) + text
+                elif seat.spec.role != 'hand' and (changed := brief_change.head(self.runtime, seat.name)):
                     text = post.line_ends(changed[0]) + text  # typed as the message is: no line ends in a space
                 try:
                     proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True, attempt_history=history)

@@ -8,7 +8,7 @@ only, as a unified diff of the brief's text with no context, then one end line. 
 fold into one diff, from the brief last told to the current one. Past ``BOUND`` bytes the head names instead the
 sections changed and their line counts, and says that ``qd brief`` prints the whole. The message itself is unchanged
 and keeps its id: the head is added at delivery, typed with it as one input, and every matcher reads the input past
-it (``input_receipt.without_brief_head``).
+it (``input_receipt.without_brief_head``). A hand takes its current brief at fresh launch and receives no new head.
 
 A launch, a fresh start or a restart loads the current brief, and so sets the brief last told to it. Where an edit
 of the ship folder can be attributed to a seat, that seat is not told of its own edit: a commit names its seat by a

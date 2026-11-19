@@ -28,7 +28,7 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     assert installed_qd.exists() and proofs[0].startswith(f"installed {head[:7]} at runtime/venv · qd ")
     assert "was unknown" in proofs[0] and "no proven previous copy" in proofs[0]
     assert proofs[1] == "service not running; qd up starts it on the installed copy"
-    assert proofs[-1] == "rebrief pending · qd up renders current briefs and posts changed-brief notices"
+    assert proofs[-1] == "rebrief pending · qd up renders current briefs"
     record = json.loads((drydock / "runtime" / "installed.json").read_text())
     assert record["commit"] == head and record["previous"] is None
     assert not (drydock / "runtime" / "upgrade").exists(), "the staged source is gone once installed"

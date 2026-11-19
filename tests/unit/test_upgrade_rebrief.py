@@ -4,6 +4,7 @@ the sync posts nothing, and each change rides at the head of its seat's next mes
 from io import BytesIO
 from itertools import count
 from dataclasses import replace
+from datetime import timedelta
 import json
 from pathlib import Path
 import shutil
@@ -18,7 +19,9 @@ from quarterdeck.service import Service
 from quarterdeck.ship import load
 from quarterdeck.input_receipt import BRIEF_HEAD  # noqa: F401
 from quarterdeck import input_receipt
+from quarterdeck.seat import Seat
 from quarterdeck.tmux import Pane
+from .test_rebrief_notices_settle import retain_launch
 
 OLD='a'*40
 NEW='b'*40
@@ -237,6 +240,28 @@ def test_replaced_launch_gets_no_notice_and_down_seat_brief_is_current(upgraded,
     assert '+Changed framework instruction.' in carried(s,'captain')
     assert 'Changed framework instruction.' in (s.ship.runtime/'brief/worker-1.md').read_text()
     assert 'Changed framework instruction.' in standing.brief(s.ship,s.ship.seat('worker-1')).text
+
+
+def test_generated_sync_keeps_old_notice_settled_for_a_crew_seat_left_down(upgraded, monkeypatch):
+    state = upgraded
+    change_archive(state)
+    name = 'worker-1'
+    seat = Seat(state.ship, state.ship.seat(name), state.tmux)
+    message = state.store.new('report', post.SHIP, name, f"ship's orders changed · read runtime/brief/{name}.md")
+    launched = retain_launch(seat, message.at + timedelta(seconds=1))
+    path = seat.trusted / 'launch.json'
+    launched.write(path)
+    assert message.id in state.store.settled_notices(name)
+    path.unlink()
+    monkeypatch.setattr(Seat, 'up', lambda *a, **k: pytest.fail('sync must leave the crew seat down'))
+
+    proofs = install.upgrade(state.ship, 'changed', state.tmux)
+    assert any('rebrief complete' in line and 'no notice posted' in line for line in proofs)
+    assert 'Changed framework instruction.' in (state.ship.runtime / 'brief' / f'{name}.md').read_text()
+    service = state.started[-1]
+    assert message.id in service.store.settled_notices(name)
+    assert not service.attempts.undelivered(service.store, name) and not service.attempts.for_message(message.id)
+    assert notices(state) == [message] and not path.exists()
 
 
 def test_older_service_unknown_kind_is_not_completion_and_force_can_recover(upgraded,monkeypatch):

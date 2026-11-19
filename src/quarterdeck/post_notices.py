@@ -2,11 +2,12 @@
 
 from collections import Counter
 from datetime import datetime
+import json
 from pathlib import Path
 import re
 import time
 
-from . import post
+from . import post, trusted_files
 
 
 def notice_class(message):
@@ -50,6 +51,7 @@ class _LaunchCache:
         self.owner_ship = None
         self.owners = {}
         self.launches = {}
+        self.retained = {}
         self.requests = {}
 
 
@@ -90,10 +92,14 @@ def _observed(cache, key, stamp, read):
 
 def launched_at(runtime, seat, *, cache=None):
     """Only a readable, validated recorded launch can settle earlier notices."""
+    return _launch_times(runtime, seat, cache=cache)[0]
+
+
+def _launch_times(runtime, seat, *, cache=None, retained=False):
     from .seat import Seat
     from . import ship as shipmod
     if Path(seat).name != seat or seat in ('', '.', '..'):
-        return None
+        return None, None
     cache = cache if cache is not None else _LaunchCache()
     try:
         ship = _observed(cache.declarations, runtime,
@@ -103,6 +109,7 @@ def launched_at(runtime, seat, *, cache=None):
             cache.owner_ship = ship
             cache.owners.clear()
             cache.launches.clear()
+            cache.retained.clear()
         owner = cache.owners.get(seat)
         fresh = owner is None
         if fresh:
@@ -120,9 +127,65 @@ def launched_at(runtime, seat, *, cache=None):
                 raise ValueError('notice launch time has no timezone')
             return at
 
-        return _observed(cache.launches, seat, owner.launch_stamp, read_launch)
-    except (OSError, ValueError, shipmod.ShipError):
-        return None  # missing/unreadable evidence grants no settlement
+        launch = _observed(cache.launches, seat, owner.launch_stamp, read_launch)
+        prior = _retained_at(owner, cache) if retained and launch is None else None
+        return launch, prior
+    except (OSError, ValueError, TypeError, shipmod.ShipError):
+        return None, None  # missing/unreadable evidence grants no settlement
+
+
+def _retained_at(owner, cache):
+    from . import seat_migration, trusted_cache
+    launch = owner.trusted / trusted_files.LAUNCH
+    unconfirmed = owner.trusted / seat_migration.UNCONFIRMED
+    history = owner.trusted / trusted_files.LAUNCHES
+    readers = owner.trusted / trusted_files.READERS
+
+    def stamps():
+        return tuple(trusted_cache.link_stamp(path) for path in (launch, unconfirmed, history, readers))
+
+    def read():
+        if trusted_cache.link_stamp(launch) is not None or trusted_cache.link_stamp(unconfirmed) is not None:
+            return None  # only a truly absent active launch admits the retained join
+        return _last_retained_join(owner, history, readers)
+
+    return _observed(cache.retained, owner.name, stamps, read)
+
+
+def _last_retained_join(owner, history, readers):
+    """One latest join to this seat, from trusted metadata alone."""
+    from . import harness as harnesses, seat_files
+
+    def rows(path):
+        text = seat_files.read_text(path) or ''
+        for line in text.splitlines():
+            if line.strip():
+                row = json.loads(line)
+                if not isinstance(row, dict) or not isinstance(row.get('record'), str):
+                    raise ValueError('unreadable retained launch evidence')
+                yield row
+
+    latest, joins = None, set()
+    for row in rows(history):
+        at = datetime.fromisoformat(row.get('at'))
+        if at.tzinfo is None:
+            return None
+        if latest is None or at > latest:
+            latest, joins = at, set()
+        if at == latest:
+            joins.add((row['record'], row.get('pool'), row.get('harness')))
+    if len(joins) != 1:
+        return None
+    (record, pool, program), = joins
+    spec = owner.ship.seat(owner.name).for_pool(pool)
+    if program not in (None, spec.harness):
+        return None
+    path = Path(record)
+    if (not path.is_absolute() or '..' in path.parts or '\0' in record
+            or harnesses.get(spec.harness).home_variable is not None and not path.is_relative_to(owner.home)):
+        return None
+    owned = {row.get('harness') for row in rows(readers) if row['record'] == record and row.get('harness') is not None}
+    return latest if owned == {spec.harness} else None
 
 
 
@@ -155,13 +218,13 @@ def settled(store, seat, *, brief_at=None):
     candidates = [(m, kind) for m, kind in candidates if kind is not None and m.at.tzinfo is not None]
     held = [(m, held_request(m)) for m in incoming if m.at.tzinfo is not None]
     held = [(m, request) for m, request in held if request is not None]
+    launch = prior = None
     if candidates or held:
         cache = getattr(store, '_notice_launch_cache', None)
         if cache is None:
             cache = store._notice_launch_cache = _LaunchCache()
-        launch = launched_at(store.dir.parent.parent, seat, cache=cache)
-    else:
-        launch = None
+        launch, prior = _launch_times(store.dir.parent.parent, seat, cache=cache,
+                                      retained=any(kind == 'changed orders' for _, kind in candidates))
     if isinstance(brief_at, datetime) and brief_at.tzinfo is not None:
         launch = max(launch, brief_at) if launch is not None else brief_at
     latest = {}
@@ -169,7 +232,8 @@ def settled(store, seat, *, brief_at=None):
         latest[kind] = max(latest.get(kind, (message.at, message.id)), (message.at, message.id))
     result = {}
     for message, kind in candidates:
-        if launch is not None and message.at < launch:
+        if (launch is not None and message.at < launch
+                or kind == 'changed orders' and prior is not None and message.at < prior):
             result[message.id] = f'{kind}: settled by a later launch'
         elif (message.at, message.id) < latest[kind]:
             result[message.id] = f'{kind}: settled by a newer notice'

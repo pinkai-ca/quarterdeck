@@ -8,8 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import carriage_plan, post, post_notices, post_threads, ship as shipmod
-from quarterdeck.seat import Seat
+from quarterdeck import carriage_plan, post, post_notices, post_threads, provenance, record_owner, ship as shipmod
+from quarterdeck import trusted_files
+from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
 
 
@@ -57,6 +58,93 @@ def reader(store):
     seat.folder = seat.ship.runtime / 'seats' / 'reader'
     seat._queued_unread = lambda store, attempts: []
     return seat
+
+
+def retain_launch(seat, at):
+    launched = Launched('%1', 123, at.isoformat(), seat.pool.name, None, [seat.spec.harness], None,
+                        harness=seat.spec.harness)
+    record = seat.home / 'made-record.jsonl'
+    record_owner.register(seat.trusted, record, seat.spec.harness)
+    provenance.remember_launch(seat.trusted, record, launched)
+    return launched
+
+
+def test_down_hand_keeps_its_old_notice_settled_without_an_attempt_or_seat_act(store, monkeypatch):
+    runtime = store.dir.parent.parent
+    declaration = runtime.parent / 'ship.toml'
+    declaration.write_text(declaration.read_text().replace('role = "worker"', 'role = "hand"'))
+    ship = shipmod.load(runtime.parent)
+    seat = Seat(ship, ship.seat('reader'), None)
+    message = notice(store, body='brief changed · read runtime/brief/reader.md')
+    launched = retain_launch(seat, AT + timedelta(seconds=1))
+    path = seat.trusted / trusted_files.LAUNCH
+    launched.write(path)
+    assert message.id in store.settled_notices(seat.name)
+    path.unlink()  # the generated down removed the active marker
+    original = {p: p.read_bytes() for p in seat.trusted.glob('*.jsonl')}
+    original_post = (store.dir / f'{message.id}.json').read_bytes()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('notice settlement must neither act on the seat nor read its conversation')
+
+    monkeypatch.setattr(Seat, 'up', forbidden)
+    monkeypatch.setattr(Seat, 'down', forbidden)
+    monkeypatch.setattr(Seat, 'record', forbidden)
+    monkeypatch.setattr(Seat, 'lookup_record', forbidden)
+    restarted = post.Store(runtime)
+    attempts = post.Attempts(runtime)
+    assert not attempts.undelivered(restarted, seat.name)
+    assert not attempts.all() and not list((runtime / 'post' / 'pending').rglob('*.json'))
+    assert not restarted.read_ids(seat.name)
+    assert restarted.settled_notices(seat.name)[message.id] == 'changed orders: settled by a later launch'
+    assert {p: p.read_bytes() for p in seat.trusted.glob('*.jsonl')} == original
+    assert not path.exists() and (store.dir / f'{message.id}.json').read_bytes() == original_post
+
+
+@pytest.mark.parametrize('evidence', ['newer notice', 'equal', 'missing', 'wrong pool', 'wrong reader',
+                                      'ambiguous', 'unreadable', 'active unproved'])
+def test_unproved_retained_join_or_non_older_notice_still_waits(store, evidence):
+    runtime = store.dir.parent.parent
+    ship = shipmod.load(runtime.parent)
+    seat = Seat(ship, ship.seat('reader'), None)
+    message = notice(store, 2 if evidence == 'newer notice' else 0)
+    if evidence != 'missing':
+        retain_launch(seat, AT + timedelta(seconds=0 if evidence == 'equal' else 1))
+        history = seat.trusted / trusted_files.LAUNCHES
+        row = json.loads(history.read_text())
+        if evidence == 'wrong pool':
+            latest = dict(row, pool='unrelated', at=(AT + timedelta(seconds=3)).isoformat())
+            history.write_text(history.read_text() + json.dumps(latest) + '\n')
+        elif evidence == 'wrong reader':
+            (seat.trusted / trusted_files.READERS).write_text(json.dumps(dict(record=row['record'], harness='pi')))
+        elif evidence == 'ambiguous':
+            history.write_text(history.read_text() + json.dumps(dict(row, record=row['record'] + '.other')) + '\n')
+        elif evidence == 'unreadable':
+            history.write_text(history.read_text() + '{incomplete\n')
+        elif evidence == 'active unproved':
+            (seat.trusted / trusted_files.LAUNCH).write_text('{}')
+    assert message.id not in store.settled_notices(seat.name)
+    assert post.Attempts(runtime).undelivered(store, seat.name) == [message]
+
+
+def test_retained_observation_refreshes_for_either_trusted_file(store, monkeypatch):
+    runtime = store.dir.parent.parent
+    ship = shipmod.load(runtime.parent)
+    seat = Seat(ship, ship.seat('reader'), None)
+    message = notice(store)
+    retain_launch(seat, AT + timedelta(seconds=1))
+    readers = seat.trusted / trusted_files.READERS
+    trusted = readers.read_text()
+    age_observations(monkeypatch)
+    assert not cached_pass(store)
+    readers.write_text(trusted.replace('codex', 'pi'))
+    age_observations(monkeypatch)
+    assert cached_pass(store) == [message]
+    readers.write_text(trusted)
+    age_observations(monkeypatch)
+    assert not cached_pass(store)
+    (seat.trusted / trusted_files.LAUNCHES).unlink()
+    assert cached_pass(store) == [message]
 
 
 def test_three_notices_then_launch_are_history_not_waiting_or_carried(store, tmp_path):

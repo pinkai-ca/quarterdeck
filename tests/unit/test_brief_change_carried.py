@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -81,6 +82,19 @@ def test_two_edits_before_the_message_fold_into_one(setup):  # noqa: F811
     assert box.count(input_receipt.BRIEF_HEAD) == 1 and box.count(input_receipt.BRIEF_HEAD_END) == 1
     assert '+Order two, amended.' in box and '+Seat line, moved.' in box
     assert brief_change.told(svc.runtime, seat.name) == NEWER
+
+
+def test_hand_gets_the_order_without_a_new_standing_orders_head(setup):  # noqa: F811
+    svc, seat, live, _ = setup
+    seat.spec = svc.ship.seats[seat.name] = replace(seat.spec, role='hand')
+    brief_change.seed(svc.runtime, seat.name, OLD)
+    publish(svc.runtime, seat.name, NEW)
+    order = svc.store.new('order', 'desk', seat.name, 'An invented hand order.')
+    svc.deliver(seat, [order])
+    assert svc.store.all() == [order]
+    assert live['box'] == post.typed([order]).rstrip('\n')
+    assert live['pasted'] == live['submitted'] == 1
+    assert brief_change.told(svc.runtime, seat.name) == OLD
 
 
 def test_a_withheld_delivery_tells_nothing(setup, monkeypatch):  # noqa: F811

@@ -1036,9 +1036,10 @@ def cmd_thread(args: argparse.Namespace) -> Reading:
 def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     ship = load_ship(args)
     seat, human, validate = _inbox_target(ship, args.seat)
+    role = ship.seat(seat).role if seat in ship.seats else None
     if not args.wait:
         # A hand reads only what is open for it, as its inbox file does; --all still prints the whole history.
-        open_only = not args.all and seat in ship.seats and ship.seat(seat).role == 'hand'
+        open_only = not args.all and role == 'hand'
         data = post.inbox_reading(post.Store(ship.runtime), seat, recent=not args.all, open_only=open_only)
         if validate is not None:
             validate()
@@ -1060,7 +1061,7 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     second = {m.id for m in messages if any(a.seat == seat and a.path not in now for a in every.for_message(m.id))}
     # A change to the seat's standing orders since it last read them rides at the head of the batch, as at a door.
     from . import brief_change
-    changed = brief_change.head(ship.runtime, seat)
+    changed = None if role == 'hand' else brief_change.head(ship.runtime, seat)
     data = {"seat": seat, "messages": messages}
     if changed:
         data["standing_orders_changed"] = changed[0]
