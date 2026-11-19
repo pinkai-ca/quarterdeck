@@ -300,6 +300,73 @@ def test_unreadable_owner_evidence_holds_cleanup(tmp_path, monkeypatch):
         root.close()
 
 
+@pytest.mark.parametrize('inherited', [False, True])
+def test_a_reaped_slot_owner_checks_for_a_surviving_descriptor(tmp_path, monkeypatch, inherited):
+    root = root_at(tmp_path)
+    other, retry, contender = (layout.Slot(root) for _ in range(3))
+    release_read, release_write = os.pipe()
+    retired_read, retired_write = os.pipe()
+    holder = None
+    guard = None
+    try:
+        other.acquire({'verb': 'run', 'run': 'other'})
+        assert other.selected == 0
+        holder = subprocess.Popen([sys.executable, '-B', '-c', '''
+import os, subprocess, sys
+from tests.testrunner import layout
+from tests.unit.test_run_slots_ordinary import root_at
+root = root_at(sys.argv[1])
+slot = layout.Slot(root)
+slot.acquire({"verb": "run", "run": sys.argv[2]})
+if sys.argv[3] == "True":
+    release, retired = map(int, sys.argv[4:6])
+    subprocess.Popen([sys.executable, '-B', '-c',
+                      'import os, sys; fd, release, retired = map(int, sys.argv[1:]); '
+                      'os.read(release, 1); os.close(fd); os.write(retired, b"1")',
+                      str(slot.fd), str(release), str(retired)],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     pass_fds=(slot.fd, release, retired))
+print(slot.selected, flush=True)
+sys.stdin.read()
+''', str(tmp_path), RUN, str(inherited), str(release_read), str(retired_write)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  pass_fds=(release_read, retired_write))
+        assert holder.stdout.readline().strip() == b'1', 'the earlier peer put this controller in slot 2'
+        stale = (tmp_path / 'slot-2.lock').read_bytes()
+        holder.kill()
+        holder.communicate()
+        other.release()
+        retry.acquire({'verb': 'run', 'run': 'retry'}, wait=0)
+        assert retry.selected == 0, 'the next run uses the other peer’s newly freed slot'
+        monkeypatch.setattr(layout, '_flock_files', lambda: set())
+        made = layout.RunGuard(root, RUN, create=True)
+        made.release()
+        guard = layout.RunGuard(root, RUN)
+        if inherited:
+            with pytest.raises(layout.RunBusy, match='run slot is still held'):
+                guard.acquire()
+        else:
+            guard.acquire()
+        assert (tmp_path / 'slot-2.lock').read_bytes() == stale
+        contender.acquire({'verb': 'run', 'run': 'contender'}, wait=0)
+        assert contender.selected == (2 if inherited else 1)
+        assert json.loads((tmp_path / 'slot.lock').read_bytes())['run'] == 'retry'
+        if inherited:
+            os.write(release_write, b'1')
+            assert os.read(retired_read, 1) == b'1'
+    finally:
+        if guard is not None:
+            guard.release()
+        if holder is not None and holder.poll() is None:
+            holder.kill()
+            holder.communicate()
+        for fd in (release_read, release_write, retired_read, retired_write):
+            os.close(fd)
+        for pool in (contender, retry, other):
+            pool.release()
+        root.close()
+
+
 def test_a_line_skipped_by_a_moving_proc_locks_still_reads_held(tmp_path, monkeypatch):
     """The reproduction, deterministic: the probe reads /proc/locks in small reads; between them the newest of the
     locks above the holder's line are released, so the kernel's walk skips lines. The probe's answer must stay held."""

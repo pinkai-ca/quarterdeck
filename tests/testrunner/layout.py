@@ -370,21 +370,48 @@ def _flock_files() -> set[tuple[int, int]]:
     return {key for line in _proc_locks().splitlines() if (key := _flock_file(line.split())) is not None}
 
 
+def _pid_namespace() -> list[int] | None:
+    if os.readlink('/proc/self') != str(os.getpid()):
+        return None  # the proc mount interprets PID names in a different namespace
+    namespace = os.stat('/proc/self/ns/pid')
+    return [namespace.st_dev, namespace.st_ino]
+
+
 def _slot_owner(pid: int) -> dict | None:
     """This live owner in the caller's PID namespace, or no usable process identity."""
     try:
-        if os.readlink('/proc/self') != str(os.getpid()):
-            return None  # the proc mount interprets PID names in a different namespace
         namespace = os.stat(f'/proc/{pid}/ns/pid')
-        caller = os.stat('/proc/self/ns/pid')
-        if (namespace.st_dev, namespace.st_ino) != (caller.st_dev, caller.st_ino):
+        if (pidns := _pid_namespace()) != [namespace.st_dev, namespace.st_ino]:
             return None
         fields = procs.stat_fields(pid)
         if fields and len(fields) > 19 and fields[0] not in procs.EXITED:
-            return {'boot': procs.boot_id(), 'start': fields[19], 'pidns': [namespace.st_dev, namespace.st_ino]}
+            return {'boot': procs.boot_id(), 'start': fields[19], 'pidns': pidns}
     except OSError:
         pass
     return None
+
+
+def _descriptor_flock(process_fd: int, key: tuple[int, int]) -> bool | None:
+    """Read flocks on the exact file from one process's pinned proc entry."""
+    directory = os.open('fdinfo', DIRECTORY, dir_fd=process_fd)
+    try:
+        for name in os.listdir(directory):
+            try:
+                opened = os.stat(f'fd/{name}', dir_fd=process_fd)
+                if (opened.st_dev, opened.st_ino) != key:
+                    continue
+                fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory)
+            except FileNotFoundError:
+                continue  # a descriptor closed; a continuously held flock fd stays listed
+            with os.fdopen(fd) as info:
+                for line in info:
+                    fields = line.split()
+                    if fields[:1] == ['lock:'] and fields[2:3] == ['FLOCK']:
+                        # Some filesystems report different device numbers through stat and procfs.
+                        return True if _flock_file(fields[1:]) == key else None
+    finally:
+        os.close(directory)
+    return False
 
 
 def _owner_flock(note: dict, key: tuple[int, int]) -> bool | None:
@@ -397,24 +424,9 @@ def _owner_flock(note: dict, key: tuple[int, int]) -> bool | None:
         owner_fd = os.open(process, DIRECTORY)
         try:
             before = _slot_owner(pid)
-            directory = os.open('fdinfo', DIRECTORY, dir_fd=owner_fd)
-            try:
-                for name in os.listdir(directory):
-                    try:
-                        opened = os.stat(f'fd/{name}', dir_fd=owner_fd)
-                        if (opened.st_dev, opened.st_ino) != key:
-                            continue
-                        fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory)
-                    except FileNotFoundError:
-                        continue  # an unrelated fd closed; a continuously held flock fd stays listed
-                    with os.fdopen(fd) as info:
-                        for line in info:
-                            fields = line.split()
-                            if fields[:1] == ['lock:'] and fields[2:3] == ['FLOCK']:
-                                # Some filesystems report different device numbers through stat and procfs.
-                                return True if _flock_file(fields[1:]) == key else None
-            finally:
-                os.close(directory)
+            held = _descriptor_flock(owner_fd, key)
+            if held is not False:
+                return held
             # Only the original live controller can establish absence. Slot descriptors are CLOEXEC;
             # the tool passes only the scratch lock to its children. An exited controller may still
             # have a pre-exec child, and an old note cannot distinguish its writer from PID reuse.
@@ -428,10 +440,64 @@ def _owner_flock(note: dict, key: tuple[int, int]) -> bool | None:
     return None
 
 
+def _process_lifetime(pid: int) -> tuple[str, int] | None:
+    """State and start tick. Return absence only when the process entry is gone."""
+    fields = procs.stat_fields(pid)
+    if fields is None:
+        try:
+            os.stat(f'/proc/{pid}')
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+        raise OSError('process lifetime unreadable')
+    return fields[0], int(fields[19])
+
+
+def _inherited_flock(note: dict, key: tuple[int, int]) -> bool | None:
+    """After a proved controller exit, check for the slot descriptor in any possible inheritor."""
+    pid, owner = note.get('pid'), note.get('owner')
+    if type(pid) is not int or pid <= 0 or not isinstance(owner, dict):
+        return None
+    try:
+        namespace = _pid_namespace()
+        if namespace is None or owner.get('pidns') != namespace or owner.get('boot') != procs.boot_id():
+            return None
+        start = int(owner['start'])
+        if start < 0:
+            return None
+        original = _process_lifetime(pid)
+        if original and original[1] == start and original[0] not in procs.EXITED:
+            return None
+        # Slot fds are close-on-exec and aren't passed to subprocesses. The controller is gone, so
+        # the only possible inheritors are its own-user children between fork and exec, which cannot
+        # create more inheritors. Earlier processes cannot have inherited this file description.
+        for candidate in procs._ours():
+            lifetime = _process_lifetime(candidate)
+            if not lifetime or lifetime[0] in procs.EXITED or lifetime[1] < start:
+                continue
+            try:
+                process_fd = os.open(f'/proc/{candidate}', DIRECTORY)
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            try:
+                held = _descriptor_flock(process_fd, key)
+            except (FileNotFoundError, ProcessLookupError):
+                again = _process_lifetime(candidate)
+                if again == lifetime:
+                    return None  # this possible inheritor still exists, with unreadable descriptors
+                continue
+            finally:
+                os.close(process_fd)
+            if held is not False:
+                return held
+        return False
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, IndexError):
+        return None
+
+
 def run_holds_slot(root: Root, run: str) -> bool:
     """An older tool may not hold the new result-directory guard yet.
 
-    Only read a matching slot note, the global flock table and the noted owner's fdinfo. When those cannot
+    Only read a matching slot note, the global flock table and process descriptors. When those cannot
     establish whether its flock is held, hold cleanup and leave admission free to reuse the slot."""
     for index in range(SLOT_COUNT):
         name = SLOT if index == 0 else f'slot-{index + 1}.lock'
@@ -457,6 +523,8 @@ def run_holds_slot(root: Root, run: str) -> bool:
             except OSError:
                 pass  # unreadable, just as inconclusive as a missing line
             held = _owner_flock(data, key)
+            if held is None:
+                held = _inherited_flock(data, key)
             if held is True:
                 return True
             try:
