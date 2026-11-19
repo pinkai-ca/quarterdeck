@@ -398,22 +398,28 @@ def test_row_exhaustion_has_an_immediate_compatibility_warning(world, human, res
 
 
 @pytest.mark.parametrize('human', [False, True], ids=['crew', 'operator'])
-def test_claude_raw_alarm_uses_768_mib_floor_and_actual_stream_bound(world, human):
+def test_claude_raw_alarm_warns_at_three_quarters_of_stream_bound(world, monkeypatch, human):
+    monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', 4 * record_file.MiB)
     seat, path = claude_seat(world, human)
 
     def alarms():
         return record_file.alarms([seat], owned=human_wake.owned_record,
                                   observation=lambda _: projection(path, lines=1000, retained=1000, memory=1000))
 
-    sized(path, 767)
+    sized(path, 3)
+    with path.open('r+b') as stream:
+        stream.truncate(3 * record_file.MiB - 1)
     assert alarms() == []
-    sized(path, 768)
-    assert '768.0 MiB of its 1024.0 MiB' in alarms()[0]
-    sized(path, 1024)
-    assert '1024.0 MiB of its 1024.0 MiB' in alarms()[0]
+    sized(path, 3)
+    [near] = alarms()
+    assert '3.0 MiB of its 4.0 MiB read bound' in near
+    sized(path, 4)
+    [at_bound] = alarms()
+    assert '4.0 MiB of its 4.0 MiB read bound' in at_bound
     with path.open('ab') as stream:
         stream.write(b'\n')
-    assert 'past the read bound' in alarms()[0]
+    [past] = alarms()
+    assert 'past the read bound' in past
 
 
 def test_unmeasured_claude_shape_assumes_dense_evidence(world):
