@@ -24,6 +24,7 @@ def context(tmp_path, monkeypatch):
         name='seat-maple', folder=tmp_path / 'seats' / 'seat-maple', trusted=tmp_path / 'seats' / 'seat-maple',
         ship=SimpleNamespace(runtime=tmp_path), session=SimpleNamespace(human=True),
         launched=lambda: launch, record=no_record, join=no_record,
+        pool=SimpleNamespace(name='pool-willow'),
         harness=SimpleNamespace(state=no_record), is_up=True,
         spec=SimpleNamespace(pools=('pool-willow', 'pool-oak')),
     )
@@ -129,17 +130,35 @@ def test_missing_or_malformed_fact_cannot_be_a_clear_decision(context, bad):
     assert move_hold.reading(seat) == 'move proof unknown'
 
 
-def test_walled_human_with_available_destination_shows_tools_hold_without_record(context, monkeypatch):
+def test_walled_human_with_cached_room_shows_idle_hint_and_unknown_decision(context, monkeypatch):
     seat, _, _ = context
     publish(seat)
     monkeypatch.setattr(watch.ledger.Ledger, 'reading', lambda runtime: nullcontext(object()))
-    monkeypatch.setattr(quota, 'current_walled', lambda *args: True)
+    monkeypatch.setattr(quota, 'current_walls', lambda *args: ['pool-willow 7d'])
     monkeypatch.setattr(quota, 'candidate_pools', lambda target: ['pool-oak'])
     monkeypatch.setattr(quota, 'cached_open', lambda *args: True)
     held, unknown, reasons = watch.limit_state(seat.ship, [seat])
     assert held == []
     assert unknown == []
-    assert reasons == ['seat-maple: move held: tool state unknown']
+    assert reasons == ['seat-maple: tool state unknown; move decision unknown']
+
+
+@pytest.mark.parametrize('changed', ['launch', 'pool', 'expired'])
+def test_selected_hold_needs_current_launch_source_and_time(context, changed):
+    seat, clock, launch = context
+    binding = move_hold.generation(seat)
+    move_hold.publish_wall(seat, binding, seat.pool.name, 'lifecycle-busy', target='pool-oak')
+    publish(seat)
+    assert move_hold.wall_reading(seat) == ('move held for pool-oak: another lifecycle transition is in progress', True)
+    if changed == 'launch':
+        launch.at = '2032-04-05T06:08:00+00:00'
+    elif changed == 'pool':
+        seat.pool.name = 'pool-oak'
+    else:
+        clock['wall'] += 6_000_000_000
+        clock['monotonic'] += 6_000_000_000
+    reason, observed = move_hold.wall_reading(seat)
+    assert not observed and 'unknown' in reason
 
 
 def test_overflow_keeps_seat_and_missing_dimension(context):

@@ -2545,21 +2545,31 @@ class Service:
                         quota.observe_screen(book, seat, screen, seat.launched(), commit=False)
             if not quota.current_walled(seat, self.ledger):
                 continue
-            if self.not_idle_at_wall(seat):
+            binding, came_from = move_hold.generation(seat), seat.pool.name
+            if hold := self._wall_idle_hold(seat):
+                category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
+                move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
                 continue
             ordered = quota.candidate_pools(seat)
             target = next((p for p in ordered if self.known_open(seat, p)), None)
             if target is None:
+                move_hold.publish_wall(seat, binding, came_from)
                 continue  # every pool is walled or unread: a fact the status line shows, not a move
-            came_from = seat.pool.name
             from . import relaunch_intent
             from .harness import resume_target
             try:
                 with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
                     proof = seat.failover_to(target)
             except resume_target.Unproved as error:
+                move_hold.publish_wall(seat, binding, came_from, 'resume-unproved', target=target)
                 self.log("failover", seat=seat.name, pool=target, skipped=str(error))
                 continue
+            except lifecycle.Busy:
+                move_hold.publish_wall(seat, binding, came_from, 'lifecycle-busy', target=target)
+                raise
+            except (OSError, ShipError):
+                move_hold.publish_wall(seat, binding, came_from, 'outcome-unknown', target=target)
+                raise
             notice = f"moved to pool {target} from {came_from} at its wall"
             self.report_pool_move(seat, notice)
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
@@ -2570,6 +2580,10 @@ class Service:
         return hold.reason if hold is not None else None
 
     def not_idle_at_wall(self, seat: Seat) -> str | None:
+        hold = self._wall_idle_hold(seat)
+        return hold.reason if hold is not None else None
+
+    def _wall_idle_hold(self, seat: Seat) -> idle.Hold | None:
         """The live proof for a move off a pool, with one allowance at its wall: input queued in the program.
 
         A walled program never takes its queue, so a seat with input queued there would be held at its wall for
@@ -2585,7 +2599,7 @@ class Service:
                 and idle.check(replace(state, queued=())) is None
                 and quota.current_walled(seat, self.ledger)):
             return None
-        return hold.reason
+        return hold
 
     def idle_reading(self, seat: Seat):
         """Compatibility wrapper for callers that already hold the service."""

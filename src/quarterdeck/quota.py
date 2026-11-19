@@ -46,7 +46,7 @@ class ModelScope:
         return verdict
 
 
-def model_scope(seat, pool_name: str, *, running: bool = False, screen=None, declared_fallback=False):
+def model_scope(seat, pool_name: str, *, running: bool = False, screen=None, declared_fallback=False, read_only=False):
     """Adapter-owned group applicability; source evidence differs from a resolved destination."""
     from . import harness as harnesses
 
@@ -64,11 +64,17 @@ def model_scope(seat, pool_name: str, *, running: bool = False, screen=None, dec
     sources = ()
     if running:
         from .watch import running_settings
-        model = running_settings(seat, screen=screen).get("model")
+        if read_only:
+            record = seat.join(publish=False).record
+            model = running_settings(seat, screen=screen, record=record).get("model")
+        else:
+            model = running_settings(seat, screen=screen).get("model")
         if model is None and declared_fallback:
             model = seat.spec.for_pool(pool_name).model
         if reader.model_scoped_quota:
-            record, launched = seat.record(), seat.launched()
+            if not read_only:
+                record = seat.record()
+            launched = seat.launched()
             sources = tuple(filter(None, (str(record) if record else None,
                             f"screen:{seat.name}:{launched.at}" if launched else None)))
     else:
@@ -82,10 +88,11 @@ def window_applies(scope, pool: str, group: str | None):
 
 
 def current_walls(seat, book) -> list[str]:
+    """Model-scoped wall reasons for display, without publishing the observed record join."""
     pool = seat.pool.name
     if not book.walled(pool, seat.ship) and not book.quota.blocked(seat.name, pool):
         return []  # No model reading is needed unless this pool has a wall to scope.
-    scope = model_scope(seat, pool, running=True)
+    scope = model_scope(seat, pool, running=True, read_only=True)
     found = book.walls(seat.ship, scope=scope, pool=pool)
     unknown = book.quota.blocked(seat.name, pool, scope=scope)
     if unknown and unknown not in found:

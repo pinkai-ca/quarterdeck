@@ -142,7 +142,7 @@ The modules that the framework table does not list, the module of each part amon
 | `ledger.py` | the Ledger: turns, tokens, tool calls and machine use, by pool, seat and order; the service writes the Ledger, and every reading opens the Ledger read-only |
 | `lifecycle.py` | the seat-transition claim that lifecycle acts and ordinary delivery share: an explicit act waits a bounded time for it, a delivery never waits |
 | `model_mismatch.py` | differences between a seat's recorded model and the ship file, and one fixed notice to the systems seats for each |
-| `move_hold.py` | the service's move decisions, kept for display only |
+| `move_hold.py` | expiring idle observations and the service's decision stage at a wall, kept for display only |
 | `order_attribution.py` | the order a turn is charged to, from reply threads and timestamped evidence, never from prose |
 | `pane_obstruction.py` | one small marker that names why the door held a paste, such as a pane too short |
 | `pending_lifecycle.py` | journal retirement by the journal's writer, and the last exact join of a retiring launch |

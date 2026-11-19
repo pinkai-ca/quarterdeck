@@ -5,6 +5,8 @@ covers native screens, expiring grants, disk space and changes outside these hin
 No Facts, record state or screen is reused by this scheduler.
 """
 
+from .move_hold import WALL_MOVE
+
 
 def fingerprint(path):
     try:
@@ -15,9 +17,8 @@ def fingerprint(path):
 
 
 # What the service writes itself, on every pass or with each collection: a change there is the service's own
-# doing, never a reason to collect again. move-hold.json is refreshed by its idle reading on its passes, and
-# compaction.json by its observation as a working seat's record grows. The 30 s refresh still reads both.
-SERVICE_WRITTEN = frozenset({'move-hold.json', 'compaction.json'})
+# doing, never a reason to collect again. The periodic refresh reads these idle, move and compaction observations.
+SERVICE_WRITTEN = frozenset({'move-hold.json', WALL_MOVE, 'compaction.json'})
 
 
 def inputs(ship):

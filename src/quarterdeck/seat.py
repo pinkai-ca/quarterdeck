@@ -743,9 +743,9 @@ class Seat:
         found = self._pinned_join(publish=False)
         return found.record if found is not None else None
 
-    def join(self) -> Join:
-        """Pin the first record after launch and retain its ownership and launch boundary."""
-        found = self._pinned_join(publish=True)
+    def join(self, *, publish=True) -> Join:
+        """Find the first record after launch and ordinarily pin it and retain its ownership."""
+        found = self._pinned_join(publish=publish)
         if found is not None:
             return found
         pinned = self.trusted / trusted_files.RECORD
@@ -760,7 +760,7 @@ class Seat:
             found = self.harness.join(self.home, launched.when, tuple(Path(p) for p in launched.records_before))
         except OSError as error:
             return Join(None, f"record unreadable: {error}; inspect with qd watch {self.name}")
-        if found.record is not None:
+        if found.record is not None and publish:
             trusted_files.make(self.ship.runtime, self.name)
             durable.replace_file(pinned, str(found.record) + "\n")  # law: one-record
             if refused := self._noted_or_refused(found.record):

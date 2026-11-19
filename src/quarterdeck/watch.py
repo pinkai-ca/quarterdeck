@@ -311,10 +311,11 @@ def unaccounted_records(book, seat):
         return None  # missing/changed/malformed evidence keeps the ordinary reading path
 
 
-def running_settings(seat: Seat, *, screen=None) -> dict[str, str]:
+def running_settings(seat: Seat, *, screen=None, record=...) -> dict[str, str]:
     """The model and effort the program reports, from its record first and its screen second (law: record-first)."""
     found: dict[str, str] = {}
-    record = seat.record()
+    if record is ...:
+        record = seat.record()
     try:
         state = seat.harness.state(record) if record else None
     except OSError:
@@ -794,7 +795,7 @@ def _mount(path: Path) -> str:
 
 def limit_holds(ship: Ship, selected: list[Seat | UnresolvedSeat]) -> tuple[list[str], list[str]]:
     """Keep wall outcomes and uncertainty separate from operational move-hold reasons."""
-    held, unknown, _ = limit_state(ship, selected)
+    held, unknown, _ = limit_state(ship, selected, show_moves=False)
     return held, unknown
 
 
@@ -814,7 +815,7 @@ def _readable_up(seat: Seat) -> bool:
         return False
 
 
-def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
+def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat], *, show_moves=True):
     """Up seats at a limit with no eligible destination in the recorded evidence."""
     up = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and _readable_up(seat)]
     if not up:
@@ -824,22 +825,29 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
         if book is None:
             return [], [], []
         with book:
-            held, walled = [], []
+            held, moves = [], []
             for seat in up:
                 try:
-                    if not quota.current_walled(seat, book):
+                    reasons = quota.current_walls(seat, book) if show_moves else None
+                    if not (quota.current_walled(seat, book) if reasons is None else reasons):
                         continue
                 except ShipError:
                     continue  # a seat whose own record is refused: its own line names it
-                walled.append(seat)
                 if not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat)):
                     label = seat.name
-                    if seat.harness.model_scoped_quota and (reasons := quota.current_walls(seat, book)):
-                        label += " (" + "; ".join(dict.fromkeys(held_scope(r, seat.pool.name) for r in reasons)) + ")"
+                    if seat.harness.model_scoped_quota:
+                        scoped = reasons if reasons is not None else quota.current_walls(seat, book)
+                        if scoped:
+                            label += " (" + "; ".join(dict.fromkeys(held_scope(r, seat.pool.name) for r in scoped)) + ")"
                     held.append(label)
-            reasons = [f'{seat.name}: move held: {reason}' for seat in walled
-                       if len(seat.spec.pools) > 1 and (reason := move_hold.reading(seat))]
-        return held, [], reasons  # law: nothing-waits-silently -- tool holds with a usable destination
+                if show_moves and len(seat.spec.pools) > 1:
+                    decision, observed = move_hold.wall_reading(seat)
+                    if decision and observed:
+                        cap = '; '.join(dict.fromkeys(reason.split(' · ', 1)[0] for reason in reasons))
+                        moves.append(f'{seat.name} at limit ({cap}) · {decision}')
+                    elif decision:
+                        moves.append(f'{seat.name}: {decision}')
+        return held, [], moves  # law: nothing-waits-silently -- show what the service established at its wall
     except (OSError, sqlite3.Error):
         return [], ["held seats unknown; ledger unreadable"], []
 
