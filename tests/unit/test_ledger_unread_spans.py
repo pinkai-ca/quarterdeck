@@ -429,8 +429,11 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
         assert path.stat().st_size == size
 
 
-@pytest.mark.parametrize('layout,carrier', [('newline', None), ('splitlines', 'tool_result')])
-def test_assistant_picture_projection_recovers_owned_operator_record(tmp_path, monkeypatch, layout, carrier):
+@pytest.mark.parametrize('layout,role,row_type,carrier', [
+    ('newline', 'assistant', 'assistant', None), ('splitlines', 'assistant', 'assistant', 'tool_result'),
+    ('newline', 'user', None, 'tool_result'), ('splitlines', 'user', 'future_result', 'tool_result'),
+])
+def test_message_picture_projection_recovers_owned_operator_record(tmp_path, monkeypatch, layout, role, row_type, carrier):
     compatibility_bound = 32 * 1024
     monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', compatibility_bound)
     monkeypatch.setattr(claude_record, 'ROW_BYTES', 4096)
@@ -480,7 +483,13 @@ def test_assistant_picture_projection_recovers_owned_operator_record(tmp_path, m
         native.begin(post.typed(messages))
         picture = image(48 * 1024)
         block = picture if carrier is None else dict(result([picture]), type=carrier)
-        native.add('assistant', version='2.1.325', message=dict(content=[block, text('Synthetic reply')],
+        if role == 'user':
+            begin_tool(native)
+            row = native.add(row_type, version='2.1.325', message=dict(content=[block], role=role))
+            if row_type is None:
+                del row['type']
+        reply_content = [block, text('Synthetic reply')] if role == 'assistant' else [text('Synthetic reply')]
+        native.add('assistant', version='2.1.325', message=dict(content=reply_content,
                    role='assistant', model='synthetic', id='synthetic-image-reply',
                    usage=dict(input_tokens=2, output_tokens=3, cache_read_input_tokens=5,
                               cache_creation_input_tokens=7)))
@@ -497,14 +506,15 @@ def test_assistant_picture_projection_recovers_owned_operator_record(tmp_path, m
         [raw] = book.unread_spans()
         assert (raw['bound'], raw['counted']) == (compatibility_bound, 1)
 
-    def refuse_assistant(row, payloads, descriptor, remaining):
+    def refuse_before_projection(row, payloads, descriptor, remaining):
         field, capture = next(iter(payloads.items()))
         refusal = claude_record.RowRefusal(claude_record.schema_path(field), capture.size)
-        raise claude_record.projection_error(refusal, 'not-a-user-row')
+        shape = row if role == 'user' else None
+        raise claude_record.projection_error(refusal, 'not-a-user-row', row=shape, path=field)
 
     json_record.release(path)
     with monkeypatch.context() as prior:
-        prior.setattr(claude_record, 'project_assistant_images', refuse_assistant)
+        prior.setattr(claude_record, 'project_images', refuse_before_projection)
         service = Service(ship, tmux)
         with service.ledger as book:
             assert account(service, book) == before
@@ -512,14 +522,19 @@ def test_assistant_picture_projection_recovers_owned_operator_record(tmp_path, m
             assert blocked['bound'] == raw['bound'] and blocked['projection']['counted'] == 1
             [refusal] = book.projection_refusals()
             assert (refusal['layout'], refusal['reason']) == (layout, 'not-a-user-row')
-            assert 'content_is_list' not in refusal
+            if role == 'user':
+                assert (refusal['row_type'], refusal['message_role'], refusal['block_type'],
+                        refusal['content_is_list']) == (row_type or 'missing', role, carrier, True)
+            else:
+                assert 'content_is_list' not in refusal
 
     service = Service(ship, tmux)
     with service.ledger as book:
         after = account(service, book, observed=True)
         assert after[:1] == before and len(after) == 2
+        tokens = (5, 2, 7, 3) if role == 'assistant' else (12, 13, 12, 6)
         assert book.db.execute('SELECT read_cached,read_uncached,cache_written,written FROM turns '
-                               'WHERE record=? AND turn=1', (str(path),)).fetchone() == (5, 2, 7, 3)
+                               'WHERE record=? AND turn=1', (str(path),)).fetchone() == tokens
         _, attribution = book.attributions.details()
         assert (attribution['status'], attribution['orders']) == ('attributed', [order.id])
         assert any(item.get('message') == order.id for item in attribution['evidence'])
@@ -614,15 +629,15 @@ def test_projection_refusal_shape_survives_ledger_roundtrip(tmp_path, reason):
         # This format had layout, reason and scalar type before the shape fields were added.
         book.save_projection_usage(record, claude_record.RefusedProjectionUsage(stamp, row_refusal=base))
         assert 'content_is_list' not in book.projection_refusals()[0]
-        detail = base.with_shape('assistant', 'assistant', 'mcp_tool_result', True)
+        detail = base.with_shape('future_result', 'assistant', 'mcp_tool_result', True)
         book.save_projection_usage(record, claude_record.RefusedProjectionUsage(stamp, row_refusal=detail))
         assert book.projection_usage(record).row_refusal == detail
         view = ledger_reading.collect(book, by='seat')
-        assert any(line.endswith('row assistant, message role assistant, block mcp_tool_result, content list')
+        assert any(line.endswith('row future_result, message role assistant, block mcp_tool_result, content list')
                    for line in ledger_reading.render(view))
 
         tampered = dict(path=['message', 'content'], size=42, layout='splitlines', reason=reason, value_type='?',
-                        row_type='private-row', message_role=['private-role'], block_type='private_tool_result',
+                        row_type='private-row\n', message_role=['private-role'], block_type='private_tool_result',
                         content_is_list=False)
         book.db.execute('UPDATE record_projection_usage SET stamp=?',
                         (json.dumps(dict(stamp=stamp, row_refusal=tampered)),))

@@ -131,6 +131,14 @@ def compactions(record: Path):
         def __init__(self):
             self.history, self.seen, self.native_turn = History(), {}, None
 
+        def work(self, row, *, turn=False):
+            self.history.work(row, turn=turn)
+            if isinstance(row, claude_record.ProjectedRow):
+                # The guarded stream hashed the complete row, including image bytes.
+                self.history.frontier[-1] = row.identity
+                if turn:
+                    self.history.turn = row.identity
+
         def feed(self, rows):
             for row in rows:
                 if 'isSidechain' in row and type(row['isSidechain']) is not bool:
@@ -166,20 +174,17 @@ def compactions(record: Path):
                     if not isinstance(metadata, dict) or metadata.get('trigger') not in ('auto', 'manual'):
                         raise ValueError('unknown compaction boundary')
                     self.history.count += 1
-                    self.history.work(row)
+                    self.work(row)
                 elif kind == 'system' and row.get('subtype') == 'turn_duration':
                     ancestor = key
                     while ancestor is not None and ancestor != self.native_turn:
                         ancestor = self.seen.get(ancestor)
                     self.history.complete = self.native_turn is not None and ancestor == self.native_turn
                 elif kind == 'user' and prompt_text(row) is not None:
-                    self.history.work(row, turn=True)
-                    if isinstance(row, claude_record.ProjectedRow):
-                        # The guarded stream hashed the complete typed row, including image bytes.
-                        self.history.turn = self.history.frontier[-1] = row.identity
+                    self.work(row, turn=True)
                     self.native_turn = key
                 elif kind == 'queue-operation' and row.get('operation') == 'enqueue':
-                    self.history.work(row)
+                    self.work(row)
                 elif kind == 'assistant':
                     for block in row.get('message', {}).get('content', []):
                         if block.get('type') == 'tool_use':

@@ -76,7 +76,7 @@ ASSISTANT_RESULTS = frozenset((
     'text_editor_code_execution_tool_result', 'advisor_tool_result',
 ))
 REFUSAL_SHAPE_REASONS = ('not-a-user-row', 'unknown-block-type')
-REFUSAL_ROW_TYPES = frozenset(('user', 'assistant', 'system', 'summary', 'progress', 'attachment'))
+REFUSAL_ROW_TYPE = re.compile(r'^[a-z][a-z_-]{0,31}$')
 REFUSAL_ROLES = frozenset(('user', 'assistant'))
 REFUSAL_BLOCK_TYPES = ASSISTANT_RESULTS | {'image', 'text'}
 
@@ -100,7 +100,8 @@ class RowRefusal:
     content_is_list: bool | None = None
 
     def with_shape(self, row_type, message_role, block_type, content_is_list):
-        return replace(self, row_type=safe_type(row_type, REFUSAL_ROW_TYPES),
+        label = row_type if isinstance(row_type, str) and REFUSAL_ROW_TYPE.fullmatch(row_type) else '?'
+        return replace(self, row_type=label,
                        message_role=safe_type(message_role, REFUSAL_ROLES),
                        block_type=safe_type(block_type, REFUSAL_BLOCK_TYPES), content_is_list=content_is_list)
 
@@ -305,7 +306,7 @@ def projection_error(refusal=None, reason='budget', value_type=None, *, row=None
                 index = path[2]
                 if isinstance(index, int) and index < len(content) and isinstance(content[index], dict):
                     block_type = content[index].get('type')
-            refusal = refusal.with_shape(row.get('type'), role, block_type, content_is_list)
+            refusal = refusal.with_shape(row.get('type', 'missing'), role, block_type, content_is_list)
     return _row_limit('required JSON row exceeds the retained-byte budget', refusal)
 
 
@@ -343,18 +344,19 @@ def mirror_image_kind(row, path, result_has_image):
 
 
 def project_payloads(row, payloads, descriptor, retained_bytes):
-    """Confirm a candidate using its enclosing native row, independent of JSON key order."""
+    """Prove candidates from their completed envelopes, independent of JSON key order."""
     message = row.get('message')
     first_path, first_capture = next(iter(payloads.items()))
     first_refusal = RowRefusal(schema_path(first_path), first_capture.size)
     row_type = row.get('type')
-    if (row_type not in ('user', 'assistant') or not isinstance(message, dict) or message.get('role') != row_type
+    role = message.get('role') if isinstance(message, dict) else None
+    if (role not in ('user', 'assistant') or (row_type in ('user', 'assistant') and row_type != role)
             or not isinstance(message.get('content'), list)):
         raise projection_error(first_refusal, 'not-a-user-row', row=row, path=first_path)
     if not all(isinstance(block, dict) for block in message['content']):
         raise projection_error(first_refusal, 'unknown-block-type', row=row, path=first_path)
-    if row_type == 'assistant':
-        return project_assistant_images(row, payloads, descriptor, ROW_BYTES - retained_bytes)
+    if row_type != 'user':
+        return project_images(row, payloads, descriptor, ROW_BYTES - retained_bytes)
     results = [block for block in message['content'] if native_result(block)]
     result_has_image = any(isinstance(block.get('content'), list)
                            and any(map(native_image, block['content'])) for block in results)
@@ -395,41 +397,53 @@ def project_payloads(row, payloads, descriptor, retained_bytes):
             # Empty text replacing a leading block must not expose a later watch header.
             raise projection_error(first_refusal, 'text-watch-marker', 'text')
     if not any(block.get('type') == 'tool_result' for block in message['content']):
-        row = ProjectedRow(row)
-        hasher = sha256()
-        for part in canonical_parts(row, spans, descriptor):
-            hasher.update(part)
-        row.identity = hasher.hexdigest()
+        return with_identity(row, spans, descriptor)
     return row
 
 
-def project_assistant_images(row, payloads, descriptor, remaining):
-    """Replace only verified image data, leaving each assistant evidence field intact."""
-    content = row['message']['content']
+def project_images(row, payloads, descriptor, remaining):
+    """Replace only verified message images and restore the other candidates exactly."""
+    message = row['message']
+    result_types = ASSISTANT_RESULTS if message['role'] == 'assistant' else ('tool_result',)
+    spans = {}
     for path, capture in payloads.items():
         refusal = RowRefusal(schema_path(path), capture.size)
-        block = content[path[2]] if capture.kind != 'mirror' else {}
+        block = message['content'][path[2]] if capture.kind != 'mirror' else {}
         try:
-            value = assistant_image_payload(row, path, block, capture, refusal)
+            value = verified_image_payload(row, path, block, capture, refusal, result_types)
         except ProjectionLimit:
-            # The scanner also captures paths used by user results. Restore
-            # required candidates from the guarded source when they fit.
+            # Text and mirror fields may carry evidence in these rows.
             extra = capture.size - 2  # the encoded string replaces the four bytes of null
             if extra > remaining:
                 raise
             raw = b''.join(payload_bytes(descriptor, capture))
             value = json.loads(b'"' + raw + b'"')
             remaining -= extra
+        else:
+            spans[id(value)] = capture
         at_path(row, path[:-1])[path[-1]] = value
+    # These compaction frontier entries identify the full row, including images.
+    if spans and (row.get('type') == 'system' and row.get('subtype') == 'compact_boundary'
+                  or row.get('type') == 'queue-operation' and row.get('operation') == 'enqueue'):
+        return with_identity(row, spans, descriptor)
     return row
 
 
-def assistant_image_payload(row, path, block, capture, refusal):
-    if capture.kind != 'image' or path[3] != 'source' and not native_result(block, ASSISTANT_RESULTS):
+def verified_image_payload(row, path, block, capture, refusal, result_types):
+    if capture.kind != 'image' or path[3] != 'source' and not native_result(block, result_types):
         raise projection_error(refusal, 'unknown-block-type', block.get('type'), row=row, path=path)
     image = block if path[3] == 'source' else at_path(row, path[:5])
     media_type = check_native_image(image, refusal, row, path)
     return capture.value('image', refusal, media_type)
+
+
+def with_identity(row, spans, descriptor):
+    row = ProjectedRow(row)
+    hasher = sha256()
+    for part in canonical_parts(row, spans, descriptor):
+        hasher.update(part)
+    row.identity = hasher.hexdigest()
+    return row
 
 
 def payload_bytes(descriptor, capture):
@@ -444,7 +458,7 @@ def payload_bytes(descriptor, capture):
 
 
 def canonical_parts(value, spans, descriptor):
-    """Hash typed rows exactly as sorted compact JSON, streaming the original ASCII image bytes."""
+    """Hash full rows exactly as sorted compact JSON, streaming the original ASCII image bytes."""
     if isinstance(value, Payload):
         yield b'"'
         yield from payload_bytes(descriptor, spans[id(value)])

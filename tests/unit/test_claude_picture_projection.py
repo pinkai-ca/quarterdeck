@@ -186,7 +186,7 @@ def test_assistant_images_preserve_native_evidence(tmp_path, monkeypatch, layout
 
 
 @pytest.mark.parametrize('case,reason,path_tail,shape', [
-    ('row', 'not-a-user-row', ('source', 'data'), ('?', 'assistant', 'image', True)),
+    ('row', 'not-a-user-row', ('source', 'data'), ('user', 'assistant', 'image', True)),
     ('role', 'not-a-user-row', ('source', 'data'), ('assistant', '?', 'image', True)),
     ('scalar', 'not-a-user-row', ('toolUseResult',), ('assistant', 'assistant', '?', False)),
     ('unknown-block', 'unknown-block-type', ('source', 'data'), ('assistant', 'assistant', '?', True)),
@@ -206,7 +206,7 @@ def test_assistant_projection_refuses_unverified_oversized_values(tmp_path, monk
     picture = image(size)
     row = {'type': 'assistant', 'message': {'role': 'assistant', 'content': [picture]}}
     if case == 'row':
-        row['type'] = 'private-native-row'
+        row['type'] = 'user'
     elif case == 'role':
         row['message']['role'] = 'private-message-role'
     elif case in ('scalar', 'mirror'):
@@ -238,6 +238,91 @@ def test_assistant_projection_refuses_unverified_oversized_values(tmp_path, monk
     assert detail.path[-len(path_tail):] == path_tail
     assert detail.size >= size
     assert (detail.row_type, detail.message_role, detail.block_type, detail.content_is_list) == shape
+
+
+@pytest.mark.parametrize('layout', ['newline', 'splitlines'])
+@pytest.mark.parametrize('row_type,role', [(None, 'user'), ('future_result', 'user'), ('future_result', 'assistant')])
+def test_non_native_row_projects_only_verified_message_image(tmp_path, monkeypatch, layout, row_type, role):
+    native = Native(tmp_path / 'synthetic.jsonl', 'claude')
+    begin_tool(native, 'Bash', {'command': 'qd inbox --wait'}, call='toolu_watch')
+    watch = 'qd > synthetic watch envelope\n' + 'Exact Ω text with a backslash \\ and newline\n' * 1600
+    picture = image(384 * 1024)
+    carrier = dict(result([text('Exact sibling'), picture]),
+                   type='tool_result' if role == 'user' else 'mcp_tool_result')
+    content = [carrier, dict(result(watch), tool_use_id='toolu_watch')]
+    # A mirror string is exact evidence outside native user rows, even when it looks like base64.
+    row = native.add(row_type, message=dict(role=role, content=content),
+                     toolUseResult=dict(data='QUJD' * (72 * 1024 // 4), status='synthetic'))
+    if row_type is None:
+        del row['type']
+    native.finish()
+    path = native.path
+    if layout == 'splitlines':
+        path.write_bytes(path.read_bytes().replace(b'\n', '\u2028'.encode(), 1))
+    adapter = get('claude')
+
+    def observations():
+        return (adapter.read(path), adapter.inputs(path), adapter.attribution_inputs(path),
+                adapter.person_inputs(path, ()), adapter.compactions(path),
+                input_receipt.confirmed(adapter, path, 'Synthetic task', AT))
+
+    with monkeypatch.context() as full:
+        full.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        expected = observations()
+        assert claude_record.projection_usage(claude_record.parse(path)).compatibility
+    json_record.release(path)
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    assert observations() == expected
+    assert any(item.kind == 'watch' and item.text == watch.strip() for item in expected[2]) == (role == 'user')
+    assert expected[4].reason == 'native compaction history unreadable or incomplete'
+    assert expected[5] == 'delivered'
+    snapshot = claude_record.parse(path)
+    kept = snapshot.rows[2][1]
+    payload = kept['message']['content'][0]['content'][1]['source']['data']
+    assert (payload.size, payload.image_bytes) == (384 * 1024, 288 * 1024)
+    assert not isinstance(kept, claude_record.ProjectedRow)
+    expected_row = deepcopy(row)
+    expected_row['message']['content'][0]['content'][1]['source']['data'] = ''
+    assert kept == expected_row
+    assert snapshot.raw_digest == sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize('row_type', ['system', 'queue-operation'])
+def test_non_native_work_rows_keep_the_exact_compaction_frontier(tmp_path, monkeypatch, row_type):
+    native = Native(tmp_path / 'synthetic.jsonl', 'claude')
+    native.finish()
+    fields = (dict(subtype='compact_boundary', compactMetadata={'trigger': 'auto'}) if row_type == 'system'
+              else dict(operation='enqueue', content='Exact queued input'))
+    row = native.add(row_type, message=dict(role='user', content=[image(384 * 1024)]), **fields)
+    with monkeypatch.context() as full:
+        full.setattr(claude_record, 'PROJECTED_BYTES', 1)
+        expected = claude.compactions(native.path)
+    assert expected.reason is None
+    json_record.release(native.path)
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    assert claude.compactions(native.path) == expected
+    assert claude_record.parse(native.path).rows[-1][1].identity == identity(row)
+
+
+@pytest.mark.parametrize('field,row_type,label', [
+    ('absent', None, 'missing'), ('present', None, '?'), ('present', 'future_result', 'future_result'),
+    ('present', 'a' + '_' * 31, 'a' + '_' * 31), ('present', 'a' * 33, '?'),
+    ('present', 'Mixed-case', '?'), ('present', 'future_result\n', '?'), ('present', 'type2', '?'),
+])
+def test_non_native_row_refusal_bounds_its_type_label(tmp_path, monkeypatch, field, row_type, label):
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
+    monkeypatch.setattr(claude_record, 'ROW_BYTES', 4096)
+    monkeypatch.setattr(claude_record, 'CHUNK', 512)
+    native = Native(tmp_path / 'synthetic.jsonl', 'claude')
+    row = native.add(row_type, message=dict(role='user', content=[result([image(8192), text('x' * 8192)])]))
+    if field == 'absent':
+        del row['type']
+        native.flush()
+    with pytest.raises(claude_record.ProjectionLimit) as rejected:
+        claude_record.parse(native.path)
+    assert rejected.value.row_refusal == claude_record.RowRefusal(
+        ('message', 'content', 'content', 'text'), 8192, 'newline', 'unknown-block-type', 'tool_result',
+        label, 'user', 'tool_result', True)
 
 
 @pytest.mark.parametrize('tool', ['Read', 'Bash error', 'Agent'])
@@ -394,7 +479,6 @@ def test_mirrored_bash_output_preserves_the_background_handle_and_exact_stop_mes
     ('watch-sibling', 'text-watch-marker', 'text'),
     ('background', 'text-watch-marker', 'tool_result'),
     ('role', 'not-a-user-row', '?'),
-    ('type', 'not-a-user-row', '?'),
     ('source', 'image-not-base64', 'image'),
     ('media', 'image-media-type', '?'),
     ('media-short', 'image-media-type', 'png'),
@@ -426,8 +510,6 @@ def test_giant_unproved_or_required_values_remain_unknown(tmp_path, monkeypatch,
         message['content'] = [result('Command running in background with ID: synthetic. ' + padding)]
     elif case == 'role':
         message['role'] = 'assistant'
-    elif case == 'type':
-        row['type'] = 'system'
     elif case == 'source':
         picture['source']['type'] = 'made-up-source'
     elif case in ('media', 'media-short'):
