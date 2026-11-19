@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import socket
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,7 @@ import tempfile
 import pytest
 
 from tests.testrunner import procs, resources
+from tests.testrunner.layout import RESULTS, SOCKETS, Root
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -328,6 +330,74 @@ def test_setup_past_its_own_bound_is_a_setup_timeout_whatever_the_pytest_timeout
     result, report, _ = run_result(project, done)
     assert done.returncode == 3 and result['outcome']['status'] == 'timeout'
     assert 'time limit of setup, 600 s' in report and result['outcome']['pytest_exit'] is None
+
+
+def test_immediate_timeout_reports_only_the_runs_held_session(synthetic_project):
+    project, commit = synthetic_project
+    (project / 'tests/test_never_reached.py').write_text('def test_synthetic(): assert True\n')
+    commit()
+    root = Root(project)
+    try:
+        root_path = root.path
+        directory = root.child(SOCKETS)
+    finally:
+        root.close()
+    peer = root_path / SOCKETS / 'preexisting-private.sock'
+    own = peer.with_name('owned-session')
+    expire_at_entry = '''
+import os
+from testrunner import sessions
+from testrunner.layout import DIRECTORY, RESULTS, SOCKETS
+time_limit = run.Runner.time_limit
+def expired(self):
+    if not hasattr(self, "root"):
+        return time_limit(self)  # preflight has no run-owned registry yet
+    parent = self.root.path / SOCKETS
+    folder = parent / "owned-session"
+    folder.mkdir(mode=0o700)
+    descriptor = os.open(folder, DIRECTORY)
+    try:
+        registry = str(self.root.path / RESULTS / self.run / "sessions")
+        assert sessions.register(parent, folder, descriptor, registry=registry, run=self.run)
+    finally:
+        os.close(descriptor)
+    (folder / "unfinished").write_text("synthetic unfinished output")
+    leap(601)
+    return time_limit(self)
+run.Runner.time_limit = expired
+'''
+    with socket.socket(socket.AF_UNIX) as listener:
+        try:
+            # Bind through a short path even when pytest's temporary directory is deep.
+            listener.bind(f'/proc/self/fd/{directory}/{peer.name}')
+        finally:
+            os.close(directory)
+        original_inode = peer.stat().st_ino
+        done = leaping_run(project, expire_at_entry, '--timeout', '60')
+        assert done.returncode == 3, done.stdout + done.stderr
+        [record] = (root_path / RESULTS).glob('*/result.json')
+        raw = record.read_text()
+        report = record.with_name('report.md').read_text()
+        result = json.loads(raw)
+        assert result['outcome']['status'] == 'timeout'
+        assert result['outcome']['pytest_exit'] is None
+        assert 'time limit of setup, 600 s' in report
+        assert peer.name not in raw + report + done.stdout + done.stderr
+        cleanup = result['cleanup']
+        assert cleanup['outcome'] == 'held'
+        assert cleanup['socket_entries_left'] == [str(own)]
+        [held] = cleanup['sessions']['entries']
+        assert held['path'] == str(own) and held['outcome'] == 'held'
+        assert 'container is not empty' in held['reason']
+        assert str(own) in report
+
+        (own / 'unfinished').unlink()
+        retired = command([sys.executable, '-I', str(ROOT / 'tests/testrun.py'), 'retire', result['run']],
+                          cwd=project)
+        assert retired.returncode == 0, retired.stdout + retired.stderr
+        assert not own.exists()
+        assert not Path(result['working_storage']['path']).exists()
+        assert peer.is_socket() and peer.stat().st_ino == original_inode
 
 
 def test_the_wait_for_a_slot_is_counted_in_neither_bound(synthetic_project):

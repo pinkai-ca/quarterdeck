@@ -367,7 +367,7 @@ class Runner:
                   'outcome': {'status': 'running', 'wrapper_exit': None}}
         write_json(results_fd, 'result.json', result)
         self.console = open(scratch / 'console.txt', 'a', encoding='utf-8', errors='replace')
-        sockets_before, target_before = [], None
+        target_before = None
         pytest_exit, note = None, None
         checkout = scratch / f'checkout-{run}'
         try:  # from here every failure, the runner's own included, reaches the same fixed ending
@@ -419,12 +419,12 @@ class Runner:
             note = f'runner error: {type(error).__name__}: {error}'
         try:
             with self.alarm(FINALIZATION_SECONDS, self.on_finalization_timeout):
-                return self.finalize(root, target, target_before, checkout, scratch, sockets_before,
+                return self.finalize(root, target, target_before, checkout, scratch,
                                      result, results_fd, runs_fd, pytest_exit, note)
         except FinalizationTimeout:
             return self.emergency(root, scratch, result, results_fd, runs_fd)
 
-    def finalize(self, root, target, target_before, checkout, scratch, sockets_before,
+    def finalize(self, root, target, target_before, checkout, scratch,
                  result, results_fd, runs_fd, pytest_exit, note):
         run = self.run
         self.console.close()
