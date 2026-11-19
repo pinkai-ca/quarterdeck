@@ -67,6 +67,14 @@ def opencode_record(home, mode):
         opencode_shape.session(db, SESSION)
         opencode_shape.user(db, 'synthetic-input', SESSION, 10, 'Made-up input')
         opencode_shape.assistant(db, 'synthetic-step', 'synthetic-input', SESSION, 20, finish='tool-calls')
+        if mode == 'closed':
+            # The first step stays running. A later answered message closes that turn; the launch has not ended.
+            opencode_shape.part(db, 'synthetic-call', 'synthetic-step', SESSION, 21,
+                                dict(type='tool', tool=TOOL,
+                                     state=dict(status='running', time=dict(start=opencode_shape.MS + 21))))
+            opencode_shape.user(db, 'synthetic-next', SESSION, 50, 'Made-up follow-up')
+            opencode_shape.assistant(db, 'synthetic-next-answer', 'synthetic-next', SESSION, 60)
+            return record
         state = dict(status={'idle': 'completed', 'pending': 'running', 'unknown': 'unmeasured'}[mode],
                      time=dict(start=opencode_shape.MS + 21))
         if mode == 'idle':
@@ -82,6 +90,9 @@ def pi_record(home, mode):
     record = PiShape(home, home, SESSION, MODEL)
     record.begin('Made-up input', MODEL, 'off')
     record.tool_start(TOOL, 'made-up argument')
+    if mode == 'closed':
+        record.end('Made-up answer')  # the turn stops; the tool result is still absent
+        return record.path
     if mode != 'pending':
         record.tool_end('Made-up result', False)
         record.end('Made-up answer')
@@ -109,13 +120,17 @@ CASES = [
     ('codex', 'openai', codex_record, 'pending', (TOOL,), 'tools-pending'),
     ('codex', 'openai', codex_record, 'unknown', None, 'tools-unknown'),
     ('codex', 'openai', codex_record, 'idle', (), None),
+    # Grok has no closed-turn pending row: grok_record.Reader.state replaces pending tools with
+    # unknown when the root has ended and a call is still live.
     ('grok', 'xai', grok_record, 'pending', (TOOL,), 'turn-open'),
     ('grok', 'xai', grok_record, 'unknown', None, 'tools-unknown'),
     ('grok', 'xai', grok_record, 'idle', (), None),
     ('opencode', 'local', opencode_record, 'pending', (TOOL,), 'turn-open'),
+    ('opencode', 'local', opencode_record, 'closed', (TOOL,), 'tools-pending'),
     ('opencode', 'local', opencode_record, 'unknown', None, 'tools-unknown'),
     ('opencode', 'local', opencode_record, 'idle', (), None),
     ('pi', 'local', pi_record, 'pending', (TOOL,), 'turn-open'),
+    ('pi', 'local', pi_record, 'closed', (TOOL,), 'tools-pending'),
     ('pi', 'local', pi_record, 'unknown', None, 'tools-unknown'),
     ('pi', 'local', pi_record, 'idle', (), None),
     ('antigravity', 'google', antigravity_record, 'open-unknown', None, 'turn-open'),
@@ -149,6 +164,8 @@ def test_native_readers_gate_service_move(tmp_path, monkeypatch, program, provid
     assert seat.record() == record
     state = seat.harness.state(record)
     assert state.pending_tools == tools
+    if mode == 'closed':
+        assert state.turn_open is False
     if mode == 'open-unknown':
         assert state.open_tool == TOOL
     if hold is None:
