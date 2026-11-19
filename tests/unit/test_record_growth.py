@@ -1,6 +1,7 @@
 """Size-only warning episodes for made records and abbreviated headlines."""
 
 from dataclasses import replace
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -16,8 +17,10 @@ AT = 10_000
 
 def sized(path, mib):
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Forecasts need the apparent size; none of the fixture's body is allocated.
     with path.open('wb') as stream:
         stream.truncate(mib * record_file.MiB)
+        assert os.fstat(stream.fileno()).st_blocks == 0
 
 
 @pytest.fixture

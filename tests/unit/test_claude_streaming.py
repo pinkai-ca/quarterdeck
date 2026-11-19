@@ -13,6 +13,12 @@ from quarterdeck.harness import claude, claude_record, json_record, record_file
 from tests.compaction_shapes import Native
 
 
+@pytest.fixture(autouse=True)
+def small_projection_bounds(monkeypatch):
+    monkeypatch.setattr(claude_record, 'CHUNK', 1024)
+    monkeypatch.setattr(claude_record, 'ROW_BYTES', 4 * 1024)
+
+
 def native(path):
     record = Native(path, 'claude')
     record.finish()
@@ -282,6 +288,7 @@ def test_production_bound_refuses_before_scanning_any_body(tmp_path, monkeypatch
     path = tmp_path / 'synthetic.jsonl'
     with path.open('wb') as record:
         record.truncate(record_file.CLAUDE_STREAM_BOUND + 1)
+    assert path.stat().st_blocks == 0
 
     def unexpected(*_):
         pytest.fail('a past-bound record read body bytes')

@@ -13,6 +13,15 @@ from quarterdeck.harness.compactions import identity
 from tests.compaction_shapes import AT, Native
 
 
+PAYLOAD_BYTES = 32 * 1024
+
+
+@pytest.fixture(autouse=True)
+def small_projection_bounds(monkeypatch):
+    monkeypatch.setattr(claude_record, 'CHUNK', 1024)
+    monkeypatch.setattr(claude_record, 'ROW_BYTES', 8 * 1024)
+
+
 def image(size):
     return {'source': {'data': 'QUJD' * (size // 4), 'media_type': 'image/png', 'type': 'base64'},
             'type': 'image'}
@@ -42,7 +51,7 @@ def read_mirror(picture):
 @pytest.mark.parametrize('splitlines', [False, True], ids=['newline', 'splitlines'])
 def test_payload_projection_matches_the_full_native_readers(tmp_path, monkeypatch, use, splitlines):
     record = Native(tmp_path / 'synthetic.jsonl', 'claude')
-    size = 1024 * 1024
+    size = PAYLOAD_BYTES
     body = 'escaped "quotes", \\ and plain text\n' * (size // 25)
     receipt = 'Synthetic receipt Ω\n\nSecond block'
     if use == 'typed':
@@ -105,8 +114,8 @@ def test_payload_projection_matches_the_full_native_readers(tmp_path, monkeypatc
 def test_assistant_images_preserve_native_evidence(tmp_path, monkeypatch, layout, carrier):
     path = tmp_path / 'synthetic.jsonl'
     record = Native(path, 'claude', path.stem)
-    size = 384 * 1024
-    long_text = 'Ω "quote" and \\ with a newline\n' * 2000
+    size = PAYLOAD_BYTES
+    long_text = 'Ω "quote" and \\ with a newline\n' * 32
     reply = 'Synthetic assistant reply Ω'
     bash = dict(type='tool_use', id='toolu_bash', name='Bash',
                 input=dict(command='synthetic command', run_in_background=True))
@@ -116,7 +125,7 @@ def test_assistant_images_preserve_native_evidence(tmp_path, monkeypatch, layout
     block = picture if carrier is None else dict(result([text(long_text), picture]), type=carrier)
     content = [text(reply), block, bash, agent]
     if carrier is None:
-        retained = image(72 * 1024)
+        retained = image(2 * 1024)
         retained['source']['media_type'] = 'synthetic-other-format'
         content.append(retained)
     row = record.add('assistant', version='2.1.325', context={'value': 'exact'},
@@ -202,7 +211,7 @@ def test_assistant_images_preserve_native_evidence(tmp_path, monkeypatch, layout
 def test_assistant_projection_refuses_unverified_oversized_values(tmp_path, monkeypatch, case, reason, path_tail, shape):
     record = Native(tmp_path / 'synthetic.jsonl', 'claude')
     monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', 1)
-    size = 384 * 1024
+    size = PAYLOAD_BYTES
     picture = image(size)
     row = {'type': 'assistant', 'message': {'role': 'assistant', 'content': [picture]}}
     if case == 'row':
@@ -245,14 +254,14 @@ def test_assistant_projection_refuses_unverified_oversized_values(tmp_path, monk
 def test_non_native_row_projects_only_verified_message_image(tmp_path, monkeypatch, layout, row_type, role):
     native = Native(tmp_path / 'synthetic.jsonl', 'claude')
     begin_tool(native, 'Bash', {'command': 'qd inbox --wait'}, call='toolu_watch')
-    watch = 'qd > synthetic watch envelope\n' + 'Exact Ω text with a backslash \\ and newline\n' * 1600
-    picture = image(384 * 1024)
+    watch = 'qd > synthetic watch envelope\n' + 'Exact Ω text with a backslash \\ and newline\n' * 32
+    picture = image(PAYLOAD_BYTES)
     carrier = dict(result([text('Exact sibling'), picture]),
                    type='tool_result' if role == 'user' else 'mcp_tool_result')
     content = [carrier, dict(result(watch), tool_use_id='toolu_watch')]
     # A mirror string is exact evidence outside native user rows, even when it looks like base64.
     row = native.add(row_type, message=dict(role=role, content=content),
-                     toolUseResult=dict(data='QUJD' * (72 * 1024 // 4), status='synthetic'))
+                     toolUseResult=dict(data='QUJD' * 512, status='synthetic'))
     if row_type is None:
         del row['type']
     native.finish()
@@ -279,7 +288,7 @@ def test_non_native_row_projects_only_verified_message_image(tmp_path, monkeypat
     snapshot = claude_record.parse(path)
     kept = snapshot.rows[2][1]
     payload = kept['message']['content'][0]['content'][1]['source']['data']
-    assert (payload.size, payload.image_bytes) == (384 * 1024, 288 * 1024)
+    assert (payload.size, payload.image_bytes) == (PAYLOAD_BYTES, PAYLOAD_BYTES // 4 * 3)
     assert not isinstance(kept, claude_record.ProjectedRow)
     expected_row = deepcopy(row)
     expected_row['message']['content'][0]['content'][1]['source']['data'] = ''
@@ -293,7 +302,7 @@ def test_non_native_work_rows_keep_the_exact_compaction_frontier(tmp_path, monke
     native.finish()
     fields = (dict(subtype='compact_boundary', compactMetadata={'trigger': 'auto'}) if row_type == 'system'
               else dict(operation='enqueue', content='Exact queued input'))
-    row = native.add(row_type, message=dict(role='user', content=[image(384 * 1024)]), **fields)
+    row = native.add(row_type, message=dict(role='user', content=[image(PAYLOAD_BYTES)]), **fields)
     with monkeypatch.context() as full:
         full.setattr(claude_record, 'PROJECTED_BYTES', 1)
         expected = claude.compactions(native.path)
@@ -329,7 +338,7 @@ def test_non_native_row_refusal_bounds_its_type_label(tmp_path, monkeypatch, fie
 def test_duplicate_mirror_is_compatible_with_native_evidence(tmp_path, monkeypatch, tool):
     path = tmp_path / 'synthetic-conversation.jsonl'
     record = Native(path, 'claude')
-    size = 1024 * 1024
+    size = PAYLOAD_BYTES
     large = 'line with quotes " and a backslash \\ and newline\n' * (size // 40)
     version = '2.1.317' if tool == 'Bash error' else '2.1.325'
     if tool == 'Read':
@@ -554,7 +563,7 @@ def test_giant_unproved_or_required_values_remain_unknown(tmp_path, monkeypatch,
 @pytest.mark.parametrize('layout', ['newline', 'splitlines'])
 def test_typed_identity_uses_the_same_guard_after_reading_image_bytes(tmp_path, monkeypatch, layout):
     record = Native(tmp_path / 'synthetic.jsonl', 'claude')
-    row = record.add('user', message=dict(role='user', content=[text('Synthetic Ω input'), image(1024 * 1024)]))
+    row = record.add('user', message=dict(role='user', content=[text('Synthetic Ω input'), image(PAYLOAD_BYTES)]))
     record.finish()
     raw = b'\n'.join(json.dumps(item, ensure_ascii=False).encode() for item in record.rows) + b'\n'
     if layout == 'splitlines':

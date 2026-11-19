@@ -318,20 +318,25 @@ from tests.unit.test_run_slots_ordinary import root_at
 root = root_at(sys.argv[1])
 slot = layout.Slot(root)
 slot.acquire({"verb": "run", "run": sys.argv[2]})
-if sys.argv[3] == "True":
-    release, retired = map(int, sys.argv[4:6])
-    subprocess.Popen([sys.executable, '-B', '-c',
-                      'import os, sys; fd, release, retired = map(int, sys.argv[1:]); '
-                      'os.read(release, 1); os.close(fd); os.write(retired, b"1")',
-                      str(slot.fd), str(release), str(retired)],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     pass_fds=(slot.fd, release, retired))
-print(slot.selected, flush=True)
+release, retired = map(int, sys.argv[4:6])
+inherited = (slot.fd,) if sys.argv[3] == "True" else ()
+child = subprocess.Popen([sys.executable, '-B', '-c', """
+import os, sys
+release, retired = map(int, sys.argv[1:3])
+os.read(release, 1)
+for fd in sys.argv[3:]:
+    os.close(int(fd))
+os.write(retired, b'1')
+""", str(release), str(retired), *map(str, inherited)],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         pass_fds=(release, retired, *inherited))
+print(slot.selected, child.pid, flush=True)
 sys.stdin.read()
 ''', str(tmp_path), RUN, str(inherited), str(release_read), str(retired_write)],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   pass_fds=(release_read, retired_write))
-        assert holder.stdout.readline().strip() == b'1', 'the earlier peer put this controller in slot 2'
+        slot, child = map(int, holder.stdout.readline().split())
+        assert slot == 1, 'the earlier peer put this controller in slot 2'
         stale = (tmp_path / 'slot-2.lock').read_bytes()
         holder.kill()
         holder.communicate()
@@ -339,6 +344,8 @@ sys.stdin.read()
         retry.acquire({'verb': 'run', 'run': 'retry'}, wait=0)
         assert retry.selected == 0, 'the next run uses the other peer’s newly freed slot'
         monkeypatch.setattr(layout, '_flock_files', lambda: set())
+        # Exercise real descriptor inspection for the possible inheritor without probing unrelated suite processes.
+        monkeypatch.setattr(layout.procs, '_ours', lambda: [child])
         made = layout.RunGuard(root, RUN, create=True)
         made.release()
         guard = layout.RunGuard(root, RUN)
@@ -351,9 +358,8 @@ sys.stdin.read()
         contender.acquire({'verb': 'run', 'run': 'contender'}, wait=0)
         assert contender.selected == (2 if inherited else 1)
         assert json.loads((tmp_path / 'slot.lock').read_bytes())['run'] == 'retry'
-        if inherited:
-            os.write(release_write, b'1')
-            assert os.read(retired_read, 1) == b'1'
+        os.write(release_write, b'1')
+        assert os.read(retired_read, 1) == b'1'
     finally:
         if guard is not None:
             guard.release()

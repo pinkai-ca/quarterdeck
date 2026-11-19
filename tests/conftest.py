@@ -164,8 +164,10 @@ def pytest_report_header(config):
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node, error):
-    node.config._qd_synthetic_memory_checks.update(
-        node.workeroutput.get('qd_synthetic_memory_checks', []))
+    # xdist only receives workeroutput when the worker reaches session finish.
+    output = getattr(node, 'workeroutput', None)
+    if output is not None:
+        node.config._qd_synthetic_memory_checks.update(output.get('qd_synthetic_memory_checks', []))
 
 
 class SyntheticMemoryRoots:
@@ -206,16 +208,18 @@ class SyntheticMemoryRoots:
         tool's own scratch.memory_root, as every base does. Where the basetemp is on disk, as on a runner
         without a large tmpfs, it opens the same way without asking the mount, since the test made it there.
         Every other check of the teardown is the same for both."""
-        if base.is_relative_to(self.tmp_path):
-            if not base.is_absolute() or base.resolve() != base:
-                raise layout.Refused(f'{base}: memory storage base is not an absolute plain path')
-            fd = os.open(base, layout.DIRECTORY)
-            try:
-                if not scratch.filesystem(fd):
-                    path = base / scratch.project_name(project)
-                    return path, layout.open_child(fd, path.name, path, create=False, device=os.fstat(fd).st_dev)
-            finally:
-                os.close(fd)
+        if not base.is_relative_to(self.tmp_path):
+            # A nested CI-layout controller can create real memory scratch even when its parent models disk only.
+            return scratch.memory_root(project, base, create=False, physical=True)
+        if not base.is_absolute() or base.resolve() != base:
+            raise layout.Refused(f'{base}: memory storage base is not an absolute plain path')
+        fd = os.open(base, layout.DIRECTORY)
+        try:
+            if not scratch.filesystem(fd):
+                path = base / scratch.project_name(project)
+                return path, layout.open_child(fd, path.name, path, create=False, device=os.fstat(fd).st_dev)
+        finally:
+            os.close(fd)
         return scratch.memory_root(project, base, create=False)
 
     def finish(self):

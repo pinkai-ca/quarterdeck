@@ -100,6 +100,44 @@ def test_shared_header_never_attests_earlier_plugin_import_timing(monkeypatch, o
     assert ('setting it now is too late' in header) == (observed != '1')
 
 
+def test_xdist_keeps_memory_checks_when_a_worker_exits_without_output():
+    from types import SimpleNamespace
+    from tests import conftest
+
+    config = SimpleNamespace(_qd_synthetic_memory_checks={'existing-root'})
+    dead = SimpleNamespace(config=config)
+    conftest.pytest_testnodedown(dead, error='worker exited')
+    assert config._qd_synthetic_memory_checks == {'existing-root'}
+
+    finished = SimpleNamespace(config=config, workeroutput={'qd_synthetic_memory_checks': ['reported-root']})
+    conftest.pytest_testnodedown(finished, error=None)
+    assert config._qd_synthetic_memory_checks == {'existing-root', 'reported-root'}
+
+
+def test_xdist_reports_the_crash_after_the_shared_hook(tmp_path):
+    from tests.conftest import ROOT
+
+    (tmp_path / 'conftest.py').write_text('''
+from tests.conftest import pytest_testnodedown
+
+def pytest_configure(config):
+    config._qd_synthetic_memory_checks = set()
+''')
+    (tmp_path / 'test_crash.py').write_text('''
+import os
+
+def test_worker_crashes():
+    os._exit(3)
+''')
+    done = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-n', '1', '--max-worker-restart=0',
+                           '-p', 'no:cacheprovider', '--basetemp', str(tmp_path / 'temp'), str(tmp_path)],
+                          cwd=ROOT, text=True, capture_output=True, timeout=60)
+    output = done.stdout + done.stderr
+    assert done.returncode == pytest.ExitCode.TESTS_FAILED, output
+    assert 'gw0' in output and 'test_crash.py::test_worker_crashes' in output, output
+    assert 'INTERNALERROR' not in output, output
+
+
 def test_runner_restores_alarm_state_after_its_deadline():
     import signal
     import time

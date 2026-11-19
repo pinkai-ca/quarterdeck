@@ -330,6 +330,13 @@ def test_projection_spans_follow_owned_records_through_accounting(tmp_path, monk
 @pytest.mark.parametrize('mirror,layout', [(False, 'newline'), (True, 'newline'),
                                            (False, 'splitlines'), (True, 'splitlines')])
 def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path, monkeypatch, mirror, layout):
+    # The appended picture crosses both old ceilings on the same small record.
+    row_bound = 1024
+    legacy_bound = 2 * row_bound
+    picture_bytes = 4 * row_bound
+    monkeypatch.setattr(claude_record, 'CHUNK', 1024)
+    monkeypatch.setattr(claude_record, 'ROW_BYTES', row_bound)
+    monkeypatch.setattr(claude_record, 'COMPATIBILITY_BOUND', legacy_bound)
     session = Session('synthetic-session', 'Synthetic', human=True)
     pool = Pool('synthetic-pool', 'anthropic')
     spec = SeatSpec('synthetic-seat', session.name, 'office', 'claude', (pool.name,))
@@ -369,7 +376,7 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
         # Construct the rest elsewhere, then append it without rewriting the observed prefix.
         first_rows = len(native.rows)
         native.path = tmp_path / 'made-suffix.jsonl'
-        picture = image(MiB)
+        picture = image(picture_bytes)
         if mirror:
             native.begin('Synthetic Read request')
             begin_tool(native)
@@ -379,21 +386,19 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
             native.add('user', version='2.1.325', message=dict(role='user', content=[
                 picture, text('Synthetic pasted-image prompt')]))
         native.finish()
-        padding = json.dumps({'type': 'file-history-snapshot', 'snapshot': 'x' * (4 * MiB)}).encode() + b'\n'
+        before_size = path.stat().st_size
         with path.open('ab') as stream:
             if layout == 'splitlines':
                 stream.write('\u2028'.encode())
             for row in native.rows[first_rows:]:
                 stream.write(json.dumps(row).encode() + b'\n')
-            for _ in range(32):
-                stream.write(padding)
         size = path.stat().st_size
-        assert size > 128 * MiB
+        assert before_size <= legacy_bound < size
         with monkeypatch.context() as older:
-            older.setattr(record_file, 'CLAUDE_STREAM_BOUND', 128 * MiB)
+            older.setattr(record_file, 'CLAUDE_STREAM_BOUND', legacy_bound)
             assert account(service, book) == before
         [raw] = book.unread_spans()
-        assert (raw['record'], raw['size'], raw['bound'], raw['counted']) == (str(path), size, 128 * MiB, 1)
+        assert (raw['record'], raw['size'], raw['bound'], raw['counted']) == (str(path), size, legacy_bound, 1)
 
     json_record.release(path)
     with monkeypatch.context() as earlier_reader:
@@ -412,7 +417,7 @@ def test_picture_projection_recovers_the_same_operator_record_in_place(tmp_path,
             if layout == 'newline' and mirror:
                 expected_path = ['toolUseResult', 'file', 'base64']
             assert book.projection_refusals() == [
-                dict(record=str(path), path=expected_path, size=MiB, layout=layout, reason='budget', value_type='?',
+                dict(record=str(path), path=expected_path, size=picture_bytes, layout=layout, reason='budget', value_type='?',
                      compatibility=False, exhausted='retained bytes per row')]
 
     service = Service(ship, tmux)
@@ -547,7 +552,8 @@ def test_message_picture_projection_recovers_owned_operator_record(tmp_path, mon
 
 @pytest.mark.parametrize('layout', ['newline', 'splitlines'])
 @pytest.mark.parametrize('legacy', [True, False])
-def test_compatibility_field_evidence_is_persisted_only_for_its_exact_observation(tmp_path, layout, legacy):
+def test_compatibility_field_evidence_is_persisted_only_for_its_exact_observation(tmp_path, monkeypatch, layout, legacy):
+    monkeypatch.setattr(claude_record, 'ROW_BYTES', 1024)
     path, record = tmp_path / 'ledger.sqlite', tmp_path / 'synthetic.jsonl'
     native = Native(record, 'claude')
     native.finish()

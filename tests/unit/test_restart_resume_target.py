@@ -16,6 +16,15 @@ from quarterdeck.harness.types import Screen
 from .test_cross_program_failover import running, usage  # noqa: F401
 
 
+def cross_read_bound(path, reader, monkeypatch):
+    """Set the reader limit at the current fixture size, then cross it by one byte."""
+    bound_name = 'CLAUDE_STREAM_BOUND' if reader == 'claude' else 'LINES_BOUND'
+    bound = path.stat().st_size
+    monkeypatch.setattr(record_file, bound_name, bound)
+    with path.open('r+b') as stream:
+        stream.truncate(bound + 1)
+
+
 @pytest.mark.parametrize('running', [False, True], indirect=True, ids=['crew', 'human'])
 @pytest.mark.parametrize('case', ['unreadable', 'missing', 'no-id', 'oversized-no-id'])
 @pytest.mark.parametrize('entry', ['cli', 'service'])
@@ -36,8 +45,7 @@ def test_unproved_restart_keeps_the_old_process_until_the_correct_next_step(runn
     else:
         record.write_text(json.dumps({'type': 'session_meta', 'payload': {}}) + '\n')
         if case == 'oversized-no-id':
-            with record.open('r+b') as stream:
-                stream.truncate(record_file.LINES_BOUND + 1)
+            cross_read_bound(record, seat.harness.name, monkeypatch)
 
     if entry == 'cli':
         monkeypatch.setattr(cli, 'seat_of', lambda *_: seat)
@@ -75,8 +83,7 @@ def test_oversized_owned_record_supplies_resume_to_the_native_launch(running, mo
     owned = seat.record()
     expected = seat.harness.session_id(owned)
     assert owned == active.path and expected
-    with owned.open('r+b') as stream:
-        stream.truncate(record_file.bound_of(owned, program) + 1)
+    cross_read_bound(owned, program, monkeypatch)
     with pytest.raises(record_file.PastBound):
         seat.harness.session_id(owned)
 
@@ -474,8 +481,7 @@ def test_plain_list_relaunch_moves_from_proved_wall_with_oversized_identity(runn
     s, owned = plain_claude(r, model)
     before = s.launched()
     identity = s.harness.session_id(owned)
-    with owned.open('r+b') as stream:
-        stream.truncate(record_file.bound_of(owned, s.harness.name) + 1)
+    cross_read_bound(owned, s.harness.name, monkeypatch)
     # No running model can be read from this synthetic screen or the above-bound record.
     monkeypatch.setattr(s.harness, 'screen', lambda _: Screen('', '', working=False))
     at = post.now()
@@ -503,7 +509,7 @@ def test_plain_list_wall_preserves_the_no_identity_policy(running, monkeypatch, 
         assert 'start a new conversation carrying its handoff' in capsys.readouterr().err
 
 
-def test_oversized_claude_stable_filename_and_pi_header(tmp_path):
+def test_oversized_claude_stable_filename_and_pi_header(tmp_path, monkeypatch):
     native = tmp_path / 'projects' / 'synthetic'
     native.mkdir(parents=True)
     identity = str(uuid4())
@@ -512,8 +518,7 @@ def test_oversized_claude_stable_filename_and_pi_header(tmp_path):
     claude.write_text('{"type":"file-history-snapshot"}\n')
     pi.write_text('{"type":"session","id":"synthetic-pi"}\n')
     for record, reader in ((claude, 'claude'), (pi, 'pi')):
-        with record.open('r+b') as stream:
-            stream.truncate(record_file.bound_of(record, reader) + 1)
+        cross_read_bound(record, reader, monkeypatch)
     assert resume_target.identify(get('claude'), claude) == identity
     assert resume_target.identify(get('pi'), pi) == 'synthetic-pi'
 

@@ -8,10 +8,10 @@ import json
 import pytest
 
 from quarterdeck import cli, credential, pending, post, quota, record_owner, seat as seatmod, service, standing, watch
+from quarterdeck.harness import record_file
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.limits import Usage, Window
-from quarterdeck.harness.record_file import LINES_BOUND
 from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape
 from quarterdeck.harness.types import Screen, State
 from quarterdeck.seat import Launched, Seat
@@ -63,7 +63,8 @@ def running(tmp_path, monkeypatch, request):
             shape = CodexShape if seat.harness.name == 'codex' else ClaudeShape
             record = shape(seat.home, tmp_path, f'synthetic-target-{len(launches)}', seat.spec.model)
             created.append(record)
-        if not record.path.exists() or record.path.stat().st_size <= LINES_BOUND:
+        bound = record_file.bound_of(record.path, seat.harness.name)
+        if not record.path.exists() or record.path.stat().st_size <= bound:
             record.begin('new synthetic input', seat.spec.model, seat.spec.effort or 'none')
             record.end('new synthetic reply')
         live['pane'] = Pane(f'%{len(launches)+1}', 'crew', 'worker', 101+len(launches), 80, 24, False, False, None)

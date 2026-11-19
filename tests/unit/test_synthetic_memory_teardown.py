@@ -45,9 +45,11 @@ def test_a_shared_base_must_still_be_memory(tmp_path, tmp_path_factory, monkeypa
     (root / 'runs').mkdir()
     (root / 'runs' / 'inert-kept-product.txt').write_text('synthetic product')
     own = layout.identity(os.stat(shared))
-    real = scratch.filesystem
-    # Stand-in: the shared base reads as `kind`, every other base as it really is.
-    monkeypatch.setattr(scratch, 'filesystem', lambda fd: kind if layout.identity(os.fstat(fd)) == own else real(fd))
+    real = scratch.physical_filesystem
+    # The parent models CI's disk-only layout; a nested controller can still place its scratch in real memory.
+    monkeypatch.setenv(scratch.CI_DISK_ENV, '1')
+    monkeypatch.setattr(scratch, 'physical_filesystem',
+                        lambda fd: kind if layout.identity(os.fstat(fd)) == own else real(fd))
     monkeypatch.setattr(scratch, 'candidates', lambda environ=None: [tmp_path, shared])
     checks = set()
     cleanup = SyntheticMemoryRoots(tmp_path, checks)
