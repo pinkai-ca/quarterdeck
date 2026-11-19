@@ -121,7 +121,8 @@ git -C ships/mine commit -am "My crew"
 - The first `qd up` makes the ship's own copy of the Quarterdeck code, and says so. The copy changes only when you run `qd sync`: see [Updating your ship](SYNC.md).
 - `qd up` starts Quarterdeck's service, which delivers the crew's messages, and every agent marked up, then prints a line for each agent, such as `desk up in %1 · claude … · fresh`, then `service started`, and last a line that begins `tmux: the ship's own server`.
 - `qd up` gives each agent one first turn, to read its brief. After that an agent takes a turn only when the agent has something to do.
-- `attach` opens the tmux session `Office`, where the desk is. The captain and the engineer are in a session named for the ship, such as `Endeavour Bridge`: `.venv/bin/qd --ship ships/mine attach bridge` opens that one. Both sessions are on a tmux server of the ship's own, apart from any tmux you use yourself.
+- On the copied default ship, `attach` opens `Office`, the title set for the desk's session. Run `.venv/bin/qd --ship ships/mine attach bridge` to see the captain and engineer. The `bridge` session has no explicit title, so tmux uses the declared ship name followed by `Bridge`. The tracked default is `default Bridge`. If you set `name = "Endeavour"`, it is `Endeavour Bridge`.
+- With `qd setup`, the desk sits in the separate office, whose session title is `Office` by default. The project ship's captain and engineer share its `bridge` session, titled by the same rule. Each ship uses its own tmux server.
 
 **6. Give the first order.** A desk on Claude Code, Codex, Grok Build, OpenCode or pi is woken by the ship with the desk's first waiting message. A desk on another harness cannot hear the crew until the desk has taken one turn: speak to that desk first, in the desk's pane, or an order given by hand waits for the desk.
 
