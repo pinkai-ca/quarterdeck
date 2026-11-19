@@ -2756,12 +2756,14 @@ class Service:
         binding = move_hold.generation(seat)
         from . import relaunch_intent
         from .harness import resume_target
-        if not seat.session.human and self.resumes_on(seat, pool):
+        # A stand-in with no ledger or no pool table keeps the ordinary move.
+        spec = getattr(seat, 'spec', None)
+        if (not seat.session.human and getattr(self, 'ledger', None) is not None
+                and callable(getattr(spec, 'for_pool', None)) and self.resumes_on(seat, pool)):
             try:
-                seat._require_resume(seat.spec.for_pool(pool))
+                seat._require_resume(spec.for_pool(pool))
             except resume_target.Unproved as error:
-                # No ledger keeps the ordinary move, so a busy claim still refuses before any handoff.
-                if getattr(self, 'ledger', None) is not None and not quota.current_walled(seat, self.ledger):
+                if not quota.current_walled(seat, self.ledger):
                     return self._stage_unproved_select(seat, error, pool)
         with relaunch_intent.section(self, seat, 'select', resume=lambda: self.resumes_on(seat, pool)):
             try:
