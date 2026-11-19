@@ -58,7 +58,7 @@ def test_wide_items_and_both_annotations_share_final_cached_and_cold_budget():
 @pytest.mark.parametrize(('name', 'reason', 'shown'), [
     ('builder', 'account holder approval is required', 'builder: account holder approval is required'),
     ('builder', 'account holder approval is required ' + '界' * 70, 'builder needs a human'),
-    ('界' * 70, 'account holder approval is required', '1 need human'),
+    ('界' * 70, 'account holder approval is required', '1 needs a human'),
 ])
 def test_human_alert_keeps_the_best_complete_item(name, reason, shown):
     full_reason = f'{name}: {reason}'
@@ -68,7 +68,7 @@ def test_human_alert_keeps_the_best_complete_item(name, reason, shown):
         first, human, *items, last = line.split(headlines.SEPARATOR)
         assert (first, human, last) == ('SERVICE DOWN', shown, 'qd status')
         assert items[0] == 'disk: / 97%' and any(item.startswith('3 waiting') for item in items)
-        assert '1 seats held' not in items and full_reason not in items
+        assert '1 seat held' not in items and full_reason not in items
         assert headlines.columns(line) <= headlines.WIDTH
     assert full_reason in headlines.details(facts)
 
@@ -78,31 +78,45 @@ def test_an_overlong_human_item_cannot_hide_another_seats_reason():
     reason = 'builder: account holder approval is required'
     facts = watch.Facts('ok', 0, 0, 0, needs_human=[long_name, 'builder'],
                         seat_holds=[f'{long_name}: action required', reason])
-    assert facts.line().split(headlines.SEPARATOR) == ['service ok', reason, '1 need human', 'qd status']
+    assert facts.line().split(headlines.SEPARATOR) == ['service ok', reason, '1 needs a human', 'qd status']
 
 
 def test_named_priority_precedes_extra_seat_groups_and_annotations():
-    facts = watch.Facts('down', 1, 2, 0, needs_human=['op'], login=[('p', '03:10')],
+    facts = watch.Facts('ok', 1, 2, 0, needs_human=['op'], login=[('p', '03:10')],
                         disks=[('/', 97)], held=['a'], record_bounds=['b: record past the read bound'],
                         ending=['another program is ending'], manual_fresh=['a different program needs a fresh start'],
                         pane_obstructions=['another pane is too short'])
     notes = (headlines.note('status stale: published 15s ago', 'status stale'),
              headlines.note('copy warning ' + '界' * 150, 'copy warning'))
     line = headlines.status_line(facts, notes=notes)
-    necessary = ('SERVICE DOWN', 'op needs a human', 'p login needed by 03:10', 'disk: / 97%',
-                 'a held at limit', 'b: record past the read bound', '1 waiting')
+    limit = 'held at limit' if 'held at limit' in line else '1 limit hold'
+    necessary = ('service ok', 'status stale', 'copy warning', 'needs a human', 'login needed',
+                 'disk: / 97%', limit, '1 past read bound', '1 waiting')
     positions = [line.index(item) for item in necessary]
     assert positions == sorted(positions)
-    for item in ('another program', 'fresh start', 'pane', 'status stale', 'copy warning'):
+    for item in ('another program', 'fresh start', 'pane'):
         assert item not in line or line.index(item) > positions[-1]
     assert line.endswith(' · qd status') and headlines.columns(line) <= headlines.WIDTH
+
+
+def test_crowded_independent_collection_keeps_its_provenance_and_shortens_the_lead():
+    state = 'busy 400s in ' + '界' * 100 + ': main loop stuck, nothing is delivered'
+    facts = replace(crowded(), service=state)
+    copy = headlines.note('copy warning ' + '界' * 100, 'copy warning')
+    line = presentation.collected_line(facts, 120, notes=(copy,))
+    lead, freshness, warning, human, *items, pointer = line.split(headlines.SEPARATOR)
+    assert (lead, freshness, warning, human, pointer) == (
+        'service busy: main loop stuck', 'collected here', 'copy warning', '50 need human', 'qd status')
+    assert items[:3] == ['1 seat held', '1 sign-in failure', '1 login needed']
+    assert any(item.startswith('+') and item.endswith(' more') for item in items)
+    assert headlines.columns(line) <= headlines.WIDTH
 
 
 def test_emoji_variations_and_keycaps_are_budgeted_conservatively():
     assert headlines.columns('✈️') >= 2
     assert headlines.columns('1️⃣') >= 2
     line = watch.Facts('ok', 0, 0, 0, needs_human=['✈️1️⃣' * 33]).line()
-    assert '1 need human' in line and '✈' not in line
+    assert '1 needs a human' in line and '✈' not in line
     assert line.endswith(' · qd status') and headlines.columns(line) <= headlines.WIDTH
 
 

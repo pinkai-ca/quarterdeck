@@ -175,7 +175,7 @@ def collected_line(value, publication_age, *, notes=()):
     """Keep fresh alerts, explicitly saying why the independent collector ran."""
     if publication_age is not None:
         age = f'publication {publication_age}s old'
-        freshness = headlines.note(f'{age}, collected here', age)
+        freshness = headlines.note(f'{age}, collected here', 'collected here')
         notes = (freshness, *notes)
     if isinstance(value, str):
         return headlines.bound_text(value, notes=notes)

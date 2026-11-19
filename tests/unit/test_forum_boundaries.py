@@ -483,7 +483,7 @@ def test_the_service_logs_a_hold_once_and_the_status_names_it(world):
     facts = watch.Facts(service='down', waiting=0, oldest=0, blind=0, group_held=group_post.holds(world.ship.runtime))
     assert f'{post.short_of(root.id)} group held: group evidence is malformed JSON' in facts.line()
     crowded = ['synthetic other alert'] * 12  # past the width: categories are counted instead
-    assert '1 groups held' in headlines.status_line(facts, crowded)
+    assert '1 group held' in headlines.status_line(facts, crowded)
 
 
 # --- separation: inbox and carriage hold a member's own messages; the store is not fenced -----------------

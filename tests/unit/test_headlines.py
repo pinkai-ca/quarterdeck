@@ -111,9 +111,9 @@ def test_alert_overflow_counts_held_seats_and_keeps_allowance_facts(tmp_path, mo
                        unarmed=['other'], disks=[('disk', 95)], login=[('pool', 'soon')],
                        queued=2, usage=rows * 10)
     line = many.line()
-    for label in ('SERVICE DOWN', 'waiting', 'queued', 'blind', 'need human', 'unarmed',
-                  'held', 'pending', 'disk', 'login', 'qd status'):
+    for label in ('SERVICE DOWN', 'waiting', 'queued', 'blind', '1 needs a human', 'unarmed',
+                  '1 limit hold', 'pending', 'disk: disk 95%', 'pool login needed by soon'):
         assert label in line
     assert 'walls' not in line and 'usage' not in line
-    assert len(line) <= 160
+    assert len(line) <= 160 and line.endswith(' · qd status')
     assert len(many.usage) == 10 * len(rows) and many.walls == ['long wall reason' * 20]

@@ -47,6 +47,8 @@ def note(text, summary):
 
 
 def _human_summary(count):
+    if count == 1:
+        return ('1 needs a human',)
     return (f'{count} need human',) if count else ()
 
 
@@ -59,7 +61,7 @@ def _human_holds(facts):
             reasons[name].append(reason)
         else:
             other_holds.append(item)
-    named = _named(facts.needs_human, 'need human', lambda name: f'{name} needs a human')
+    named = _named(facts.needs_human, 'need human', lambda name: f'{name} needs a human', singular='needs a human')
     if not any(reasons.values()):
         return named, other_holds
     short = named.details
@@ -81,17 +83,17 @@ def sections(facts, *, detailed=False) -> Headline:
                   if not any(fallback.startswith(detail + ';') for fallback in facts.manual_fresh)]
     lead = 'SERVICE DOWN' if facts.service == 'down' else f'service {facts.service}'
     if detailed:
-        humans = _named(facts.needs_human, 'need human', lambda name: f'{name} needs a human')
+        humans = _named(facts.needs_human, 'need human', lambda name: f'{name} needs a human', singular='needs a human')
         seat_holds = facts.seat_holds
     else:
         humans, seat_holds = _human_holds(facts)
     immediate = (
         humans,
-        _named(seat_holds, 'seats held'),
-        _named(facts.sign_in_failures, 'sign-in failures'),
+        _named(seat_holds, 'seats held', singular='seat held'),
+        _named(facts.sign_in_failures, 'sign-in failures', singular='sign-in failure'),
         _named(facts.login, 'login needed', lambda row: f'{row[0]} login needed by {row[1]}'),
-        _named(facts.disks, 'disk alerts', lambda row: f'disk: {row[0]} {row[1]}%'),
-        _named(facts.held, 'held at limit', lambda name: f'{name} held at limit'),
+        _named(facts.disks, 'disk alerts', lambda row: f'disk: {row[0]} {row[1]}%', singular='disk alert'),
+        _named(facts.held, 'held at limit', lambda name: f'{name} held at limit', singular='limit hold'),
         _named(past, 'past read bound'),
         _count(facts.waiting, 'waiting', f'{facts.waiting} waiting, oldest {facts.oldest}m' if facts.waiting else None),
         _count(facts.queued, 'queued', f'{facts.queued} queued behind a turn, oldest {facts.oldest_queued}m'),
@@ -99,46 +101,46 @@ def sections(facts, *, detailed=False) -> Headline:
         _count(facts.unsettled, 'unsettled', f'{facts.unsettled} unsettled after an error'),
         _named(facts.unarmed, 'unarmed', lambda name: f'{name}: no watch armed'),
         _named(facts.pending, 'pending'),
-        _named(facts.post_held, 'post holds'),
-        _named(facts.post_waits, 'post waits'),
+        _named(facts.post_held, 'post holds', singular='post hold'),
+        _named(facts.post_waits, 'post waits', singular='post wait'),
     )
     forecasts = facts.pool_forecasts if detailed else facts.pool_forecast_headlines
     lower = (
-        _named(facts.pane_obstructions, 'pane holds'),
-        _named(facts.ending, 'programs ending'),
-        _named(facts.manual_fresh, 'need fresh'),
+        _named(facts.pane_obstructions, 'pane holds', singular='pane hold'),
+        _named(facts.ending, 'programs ending', singular='program ending'),
+        _named(facts.manual_fresh, 'need fresh', singular='needs fresh'),
         _named(write_stops, 'at write bound'),
-        _named(write_other, 'write-bound alerts'),
-        _named(facts.leftover_seats, 'seats left over'),
-        _named(facts.relaunches, 'relaunch holds'),
+        _named(write_other, 'write-bound alerts', singular='write-bound alert'),
+        _named(facts.leftover_seats, 'seats left over', singular='seat left over'),
+        _named(facts.relaunches, 'relaunch holds', singular='relaunch hold'),
         _named(facts.output_limits, 'at output limit'),
-        _named((facts.startup_delivery,) if facts.startup_delivery else (), 'startup holds'),
+        _named((facts.startup_delivery,) if facts.startup_delivery else (), 'startup holds', singular='startup hold'),
         _named(facts.ledger_recovery, 'ledger recovery alerts', singular='ledger recovery alert'),
-        _named((facts.accounting,) if facts.accounting else (), 'accounting alerts'),
-        _named((facts.retirement,) if facts.retirement else (), 'retirement alerts'),
+        _named((facts.accounting,) if facts.accounting else (), 'accounting alerts', singular='accounting alert'),
+        _named((facts.retirement,) if facts.retirement else (), 'retirement alerts', singular='retirement alert'),
         _named(barriers, 'service stop barriers', singular='service stop barrier'),
-        _named(server, 'server recovery alerts'),
-        _named(forecasts, 'pool forecasts'),
+        _named(server, 'server recovery alerts', singular='server recovery alert'),
+        _named(forecasts, 'pool forecasts', singular='pool forecast'),
         _named(near, 'near read bound'),
         _named(facts.move_holds, 'move alerts', singular='move alert'),
-        _named(facts.turn_errors, 'turn errors'),
-        _named(facts.model_mismatches, 'model differences'),
+        _named(facts.turn_errors, 'turn errors', singular='turn error'),
+        _named(facts.model_mismatches, 'model differences', singular='model difference'),
         _named(facts.unknown, 'selection unknown'),
         _named(facts.queue_unknown, 'queue unknown'),
-        _named(compacting, 'compaction readings'),
-        _named(facts.group_held, 'groups held'),
-        _named(facts.drop_held, 'drops held'),
-        _named(facts.cascade_held, 'cascades held'),
-        _named(facts.structure_waiting, 'structure waits'),
-        _named(facts.request_waits, 'request waits'),
-        _named(facts.raises, 'raises'),
+        _named(compacting, 'compaction readings', singular='compaction reading'),
+        _named(facts.group_held, 'groups held', singular='group held'),
+        _named(facts.drop_held, 'drops held', singular='drop held'),
+        _named(facts.cascade_held, 'cascades held', singular='cascade held'),
+        _named(facts.structure_waiting, 'structure waits', singular='structure wait'),
+        _named(facts.request_waits, 'request waits', singular='request wait'),
+        _named(facts.raises, 'raises', singular='raise'),
         _named(facts.routes, 'on fallback'),
-        _named(facts.screening, 'screenings'),
-        _named(facts.brief_git, 'brief git alerts'),
-        _named(facts.jail_sweeps, 'sandbox sweeps'),
-        _named(facts.check_failed, 'failed checks'),
-        _named(facts.check_unknown, 'checks unknown'),
-        _named((facts.cutover,) if facts.cutover else (), 'server changes needed'),
+        _named(facts.screening, 'screenings', singular='screening'),
+        _named(facts.brief_git, 'brief git alerts', singular='brief git alert'),
+        _named(facts.jail_sweeps, 'sandbox sweeps', singular='sandbox sweep'),
+        _named(facts.check_failed, 'failed checks', singular='failed check'),
+        _named(facts.check_unknown, 'checks unknown', singular='check unknown'),
+        _named((facts.cutover,) if facts.cutover else (), 'server changes needed', singular='server change needed'),
         _named(facts.operational_notices, 'tool notices', singular='tool notice'),
     )
     return Headline(_plain(lead), tuple(group for group in immediate if group.count or group.summary == '0 waiting'),
@@ -161,22 +163,30 @@ def _preferred(group):
     return group.details or (group.summary,)
 
 
+def _short_lead(lead):
+    if lead.startswith('service busy') and ': main loop stuck' in lead:
+        return 'service busy: main loop stuck'
+    for state in ('SERVICE DOWN', 'service ok', 'service busy', 'service unknown'):
+        if lead == state or lead.startswith(state + ' '):
+            return state
+    return 'service unknown'
+
+
 def render(headline: Headline, *, lead=None, notes=(), compact=False) -> str:
-    """Reserve the pointer and all immediate counts before spending space on names."""
+    """Reserve service state, provenance and the pointer before spending space on names."""
     shown_lead = _plain(lead or headline.lead)
-    if not _fits((shown_lead, '1 need human', '+1 more', POINTER)):
-        shown_lead = 'service busy' if shown_lead.startswith('service busy') else 'service unknown'
-    front = (shown_lead,)
     immediate = list(headline.immediate)
-    later_groups = (*notes, *headline.lower)
-    named = [_preferred(group) for group in (*immediate, *later_groups)]
-    full = (*front, *(item for group in named for item in group), POINTER)
+    later_groups = headline.lower
+    named = [_preferred(group) for group in (*notes, *immediate, *later_groups)]
+    full = (shown_lead, *(item for group in named for item in group), POINTER)
     if not compact and _fits(full):
         return SEPARATOR.join(full)
 
+    front = [shown_lead, *(group.summary for group in notes)]
     immediate = [group for group in immediate if group.count]  # a quiet counter must not displace an alert
     hidden = sum(group.count for group in later_groups)
-    choices = [(group.summary,) for group in immediate]
+    choices = [min(((group.summary,), _preferred(group)), key=lambda items: columns(SEPARATOR.join(items)))
+               for group in immediate]
     after = []
 
     def line(required=choices, later=after, more=None):
@@ -184,6 +194,8 @@ def render(headline: Headline, *, lead=None, notes=(), compact=False) -> str:
         items = [item for group in required for item in group]
         return (*front, *items, *later, *((f'+{more} more',) if more else ()), POINTER)
 
+    if not _fits(line()):
+        front[0] = _short_lead(shown_lead)
     while immediate and not _fits(line()):
         hidden += immediate.pop().count
         choices.pop()
@@ -207,6 +219,11 @@ def render(headline: Headline, *, lead=None, notes=(), compact=False) -> str:
         trial[index] = _preferred(group)
         if _fits(line(trial)):
             choices[index] = trial[index]
+
+    for index, group in enumerate(notes, start=1):
+        front[index] = _preferred(group)[0]
+        if not _fits(line()):
+            front[index] = group.summary
 
     for group in later_groups:
         preferred = (group.summary,) if compact else _preferred(group)

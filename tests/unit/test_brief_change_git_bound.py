@@ -159,7 +159,7 @@ def test_the_status_line_names_a_git_unanswered_past_three_passes_and_clears_whe
     [named] = lines[2]
     assert named.startswith("ship folder's git has not answered for 3 passes (git rev-parse did not answer within")
     facts = watch.Facts('up', 0, 0, 0, brief_git=brief_change.status(runtime))
-    assert named in facts.brief_git and '1 brief git alerts' in facts.line()
+    assert named in facts.brief_git and '1 brief git alert' in facts.line()
     assert len([1 for args, _ in case.logs if args == ('error',)]) == 1, 'the same failure is logged once'
     monkeypatch.delenv('SYNTHETIC_HANG_ON')
     service.rebrief()

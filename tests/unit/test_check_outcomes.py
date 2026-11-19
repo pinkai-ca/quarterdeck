@@ -185,11 +185,11 @@ def test_thrown_check_is_named_once_and_clears_only_after_its_program_passes(
                                             step=None, reason=legacy_reason)
     facts = watch.facts(copied_ship, NS())
     assert facts.check_unknown == [stamp]
-    assert '1 checks unknown' in facts.line() and 'fake failed its check' in facts.line()
+    assert '1 check unknown' in facts.line() and 'fake failed its check' in facts.line()
     detail = watch.status_reading(copied_ship, NS(), collected=facts)
     assert watch.render_table(detail).count(stamp) == 1
     overflow = replace(facts, pending=['synthetic pending ' * 30])
-    assert '1 checks unknown' in overflow.line() and overflow.line().endswith(' · qd status')
+    assert '1 check unknown' in overflow.line() and overflow.line().endswith(' · qd status')
 
     monkeypatch.setattr(check, '_check', lambda *args: ([check.ProbeCheck('complete', True, '')], 'synthetic-version'))
     check.check(copied_ship, 'codex', None)
@@ -240,7 +240,7 @@ def test_malformed_program_outcome_is_visible_isolated_and_replaced_whole(
     source.write_bytes(malformed)
     unknown = 'fake check unknown: evidence unavailable'
     facts = watch.facts(copied_ship, NS())
-    assert facts.check_unknown == [unknown] and '1 checks unknown' in facts.line()
+    assert facts.check_unknown == [unknown] and '1 check unknown' in facts.line()
     assert watch.render_table(watch.status_reading(copied_ship, NS(), collected=facts)).count(unknown) == 1
     monkeypatch.setattr(check, '_check', lambda *args: ([check.ProbeCheck('complete', True, '')], 'synthetic-version'))
     check.check(copied_ship, 'codex', None)

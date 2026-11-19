@@ -73,7 +73,7 @@ def test_two_tools_keep_lines_on_overflow_and_omit_expired_and_foreign(evidence,
     overflow = watch.Facts('ok', 0, 0, 0, operational_notices=[FIRST, SECOND],
                            needs_human=['worker' * 40]).line()
     assert f'{FIRST} · {SECOND}' in overflow
-    assert '1 need human' in overflow and overflow.endswith(' · qd status')
+    assert '1 needs a human' in overflow and overflow.endswith(' · qd status')
 
 
 def test_maximum_notices_share_one_display_budget_after_required_alerts():

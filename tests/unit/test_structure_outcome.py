@@ -377,7 +377,7 @@ def test_status_invalidates_stale_side_state_and_preserves_overflow_category(str
     assert path.read_bytes() == before  # status never writes observations or ages grace
     facts = watch.Facts('ok', 0, 0, 0, structure_waiting=outcome.waits(case.ship, [seat]))
     assert 'turn outcome unknown' in facts.line()
-    assert '1 structure waits' in headlines.status_line(facts, ['Synthetic alert ' * 30])
+    assert '1 structure wait' in headlines.status_line(facts, ['Synthetic alert ' * 30])
     path.write_text('{')
     assert outcome.waits(case.ship, [seat]) == ['structure wait evidence unreadable']
 

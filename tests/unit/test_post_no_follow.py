@@ -313,7 +313,7 @@ def test_a_store_link_is_named_on_the_status_line(tmp_path):
     link.symlink_to(target, target_is_directory=True)
     facts = watch.facts(ship, SimpleNamespace())
     assert f'{post_dir.LINK_HELD}{link}' in facts.post_held
-    assert '1 post holds' in facts.line()
+    assert '1 post hold' in facts.line()
 
 
 def test_an_imports_link_is_named_on_the_status_line(tmp_path):
@@ -324,13 +324,13 @@ def test_an_imports_link_is_named_on_the_status_line(tmp_path):
     link.symlink_to(target, target_is_directory=True)
     facts = watch.facts(ship, SimpleNamespace())
     assert f'{post_dir.LINK_HELD}{link}' in facts.post_held
-    assert '1 post holds' in facts.line()
+    assert '1 post hold' in facts.line()
     with pytest.raises(ShipError) as caught:
         post.Store(ship.runtime).new('order', 'desk', 'captain', 'Still listed.')
     held(caught.value, link)
     facts = watch.facts(ship, SimpleNamespace())
     assert f'{post_dir.LINK_HELD}{link}' in facts.post_held
-    assert '1 post holds' in facts.line()
+    assert '1 post hold' in facts.line()
 
 
 def test_a_fifo_at_a_store_name_is_skipped_and_ordinary_messages_remain(tmp_path, monkeypatch):

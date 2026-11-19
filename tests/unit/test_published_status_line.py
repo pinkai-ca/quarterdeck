@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, output, presentation, watch
+from quarterdeck import cli, headlines, output, presentation, watch
 from .test_status_presentation import live
 
 
@@ -34,6 +34,31 @@ def test_unverified_publications_keep_alerts_with_explicit_staleness(live, monke
     if change == 'old':
         assert 'published 46s ago' in line
     assert path.read_bytes() == before, 'reading must not renew the publication'
+
+
+@pytest.mark.parametrize('plain', [False, True], ids=['structured', 'older-plain'])
+def test_crowded_stale_publication_keeps_provenance_before_urgent_alerts(live, monkeypatch, plain):
+    ship, _, _ = live
+    wide = '界' * 100
+    facts = watch.Facts('ok', 9, 25, 4, needs_human=[wide], seat_holds=['seat: ' + wide],
+                        sign_in_failures=[wide], login=[(wide, 'soon')], disks=[(wide, 95)], held=[wide],
+                        record_bounds=[wide + ': record past the read bound'], queued=5)
+    path = ship.runtime / presentation.NAME
+    data = json.loads(path.read_text())
+    data.update(line=facts.line(), headline=headlines.cache_document(facts))
+    if plain:
+        data.pop('headline')
+        data['line'] = data['line'].removesuffix('qd status') + 'details: qd status'
+    path.write_text(json.dumps(data))
+    monkeypatch.setattr(presentation.time, 'time_ns', lambda: data['written'] + 46_000_000_000)
+    monkeypatch.setattr(watch, 'facts', no_collection)
+    copy = headlines.note('copy warning ' + wide, 'copy warning')
+
+    line, age = presentation.published_reading(ship.folder, status_refresh=30, notes=(copy,))
+    service, freshness, warning, human, *items, pointer = line.split(headlines.SEPARATOR)
+    assert age is None and service == 'service ok' and freshness.startswith('status stale')
+    assert (warning, human, items[0], pointer) == ('copy warning', '1 needs a human', '1 seat held', 'qd status')
+    assert headlines.columns(line) <= headlines.WIDTH
 
 
 @pytest.mark.parametrize('publication', [None, '{corrupt', '{}', '[]', 'x' * 65537])

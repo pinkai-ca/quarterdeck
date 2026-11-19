@@ -59,7 +59,7 @@ def test_cascade_hold_category_survives_status_overflow_without_changing_group_c
     assert watch.Facts('ok', 0, 0, 0).cascade_held == []
     facts = watch.Facts('down', 0, 0, 0, group_held=['group held: ' + 'g' * 200],
                         cascade_held=['cascade held: ' + 'c' * 200])
-    assert '1 groups held' in facts.line() and '1 cascades held' in facts.line()
+    assert '1 group held' in facts.line() and '1 cascade held' in facts.line()
     assert len(facts.line()) <= 160
 
 

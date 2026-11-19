@@ -188,7 +188,7 @@ def test_status_line_names_authentication_with_no_open_order(tmp_path, monkeypat
     facts = watch.facts(ship, object(), store=store, attempts=attempts)
     assert (seat.name in facts.needs_human) is human
     assert any(AUTHENTICATION in reason for reason in facts.sign_in_failures)
-    assert AUTHENTICATION in facts.line() or '1 sign-in failures' in facts.line()
+    assert AUTHENTICATION in facts.line() or '1 sign-in failure' in facts.line()
     if not human:
         assert auth_failure.WAITING in facts.line()
         assert f'{seat.name} needs a human' not in facts.line()

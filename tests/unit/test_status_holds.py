@@ -154,8 +154,8 @@ def test_crowded_status_counts_immediate_alerts_and_groups_the_rest():  # law: n
     text = facts.line()
     print(len(text), text)
     from quarterdeck.headlines import columns
-    for category in ("SERVICE DOWN", "1 waiting", "1 queued", "1 blind", "1 need human", "1 unarmed",
-                     "held at limit", "1 pending", "1 disk alerts", "1 login needed", "more"):
+    for category in ("SERVICE DOWN", "1 waiting", "1 queued", "1 blind", "1 needs a human", "1 unarmed",
+                     "held at limit", "1 pending", "1 disk alert", "1 login needed", "more"):
         assert category in text
     assert columns(text) <= 160 and text.endswith(" · qd status")
     assert "walls" not in text and "usage" not in text and "reset" not in text

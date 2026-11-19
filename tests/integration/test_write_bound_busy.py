@@ -596,7 +596,7 @@ def test_a_device_whose_free_space_goes_unread_two_looks_running_is_named_on_the
     named = f'write bound: free space unread on {folder}, 2 looks running (PermissionError); its floor is not watched there'
     assert write_bound.status(ship) == [named]
     facts = watch.facts(ship, tmux)
-    assert named in facts.write_bounds and '1 write-bound alerts' in facts.line()
+    assert named in facts.write_bounds and '1 write-bound alert' in facts.line()
     kept = write_bound.floor_unread_path(ship.runtime)
     first = kept.stat().st_mtime_ns, kept.stat().st_ino
     write_bound.floor_unread_write(ship.runtime, state.unread, log)
