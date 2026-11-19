@@ -2382,7 +2382,7 @@ class Service:
         observations, notices, human_readings = [], [], []
         marks, errors = dict(self.read_marks), dict(self.account_errors)
         holds, held = dict(getattr(self, 'read_holds', {})), {}
-        spans = {}  # record -> (size, bound): read refused past its bound this pass
+        spans = {}  # record -> (raw size, limit, resource, unit): read stopped at a bound
         projections = {}  # scalar budget evidence from guarded native streams
         meters = deepcopy(self.meters)
         checkpoints = {}
@@ -2470,8 +2470,10 @@ class Service:
                     if (getattr(owned.reader, 'native_status_stream', False)
                             and (usage := getattr(error, 'projection_usage', None)) is not None):
                         projections[record] = usage
+                        if usage.exhausted is not None and getattr(error, 'limit', None) is not None:
+                            spans[record] = usage.stamp[2], error.limit, usage.exhausted, error.unit
                     if getattr(error, 'size', None) is not None and getattr(error, 'bound', None) is not None:
-                        spans[record] = error.size, error.bound  # past its read bound: a span the ledger keeps
+                        spans[record] = error.size, error.bound, None, None
                     prior = errors.get(record)
                     if prior is None or prior[:2] != (evidence, message):
                         notices.append(("error", dict(step="account", seat=seat.name, record=record.name, error=message)))
@@ -2496,13 +2498,16 @@ class Service:
                         book.mark_accounted(record, None)
                         book.mark_record(record, seat.name, pool, error, commit=False, evidence=settlement)
                         if record in spans:  # law: every-turn-accounted: what was never read is shown, not guessed
-                            book.mark_unread_span(record, seat.name, pool, *spans[record], post.now().isoformat(),
-                                                  commit=False)
+                            size, limit, resource, unit = spans[record]
+                            book.mark_unread_span(record, seat.name, pool, size, limit, post.now().isoformat(),
+                                                  resource=resource, unit=unit, commit=False)
                         marks.pop(record, None)
                         continue
-                    book.clear_unread_span(record, commit=False)  # read whole: no span of it is unread
+                    complete = record in checkpoints
+                    span_remains = not complete and book.has_unread_span(record)
                     if state is None:  # an empty record of unknown reader: settled, with nothing to account
-                        book.mark_record(record, seat.name, pool, None, commit=False)
+                        if not span_remains:
+                            book.mark_record(record, seat.name, pool, None, commit=False)
                         continue
                     extra = getattr(state, 'extra_usage', ())
                     if source_walls is None:
@@ -2511,7 +2516,6 @@ class Service:
                     else:
                         source_walls(record, seat.name, state.walls, post.now(), extra)
                     incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
-                    book.mark_record(record, seat.name, pool, incomplete, commit=False)
                     if turns:
                         qualify = getattr(reader, "price_turn", lambda turn, price: turn)
                         turns = [qualify(t, book.provenance.price(record, t.started, t.ended)) for t in turns]
@@ -2521,12 +2525,19 @@ class Service:
                             if live and record == current:
                                 meters[seat.name] = machine.Meter(pane.pid)
                             notices.append(("ledger", dict(seat=seat.name, record=record.name, turns=written)))
-                    marks[record] = stamp
+                    if incomplete or not span_remains:
+                        book.mark_record(record, seat.name, pool, incomplete, commit=False)
+                    if complete:
+                        book.clear_unread_span(record, commit=False)
+                    if not span_remains or record in held:
+                        marks[record] = stamp
+                    else:
+                        marks.pop(record, None)
                     if record in held:
                         holds[record] = held[record]
                     else:
                         holds.pop(record, None)
-                    if record in checkpoints:
+                    if complete:
                         book.mark_accounted(record, checkpoints[record])
                     if record == current and seat.session.human:
                         human_readings.append((seat, record, state, turns, stamp[1]))

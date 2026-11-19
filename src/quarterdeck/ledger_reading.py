@@ -42,9 +42,15 @@ def _mib(count: int) -> str:
 
 def span_note(span: dict) -> str:
     """One unread span, in words: never a figure for the turns it holds (law: every-turn-accounted)."""
-    return (f"unread span: {Path(span['record']).name} ({span['seat']}, {span['pool']}) · {_mib(span['size'])} past its "
-            f"read bound of {_mib(span['bound'])}, first seen {span['passed_at']}; {span['counted']} turns counted "
-            f"before it, its turns since unknown")
+    limits = []
+    if 'bound' in span:
+        earlier = "previously " if 'projection' in span else ""
+        limits.append(f"{earlier}{_mib(span['size'])} past its read bound of {_mib(span['bound'])}")
+    if projection := span.get('projection', span if 'resource' in span else None):
+        limits.append(f"{projection['size']:,} bytes raw, projection {projection['resource']} limit of "
+                      f"{projection['limit']:,} {projection['unit']} exceeded")
+    return (f"unread span: {Path(span['record']).name} ({span['seat']}, {span['pool']}) · {' · '.join(limits)}, first seen "
+            f"{span['passed_at']}; {span['counted']} turns counted before it, its turns since unknown")
 
 
 def notes(data: dict) -> list[str]:

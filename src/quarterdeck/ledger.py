@@ -94,6 +94,11 @@ CREATE TABLE IF NOT EXISTS unread_spans (
     record TEXT PRIMARY KEY, seat TEXT NOT NULL, pool TEXT NOT NULL, size INTEGER NOT NULL, bound INTEGER NOT NULL,
     passed_at TEXT NOT NULL, seen_at TEXT NOT NULL, counted INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS unread_projection_spans (
+    record TEXT PRIMARY KEY, seat TEXT NOT NULL, pool TEXT NOT NULL, size INTEGER NOT NULL,
+    limit_value INTEGER NOT NULL, resource TEXT NOT NULL, unit TEXT NOT NULL,
+    passed_at TEXT NOT NULL, seen_at TEXT NOT NULL, counted INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS record_projection_usage (
     record TEXT PRIMARY KEY, stamp TEXT NOT NULL, lines INTEGER, retained INTEGER, memory INTEGER, exhausted TEXT
 );
@@ -402,29 +407,55 @@ class Ledger:
                               (str(record),)).fetchone()
         return tuple(row) if row else None
 
-    def mark_unread_span(self, record: Path, seat: str, pool: str, size: int, bound: int, at: str, *,
-                         commit: bool = True) -> None:
-        """Keep the span of a record that was never read because it passed its read bound (law: every-turn-accounted):
-        the seat, the pool, its size and the bound, when it was first seen past the bound, when its figures last
-        changed (seen_at), and how many of its turns were counted before. Its turns since are unknown: no figure is
-        made for them. A pass that finds the span unchanged writes nothing."""
-        old = self.db.execute("SELECT seat,pool,size,bound FROM unread_spans WHERE record=?", (str(record),)).fetchone()
+    def _unread_evidence(self, record: Path) -> list[tuple]:
+        return self.db.execute(
+            "SELECT seat,pool,size,bound,NULL,NULL,passed_at,counted FROM unread_spans WHERE record=? "
+            "UNION ALL SELECT seat,pool,size,limit_value,resource,unit,passed_at,counted "
+            "FROM unread_projection_spans WHERE record=?", (str(record), str(record))).fetchall()
+
+    def has_unread_span(self, record: Path) -> bool:
+        return bool(self._unread_evidence(record))
+
+    def mark_unread_span(self, record: Path, seat: str, pool: str, size: int, limit: int, at: str, *,
+                         resource: str | None = None, unit: str | None = None, commit: bool = True) -> None:
+        """Keep a limited read's raw size and actual limit (law: every-turn-accounted).
+
+        The first observation and the turns counted before it survive a change of limit. Raw-bound evidence
+        remains alongside projection evidence until a complete read. Repeated evidence writes nothing.
+        """
+        evidence = self._unread_evidence(record)
+        old = next((row for row in evidence if (row[4] is None) == (resource is None)), None)
         if old is None:
-            self.db.execute("INSERT INTO unread_spans (record,seat,pool,size,bound,passed_at,seen_at,counted) "
-                            "VALUES (?,?,?,?,?,?,?,?)", (str(record), seat, pool, size, bound, at, at, self.ingested(record)))
-        elif tuple(old) != (seat, pool, size, bound):
-            self.db.execute("UPDATE unread_spans SET seat=?,pool=?,size=?,bound=?,seen_at=? WHERE record=?",
-                            (seat, pool, size, bound, at, str(record)))
+            passed, counted = evidence[0][6:] if evidence else (at, self.ingested(record))
         else:
-            return  # the same span, its figures unchanged: nothing to write
+            prior_seat, prior_pool, prior_size, prior_limit, prior_resource, prior_unit, passed, counted = old
+            if (prior_seat, prior_size, prior_limit, prior_resource, prior_unit) == (seat, size, limit, resource, unit):
+                # A fresh launch can remove the current pool fallback without changing this record's known owners.
+                if prior_pool == pool or (self.provenance.owners(str(record), seat, prior_pool)
+                                          == self.provenance.owners(str(record), seat, pool)):
+                    return
+        if resource is None:
+            self.db.execute("INSERT OR REPLACE INTO unread_spans (record,seat,pool,size,bound,passed_at,seen_at,counted) "
+                            "VALUES (?,?,?,?,?,?,?,?)", (str(record), seat, pool, size, limit, passed, at, counted))
+        else:
+            self.db.execute("INSERT OR REPLACE INTO unread_projection_spans "
+                            "(record,seat,pool,size,limit_value,resource,unit,passed_at,seen_at,counted) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (str(record), seat, pool, size, limit, resource, unit, passed, at, counted))
         if commit and self.db.in_transaction:
             self.db.commit()
 
+    def _delete_unread_span(self, record: Path, resource: str | None) -> None:
+        table = 'unread_spans' if resource is None else 'unread_projection_spans'
+        self.db.execute(f"DELETE FROM {table} WHERE record=?", (str(record),))
+
     def clear_unread_span(self, record: Path, *, commit: bool = True) -> None:
-        """A record read whole again (a bound raised, a record replaced): its span is no longer unread."""
-        if self.db.execute("SELECT 1 FROM unread_spans WHERE record=?", (str(record),)).fetchone() is None:
+        """Clear the span after a complete, stable read of its owned record."""
+        evidence = self._unread_evidence(record)
+        if not evidence:
             return
-        self.db.execute("DELETE FROM unread_spans WHERE record=?", (str(record),))
+        for row in evidence:
+            self._delete_unread_span(record, row[4])
         if commit and self.db.in_transaction:
             self.db.commit()
 
@@ -453,16 +484,30 @@ class Ledger:
         return None
 
     def unread_spans(self) -> list[dict]:
-        """Every unread span, oldest first. A ledger an earlier copy wrote has none."""
+        """One unread span per owned key, oldest first, with any raw and projection evidence."""
+        query = ("SELECT record,seat,pool,size,bound AS limit_value,NULL AS resource,NULL AS unit,"
+                 "passed_at,seen_at,counted FROM unread_spans")
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='unread_projection_spans'").fetchone():
+            query += (" UNION ALL SELECT record,seat,pool,size,limit_value,resource,unit,passed_at,seen_at,counted "
+                      "FROM unread_projection_spans")
         try:
-            rows = self.db.execute("SELECT record,seat,pool,size,bound,passed_at,seen_at,counted FROM unread_spans "
-                                   "ORDER BY passed_at, record").fetchall()
+            rows = self.db.execute(query + " ORDER BY record,resource").fetchall()
         except sqlite3.OperationalError:
             return []  # no such table: written before spans were kept
-        return [dict(record=record, seat=owner, pool=charged, size=size, bound=bound, passed_at=passed, seen_at=seen,
-                     counted=counted, turns_since=None)
-                for record, seat, pool, size, bound, passed, seen, counted in rows
-                for owner, charged in self.provenance.owners(record, seat, pool)]  # as the unread records resolve
+        spans = {}
+        for record, seat, pool, size, limit, resource, unit, passed, seen, counted in rows:
+            evidence = dict(size=size, passed_at=passed, seen_at=seen, counted=counted)
+            if resource is None:
+                evidence['bound'] = limit
+            else:
+                evidence.update(resource=resource, limit=limit, unit=unit)
+            if record in spans:
+                spans[record]['projection'] = evidence  # raw first in the query order
+            else:
+                spans[record] = dict(record=record, seat=seat, pool=pool, turns_since=None, **evidence)
+        return [dict(span, seat=owner, pool=charged)
+                for span in sorted(spans.values(), key=lambda span: (span['passed_at'], span['record']))
+                for owner, charged in self.provenance.owners(span['record'], span['seat'], span['pool'])]
 
     def incomplete_records(self) -> list[tuple[str, str, str, str]]:
         errors = self.db.execute("SELECT record, seat, pool, error FROM records ORDER BY record").fetchall()

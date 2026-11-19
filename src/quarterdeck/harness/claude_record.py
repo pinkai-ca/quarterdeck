@@ -39,9 +39,15 @@ class Unknown(record_file.RecordError):
 class ProjectionLimit(Unknown):
     """A record might need the existing bounded full reader."""
 
-    def __init__(self, reason, resource='native projection'):
+    def __init__(self, reason, resource='native projection', *, limit=None, unit=None):
         super().__init__(reason)
         self.resource = resource
+        self.limit = limit
+        self.unit = unit
+
+
+def _row_limit(reason):
+    return ProjectionLimit(reason, 'retained bytes per row', limit=ROW_BYTES, unit='bytes')
 
 
 class PhysicalSeparators(Exception):
@@ -72,7 +78,7 @@ class GiantRow:
                     self.snapshot = None
         else:
             if len(self.output) + len(data) > ROW_BYTES:
-                raise ProjectionLimit('required JSON row exceeds the retained-byte budget')
+                raise _row_limit('required JSON row exceeds the retained-byte budget')
             self.output.extend(data)
         if self.key_bytes is not None:
             self.key_bytes.extend(data)
@@ -228,7 +234,7 @@ class GiantRow:
         if row.get('type') == OMIT_TYPE:
             del row[OMIT_KEY]
         elif self.snapshot is None:
-            raise ProjectionLimit('required snapshot value exceeds the retained-byte budget')
+            raise _row_limit('required snapshot value exceeds the retained-byte budget')
         else:
             row[OMIT_KEY] = json.loads(self.snapshot.decode())
         return row, None, retained_size(row)
@@ -237,7 +243,7 @@ class GiantRow:
 def retained_size(row):
     data = json.dumps(row, ensure_ascii=False, separators=(',', ':')).encode('utf-8', errors='surrogatepass')
     if len(data) > ROW_BYTES:
-        raise ProjectionLimit('required projection exceeds the per-row budget')
+        raise _row_limit('required projection exceeds the per-row budget')
     return len(data)
 
 
@@ -353,16 +359,19 @@ def scan(descriptor, size, cached, *, splitlines=False):
         nonlocal retained, number, decoded
         number += 1
         if number > rows_bound:
-            raise ProjectionLimit('native record exceeds its physical line budget', 'physical lines')
+            raise ProjectionLimit('native record exceeds its physical line budget', 'physical lines',
+                                  limit=rows_bound, unit='lines')
         row, diagnostic, weight = line.finish()
         retained += weight
         if retained > retained_bound:
-            raise ProjectionLimit('native record exceeds its retained-byte budget', 'retained bytes')
+            raise ProjectionLimit('native record exceeds its retained-byte budget', 'retained bytes',
+                                  limit=retained_bound, unit='bytes')
         if large:
             if row is not None:
                 decoded += decoded_size(row)
             if decoded + number * ROW_STATE_BYTES > record_file.CLAUDE_STREAM_MEMORY:
-                raise ProjectionLimit('native record exceeds its retained memory budget', 'retained memory')
+                raise ProjectionLimit('native record exceeds its retained memory budget', 'retained memory',
+                                      limit=record_file.CLAUDE_STREAM_MEMORY, unit='bytes')
         if row is not None:
             rows.append((number, row))
         elif diagnostic is not None:
