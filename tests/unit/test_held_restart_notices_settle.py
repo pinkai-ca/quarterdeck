@@ -7,8 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import post, post_notices, request_queue, post_threads, ship as shipmod
+from quarterdeck.seat import Seat
 from quarterdeck.service import Service
-from tests.unit.test_rebrief_notices_settle import AT, store, launch, reader
+from tests.unit.test_rebrief_notices_settle import AT, store, launch, notice, reader, retain_launch
 
 
 STEM = '120000-relaunch-123'
@@ -98,6 +99,38 @@ def test_later_launch_settles_a_held_request_notice(store, monkeypatch):
     launch(store, message.at + timedelta(seconds=1))
     assert store.settled_notices('reader')[message.id] == 'held restart: settled by a later launch'
     assert request_queue.load(path)['kind'] == 'relaunch'
+
+
+@pytest.mark.parametrize('resume', [True, False], ids=['restart', 'fresh'])
+def test_down_seat_reads_one_retained_launch_for_its_notice_batch(store, monkeypatch, resume):
+    path, message = held(store, monkeypatch, resume=resume, refused=True)
+    ship = shipmod.load(store.dir.parent.parent.parent)
+    seat = Seat(ship, ship.seat('reader'), None)
+    retained = retain_launch(seat, message.at + timedelta(seconds=1))
+    base_move = 'moved to pool example from before by qd set'
+    move_source = SimpleNamespace(name='reader', launched=lambda: SimpleNamespace(resume='conversation' if resume else None))
+    Service.report_pool_move(SimpleNamespace(store=store), move_source, base_move)
+    [old_move] = [m for m in store.for_seat('reader') if m.body.startswith(base_move)]
+    assert old_move.body == (base_move if resume else base_move + ' and started a new conversation')
+    near_move = notice(store, 1, body=old_move.body + ' with unrelated text')
+    ordinary_report = notice(store, 2, body=old_move.body, sender='another-seat')
+    equal = notice(store, 121)
+    newer_move = notice(store, 122, body='moved to pool later from example at its wall')
+    assert equal.at == retained.when < newer_move.at
+
+    observed, read = [], post_notices._retained_at
+
+    def retained_at(owner, cache):
+        observed.append(owner.name)
+        return read(owner, cache)
+
+    monkeypatch.setattr(post_notices, '_retained_at', retained_at)
+    assert store.settled_notices('reader') == {
+        message.id: 'held restart: settled by a later launch',
+        old_move.id: 'pool move: settled by a later launch',
+    }
+    assert observed == ['reader'] and request_queue.load(path)['kind'] == 'relaunch'
+    assert post.Attempts(store.dir.parent.parent).undelivered(store, 'reader') == [near_move, ordinary_report, equal, newer_move]
 
 
 def test_unreadable_request_settles_nothing(store, monkeypatch):

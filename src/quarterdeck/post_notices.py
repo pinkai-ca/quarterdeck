@@ -8,6 +8,11 @@ import re
 import time
 
 from . import post, trusted_files
+from .harness.resume_target import NEW_CONVERSATION
+
+
+POOL_MOVE = re.compile(r'moved to pool \S+ from \S+ (?:at its wall|by qd set)'
+                       rf'(?: and {re.escape(NEW_CONVERSATION)})?')
 
 
 def notice_class(message):
@@ -16,7 +21,7 @@ def notice_class(message):
     if message.body in (f"ship's orders changed · read runtime/brief/{message.to}.md",
                         f"brief changed · read runtime/brief/{message.to}.md"):
         return 'changed orders'
-    if re.fullmatch(r'moved to pool [^\s]+ from [^\s]+ (?:at its wall|by qd set)', message.body):
+    if POOL_MOVE.fullmatch(message.body):
         return 'pool move'
     return None
 
@@ -218,13 +223,14 @@ def settled(store, seat, *, brief_at=None):
     candidates = [(m, kind) for m, kind in candidates if kind is not None and m.at.tzinfo is not None]
     held = [(m, held_request(m)) for m in incoming if m.at.tzinfo is not None]
     held = [(m, request) for m, request in held if request is not None]
-    launch = prior = None
+    launch = None
     if candidates or held:
         cache = getattr(store, '_notice_launch_cache', None)
         if cache is None:
             cache = store._notice_launch_cache = _LaunchCache()
-        launch, prior = _launch_times(store.dir.parent.parent, seat, cache=cache,
-                                      retained=any(kind == 'changed orders' for _, kind in candidates))
+        launch, prior = _launch_times(store.dir.parent.parent, seat, cache=cache, retained=True)
+        if launch is None:
+            launch = prior
     if isinstance(brief_at, datetime) and brief_at.tzinfo is not None:
         launch = max(launch, brief_at) if launch is not None else brief_at
     latest = {}
@@ -232,8 +238,7 @@ def settled(store, seat, *, brief_at=None):
         latest[kind] = max(latest.get(kind, (message.at, message.id)), (message.at, message.id))
     result = {}
     for message, kind in candidates:
-        if (launch is not None and message.at < launch
-                or kind == 'changed orders' and prior is not None and message.at < prior):
+        if launch is not None and message.at < launch:
             result[message.id] = f'{kind}: settled by a later launch'
         elif (message.at, message.id) < latest[kind]:
             result[message.id] = f'{kind}: settled by a newer notice'

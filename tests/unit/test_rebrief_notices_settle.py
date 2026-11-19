@@ -103,11 +103,12 @@ def test_down_hand_keeps_its_old_notice_settled_without_an_attempt_or_seat_act(s
 
 @pytest.mark.parametrize('evidence', ['newer notice', 'equal', 'missing', 'wrong pool', 'wrong reader',
                                       'ambiguous', 'unreadable', 'active unproved'])
-def test_unproved_retained_join_or_non_older_notice_still_waits(store, evidence):
+@pytest.mark.parametrize('body', [None, 'moved to pool example from prior by qd set'], ids=['brief', 'pool-move'])
+def test_unproved_retained_join_or_non_older_notice_still_waits(store, evidence, body):
     runtime = store.dir.parent.parent
     ship = shipmod.load(runtime.parent)
     seat = Seat(ship, ship.seat('reader'), None)
-    message = notice(store, 2 if evidence == 'newer notice' else 0)
+    message = notice(store, 2 if evidence == 'newer notice' else 0, body=body)
     if evidence != 'missing':
         retain_launch(seat, AT + timedelta(seconds=0 if evidence == 'equal' else 1))
         history = seat.trusted / trusted_files.LAUNCHES
