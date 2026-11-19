@@ -131,19 +131,28 @@ def damage_record(seat, case):
     else:
         record.write_text(json.dumps({'type': 'user'}) + '\n')
         with record.open('r+b') as stream:
-            stream.truncate(record_file.LINES_BOUND + 1)
+            stream.truncate(record_file.bound_of(record, seat.harness.name) + 1)
     return record
 
 
 @pytest.mark.parametrize('case', ['unreadable', 'oversized', 'missing'])
-def test_walled_crew_unproved_record_moves_fresh_to_the_open_pool_once(running, case):
+def test_walled_crew_unproved_record_moves_fresh_to_the_open_pool_once(running, case, monkeypatch):
     from dataclasses import replace
     r = running
     on_the_open_program(r)
     before = len(r.launches)
     message = r.svc.store.new('order', 'issuer', 'worker', 'synthetic open order')
     r.seat.ship.seats['sentry'] = replace(r.seat.ship.seat('worker'), name='sentry', role='systems', persona=None)
-    damage_record(r.seat, case)
+    if case == 'oversized':
+        # Pin the joined record first. The streamed reader then takes this constant through bound_of.
+        joined = r.seat.record()
+        monkeypatch.setattr(record_file, 'CLAUDE_STREAM_BOUND', 64)
+        assert joined == r.seat.record()
+    record = damage_record(r.seat, case)
+    if case == 'oversized':
+        assert record.stat().st_size > record_file.bound_of(record, 'claude') == 64
+        with pytest.raises(record_file.PastBound):
+            r.seat.harness.session_id(record)
     r.svc.failover()
     assert r.seat.pool.name == 'third' and r.seat.launched().resume is None
     assert len(r.launches) == before + 1 and '--resume' not in r.launches[-1]
