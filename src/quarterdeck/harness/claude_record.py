@@ -448,6 +448,7 @@ def _parse(record):
                     # A traceback would retain the abandoned projection while
                     # the legacy reader allocates its own buffer and rows.
                     limit = ProjectionLimit(str(error))
+                if limit is not None:
                     full = record_file.read_from(descriptor, info, source, bound)
             except (OSError, UnicodeError) as error:
                 failure = error

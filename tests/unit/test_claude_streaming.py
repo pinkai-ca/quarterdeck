@@ -3,6 +3,7 @@
 from hashlib import sha256
 import json
 import os
+from weakref import ref
 
 import pytest
 
@@ -55,6 +56,29 @@ def test_valid_under_bound_required_evidence_has_a_complete_fallback(tmp_path, m
     assert json_record._entry(snapshot).claude_full and list(snapshot.rows) == expected
     assert claude.state(record.path).turn_open is False
     assert claude.compactions(record.path).reason is None
+
+
+def test_fallback_read_releases_the_abandoned_projection(tmp_path, monkeypatch):
+    record = native(tmp_path / 'synthetic.jsonl')
+    projections = []
+
+    class Projection:
+        pass
+
+    def scan(*args):
+        projection = Projection()
+        projections.append(ref(projection))
+        raise claude_record.ProjectionLimit('synthetic projection limit')
+
+    read_from = record_file.read_from
+
+    def read_without_projection(*args):
+        assert len(projections) == 1 and projections[0]() is None
+        return read_from(*args)
+
+    monkeypatch.setattr(claude_record, '_scan_layout', scan)
+    monkeypatch.setattr(record_file, 'read_from', read_without_projection)
+    assert json_record._entry(claude_record.parse(record.path)).claude_full
 
 
 @pytest.mark.parametrize('tail', [b'!\n', b'{"type":\n', b'[]\n'])
