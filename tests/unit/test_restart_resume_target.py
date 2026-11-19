@@ -261,6 +261,14 @@ def handoff_orders(r):
 def test_live_crew_handoff_is_durable_bound_and_waits_for_report_and_turn_end(running, monkeypatch):
     r = running
     s = r.seat
+    journal = alarms.path(r.svc.runtime, s.name, 'staged-move')
+    remove = fresh_handoff.post_dir.remove
+
+    def remove_other_files(target):
+        assert target != journal, 'an ordinary handoff must not try to remove a staged move alarm'
+        remove(target)
+
+    monkeypatch.setattr(fresh_handoff.post_dir, 'remove', remove_other_files)
     usage(r.svc, 'first', 0.2)
     monkeypatch.setattr(s.harness, 'screen', lambda _: Screen('', '', working=False))
     before = s.launched()
@@ -416,11 +424,20 @@ def test_immediate_fresh_settles_a_carried_handoff_after_the_replacement_starts(
     assert closed and all(fresh_handoff.REPORT.fullmatch(m.body.strip()) is None for m in closed)
 
 
-def test_open_pool_select_of_a_missing_record_stages_the_chosen_pool(running):
+def test_open_pool_select_of_a_missing_record_stages_the_chosen_pool(running, monkeypatch):
     r = running
     r.svc.failover()
     assert r.seat.pool.name == 'second' and not quota.current_walled(r.seat, r.svc.ledger)
     damage_record(r.seat, 'missing')
+    journal = alarms.path(r.svc.runtime, r.seat.name, 'staged-move')
+    remove = fresh_handoff.post_dir.remove
+
+    def remove_other_files(target):
+        if target == journal:
+            raise OSError('synthetic removal failure while staging a new move')
+        remove(target)
+
+    monkeypatch.setattr(fresh_handoff.post_dir, 'remove', remove_other_files)
     before, launches = r.seat.launched(), len(r.launches)
     answer = r.svc.select(r.seat, 'third')
     assert 'handoff order' in answer and 'moved to third' not in answer
@@ -504,6 +521,43 @@ def test_open_pool_select_rechecks_the_chosen_pool_after_report_and_idle(running
     moved = 'moved to pool third from second by qd set and started a new conversation'
     assert [message.body for message in r.svc.store.for_seat(s.name) if message.body == moved] == [moved]
     assert all('third is walled' not in line for line in watch.facts(s.ship, s.tmux).seat_holds)
+
+
+def test_staged_move_reports_success_while_alarm_removal_retries(running, monkeypatch):
+    r = running
+    s, svc = r.seat, r.svc
+    _, order, handoff = stage_ready_move(r, monkeypatch)
+    s.ship.seats['sentry'] = replace(s.spec, name='sentry', role='systems')
+    usage(svc, 'third', 1.0)
+    svc.fresh_handoffs()
+    journal = alarms.path(svc.runtime, s.name, 'staged-move')
+    assert journal.is_file()
+    [alert] = svc.store.for_seat('sentry')
+    usage(svc, 'third', 0.0)
+    before = len(r.launches)
+    remove = fresh_handoff.post_dir.remove
+
+    def remove_other_files(target):
+        if target == journal:
+            raise OSError('synthetic removal failure at the move start')
+        remove(target)
+
+    moved = 'moved to pool third from second by qd set and started a new conversation'
+    with monkeypatch.context() as cut:
+        cut.setattr(fresh_handoff.post_dir, 'remove', remove_other_files)
+        svc.fresh_handoffs()
+        assert fresh_handoff.load(svc.runtime, s.name)['phase'] == 'done'
+        assert len(r.launches) == before + 1 and s.pool.name == 'third'
+        assert not svc.store.is_open(order) and svc.store.is_open(handoff)
+        assert journal.is_file()
+        [report] = [m for m in svc.store.for_seat(s.name) if m.body == moved]
+
+    started = s.launched()
+    svc.fresh_handoffs()
+    assert not journal.exists()
+    assert s.launched() == started and len(r.launches) == before + 1
+    assert [m for m in svc.store.for_seat(s.name) if m.body == moved] == [report]
+    assert svc.store.for_seat('sentry') == [alert]
 
 
 @pytest.mark.parametrize('during', ['post', 'handoff', 'destination', 'launch'])
@@ -591,13 +645,17 @@ def test_a_superseded_staged_move_clears_its_alarm(running, monkeypatch, interru
     assert journal.is_file()
     [alert] = svc.store.for_seat('sentry')
 
-    def fail_removal(*_):
-        raise OSError('synthetic removal failure after settlement')
+    remove = fresh_handoff.post_dir.remove
+
+    def remove_other_files(target):
+        if target == journal:
+            raise OSError('synthetic removal failure after settlement')
+        remove(target)
 
     s.fresh()
     with monkeypatch.context() as cut:
         if interrupted:
-            cut.setattr(fresh_handoff, '_clear_move_alarm', fail_removal)
+            cut.setattr(fresh_handoff.post_dir, 'remove', remove_other_files)
         svc.fresh_handoffs()
     assert fresh_handoff.load(svc.runtime, s.name)['phase'] == 'superseded'
     assert journal.exists() == interrupted

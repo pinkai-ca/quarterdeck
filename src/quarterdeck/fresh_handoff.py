@@ -55,7 +55,8 @@ def save(runtime, name, data):
 
 
 def _clear_move_alarm(runtime, name):
-    with suppress(FileNotFoundError):
+    # A settled handoff can retry housekeeping on a later pass.
+    with suppress(OSError, ShipError):
         post_dir.remove(alarms.path(runtime, name, 'staged-move'))
 
 
@@ -164,8 +165,8 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                         data['order'] = store.prepare('order', post.SHIP, name, body, subject=SUBJECT).to_json()
                     if pool is not None:
                         data['pool'] = pool
-                    if not current:
-                        _clear_move_alarm(runtime, name)
+                        if not current:
+                            _clear_move_alarm(runtime, name)
                     save(runtime, name, data)  # publish the intent before the immutable post
                     order = _publish_order(store, data)
                     disposition = 'already-staged' if current else 'staged'
@@ -233,8 +234,9 @@ def _start(service, seat, store, data, *, unable=False, pool=None, enclosed=Fals
     note = f'{name} {resume_target.NEW_CONVERSATION} because {explanation}.'
 
     def begin():
-        try:
+        if data.get('pool') is not None:
             _clear_move_alarm(runtime, name)
+        try:
             proof = seat._fresh_on_pool(pool) if pool is not None else seat._fresh()
         except (OSError, ShipError) as error:
             data['phase'] = 'failed'
@@ -263,7 +265,8 @@ def _interrupted(service, seat, data):
     data.update(phase='failed', problem=explanation, failed_launch=compaction.launch_key(seat))
     save(runtime, name, data)
     _notice(service.store, seat, data, explanation)
-    _clear_move_alarm(runtime, name)
+    if data.get('pool') is not None:
+        _clear_move_alarm(runtime, name)
     raise ShipError(explanation)
 
 
@@ -302,7 +305,7 @@ def tick(service, seat):
         if post_dir.exists(alarms.path(runtime, name, 'staged-move')):
             with seat._lifecycle(automatic=True):
                 if load(runtime, name) == data:
-                    _clear_move_alarm(runtime, name)  # recover cleanup after a stop between settlement and removal
+                    _clear_move_alarm(runtime, name)  # retry skipped or unsuccessful cleanup after settlement
         if data['phase'] == 'failed' and 'problem' in data and data['failed_launch'] == compaction.launch_key(seat):
             raise ShipError(data['problem'])  # keep the hold until another launch establishes a new outcome
         return
@@ -332,7 +335,8 @@ def tick(service, seat):
                     return  # let the next pass settle the superseded handoff
                 data['phase'] = 'superseded'
                 save(runtime, name, data)
-                _clear_move_alarm(runtime, name)
+                if data.get('pool') is not None:
+                    _clear_move_alarm(runtime, name)
                 return
             if not _can_prepare(seat):
                 return
