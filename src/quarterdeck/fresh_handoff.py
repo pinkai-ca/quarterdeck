@@ -301,6 +301,21 @@ def tick(service, seat):
                     return
                 if data['launch'] != compaction.launch_key(seat):
                     return
-            data['phase'] = 'starting'
-            save(runtime, name, data)  # claim under the same admission used by input delivery and post
-        _start(service, seat, service.store, data, unable=unable, pool=data.get('pool'))
+            pool = data.get('pool')
+            refusal, unknown = service.select_destination(seat, pool) if pool is not None else (None, False)
+            if refusal is None:
+                data['phase'] = 'starting'
+                save(runtime, name, data)  # claim under the same admission used by input delivery and post
+        if refusal is not None:
+            from . import alarms
+
+            reason = f'staged pool move held. {refusal}'
+            systems = [spec.name for spec in seat.ship.seats.values() if spec.role == 'systems' and spec.name != name]
+            alarms.notify(service, name, None, [order.id, pool, refusal], f'{name}: {reason}',
+                          channel='staged-move', up=systems)
+            raise ShipError(reason)  # the service's seat guard publishes the named hold
+        source = seat.pool.name if pool is not None else None
+        proof = _start(service, seat, service.store, data, unable=unable, pool=pool)
+        if pool is not None:
+            service.report_pool_move(seat, f'moved to pool {pool} from {source} by qd set')
+            service.log('select', seat=name, pool=pool, came_from=source, usage_unknown=unknown, proof=proof)

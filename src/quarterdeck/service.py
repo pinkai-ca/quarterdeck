@@ -2744,10 +2744,9 @@ class Service:
                 except resume_target.Unproved as error:
                     if seat.session.human:
                         raise
-                    # The same wall refusal as a proved move. An unread destination stays the caller's choice.
-                    if (not self.known_open(seat, pool)
-                            and self.ledger.walled(pool, self.ship, scope=quota.model_scope(seat, pool))):
-                        return f"{seat.name} not moved: {pool} is walled"
+                    refused, _ = self.select_destination(seat, pool)
+                    if refused:
+                        return f"{seat.name} not moved: {refused}"
                     came_from = seat.pool.name
                     if getattr(self, 'ledger', None) is not None and not quota.current_walled(seat, self.ledger):
                         return self._stage_unproved_select(seat, error, pool)
@@ -2757,11 +2756,9 @@ class Service:
                         return self._fresh_unproved_move(seat, error, pool, came_from, kind='select',
                                                         binding=binding)
             return f"{seat.name} not moved: {reason}; ask again when its turn has ended"
-        # The destination is read as failover would read it. Only a wall refuses the explicit act: a pool
-        # whose usage is unknown, such as a background provider with no seat on it to read, is the human's call.
-        unknown = not self.known_open(seat, pool)
-        if unknown and self.ledger.walled(pool, self.ship, scope=quota.model_scope(seat, pool)):
-            return f"{seat.name} not moved: {pool} is walled"
+        refused, unknown = self.select_destination(seat, pool)
+        if refused:
+            return f"{seat.name} not moved: {refused}"
         came_from = seat.pool.name
         binding = move_hold.generation(seat)
         from . import relaunch_intent
@@ -2785,6 +2782,15 @@ class Service:
         self.log("select", seat=seat.name, pool=pool, came_from=came_from, usage_unknown=unknown, proof=proof)
         note = f"; {pool} usage unknown; moved on the explicit act" if unknown else ""
         return f"{seat.name} moved to {pool} from {came_from}{note}\n{proof}"
+
+    def select_destination(self, seat: Seat, pool: str) -> tuple[str | None, bool]:
+        """Read a declared destination for an immediate or staged selection. Unknown usage is the caller's choice."""
+        if pool not in seat.spec.pools:
+            return f"{pool} is not one of its declared choices ({', '.join(seat.spec.pools)})", False
+        unknown = not self.known_open(seat, pool)
+        if unknown and self.ledger.walled(pool, self.ship, scope=quota.model_scope(seat, pool)):
+            return f"{pool} is walled", unknown
+        return None, unknown
 
     def report_pool_move(self, seat: Seat, notice: str) -> None:
         from .harness import resume_target

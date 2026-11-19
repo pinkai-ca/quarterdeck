@@ -430,8 +430,9 @@ def test_open_pool_select_of_a_missing_record_stages_the_chosen_pool(running):
     assert 'handoff order' in again and len(r.launches) == launches and r.seat.launched() == before
 
 
-def test_open_pool_select_starts_on_the_chosen_pool_after_report_and_idle(running, monkeypatch):
-    from quarterdeck import idle
+@pytest.mark.parametrize('later_wall', [False, True], ids=['open', 'wall-then-open'])
+def test_open_pool_select_rechecks_the_chosen_pool_after_report_and_idle(running, monkeypatch, later_wall):
+    from quarterdeck import idle, watch
     r = running
     s = r.seat
     r.svc.failover()
@@ -457,6 +458,20 @@ def test_open_pool_select_starts_on_the_chosen_pool_after_report_and_idle(runnin
             continue
         r.svc.attempts.close(r.svc.attempts.open(message, s.name, launched.pane, launched.pid, launched.at),
                              'delivered')
+    if later_wall:
+        s.ship.seats['sentry'] = replace(s.spec, name='sentry', role='systems')
+        usage(r.svc, 'third', 1.0)
+        replies = r.svc.store.replies(order)
+        r.svc.fresh_handoffs()
+        r.svc.fresh_handoffs()
+        assert s.launched() == launched and len(r.launches) == before
+        assert fresh_handoff.load(r.svc.runtime, s.name) == data
+        assert r.svc.store.replies(order) == replies and r.svc.store.is_open(handoff)
+        assert any(line.startswith('worker:') and 'third is walled' in line
+                   for line in watch.facts(s.ship, s.tmux).seat_holds)
+        [alert] = r.svc.store.for_seat('sentry')
+        assert alert.body == 'worker: staged pool move held. third is walled'
+        usage(r.svc, 'third', 0.0)
     r.svc.fresh_handoffs()
     assert s.pool.name == 'third' and s.launched().resume is None
     assert len(r.launches) == before + 1 and '--resume' not in r.launches[-1]
@@ -465,6 +480,9 @@ def test_open_pool_select_starts_on_the_chosen_pool_after_report_and_idle(runnin
     started = s.launched()
     r.svc.fresh_handoffs()
     assert s.launched() == started and len(r.launches) == before + 1
+    moved = 'moved to pool third from second by qd set and started a new conversation'
+    assert [message.body for message in r.svc.store.for_seat(s.name) if message.body == moved] == [moved]
+    assert all('third is walled' not in line for line in watch.facts(s.ship, s.tmux).seat_holds)
 
 
 def plain_claude(r, model):

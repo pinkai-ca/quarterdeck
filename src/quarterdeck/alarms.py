@@ -26,6 +26,8 @@ def now():
 
 
 def path(runtime, name, channel):
+    if channel == 'staged-move':
+        return runtime / 'post' / 'staged-move-alerts' / f'{name}.json'  # service-owned from its first version
     return compaction.path(runtime, name).with_name(FILES[channel])
 
 
