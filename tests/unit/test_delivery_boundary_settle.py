@@ -748,6 +748,44 @@ def test_a_cancelled_wake_is_not_held_and_a_new_reservation_runs(tmp_path, monke
     assert current['at'] == calls[0] and current['at'] != STAMP and current['phase'] == 'delivered'
 
 
+@pytest.mark.parametrize('mark', ['settled', 'unreadable'])
+def test_a_delivered_wake_waiting_for_its_watch_is_not_held(tmp_path, monkeypatch, mark):
+    """A wake that was typed and confirmed, phase delivered and ended false, is not held. The ordinary path
+    leaves it waiting for its watch, after a settle and under an unreadable mark."""
+    ship = ship_at(tmp_path)
+    record = tmp_path / 'desk-record.jsonl'
+    record.write_text('{"synthetic": true}\n')
+    wake, data = write_wake(ship, 'desk', 'delivered', ended=False)
+    data['record'] = str(record)
+    wake.write_text(json.dumps(data) + '\n')
+    relative = wake.relative_to(ship.runtime).as_posix()
+    (wake.parent / 'record').write_text(str(record) + '\n')
+    before = wake.read_bytes()
+    if mark == 'settled':
+        old_owner(ship.runtime)
+        pointer = shutdown.pointer_path(ship.runtime)
+        pointer.write_text('not json\n')
+        result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+        assert result.startswith('delivery boundary moved aside unchanged: '), result
+        assert 'unreadable delivery pointer' in result, result
+        text = delivery_boundary.mark_path(ship.runtime).read_text()
+        assert human_wake.LINE not in text
+        rows = [json.loads(line) for line in text.splitlines()]
+        assert relative not in (rows[0].get('journals') or [])
+        assert not any(item.get('journal') == relative for item in rows[0].get('wakes') or [])
+    else:
+        plant_bad_mark(ship, 'link')
+    assert not delivery_boundary.episode_held(ship.runtime, relative, data)
+    assert not delivery_boundary.held_journal(ship.runtime, relative)
+    seat = _desk(ship)
+    seat.harness.state = lambda _path: SimpleNamespace(turn_open=True)
+    post.Store(ship.runtime).new('order', 'operator', 'desk', 'Synthetic waiting order')
+    reason = human_wake._run(seat)
+    assert reason == human_wake.WAITING, reason
+    assert 'receipt uncertain' not in (reason or '')
+    assert wake.read_bytes() == before
+
+
 def test_an_unreadable_pointer_holds_a_submitted_journal_and_not_a_delivered_one(tmp_path, monkeypatch):
     """An unparseable pointer holds a journal still being submitted, and not one already delivered."""
     def fail_screen(*_args, **_kwargs):

@@ -40,9 +40,11 @@ pointer is renamed. The next service honours a settled mark, or a settling mark 
 or that evidence file exists: the named journal is outcome uncertain and is never typed again. When the
 pointer does not parse, that line names every pending journal still in flight (pasting, submitting, submitted
 or queued: not prepared and not a terminal phase), every attempt with no result or a blind one, and every
-human-wake reservation that is not ended and not cancelled, and holds them; if they cannot all be named, the
-act refuses and moves nothing. A cancelled wake is resolved and nothing types it. A human wake still in
-flight is held by the episode on the line (its wake token), not by the path later episodes reuse. A mark
+human-wake reservation that is not ended, not cancelled, and not delivered, and holds them; if they cannot
+all be named, the act refuses and moves nothing. A cancelled wake is resolved and nothing types it, and so
+is a delivered wake whose turn has not ended: it was typed and confirmed, and it waits for its watch. A
+human wake still in flight is held by the episode on the line (its wake token), not by the path later
+episodes reuse. A mark
 that exists but cannot be read holds those same live journals, and that is logged once. A prepared journal
 that was never pasted is not cancelled. A refusal before the settling line writes no hold.
 
@@ -425,11 +427,12 @@ def _wake_identity(data: dict) -> str | None:
 
 
 def _list_holds(runtime: Path) -> _Holds:
-    """Every in-flight journal, every open or blind attempt, and every wake that is not ended and not
-    cancelled. Names only.
+    """Every in-flight journal, every open or blind attempt, and every wake that is not ended, not cancelled
+    and not delivered. Names only.
 
     A file that exists and cannot be classified refuses the whole list: a partial hold would leave the rest
-    to the ordinary rules. A cancelled wake is resolved, so it is not named.
+    to the ordinary rules. A cancelled wake, and a delivered wake still waiting for its watch, are resolved,
+    so neither is named.
     """
     from .pending import TERMINAL
     found = _Holds()
@@ -513,7 +516,7 @@ def _list_holds(runtime: Path) -> _Holds:
             ended = data.get('ended', False)
             if type(ended) is not bool:
                 raise _Unlisted('a human wake could not be read')
-            if ended or phase == 'cancelled':
+            if ended or phase in ('cancelled', 'delivered'):
                 continue
             identity = _wake_identity(data)
             if identity is None:
@@ -740,11 +743,12 @@ def _sweep_names(runtime: Path) -> list[str] | None:
 def episode_held(runtime: Path, relative: str, data: dict) -> bool:
     """Whether this human-wake episode, not merely its path, is held.
 
-    A cancelled wake is resolved. Nothing types it, under a readable mark or an unreadable one.
+    A cancelled wake is resolved, and so is a delivered wake whose turn has not ended. Nothing types either
+    as uncertain, under a readable mark or an unreadable one.
     """
     if not _relative_ok(relative) or not isinstance(data, dict):
         return False
-    if data.get('phase') == 'cancelled':
+    if data.get('phase') == 'cancelled' or (data.get('phase') == 'delivered' and data.get('ended') is not True):
         return False
     state, why, rows = _load_mark(runtime)
     if state == 'absent':
