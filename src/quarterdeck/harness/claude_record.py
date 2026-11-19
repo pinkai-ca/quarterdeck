@@ -16,6 +16,7 @@ from ..record_location import resolve
 CHUNK = 64 * 1024
 ROW_BYTES = 256 * 1024
 PROJECTED_BYTES = 16 * 1024 * 1024
+COMPATIBILITY_BOUND = 128 * 1024 * 1024  # the full reader never follows a future streaming cap increase
 ROWS = 65_536
 DEPTH = 96
 ATOM_BYTES = 8192
@@ -31,6 +32,10 @@ MALFORMED = (None, 'json', 0)
 
 class Unknown(record_file.RecordError):
     """Required native evidence exceeds the reader's retained-data budget."""
+
+
+class ProjectionLimit(Unknown):
+    """A record might need the existing bounded full reader."""
 
 
 class PhysicalSeparators(Exception):
@@ -61,7 +66,7 @@ class GiantRow:
                     self.snapshot = None
         else:
             if len(self.output) + len(data) > ROW_BYTES:
-                raise Unknown('required JSON row exceeds the retained-byte budget')
+                raise ProjectionLimit('required JSON row exceeds the retained-byte budget')
             self.output.extend(data)
         if self.key_bytes is not None:
             self.key_bytes.extend(data)
@@ -87,9 +92,9 @@ class GiantRow:
             if self.frames:
                 self.value()
             elif char != ord('{'):
-                raise Unknown('large row does not start with a native JSON object')
+                raise ProjectionLimit('large row does not start with a native JSON object')
             if len(self.frames) >= DEPTH:
-                raise Unknown('JSON nesting exceeds the validation budget')
+                raise ProjectionLimit('JSON nesting exceeds the validation budget')
             self.frames.append('object first' if char == ord('{') else 'array first')
         elif not self.frames:
             raise ValueError('root JSON object required')
@@ -185,7 +190,7 @@ class GiantRow:
                 stop = ATOM_END.search(data, at)
                 end = stop.start() if stop else len(data)
                 if len(self.atom) + end - at > ATOM_BYTES:
-                    raise Unknown('JSON atom exceeds the validation budget')
+                    raise ProjectionLimit('JSON atom exceeds the validation budget')
                 self.atom.extend(data[at:end])
                 at = end
                 if stop:
@@ -213,11 +218,11 @@ class GiantRow:
             raise ValueError('incomplete JSON object')
         row = json.loads(self.output.decode())
         if OMIT_KEY not in row:
-            raise Unknown('large row had no discardable value')
+            raise ProjectionLimit('large row had no discardable value')
         if row.get('type') == OMIT_TYPE:
             del row[OMIT_KEY]
         elif self.snapshot is None:
-            raise Unknown('required snapshot value exceeds the retained-byte budget')
+            raise ProjectionLimit('required snapshot value exceeds the retained-byte budget')
         else:
             row[OMIT_KEY] = json.loads(self.snapshot.decode())
         return row, None, retained_size(row)
@@ -226,7 +231,7 @@ class GiantRow:
 def retained_size(row):
     data = json.dumps(row, ensure_ascii=False, separators=(',', ':')).encode('utf-8', errors='surrogatepass')
     if len(data) > ROW_BYTES:
-        raise Unknown('required projection exceeds the per-row budget')
+        raise ProjectionLimit('required projection exceeds the per-row budget')
     return len(data)
 
 
@@ -267,7 +272,7 @@ class Line:
         try:
             row = json.loads(text)
         except RecursionError:
-            raise Unknown('JSON nesting exceeds the validation budget') from None
+            raise ProjectionLimit('JSON nesting exceeds the validation budget') from None
         except (ValueError, UnicodeError):
             return MALFORMED
         if not isinstance(row, dict):
@@ -316,7 +321,7 @@ def scan(descriptor, size, cached, *, splitlines=False):
         row, diagnostic, weight = line.finish()
         retained += weight
         if retained > PROJECTED_BYTES or number > ROWS:
-            raise Unknown('native record exceeds its retained-byte or line budget')
+            raise ProjectionLimit('native record exceeds its retained-byte or line budget')
         if row is not None:
             rows.append((number, row))
         elif diagnostic is not None:
@@ -413,7 +418,7 @@ def parse(record):
 def _parse(record):
     key = Path(record)
     cached = json_record._snapshots.pop(key, None)
-    if cached is not None and cached.raw_digest is None:
+    if cached is not None and cached.raw_digest is None and not cached.claude_full:
         cached = None
     for attempt in range(3):
         source = resolve(record)
@@ -427,18 +432,23 @@ def _parse(record):
             if (attempt == 0 and cached is not None and cached.stamp == stamp and cached.certified_at is not None
                     and cached.source == source and cached.certified_at <= started <= checked):
                 json_record._snapshots[key] = cached
+                if cached.claude_full and not json_record._KEEP_ROWS:
+                    return json_record._view(source, cached, None, json_record._partial(cached), cached.row_count)
                 return cached
-            previous = cached if cached is not None and cached.source == source and cached.stamp[:2] == stamp[:2] else None
-            failure = None
+            previous = (cached if cached is not None and not cached.claude_full
+                        and cached.source == source and cached.stamp[:2] == stamp[:2] else None)
+            failure = full = limit = None
             try:
                 try:
-                    entry, reused = _consume(scan(descriptor, info.st_size, previous))
-                except PhysicalSeparators:
-                    # Preserve str.splitlines() for older layouts. Their prefix
-                    # stays uncached, so split CRLF and Unicode separators are
-                    # always re-established from the original beginning.
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    entry, reused = _consume(scan(descriptor, info.st_size, None, splitlines=True))
+                    entry, reused = _scan_layout(descriptor, info.st_size, previous)
+                except ProjectionLimit as error:
+                    bound = min(COMPATIBILITY_BOUND, record_file.LINES_BOUND)
+                    if info.st_size > bound:
+                        raise
+                    # A traceback would retain the abandoned projection while
+                    # the legacy reader allocates its own buffer and rows.
+                    limit = ProjectionLimit(str(error))
+                    full = record_file.read_from(descriptor, info, source, bound)
             except (OSError, UnicodeError) as error:
                 failure = error
             if not _same_stamp(descriptor, source, stamp) or resolve(record) != source:
@@ -451,18 +461,50 @@ def _parse(record):
             os.close(descriptor)
 
         finished = time.time_ns()
-        entry.stamp, entry.source = stamp, source
-        if max(stamp[-2:]) + json_record._TIMESTAMP_TICK_NS < started <= checked <= finished:
-            entry.certified_at = started
+        certified = started if max(stamp[-2:]) + json_record._TIMESTAMP_TICK_NS < started <= checked <= finished else None
+        if full is not None:
+            return _compatible(key, source, full, stamp, certified, cached, limit)
+        entry.stamp, entry.source, entry.certified_at = stamp, source, certified
         if reused is not None:
             if entry.raw_digest == reused.raw_digest:
-                reused.stamp, reused.certified_at = entry.stamp, entry.certified_at
+                json_record.refresh_stamp(reused, entry.stamp, entry.certified_at)
                 entry = reused
             elif reused.ends_newline and entry.ends_newline:
                 json_record._carry(reused, entry, entry.rows[reused.row_count:], entry.skipped[len(reused.skipped):])
         json_record._store(key, entry, cached is not None)
         return entry
     raise record_file.RecordError('record changed while being read')
+
+
+def _scan_layout(descriptor, size, previous):
+    try:
+        return _consume(scan(descriptor, size, previous))
+    except PhysicalSeparators:
+        # Preserve str.splitlines() for older layouts without reusing a prefix.
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return _consume(scan(descriptor, size, None, splitlines=True))
+
+
+def _compatible(record, source, data, stamp, certified, cached, limit):
+    """Apply the original full reader to a stable, under-bound record."""
+    whole = cached if cached is not None and cached.claude_full and cached.source == source else None
+    try:
+        with json_record.passing():
+            if json_record._KEEP_ROWS:
+                parsed = json_record._parse_text(record, data, stamp, certified, whole)
+            else:
+                parsed = json_record._parse_bytes(source, record, data, stamp, certified, whole)
+    except OSError:
+        json_record._snapshots.pop(record, None)
+        raise
+    except (ValueError, RecursionError):
+        json_record._snapshots.pop(record, None)
+        raise limit from None
+    entry = json_record._entry(parsed)
+    entry.claude_full = True
+    entry.source = source
+    json_record._store(record, entry, cached is not None)
+    return parsed
 
 
 entries = partial(json_record.entries, parse=parse)

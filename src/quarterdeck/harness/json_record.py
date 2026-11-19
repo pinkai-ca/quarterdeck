@@ -39,11 +39,12 @@ def records_matching(home: Path, pattern: str) -> list[Path]:
 class _Snapshot:
     """A record's reading: a cached entry, which a later reading resumes from, or the view one reading returns.
 
-    In the service a cached entry keeps no text and no lines (``raw`` empty, ``rows`` empty): only the proof of its
+    In the generic service reader a cached entry keeps no text and no lines (``raw`` empty, ``rows`` empty): only the proof of its
     complete-lines prefix (its byte length and a sha256 over it), its counts, its last rows, its skipped lines and its
     readers' and inputs' running state. A view carries one reading's bytes and the lines it decoded, and parses every
     line only for a caller that asks for them all (_Rows). Where rows are kept (keep_rows: the accounting child), the
-    cached entry keeps its text and every line and is itself the view, as before."""
+    cached entry keeps its text and every line and is itself the view, as before. Claude streaming keeps
+    bounded native rows and a raw digest in both modes."""
     raw: str
     stamp: tuple
     rows: list
@@ -67,6 +68,7 @@ class _Snapshot:
     kept: '_Snapshot | None' = None  # a view's cached entry
     source: Path | None = None  # a view's record, read again only for a view served from the cache
     raw_digest: str | None = None
+    claude_full: bool = False  # a stable ordinary Claude read outside the projection budget
     previous_prefix: tuple | None = None
     retained_bytes: int = 0
 
@@ -215,6 +217,12 @@ def _store(record: Path, entry: _Snapshot, member: bool) -> None:
             _snapshots.popitem(last=False)
 
 
+def refresh_stamp(entry, stamp, certified):
+    if entry.stamp != stamp:
+        entry.compactions.clear()  # its guarded extent proof is tied to the old observation
+    entry.stamp, entry.certified_at = stamp, certified
+
+
 def _parse_bytes(source: Path, record: Path, data: bytes, stamp, certified, cached) -> _Snapshot:
     """A changed record: its old complete-lines prefix proved by its byte length and sha256, and only the lines after
     it decoded; a prefix that does not match is parsed whole. The cached entry keeps no text and no lines."""
@@ -232,7 +240,7 @@ def _parse_bytes(source: Path, record: Path, data: bytes, stamp, certified, cach
     if not base and not tail and text.strip():
         raise RecordError("no JSON object lines in this record: not a record this reader can read")
     if reuse and len(data) == cached.total_bytes:  # the same bytes under a new stamp: the same entry, its state kept
-        cached.stamp, cached.certified_at = stamp, certified
+        refresh_stamp(cached, stamp, certified)
         _store(record, cached, True)
         return _view(source, cached, data, tail, base)
     complete_end = data.rfind(b'\n') + 1
@@ -356,7 +364,7 @@ def _parse_text(record: Path, data: bytes, stamp, certified, cached) -> _Snapsho
     """keep_rows: the cache keeps each record's text and every line, and a changed record reuses its text prefix."""
     raw = _decoded(data)
     if cached is not None and raw == cached.raw:
-        cached.stamp, cached.certified_at = stamp, certified
+        refresh_stamp(cached, stamp, certified)
         _store(record, cached, True)
         return cached
     rows, skipped, offset, number = [], [], 0, 0

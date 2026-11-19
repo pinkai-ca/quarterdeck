@@ -6,6 +6,8 @@ and process CPU and elapsed wall for the last complete observation.
 """
 
 import argparse
+from dataclasses import asdict
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -108,11 +110,12 @@ def write_record(path, size, shape, core):
     left = b'{"snapshot":{"syntheticValue":"'
     right = b'"},"type":"file-history-snapshot"}\n'
     minimum = len(left) + len(right)
-    padding = size - len(core)
+    skipped = b'! synthetic malformed row\n' if shape == 'dense-malformed' else b''
+    padding = size - len(core) - len(skipped)
     if padding < minimum:
         raise ValueError('fixture is too small')
     with path.open('wb') as stream:
-        if shape == 'dense-evidence':
+        if shape.startswith('dense-'):
             prefix = b'{"type":"file-history-snapshot","message":{"content":[{"type":"text","text":"'
             suffix = b'"}]}}\n'
             width = 16 * 1024
@@ -137,8 +140,24 @@ def write_record(path, size, shape, core):
                 stream.write(left)
                 write_value(stream, remainder - minimum)
                 stream.write(right)
+        stream.write(skipped)
         stream.write(core)
     assert path.stat().st_size == size
+
+
+def semantic_digest(result):
+    state = asdict(result['state'])
+    state.pop('last_write')  # independently generated fixtures have different file times
+    history = {name: getattr(result['history'], name) for name in
+               ('conversation', 'count', 'reason', 'extent', 'digest', 'frontier', 'turn',
+                'complete', 'last_call', 'origin')}
+    attribution = [{key: value for key, value in row.items() if key != 'record'}
+                   for row in result['attribution']]
+    # The ledger asserts the real canonical record path separately in Case.account.
+    facts = {**result, 'state': state, 'history': history, 'attribution': attribution,
+             'inputs': [asdict(item) for item in result['inputs']],
+             'turns': [asdict(item) for item in result['turns']]}
+    return sha256(json.dumps(facts, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
 
 def sample(mib, shape, phase, mode):
@@ -149,7 +168,16 @@ def sample(mib, shape, phase, mode):
         target = mib * MIB
         write_record(case.record, target - (len(extra) if phase == 'append' else 0), shape, core)
         json_record.keep_rows()
-        work = dict(raw_work_bytes=0, slice_max=0)
+        work = dict(raw_work_bytes=0, slice_max=0, full_bytes=0, full_reads=0)
+        full_reader = record_file.read_from
+
+        def counted_full(*args, **kwargs):
+            data = full_reader(*args, **kwargs)
+            work['full_reads'] += 1
+            work['full_bytes'] += len(data)
+            return data
+
+        record_file.read_from = counted_full
         if mode == 'production':
             from quarterdeck.harness import claude_record
             original = claude_record.read_piece
@@ -172,8 +200,7 @@ def sample(mib, shape, phase, mode):
             try:
                 observe()
             except (OSError, ValueError):
-                if not (mode == 'baseline' and mib > 128
-                        or mode == 'production' and shape == 'dense-evidence' and mib > 16):
+                if mode != 'baseline' or mib <= 128:
                     raise
             if phase == 'append':
                 with case.record.open('ab') as stream:
@@ -182,7 +209,7 @@ def sample(mib, shape, phase, mode):
                 replaced = case.record.with_suffix('.replacement')
                 write_record(replaced, target, shape, alternate)
                 os.replace(replaced, case.record)
-        work.update(raw_work_bytes=0, slice_max=0)
+        work.update(raw_work_bytes=0, slice_max=0, full_bytes=0, full_reads=0)
         wall, cpu = perf_counter(), process_time()
         try:
             result = observe()
@@ -190,25 +217,24 @@ def sample(mib, shape, phase, mode):
             if mode != 'baseline' or mib <= 128:
                 raise
             work.update(outcome='past-bound', raw_size=error.size, bound=error.bound)
-        except record_file.RecordError as error:
-            if not (mode == 'production' and shape == 'dense-evidence' and mib > 16
-                    and 'budget' in str(error)):
-                raise
-            totals, attributed, unread = case.account(case.record, claude.ClaudeHarness())
-            assert not totals and not attributed and unread
-            work.update(outcome='retained-budget', turns=0)
         else:
             expected = [0, 1] if phase == 'append' else [1] if phase == 'replacement' else [0]
-            assert result['receipts'] == [
-                'delivered' if i in expected else None for i in range(2)]
             assert result['foreign'] is None
-            assert result['history'].count == 1 and result['history'].extent == target
-            assert result['history'].complete and result['state'].turn_open is False
-            assert [row['orders'] for row in result['attribution']] == [
-                [case.messages[i].id] for i in expected]
+            assert result['state'].turn_open is False
+            if shape == 'dense-malformed':
+                assert result['diagnostics']['total'] == 1
+                assert result['history'].reason is not None
+                assert result['state'].pending_tools is None
+            else:
+                assert result['receipts'] == [
+                    'delivered' if i in expected else None for i in range(2)]
+                assert result['history'].count == 1 and result['history'].extent == target
+                assert result['history'].complete
+                assert [row['orders'] for row in result['attribution']] == [
+                    [case.messages[i].id] for i in expected]
             assert len(result['turns']) == len(result['totals']) == len(expected)
             assert all(row[1:] == (7, 11, 5, 0) for row in result['totals'])
-            work.update(outcome='read', turns=len(result['turns']))
+            work.update(outcome='read', turns=len(result['turns']), semantic_digest=semantic_digest(result))
         work.update(mib=mib, shape=shape, phase=phase, mode=mode,
                     wall_s=round(perf_counter() - wall, 5), cpu_s=round(process_time() - cpu, 5),
                     rss_mib=peak_rss_mib())
@@ -226,6 +252,7 @@ def peak_rss_mib():
 def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument('--baseline-src', type=Path, help='src/ from the exact production parent')
+    args.add_argument('--shape', choices=('large-value', 'many-rows', 'dense-evidence', 'dense-malformed'))
     args.add_argument('--sample', nargs=4, metavar=('SIZE_MIB', 'SHAPE', 'PHASE', 'MODE'))
     given = args.parse_args()
     if given.sample:
@@ -235,14 +262,24 @@ def main():
     if given.baseline_src is None:
         args.error('--baseline-src is required for a comparison')
     paths = {'baseline': given.baseline_src.absolute(), 'production': Path('src').absolute()}
-    sizes = {'large-value': (128, 295, 512), 'many-rows': (128, 295, 512), 'dense-evidence': (8, 24)}
+    sizes = {'large-value': (128, 295, 512), 'many-rows': (128, 295, 512), 'dense-evidence': (8, 24),
+             'dense-malformed': (24,)}
     for shape, amounts in sizes.items():
+        if given.shape and shape != given.shape:
+            continue
         for mib in amounts:
             for phase in ('cold', 'append', 'replacement'):
+                samples = {}
                 for mode, source in paths.items():
-                    subprocess.run([sys.executable, '-B', '-m', 'tests.measure_claude_reader', '--sample',
-                                    str(mib), shape, phase, mode],
-                                    env=dict(os.environ, PYTHONPATH=str(source)), check=True)
+                    raw = subprocess.check_output([sys.executable, '-B', '-m', 'tests.measure_claude_reader',
+                                                   '--sample', str(mib), shape, phase, mode],
+                                                  env=dict(os.environ, PYTHONPATH=str(source)), text=True)
+                    samples[mode] = json.loads(raw)
+                    print(raw.strip(), flush=True)
+                if samples['baseline']['outcome'] == 'read':
+                    assert samples['baseline']['semantic_digest'] == samples['production']['semantic_digest'], (
+                        shape, mib, phase, 'reading and accounting evidence differ')
+
 
 
 if __name__ == '__main__':
