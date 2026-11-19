@@ -10,7 +10,7 @@ import hashlib
 import json
 import time
 
-from . import durable, pending
+from . import durable, pending, trusted_files
 from .ship import ShipError
 
 
@@ -20,7 +20,7 @@ def binding(seat, launched):
 
 def path_for(seat, launched):
     key = json.dumps(binding(seat, launched), sort_keys=True).encode()
-    return seat.folder / 'launch-openings' / (hashlib.sha256(key).hexdigest() + '.json')
+    return seat.trusted / trusted_files.LAUNCH_OPENINGS / (hashlib.sha256(key).hexdigest() + '.json')
 
 
 def prepare(seat, launched, text, *, carried=()):
@@ -121,7 +121,7 @@ def deliver(seat, launched, *, wait=True):
         updated = replace(launched, notice='; '.join(filter(None, (launched.notice, reason))))
         if seat.launched() != launched:
             raise ShipError('launch changed before opening proof publication; no input')
-        updated.write(seat.folder / 'launch.json')
+        updated.write(seat.trusted / trusted_files.LAUNCH)
         owner.launched = updated
         owner.save(phase='delivering', startup_proof=reason)
         door.opening_owner = owner

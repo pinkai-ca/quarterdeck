@@ -9,14 +9,14 @@ and the box is empty. Only the service calls ``deliver``.
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 import json
+import sqlite3
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import ledger as ledgermod, pending, input_receipt, quota, pane_obstruction
+from . import ledger as ledgermod, pending, input_receipt, quota, pane_obstruction, trusted_files
 from .harness.base import Harness, Screen, record_fingerprint
 from .harness.capabilities import persistent_screen_queue
 from .harness.types import _cells
@@ -133,7 +133,7 @@ class Door:
         self.captured_pane = None
         self.human_wake = False
         self.opening_owner = None
-        self.observation_seconds = BOX_SECONDS
+        self.observation_seconds: float | None = None
         self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
@@ -225,9 +225,9 @@ class Door:
             pane = self.seat.pane()
             if pane is None or pane.dead or pane.id != launched.pane or pane.pid != launched.pid:
                 return None
-            pointer = self.seat.folder / "record"
-            registry = self.seat.folder / record_owner.REGISTRY
-            journal = self.seat.folder / "record-launches.jsonl"
+            pointer = self.seat.trusted / trusted_files.RECORD
+            registry = self.seat.trusted / trusted_files.READERS
+            journal = self.seat.trusted / trusted_files.LAUNCHES
             pin, ownership, launches = metadata(pointer), metadata(registry), metadata(journal)
             if not pin.strip():
                 return None
@@ -324,13 +324,13 @@ class Door:
         """Omitted capture reads once; an explicitly unavailable frame never becomes idle."""
         from .turn_failure import obstruction
         if reason := obstruction(self.seat):
-            return Reading(False, reason, "needs a human")
+            return Reading(False, reason, "needs a human")  # law: nothing-waits-silently
         if self.seat.session.human:
             from .recovery import held
             if reason := held(self.seat):
                 return Reading(False, f"a human owns this session; {reason}", "needs a human")
             if not self.human_wake:
-                return Reading(False, "a human's session", "its watch delivers")
+                return Reading(False, "a human's session", "its watch delivers")  # law: one-door
             from .human_wake import candidate_hold, eligible, screen_hold
             if reason := candidate_hold(self.seat, self.proof):
                 return Reading(False, reason, "needs a human")
@@ -915,12 +915,14 @@ class Door:
         self.tmux.keys(pane.id, *answer.keys)
         return Delivery('typed', 'program asked; ship answered yes')
 
-    def settled(self, seconds: float = BOX_SECONDS) -> Screen | None:
+    def settled(self, seconds: float | None = None) -> Screen | None:
         """The screen once the program has stopped working, or the last screen seen."""
-        deadline = time.monotonic() + (self.observation_seconds if seconds is None else seconds)
+        if seconds is None:
+            seconds = BOX_SECONDS if self.observation_seconds is None else self.observation_seconds
+        deadline = time.monotonic() + seconds
         while True:
             screen = self.screen()
-            if screen is None or screen.working is False or time.monotonic() > deadline:
+            if screen is None or screen.working is False or time.monotonic() >= deadline:
                 return screen
             time.sleep(SETTLE_SECONDS)
 
@@ -943,6 +945,8 @@ class Door:
         and soft wraps at this pane's width, as read now, taken out (harness.types.held_box_matches)."""
         if self.matches(box, screen):
             return True
+        if getattr(self.harness, 'exact_input_text', False):
+            return False
         from .harness.types import held_box_matches
         pane = self.seat.pane()
         if pane is None or screen.box is None:
@@ -952,7 +956,9 @@ class Door:
 
     def activity_screen(self, seconds: float | None = None) -> Screen | None:
         """Wait through a redraw, without acting on an unreadable intermediate frame."""
-        deadline = _clock() + (self.observation_seconds if seconds is None else seconds)
+        if seconds is None:
+            seconds = BOX_SECONDS if self.observation_seconds is None else self.observation_seconds
+        deadline = _clock() + seconds
         while True:
             screen = self.screen()
             if (screen is not None and (screen.working is not None or self.adapter_obstruction(screen))
@@ -967,8 +973,11 @@ class Door:
         on a box that cannot become the message, read so twice in a row, or at ``seconds`` for safety. A wait past
         BOX_SECONDS is logged with its length and the seat's program, so a program's slow draws are seen."""
         began = _clock()
+        exact = getattr(self.harness, 'exact_input_text', False)
         if seconds is None:
-            seconds = 0 if self.observation_seconds == 0 else PASTE_SHOWN_SECONDS
+            seconds = self.observation_seconds
+        if seconds is None:
+            seconds = BOX_SECONDS if exact else PASTE_SHOWN_SECONDS
         deadline = began + seconds
         foreign = None
         while True:
@@ -979,12 +988,12 @@ class Door:
             if screen is not None and self.matches(box, screen):
                 outcome = "shown"
                 break
-            drawn = screen.box if screen is not None and cannot_become(box, screen.box) else None
+            drawn = screen.box if not exact and screen is not None and cannot_become(box, screen.box) else None
             if drawn is not None and drawn == foreign:
                 outcome = "cannot become the message"
                 break
             foreign = drawn
-            if _clock() > deadline:
+            if _clock() >= deadline:
                 outcome = "safety stop"
                 break
             _sleep(SETTLE_SECONDS)

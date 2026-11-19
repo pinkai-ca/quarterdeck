@@ -5,7 +5,7 @@ A seat's own folder, ``runtime/seats/<seat>``, is bound writable into its jail: 
 and the watch broker's request and receipts live there, and the jail may write any of them. What the service decides
 from lives here instead: the launch record and its price, the pool selection, the record pointer and its registries,
 the alarm journals, compaction.json, refusal.json, the holds on a relaunch, a retirement, a move and a sandbox that
-did not end, the sweep's record of the stray sandboxes it ended, the launch script
+did not end, the sweep's record of the stray sandboxes it ended, the deferred launch openings, the launch script
 tmux runs outside the jail, and the service's own readings and journals of the seat (model mismatch, turn failure,
 person quiet, the human wake, qd press and qd type). Inside every
 jail the runtime is an empty fence and this folder, like the locks, is a private empty tmpfs: no jail can read or
@@ -21,6 +21,7 @@ from pathlib import Path
 TRUSTED = 'trusted'
 
 LAUNCH = 'launch.json'
+LAUNCH_OPENINGS = 'launch-openings'
 PRICE = 'launch-price.json'
 POOL = 'pool'
 EXPLICIT = 'pool-explicit'  # beside ``pool``: a person chose that pool for the next launch, which takes it
