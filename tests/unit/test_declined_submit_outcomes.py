@@ -47,9 +47,10 @@ def test_operator_type_records_declined_submit_without_confirming(monkeypatch):
     pane = SimpleNamespace(id='%synthetic')
     screen = Screen('', box='', working=False)
     launched = SimpleNamespace(pane='%synthetic', pid=123, at='synthetic time')
-    seat = SimpleNamespace(name='synthetic', launched=lambda: launched)
+    harness = SimpleNamespace(name='synthetic', box=lambda line: line)
+    seat = SimpleNamespace(name='synthetic', harness=harness, launched=lambda: launched)
     shown = Screen('', box='payload', working=False)
-    door = SimpleNamespace(harness=SimpleNamespace(box=lambda line: line),
+    door = SimpleNamespace(harness=harness,
         tmux=SimpleNamespace(paste=lambda *args: None),
         box_shows=lambda *args: shown, matches=lambda *args: True,
         submit=lambda _: 'unknown; no key sent',

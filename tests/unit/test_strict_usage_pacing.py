@@ -108,7 +108,9 @@ def alerted(svc, now) -> bool:
     facts = watch.Facts(service="ok", waiting=0, oldest=0, blind=0, usage_errors=alerts)
     line = facts.line()
     table = "\n".join(watch.render_table(dict(service="ok", seats=[], open_orders=[], facts=facts, usage=[])))
-    overflowed = headlines.status_line(facts, [line, "synthetic overflow " * 20])  # too long: counts per category
+    # Reserve enough space to fit the usage count but not the pool-specific detail.
+    reserved = "synthetic status note " + "x" * 80
+    overflowed = headlines.status_line(facts, notes=(headlines.note(reserved, reserved),))
     found = [POOL in text and "human" in text for text in (line, table)] + [any(POOL in a and "human" in a for a in alerts)]
     assert len(set(found)) == 1, f"the alert must agree everywhere: {found}"
     assert ("usage evidence needs human" in overflowed) == found[0], "an overflowing status line still counts it"

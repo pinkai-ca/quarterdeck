@@ -101,7 +101,8 @@ def test_named_priority_precedes_extra_seat_groups_and_annotations():
 
 def test_crowded_independent_collection_keeps_its_provenance_and_shortens_the_lead():
     state = 'busy 400s in ' + '界' * 100 + ': main loop stuck, nothing is delivered'
-    facts = replace(crowded(), service=state)
+    # This case measures the budget with login pressure and no usage-pacing alert.
+    facts = replace(crowded(), service=state, usage_errors=[])
     copy = headlines.note('copy warning ' + '界' * 100, 'copy warning')
     line = presentation.collected_line(facts, 120, notes=(copy,))
     lead, freshness, warning, human, *items, pointer = line.split(headlines.SEPARATOR)
