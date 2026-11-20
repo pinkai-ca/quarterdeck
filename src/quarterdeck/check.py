@@ -381,6 +381,8 @@ def _probe_task_opening(seat: Seat, opening: str, *, requested_model: str | None
     checks: list[Check] = []
     proof_file = seat.spec.cwd / 'proof.txt'
     ship_home = seat.ship.folder / 'homes' / seat.harness.name
+    from . import seat_home
+    seat_home.owner_only(seat.home)  # a check seat's home is its owner's alone, as every seat's
     seat.harness.build_home(seat.home, seat.spec, seat.pool, ship_home if ship_home.is_dir() else None)
     before = _check_usage(seat, 'before')
     checks.append(before)

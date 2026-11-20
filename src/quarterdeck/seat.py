@@ -1137,6 +1137,10 @@ class Seat:
         shipmod.fence(self.ship)
         self.folder.mkdir(parents=True, exist_ok=True)
         trusted_files.make(self.ship.runtime, self.name)
+        from . import seat_home
+        # Every launch proves the home its owner's alone, 0700, before anything in it is built or read; a resume
+        # expects the home its conversation was made in, and refuses one that is absent.
+        seat_home.owner_only(self.home, built=target is not None)
         if left is not None and left.dead:
             self._retire_window(previous)  # the last launch's failed pane goes only with matching identity
         if self.launched() is not None:
@@ -1304,6 +1308,13 @@ class Seat:
     def _require_resume(self, spec: SeatSpec | None = None, *,
                         expected: resume_target.Target | None = None) -> resume_target.Target:
         launched = self.launched()
+        if self.resumable():
+            from . import seat_home
+            try:
+                seat_home.require_built(self.home)  # read only: the launch that follows mends it
+            except seat_home.Absent:
+                raise resume_target.Unproved(self.name, f'its seat home {self.home} is absent',
+                                             launch=launched) from None
         target = self._resume_target() if self.resumable() else None
         if target is None or (expected is not None and target != expected):
             raise resume_target.Unproved(self.name, launch=launched)

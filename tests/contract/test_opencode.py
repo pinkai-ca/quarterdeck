@@ -470,6 +470,7 @@ def test_the_seat_gives_its_adapter_the_same_folder_at_launch_and_at_every_resum
     given = []
     Launched("%1", 101, datetime.now(UTC).isoformat(), "a", None,
              ["opencode"], VERSION, "opencode").write(seat.trusted / "launch.json")
+    seat.home.mkdir(mode=0o700, parents=True)  # the home the resumed conversation was made in: a resume refuses an absent one
     monkeypatch.setattr(seat, "_resume_target",
                         lambda: resume_target.Target("synthetic-session", seat.home / "record.db"))
 

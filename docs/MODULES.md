@@ -175,6 +175,7 @@ The modules that the framework table does not list, the module of each part amon
 | `resources.py` | the framework's resource files, for packaging and `qd sync` |
 | `seat.py` | the Seat: one program in one tmux pane under one role, and its lifecycle: up, down, restart, fresh and a move to another pool; its launch record read whole, and the pools it may name |
 | `seat_files.py` | writes into a seat's folder, its home included, that never follow a link its jail could have planted: each folder on the way opened without following, and made so, a temporary renamed over the name, a link refused on an append, and a read that feeds a write reading a link as nothing and refused past 4 MiB |
+| `seat_home.py` | a seat's home kept to its owner alone: made 0700, and at every launch proved an owned real directory and mended to 0700 through its own descriptor, an absent one refused where the launch expects it built |
 | `seat_migration.py` | the move, once per seat: the files the service once kept in a seat's own folder taken into its trusted folder only where live state confirms them, the rest set aside unchanged in the evidence |
 | `seat_command.py` | the exact `qd` command a seat is told to run, shell quoting included, shared by the brief and the record readers |
 | `server_recovery.py` | a ship brought back when its own tmux server has gone: only when the server is proved gone, at most twice in an hour, and through `qd up`'s own path |

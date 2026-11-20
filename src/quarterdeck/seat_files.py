@@ -5,7 +5,8 @@ planted to a file of the operator. Every write the service or qd makes there goe
 ``durable.replace_file``, which uses them for such a path):
 
 - the walk from the seat folder down opens each folder with O_NOFOLLOW; a link on the way is refused, and nothing is
-  written through it (``LinkRefused``);
+  written through it (``LinkRefused``); a folder it makes is made as ``mkdir -p`` would, but the seat's home itself
+  (runtime/seats/<seat>/home) is made 0700, its owner's alone (``seat_home``);
 - a file is written to a temporary name created there with O_CREAT|O_EXCL|O_NOFOLLOW, then renamed over the name:
   a rename replaces a planted link, never follows it;
 - a link (a credential's) is made under a temporary name and renamed over the name the same way;
@@ -83,7 +84,7 @@ def _walk(root: Path, parts: tuple[str, ...], *, create: bool) -> int:
         descriptor = os.open(root, DIRECTORY)
     walked = root
     try:
-        for name in parts:
+        for index, name in enumerate(parts):
             if name in ('', '.', '..'):
                 raise LinkRefused(f'{walked / name}: not a plain name; nothing written')
             walked = walked / name
@@ -93,7 +94,9 @@ def _walk(root: Path, parts: tuple[str, ...], *, create: bool) -> int:
                 if not create:
                     raise
                 try:
-                    os.mkdir(name, 0o777, dir_fd=descriptor)
+                    # A seat's home is its owner's alone from the moment it is made (seat_home); a mkdir mode
+                    # only ever narrows by the umask, so the home is made 0700 whatever the umask.
+                    os.mkdir(name, 0o700 if (index, name) == (0, 'home') else 0o777, dir_fd=descriptor)
                 except FileExistsError:
                     pass
                 child = os.open(name, DIRECTORY, dir_fd=descriptor)

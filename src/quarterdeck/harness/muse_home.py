@@ -85,8 +85,10 @@ def owner_only(home: Path) -> None:
     Every folder is first proved an owned real directory by path; then each is
     opened without following a link, beneath its already opened parent, and
     set with fchmod, never chmod by path. A widened mode is mended, not refused;
-    a folder that is still not 0700, or not owned, refuses. An absent folder is
-    left as directory() leaves it.
+    a folder that is still not 0700, or not owned, refuses. An absent home is
+    refused at once in the seat code's one line that names it (seat_home), since
+    both callers expect it built; an absent folder below it is left as
+    directory() leaves it.
     """
     directory(home)
     for name in FOLDERS:
@@ -94,7 +96,8 @@ def owner_only(home: Path) -> None:
     try:
         root = os.open(home, _OPEN)
     except FileNotFoundError:
-        return
+        from ..seat_home import absent
+        raise absent(home) from None
     except OSError as error:
         raise ShipError(f"{home}: Muse home directory is not an owned real directory ({error.strerror})") from None
     opened = {"": root}
