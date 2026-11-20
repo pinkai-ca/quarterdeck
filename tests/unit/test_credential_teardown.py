@@ -686,14 +686,16 @@ def move_with_stale_hold(muse_ship, monkeypatch, *, temporary=False):
     return seat, record, archive, saved, original
 
 
-@pytest.mark.parametrize("history", ["current", "temporary", "landed-failed", "landed-pending"])
+@pytest.mark.parametrize("history", ["current", "temporary", "landed-failed", "landed-pending", "landed-temporary"])
 def test_operator_can_finish_a_proved_prior_move(muse_ship, monkeypatch, history):
-    temporary = history == "temporary"
+    temporary = history.endswith("temporary")
     ship, tmux, _ = muse_ship
     seat, record, archive, saved, original = move_with_stale_hold(muse_ship, monkeypatch, temporary=temporary)
     audit = acts.path(seat)
     start, failed = [json.loads(line) for line in audit.read_text().splitlines()]
     before = archive.stat()
+    archived_home = archive / "home" if temporary else archive
+    home_before = archived_home.stat()
     if history.startswith("landed-"):
         del start["source_identity"], start["review_identity"], failed["recovery"]
         previous = [start] if history == "landed-pending" else [start, failed]
@@ -713,6 +715,7 @@ def test_operator_can_finish_a_proved_prior_move(muse_ship, monkeypatch, history
     registered = json.loads(audit.read_text().splitlines()[-1])
     assert (registered["act"], registered["outcome"], registered["recovery"]) == (start["act"], "remove", str(archive))
     assert archive.stat() == before
+    assert archived_home.stat() == home_before
     assert auth_state(*saved) == original
 
 
@@ -733,14 +736,14 @@ def test_systems_cannot_finish_a_prior_move(muse_ship, monkeypatch, choice, reas
     ("different inode", "directory identity differs"),
     ("ambiguous", "more than one recorded move"),
     ("different hold", "no matching recorded move"),
-    ("landed temporary", "no matching recorded move"),
+    ("replaced temporary folder", "directory identity differs"),
 ])
 def test_operator_cannot_finish_an_unproved_move(muse_ship, monkeypatch, problem, reason):
     ship, tmux, _ = muse_ship
     seat, record, archive, saved, original = move_with_stale_hold(muse_ship, monkeypatch,
-                                                                  temporary=problem == "landed temporary")
+                                                                  temporary=problem == "replaced temporary folder")
     act_path = acts.path(seat)
-    start, failed = [json.loads(line) for line in act_path.read_text().splitlines()]
+    start = json.loads(act_path.read_text().splitlines()[0])
     if problem in {"missing", "different inode"}:
         displaced = archive.rename(archive.with_name("displaced"))
         saved = [displaced / path.relative_to(archive) for path in saved]
@@ -751,8 +754,9 @@ def test_operator_cannot_finish_an_unproved_move(muse_ship, monkeypatch, problem
     elif problem == "different hold":
         credentialmod.durable.replace_file(record, record.read_text())
     else:
-        del start["source_identity"], start["review_identity"], failed["recovery"]
-        act_path.write_text(json.dumps(start) + "\n" + json.dumps(failed) + "\n")
+        displaced = archive.rename(archive.with_name("displaced"))
+        archive.mkdir()
+        (displaced / "home").rename(archive / "home")
     audit = act_path.read_bytes()
     hold = record.read_bytes()
 
@@ -761,6 +765,40 @@ def test_operator_cannot_finish_an_unproved_move(muse_ship, monkeypatch, problem
     assert not seat.home.exists()
     assert record.read_bytes() == hold
     assert act_path.read_bytes() == audit
+    assert auth_state(*saved) == original
+
+
+@pytest.mark.parametrize("problem, reason", [
+    ("missing", "No such file"),
+    ("replaced", "directory identity differs"),
+    ("linked", "directory identity differs"),
+    ("identity-free", "no source directory identity"),
+])
+def test_legacy_temporary_retry_requires_the_original_home(muse_ship, monkeypatch, problem, reason):
+    ship, tmux, _ = muse_ship
+    seat, record, archive, saved, original = move_with_stale_hold(muse_ship, monkeypatch, temporary=True)
+    audit_path = acts.path(seat)
+    start, failed = [json.loads(line) for line in audit_path.read_text().splitlines()]
+    del start["source_identity"], start["review_identity"], failed["recovery"]
+    if problem == "identity-free":
+        start["home"] = None
+    else:
+        home = archive / "home"
+        displaced = home.rename(archive / "former-home")
+        saved = [displaced / path.relative_to(home) for path in saved]
+        if problem == "replaced":
+            home.mkdir()
+        elif problem == "linked":
+            home.symlink_to(displaced, target_is_directory=True)
+    audit_path.write_text(json.dumps(start) + "\n" + json.dumps(failed) + "\n")
+    audit = audit_path.read_bytes()
+    hold = record.read_bytes()
+
+    with pytest.raises(ShipError, match=f"{reason}.*review hold stays"):
+        credentialmod.release(ship, tmux, seat.name, None, lambda _: "remove")
+    assert not seat.home.exists()
+    assert record.read_bytes() == hold
+    assert audit_path.read_bytes() == audit
     assert auth_state(*saved) == original
 
 

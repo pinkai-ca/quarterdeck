@@ -728,7 +728,7 @@ def _release_attempts(runtime: Path, name: str) -> list[list[dict]]:
 
 def _move_plan(runtime: Path, name: str, review: tuple[int, int, int], entry: str,
                attempt: list[dict]) -> tuple[dict, Path, list[int]] | None:
-    """Return an unfinished remove's exact path and source identity if it belongs to this hold."""
+    """Return an unfinished remove's exact path and recorded identity if it belongs to this hold."""
     start, *results = attempt
     if start.get("choice") != "remove" or start.get("seat") != name:
         return None
@@ -759,10 +759,10 @@ def _move_plan(runtime: Path, name: str, review: tuple[int, int, int], entry: st
     if bound:
         identity = start.get("source_identity")
     else:
-        # The landed record stored the home inode only. It proves a home move, but cannot identify a moved seat folder.
+        # Earlier acts recorded the home identity, including when the whole temporary seat moved.
         seconds, ns = divmod(review[2], 10**9)
         held_at = datetime.fromtimestamp(seconds, timezone.utc).replace(microsecond=ns // 1000)
-        if entry != "home" or stamp < held_at.strftime("%Y%m%dT%H%M%S%fZ"):
+        if stamp < held_at.strftime("%Y%m%dT%H%M%S%fZ"):
             return None
         identity = start.get("home")
     if not isinstance(identity, list) or len(identity) != 2 or any(type(part) is not int for part in identity):
@@ -782,7 +782,11 @@ def _finish_prior_move(runtime: Path, name: str, seat, record: Path, review: tup
         act, target, identity = plans[0]
         with _recovery_root(runtime, create=False) as root, ExitStack() as stack:
             folder = _private_recovery_directory(_directory_at(stack, target.parent.name, parent=root))
-            info = os.stat(entry, dir_fd=folder, follow_symlinks=False)
+            identity_entry = entry
+            if entry == "seat" and "source_identity" not in act:
+                folder = _directory_at(stack, entry, parent=folder)
+                identity_entry = "home"
+            info = os.stat(identity_entry, dir_fd=folder, follow_symlinks=False)
             if not stat.S_ISDIR(info.st_mode) or list(_identity(info)[:2]) != identity:
                 raise ShipError("the recorded recovery directory identity differs")
             _clear_moved_hold(record, review, target)

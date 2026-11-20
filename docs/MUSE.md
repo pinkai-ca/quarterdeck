@@ -46,10 +46,12 @@ status name the recovery location. Any later deletion is a separate decision.
 The audit is in `runtime/trusted/<seat>/acts.jsonl`. If a move fails, the review
 hold stays. If the move succeeds but clearing the hold fails, the operator can
 run the same command and choose `remove` again. A matching act and the archived
-directory's identity must establish the earlier move. The retry clears the
-stale hold, records completion and leaves the archive intact. The recovery
-location stays visible in status if recording fails. If recording `keep` fails,
-the review hold stays.
+directory's identity must establish the earlier move. For earlier temporary-seat
+acts that recorded only the home identity, the `home` directory inside the
+archived seat folder supplies that identity. The retry clears the stale hold,
+records completion and leaves the archive intact. The recovery location stays
+visible in status if recording fails. If recording `keep` fails, the review hold
+stays.
 
 The launch removes inherited `META_API_KEY`, `MUSE_AUTH_PATH` and `MUSE_LOGIN`.
 Only this adapter's launch removes these sign-in redirects; other adapters keep
