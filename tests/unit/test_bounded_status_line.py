@@ -33,6 +33,7 @@ def test_every_category_obeys_the_budget_and_uses_complete_items():
     assert first == 'SERVICE DOWN' and items[0] == '50 need human' and last == 'qd status'
     assert headlines.columns(line) <= headlines.WIDTH
     assert '界' not in line
+    assert '1 usage evidence needs human' in items
     assert any(item.startswith('+') and item.endswith(' more') for item in items)
     deck = headlines.sections(facts)
     assert all(item in {group.summary for group in (*deck.immediate, *deck.lower)}

@@ -1,7 +1,7 @@
 """A redraw may recover within the existing bound; an unknown frame never sends keys."""
 from types import SimpleNamespace
 import pytest
-from quarterdeck.door import BOX_SECONDS, Door
+from quarterdeck.door import Door
 from quarterdeck.harness.types import Box, Screen
 
 
@@ -11,7 +11,7 @@ def frames(monkeypatch):
     monkeypatch.setattr('quarterdeck.door._clock', lambda: clock[0])
     monkeypatch.setattr('quarterdeck.door._sleep', lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     calls = []
-    seat = SimpleNamespace(harness=SimpleNamespace(keys=SimpleNamespace(submit='Enter')),
+    seat = SimpleNamespace(harness=SimpleNamespace(exact_input_text=True, keys=SimpleNamespace(submit='Enter')),
         tmux=SimpleNamespace(pane=lambda _: None, keys=lambda *args: calls.append(args)))
     seat.harness.queues_while_working = lambda _: True
     door = Door(seat)
@@ -27,7 +27,7 @@ def test_unreadable_redraw_recovers_without_a_blind_delivery(frames, monkeypatch
     stream = iter([None, Screen('', box=None), ready])
     monkeypatch.setattr(door, 'screen', lambda: next(stream))
     if operation == 'paste':
-        assert door.box_shows(Box('payload'), BOX_SECONDS) is ready
+        assert door.box_shows(Box('payload')) is ready
     elif operation == 'submit':
         assert door.submit('%synthetic') is None
         assert calls == [('%synthetic', 'Enter')]
@@ -41,7 +41,7 @@ def test_persistent_unknown_expires_without_input(frames, monkeypatch, operation
     door, clock, calls = frames
     monkeypatch.setattr(door, 'screen', lambda: None)
     if operation == 'paste':
-        assert door.box_shows(Box('payload'), BOX_SECONDS) is None
+        assert door.box_shows(Box('payload')) is None
     elif operation == 'submit':
         assert 'no key sent' in door.submit('%synthetic')
     else:
