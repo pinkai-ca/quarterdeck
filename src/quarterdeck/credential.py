@@ -461,17 +461,11 @@ def held_words(ship: Ship) -> list[str]:
 
 
 def settle_held(ship: Ship, *, wait: float = RESEED_WAIT) -> list[str]:
-    """Complete keep decisions and settle held renewals; unreadable records remain visible."""
+    """Settle held renewals; unreadable records remain visible."""
     lines = []
     for record, hold in _held(ship):
-        if hold is None:
-            continue
-        if hold.review:
-            if hold.keep is not None and (line := _settle_keep(ship, record, wait)):
-                lines.append(line)
-            continue
-        if hold.keep is not None:
-            continue  # a completed keep still identifies the home and names already reviewed
+        if hold is None or hold.review or hold.keep is not None:
+            continue  # review waits for a choice; a completed keep identifies the names already reviewed
         name, pool = hold.name, hold.pool
         seat_folder = ship.runtime / "seats" / name
         found = [Participant(name, seat_folder / "home", pool)]
@@ -519,32 +513,6 @@ def _snapshot(home: Path, adapter: harnesses.Harness) -> dict:
         names[label] = [kind, target, info.st_mode, *_identity(info)]
     return {"folder": list(_identity(folder[0])[:2]) if folder is not None else None,
             "home": list(_identity(root[0])[:2]) if root is not None else None, "names": names}
-
-
-def _save_keep(record: Path, hold: Hold, *, review: bool, snapshot: dict | None) -> None:
-    durable.replace_file(record, json.dumps(dict(seat=hold.name, pool=hold.pool, adapter=hold.adapter,
-                                                 review=review, keep=snapshot)) + "\n")
-
-
-def _settle_keep(ship: Ship, record: Path, wait: float) -> str | None:
-    from . import lifecycle
-
-    try:
-        with lifecycle.claim(ship.runtime, record.stem), _reseeding(ship, wait):
-            hold = _held_record(ship, record)
-            if hold is None or not hold.review or hold.keep is None:
-                return None
-            home = ship.runtime / "seats" / hold.name / "home"
-            try:
-                same = _snapshot(home, credential_review_adapter(hold.adapter)) == hold.keep
-            except (OSError, ShipError):
-                same = False
-            _save_keep(record, hold, review=not same, snapshot=hold.keep if same else None)
-    except (Busy, lifecycle.Busy):
-        return None
-    if same:
-        return f"{hold.name}: home kept in place and credential review cleared"
-    return f"{hold.name}: home changed before the keep decision settled; credential review still held"
 
 
 @contextmanager
@@ -624,8 +592,10 @@ def release(ship: Ship, tmux, name: str, caller: str, choose) -> str:
             raise ShipError(f"{name}: the release could not be recorded ({error}); the review hold stays") from None
         try:
             if choice == "keep":
-                _save_keep(record, hold, review=True, snapshot=snapshot)
-                detail = "home kept in place; the next service pass clears its review hold if the home is unchanged"
+                previous_review = record.read_text()
+                kept = dict(seat=name, pool=hold.pool, adapter=hold.adapter, review=False, keep=snapshot)
+                durable.replace_file(record, json.dumps(kept) + "\n")
+                detail = "home kept in place; credential review cleared"
             else:
                 path, identity = ((home.parent, snapshot["folder"]) if temporary else (home, snapshot["home"]))
                 if identity is not None:
@@ -641,6 +611,13 @@ def release(ship: Ship, tmux, name: str, caller: str, choose) -> str:
         try:
             acts.write(seat, dict(act=act["act"], verb=act["verb"], at=acts._now(), outcome=outcome, detail=detail))
         except (OSError, ShipError) as error:
+            if outcome == "keep":
+                try:
+                    durable.replace_file(record, previous_review)
+                except (OSError, ShipError) as restore_error:
+                    raise ShipError(f"{name}: the keep outcome could not be recorded ({error}) and the review hold "
+                                    f"could not be restored ({restore_error})") from None
+                raise ShipError(f"{name}: the keep outcome could not be recorded ({error}); the review hold stays") from None
             raise ShipError(f"{name}: {detail}; the outcome could not be recorded ({error})") from None
         if outcome == "failed":
             raise ShipError(f"{name}: {detail}")

@@ -328,7 +328,7 @@ def held_muse(muse_ship, change):
     return seat, names, service
 
 
-def test_release_command_displays_metadata_and_keeps_the_home_after_the_service_pass(muse_ship, monkeypatch, capsys):
+def test_release_command_displays_metadata_and_clears_the_hold_before_the_service_pass(muse_ship, monkeypatch, capsys):
     seat, (main, nested), service = held_muse(muse_ship, "attached-file")
     before = auth_state(main, nested)
     runtime = seat.ship.runtime
@@ -357,21 +357,21 @@ def test_release_command_displays_metadata_and_keeps_the_home_after_the_service_
     assert f"config/muse/auth.json: link -> {str(main)!r}" in out.out
     assert "synthetic detached file" not in out.out
     assert "keep/remove" in out.err
+    assert "home kept in place; credential review cleared" in out.out
     assert auth_state(main, nested) == before
-    assert credentialmod.held_for_review(seat.ship, seat.name)
-    service.credentials()
-    service.credentials()
     assert not credentialmod.held_for_review(seat.ship, seat.name)
     assert "credential review" not in watch.facts(seat.ship, seat.tmux).line()
-    assert auth_state(main, nested) == before
+    acknowledged = path.read_text()
+    assert json.loads(acknowledged)["keep"]["names"].keys() == {"auth.json", "config/muse/auth.json"}
     act = acts.last(seat)
     assert (act["verb"], act["choice"], act["outcome"], act["caller"]) == (
         "credential-release", "keep", "keep", "synthetic-operator")
     assert "credential review" in acts.describe(act)
-    main.unlink()
-    main.write_bytes(b"synthetic later file")
     service.credentials()
-    assert credentialmod.held_for_review(seat.ship, seat.name), "changed metadata needs a new review"
+    assert auth_state(main, nested) == before
+    assert not credentialmod.held_for_review(seat.ship, seat.name)
+    assert path.read_text() == acknowledged
+    assert "credential review" not in watch.facts(seat.ship, seat.tmux).line()
 
 
 def test_keeping_a_temporary_home_clears_both_the_hold_and_leftover_alert(muse_ship):
@@ -382,6 +382,7 @@ def test_keeping_a_temporary_home_clears_both_the_hold_and_leftover_alert(muse_s
         names = setup_muse_auth(seat.home, source, "foreign-link")
         before = auth_state(*names)
     credentialmod.release(ship, tmux, seat.name, "operator", lambda _: "keep")
+    assert not credentialmod.held_for_review(ship, seat.name)
     Service(ship, tmux).credentials()
     assert auth_state(*names) == before
     assert not credentialmod.held_for_review(ship, seat.name)
@@ -439,13 +440,14 @@ def test_release_refuses_an_up_seat_before_offering_a_choice(muse_ship):
     assert acts.last(seat) is None
 
 
-def test_release_refuses_a_home_that_changed_during_the_choice(muse_ship):
+@pytest.mark.parametrize("choice", ["keep", "remove"])
+def test_release_refuses_a_home_that_changed_during_the_choice(muse_ship, choice):
     seat, _, _ = held_muse(muse_ship, "attached-file")
 
     def choose(_):
         seat.home.rename(seat.home.with_name("previous-home"))
         seat.home.mkdir()
-        return "remove"
+        return choice
 
     with pytest.raises(ShipError, match="held home changed"):
         credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", choose)
@@ -480,12 +482,57 @@ def test_release_requires_an_explicit_choice(muse_ship):
     assert acts.last(seat) is None
 
 
-def test_keep_does_not_clear_review_if_the_home_changes_before_the_service_pass(muse_ship):
+def test_failed_keep_snapshot_preserves_the_review_hold_and_records_the_failure(muse_ship, monkeypatch):
+    seat, names, service = held_muse(muse_ship, "attached-file")
+    before = auth_state(*names)
+    record = seat.ship.runtime / credentialmod.HELD / f"{seat.name}.json"
+    previous = record.read_text()
+    replace_file = credentialmod.durable.replace_file
+
+    def refuse_keep(path, data, **kwargs):
+        if path == record:
+            raise PermissionError("synthetic snapshot write failure")
+        return replace_file(path, data, **kwargs)
+
+    monkeypatch.setattr(credentialmod.durable, "replace_file", refuse_keep)
+    with pytest.raises(ShipError, match="snapshot write failure.*review hold stays"):
+        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "keep")
+    assert record.read_text() == previous
+    assert acts.last(seat)["outcome"] == "failed"
+    service.credentials()
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert auth_state(*names) == before
+
+
+def test_failed_keep_outcome_restores_the_review_hold(muse_ship, monkeypatch):
+    seat, names, service = held_muse(muse_ship, "attached-file")
+    before = auth_state(*names)
+    record = seat.ship.runtime / credentialmod.HELD / f"{seat.name}.json"
+    previous = record.read_text()
+    write = acts.write
+
+    def refuse_outcome(audited, entry):
+        if entry["outcome"] == "keep":
+            assert not credentialmod.held_for_review(seat.ship, seat.name)
+            raise PermissionError("synthetic outcome write failure")
+        write(audited, entry)
+
+    monkeypatch.setattr(acts, "write", refuse_outcome)
+    with pytest.raises(ShipError, match="outcome write failure.*review hold stays"):
+        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "keep")
+    assert record.read_text() == previous
+    assert acts.last(seat)["outcome"] == "pending"
+    service.credentials()
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert auth_state(*names) == before
+
+
+def test_service_holds_changed_metadata_again_after_keep(muse_ship):
     seat, (main, _), service = held_muse(muse_ship, "attached-file")
     credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "keep")
+    assert not credentialmod.held_for_review(seat.ship, seat.name)
     main.unlink()
     main.write_bytes(b"synthetic later file")
-    service.credentials()
     service.credentials()
     assert credentialmod.held_for_review(seat.ship, seat.name)
     assert main.read_bytes() == b"synthetic later file"

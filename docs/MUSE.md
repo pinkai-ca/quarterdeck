@@ -29,12 +29,13 @@ Jailed seats stay outside pool reseeding.
 The status line points to `qd credential release <seat>`. Take the seat down
 before running the command. It shows whether each of the two names is a file,
 a link, or missing, and shows each link's target. Answer `keep` to leave the
-home in place. The next service pass clears the review hold if the inspected
-home and names still match. Answer `remove` to delete the seat's home. For a
-temporary seat this also removes its temporary seat folder. The act and its
-outcome are recorded under `runtime/trusted/<seat>/acts.jsonl`. A failed
-removal leaves the review hold in place. A kept detached credential can still
-need attention before Muse will launch.
+home in place and clear the review hold before the command returns. If the
+home or credential metadata changes afterward, the service can hold it for a
+new review. Answer `remove` to delete the seat's home. For a temporary seat
+this also removes its temporary seat folder. The act and its outcome are
+recorded under `runtime/trusted/<seat>/acts.jsonl`. If recording `keep` or
+removing the home fails, the review hold stays in place. A kept detached
+credential can still need attention before Muse will launch.
 
 The launch removes inherited `META_API_KEY`, `MUSE_AUTH_PATH` and `MUSE_LOGIN`.
 Only this adapter's launch removes these sign-in redirects; other adapters keep
