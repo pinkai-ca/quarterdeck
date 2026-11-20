@@ -74,7 +74,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `record_file.py` | the one opener of a seat's program record: no link at its name or on the way from the seat folder, no fifo, socket or device, only this user's own regular file with one name; one read at most a bound (1 GiB for streamed Claude, 128 MiB for ordinary JSON lines, 512 MiB for SQLite with its log), refused past it; the status line's word on a record near or past its bound |
 | `limits.py` | usage windows and walls |
 | `muse.py` | Muse's native launch and adapter interfaces, measured at 1.4.20; [Muse contract facts](MUSE.md) |
-| `muse_home.py` | Muse's native HOME/XDG layout, contributor-off settings seed and same-home startup proof |
+| `muse_home.py` | Muse's native HOME/XDG layout kept to its owner alone (0700, set through descriptors), contributor-off settings seed and same-home startup proof |
 | `muse_program.py` | the selected Muse installation's versioned executable, without running its updating launcher |
 | `muse_record.py` | Muse's typed session records, root turn boundaries and exact accepted/materialized input links |
 | `muse_screen.py` | Muse's measured styled composer and activity; unmeasured input forms stay unsupported |

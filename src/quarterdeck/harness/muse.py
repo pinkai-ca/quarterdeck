@@ -146,6 +146,7 @@ class MuseHarness(Harness):
         if resume:
             raise ShipError("Muse resume brief carriage is unmeasured; no launch")
         self.preflight(home, seat.cwd)
+        muse_home.owner_only(home)
         settings_path = home / "config/muse/settings.json"
         if settings_path.is_symlink():
             raise ShipError("Muse launch settings are not an owned regular file")

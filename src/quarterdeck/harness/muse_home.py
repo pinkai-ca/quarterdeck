@@ -68,10 +68,65 @@ def directory(path: Path, *, create: bool = False) -> None:
         raise ShipError(f"{path}: Muse home directory is not an owned real directory")
 
 
+FOLDERS = ("user-home", "config", "config/muse", "data", "cache", "state", "tmp")
+_OPEN = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC
+
+
 def prepare(home: Path) -> None:
     directory(home, create=True)
-    for name in ("user-home", "config", "config/muse", "data", "cache", "state", "tmp"):
+    for name in FOLDERS:
         directory(home / name, create=True)
+    owner_only(home)
+
+
+def owner_only(home: Path) -> None:
+    """Mend the home and its seven folders to 0700, each through its own descriptor.
+
+    Every folder is first proved an owned real directory by path; then each is
+    opened without following a link, beneath its already opened parent, and
+    set with fchmod, never chmod by path. A widened mode is mended, not refused;
+    a folder that is still not 0700, or not owned, refuses. An absent folder is
+    left as directory() leaves it.
+    """
+    directory(home)
+    for name in FOLDERS:
+        directory(home / name)
+    try:
+        root = os.open(home, _OPEN)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ShipError(f"{home}: Muse home directory is not an owned real directory ({error.strerror})") from None
+    opened = {"": root}
+    try:
+        _mend(home, root)
+        for name in FOLDERS:
+            parent, _, leaf = name.rpartition("/")
+            if parent not in opened:
+                continue
+            try:
+                folder = os.open(leaf, _OPEN, dir_fd=opened[parent])
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise ShipError(f"{home / name}: Muse home directory is not an owned real directory "
+                                f"({error.strerror})") from None
+            opened[name] = folder
+            _mend(home / name, folder)
+    finally:
+        for descriptor in opened.values():
+            os.close(descriptor)
+
+
+def _mend(path: Path, descriptor: int) -> None:
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise ShipError(f"{path}: Muse home directory is not an owned real directory")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        os.fchmod(descriptor, 0o700)
+    info = os.fstat(descriptor)
+    if stat.S_IMODE(info.st_mode) != 0o700 or info.st_uid != os.getuid():
+        raise ShipError(f"{path}: Muse home directory is still not mode 0700 for its owner alone")
 
 
 def home_identity(home: Path) -> list[int]:
