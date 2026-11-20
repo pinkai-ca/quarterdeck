@@ -5,14 +5,18 @@ and a check's temporary seat each end with the pool holding the newer credential
 built over a detached credential newer than its pool's.
 """
 
+import io
 import json
+import shutil
 import time
+from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import post, seat as seatmod, watch
+from quarterdeck import acts, cli, credential as credentialmod, post, seat as seatmod, watch
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.home import credential
 from quarterdeck.harness.synthetic_record import ClaudeShape
@@ -247,12 +251,15 @@ def auth_state(*names):
     return [(name.lstat().st_ino, name.readlink() if name.is_symlink() else name.read_bytes()) for name in names]
 
 
+@pytest.mark.parametrize("jailed", [False, True], ids=["ordinary", "jailed"])
 @pytest.mark.parametrize("change", ["attached-file", "nested-file", "foreign-link", "linked"])
-def test_muse_check_retains_homes_for_credential_review(muse_ship, change):
+def test_muse_check_retains_homes_for_credential_review(muse_ship, change, jailed):
     ship, tmux, source = muse_ship
     spec = SeatSpec("check-muse-0000", "qd-check-muse-0000", "worker", "muse", ("muse-primary",),
-                    model="muse-wonder-1.0", cwd=ship.workspace)
+                    model="muse-wonder-1.0", cwd=ship.workspace, sandbox=jailed)
     with temporary_seat(ship, tmux, spec, [], "qd check") as seat:
+        if jailed:
+            assert credentialmod.participants(seat.ship, [seat]) == []
         names = setup_muse_auth(seat.home, source, change)
         sources = source, source.parent / "other.json"
         before = auth_state(*sources, *names)
@@ -268,10 +275,15 @@ def test_muse_check_retains_homes_for_credential_review(muse_ship, change):
     assert tmux.sessions == {}
 
 
+@pytest.mark.parametrize("jailed", [False, True], ids=["ordinary", "jailed"])
 @pytest.mark.parametrize("change", ["attached-file", "nested-file", "foreign-link", "linked"])
-def test_muse_service_retains_homes_for_credential_review(muse_ship, change):
+def test_muse_service_retains_homes_for_credential_review(muse_ship, change, jailed):
     ship, tmux, source = muse_ship
-    seat = Seat(ship, ship.seat("muse-worker"), tmux)
+    spec = replace(ship.seat("muse-worker"), sandbox=jailed)
+    ship = replace(ship, seats={spec.name: spec})
+    seat = Seat(ship, spec, tmux)
+    if jailed:
+        assert credentialmod.participants(ship, [seat]) == []
     names = setup_muse_auth(seat.home, source, change)
     names = source, source.parent / "other.json", *names
     before = auth_state(*names)
@@ -284,3 +296,196 @@ def test_muse_service_retains_homes_for_credential_review(muse_ship, change):
         assert "home held for credential review" not in line
     else:
         assert f"{seat.name}: home held for credential review" in line
+
+
+def test_hold_home_selects_only_the_seats_own_participant(muse_ship, monkeypatch):
+    ship, tmux, source = muse_ship
+    seat = Seat(ship, ship.seat("muse-worker"), tmux)
+    other = seat.folder.parent / "other" / "home"
+    setup_muse_auth(other, source, "attached-file")
+    setup_muse_auth(seat.home, source, "linked")
+    foreign = credentialmod.Participant("other", other, seat.pool.name)
+    usage = credentialmod.Participant(seat.name, other, seat.pool.name, usage_reader=True)
+    own = credentialmod.Participant(seat.name, seat.home, seat.pool.name)
+    monkeypatch.setattr(credentialmod, "participants", lambda *_: [foreign, usage, own])
+    assert not credentialmod.hold_home(ship, seat)
+    assert credentialmod.held_words(ship) == []
+    own_link = seat.home / "auth.json"
+    own_link.unlink()
+    own_link.write_text("synthetic own credential")
+    assert credentialmod.hold_home(ship, seat)
+    assert credentialmod.held_for_review(ship, seat.name)
+    assert not credentialmod.held_for_review(ship, foreign.name)
+
+
+def held_muse(muse_ship, change):
+    ship, tmux, source = muse_ship
+    seat = Seat(ship, ship.seat("muse-worker"), tmux)
+    names = setup_muse_auth(seat.home, source, change)
+    service = Service(ship, tmux)
+    service.credentials()
+    assert credentialmod.held_for_review(ship, seat.name)
+    return seat, names, service
+
+
+def test_release_command_displays_metadata_and_keeps_the_home_after_the_service_pass(muse_ship, monkeypatch, capsys):
+    seat, (main, nested), service = held_muse(muse_ship, "attached-file")
+    before = auth_state(main, nested)
+    runtime = seat.ship.runtime
+    # Read an already-written review from before the release command existed.
+    path = runtime / credentialmod.HELD / f"{seat.name}.json"
+    path.write_text(json.dumps(dict(seat=seat.name, pool=seat.pool.name, review=True)))
+    assert f"qd credential release {seat.name}" in watch.facts(seat.ship, seat.tmux).line()
+    monkeypatch.setattr(cli, "handoff", lambda *_: None)
+    monkeypatch.setattr(cli, "load_ship", lambda _: seat.ship)
+    monkeypatch.setattr(cli.Tmux, "for_ship", lambda _: seat.tmux)
+    monkeypatch.setenv("QD_SEAT", "synthetic-operator")
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("keep\n"))
+
+    with monkeypatch.context() as patch:
+        for method in ("open", "read_bytes", "read_text"):
+            read = getattr(Path, method)
+
+            def metadata_only(self, *args, read=read, **kwargs):
+                assert self.name != "auth.json", "release opened a sign-in file"
+                return read(self, *args, **kwargs)
+
+            patch.setattr(Path, method, metadata_only)
+        assert cli.main(["--ship", str(seat.ship.folder), "credential", "release", seat.name]) == 0
+    out = capsys.readouterr()
+    assert "auth.json: file" in out.out
+    assert f"config/muse/auth.json: link -> {str(main)!r}" in out.out
+    assert "synthetic detached file" not in out.out
+    assert "keep/remove" in out.err
+    assert auth_state(main, nested) == before
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    service.credentials()
+    service.credentials()
+    assert not credentialmod.held_for_review(seat.ship, seat.name)
+    assert "credential review" not in watch.facts(seat.ship, seat.tmux).line()
+    assert auth_state(main, nested) == before
+    act = acts.last(seat)
+    assert (act["verb"], act["choice"], act["outcome"], act["caller"]) == (
+        "credential-release", "keep", "keep", "synthetic-operator")
+    assert "credential review" in acts.describe(act)
+    main.unlink()
+    main.write_bytes(b"synthetic later file")
+    service.credentials()
+    assert credentialmod.held_for_review(seat.ship, seat.name), "changed metadata needs a new review"
+
+
+def test_keeping_a_temporary_home_clears_both_the_hold_and_leftover_alert(muse_ship):
+    ship, tmux, source = muse_ship
+    spec = SeatSpec("check-muse-0001", "qd-check-muse-0001", "worker", "muse", ("muse-primary",),
+                    model="muse-wonder-1.0", cwd=ship.workspace, sandbox=True)
+    with temporary_seat(ship, tmux, spec, [], "qd check") as seat:
+        names = setup_muse_auth(seat.home, source, "foreign-link")
+        before = auth_state(*names)
+    credentialmod.release(ship, tmux, seat.name, "operator", lambda _: "keep")
+    Service(ship, tmux).credentials()
+    assert auth_state(*names) == before
+    assert not credentialmod.held_for_review(ship, seat.name)
+    assert not any(seat.name in line for line in seatmod.leftover_seats(ship))
+
+
+@pytest.mark.parametrize("temporary", [False, True], ids=["declared", "temporary"])
+def test_release_removes_the_held_home_and_keeps_the_audit(muse_ship, temporary):
+    ship, tmux, source = muse_ship
+    if temporary:
+        spec = SeatSpec("check-muse-0002", "qd-check-muse-0002", "worker", "muse", ("muse-primary",),
+                        model="muse-wonder-1.0", cwd=ship.workspace)
+        with temporary_seat(ship, tmux, spec, [], "qd check") as seat:
+            main, _ = setup_muse_auth(seat.home, source, "foreign-link")
+    else:
+        seat, (main, _), _ = held_muse(muse_ship, "foreign-link")
+        (seat.folder / "other-seat-data").touch()
+    main.unlink()
+    sources = source, source.parent / "other.json"
+    before = auth_state(*sources)
+    shown = []
+
+    def choose(words):
+        shown.extend(words)
+        return "remove"
+
+    proof = credentialmod.release(ship, tmux, seat.name, "operator", choose)
+    assert "  auth.json: missing" in shown
+    assert f"  config/muse/auth.json: link -> {str(sources[1])!r}" in shown
+    assert "held home removed" in proof
+    assert not seat.home.exists()
+    if temporary:
+        assert not seat.folder.exists()
+    else:
+        assert (seat.folder / "other-seat-data").exists()
+    assert auth_state(*sources) == before
+    assert credentialmod.held_words(ship) == []
+    start, done = [json.loads(row) for row in acts.path(seat).read_text().splitlines()]
+    assert start["outcome"] == "pending" and start["choice"] == "remove"
+    assert start["act"] == done["act"] and done["outcome"] == "remove"
+
+
+def test_release_refuses_an_up_seat_before_offering_a_choice(muse_ship):
+    seat, names, _ = held_muse(muse_ship, "nested-file")
+    before = auth_state(*names)
+    pane = Pane("%1", "crew", seat.name, 101, 80, 24, False, False, None)
+    seat.tmux.panes[pane.id] = pane
+    seat.trusted.mkdir(parents=True, exist_ok=True)
+    Launched(pane.id, pane.pid, post.now().isoformat(), seat.pool.name, None, ["muse"], "synthetic", "muse").write(
+        seat.trusted / "launch.json")
+    with pytest.raises(ShipError, match="still up"):
+        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: pytest.fail("offered a choice"))
+    assert auth_state(*names) == before
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert acts.last(seat) is None
+
+
+def test_release_refuses_a_home_that_changed_during_the_choice(muse_ship):
+    seat, _, _ = held_muse(muse_ship, "attached-file")
+
+    def choose(_):
+        seat.home.rename(seat.home.with_name("previous-home"))
+        seat.home.mkdir()
+        return "remove"
+
+    with pytest.raises(ShipError, match="held home changed"):
+        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", choose)
+    assert seat.home.is_dir()
+    assert seat.home.with_name("previous-home").is_dir()
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert acts.last(seat) is None
+
+
+def test_failed_removal_preserves_the_review_hold_and_records_the_failure(muse_ship, monkeypatch):
+    seat, names, _ = held_muse(muse_ship, "attached-file")
+    before = auth_state(*names)
+
+    def refuse(*_args, **_kwargs):
+        raise PermissionError("synthetic write failure")
+
+    monkeypatch.setattr(shutil, "rmtree", refuse)
+    with pytest.raises(ShipError, match="write failure.*review hold stays"):
+        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "remove")
+    assert auth_state(*names) == before
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert acts.last(seat)["outcome"] == "failed"
+
+
+def test_release_requires_an_explicit_choice(muse_ship):
+    seat, names, _ = held_muse(muse_ship, "attached-file")
+    before = auth_state(*names)
+    with pytest.raises(ShipError, match="choose keep or remove"):
+        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "")
+    assert auth_state(*names) == before
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert acts.last(seat) is None
+
+
+def test_keep_does_not_clear_review_if_the_home_changes_before_the_service_pass(muse_ship):
+    seat, (main, _), service = held_muse(muse_ship, "attached-file")
+    credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "keep")
+    main.unlink()
+    main.write_bytes(b"synthetic later file")
+    service.credentials()
+    service.credentials()
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert main.read_bytes() == b"synthetic later file"

@@ -2165,7 +2165,9 @@ def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
         raise ShipError(f"{name}: its record is unreadable; inspect runtime/trusted/{name}/{TEMPORARY}")
     if _held_for_renewal(ship, name):
         if credential.held_for_review(ship, name):
-            raise ShipError(f"{name}: its home is held for credential review")
+            raise ShipError(f"{name}: its home is held for credential review; qd credential release {name}")
+        if credential.kept_after_review(ship, name):
+            raise ShipError(f"{name}: its temporary home was kept by the credential review decision")
         raise ShipError(f"{name}: its home is held for a renewal; the service reseeds its pool from it, then removes it")
     check = record['purpose'] in ('qd check', 'qd check human wake') and CHECK_SEAT.fullmatch(name) is not None
     storage_retired = False

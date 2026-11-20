@@ -37,13 +37,15 @@ import stat
 import time
 from contextlib import contextmanager
 import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 
-from . import durable, harness as harnesses, seat_files
-from .harness.home import credential_aliases
+from . import durable, harness as harnesses, seat_files, trusted_files
+from .harness.home import credential_aliases, credential_review_adapter
 from .seat import Seat
 from .ship import Pool, Ship, ShipError, valid_name
 
@@ -77,14 +79,18 @@ def source_refusal(ship: Ship, seat: Seat) -> str | None:
     from .seat import launch_pool_refusal
     if seat.pool.kind == "endpoint":
         return f"{seat.name}: on an endpoint pool"
-    spec = getattr(seat, "spec", None)  # every Seat carries its declaration; a test's stand-in may carry none
-    if spec is not None and ship.jailed(spec, seat.pool):
+    if _jailed(ship, seat):
         return f"{seat.name}: jailed"
     try:
         launched = seat.launched()
     except ShipError as error:
         return str(error)
     return launch_pool_refusal(seat, launched, every_seat=True)
+
+
+def _jailed(ship: Ship, seat: Seat) -> bool:
+    spec = getattr(seat, "spec", None)  # stand-ins may carry no declaration
+    return spec is not None and ship.jailed(spec, seat.pool)
 
 
 def participants(ship: Ship, seats: list[Seat]) -> list[Participant]:
@@ -195,33 +201,74 @@ def reseed(ship: Ship, seats: list[Seat], *, wait: float = RESEED_WAIT) -> list[
 def _due(ship: Ship, seats: list[Seat]) -> bool:
     """Whether a reseed has anything to judge, by metadata alone: a linked name that is no longer a link, or a
     held copy whose size or modification time differs from the pool's file (a copy is made with the pool's times)."""
-    return _due_of(ship, participants(ship, seats))
+    return (_due_of(ship, participants(ship, seats))
+            or any(_review_due(ship, seat.name, seat.pool.name, seat.home, source, adapter)
+                   for seat, source, adapter in _jailed_reviews(ship, seats)))
 
 
 def _without_reader(adapter: harnesses.Harness) -> bool:
     return type(adapter).freshness is harnesses.Harness.freshness
 
 
+def _jailed_reviews(ship: Ship, seats: list[Seat]):
+    """Review-only homes never enter participants or take part in reseeding."""
+    for seat in seats:
+        if _jailed(ship, seat) and (source := pool_file(seat.pool)) is not None:
+            adapter = harnesses.native_for(seat.pool.provider)
+            if _without_reader(adapter):
+                yield seat, source, adapter
+
+
+def _names(home: Path, adapter: harnesses.Harness) -> tuple[Path, ...]:
+    return (home / adapter.credential_file, *credential_aliases(adapter, home))
+
+
+def _name_info(path: Path) -> tuple[os.stat_result, str | None] | None:
+    """Metadata of the name itself. In a seat home, do not follow aliases in its parent directories."""
+    located = None
+    try:
+        located = seat_files.parent(path, create=False)
+        if located is None:
+            info = path.lstat()
+            return info, os.readlink(path) if stat.S_ISLNK(info.st_mode) else None
+        directory, name = located
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        return info, os.readlink(name, dir_fd=directory) if stat.S_ISLNK(info.st_mode) else None
+    except FileNotFoundError:
+        return None
+    finally:
+        if located is not None:
+            os.close(located[0])
+
+
 def _needs_review(home: Path, source: Path, adapter: harnesses.Harness) -> bool:
     """Look only at credential names and link targets when the format cannot be judged."""
-    primary = home / source.name
-    for name in (primary, *credential_aliases(adapter, home)):
+    for name in _names(home, adapter):
         try:
-            mode = name.lstat().st_mode
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        except OSError:
+            metadata = _name_info(name)
+            if metadata is None:
+                continue
+            info, target = metadata
+            if stat.S_ISREG(info.st_mode) or (name.parent != home and target is not None
+                                             and name.resolve() != source.resolve()):
+                return True
+        except (OSError, RuntimeError, seat_files.LinkRefused):
             return True  # a name we cannot inspect cannot be cleared safely
-        if stat.S_ISREG(mode):
-            return True
-        if name != primary and stat.S_ISLNK(mode):
-            try:
-                if name.resolve() == source.resolve():
-                    continue  # the native name normally reaches the pool through the top-level link
-            except (OSError, RuntimeError):
-                pass  # a link whose target cannot be established also needs review
-            return True
     return False
+
+
+def _review_due(ship: Ship, name: str, pool: str, home: Path, source: Path, adapter: harnesses.Harness) -> bool:
+    if not _needs_review(home, source, adapter):
+        return False
+    held = _held_record(ship, _hold_path(ship, name))
+    if held is None:
+        return True
+    if held.review:
+        return False
+    try:
+        return held.keep is None or held.pool != pool or held.keep != _snapshot(home, adapter)
+    except (OSError, ShipError):
+        return True
 
 
 def _due_of(ship: Ship, found: list[Participant]) -> bool:
@@ -232,7 +279,7 @@ def _due_of(ship: Ship, found: list[Participant]) -> bool:
             continue
         adapter = harnesses.native_for(pool.provider)
         if _without_reader(adapter):
-            if _needs_review(seat.home, source, adapter):
+            if _review_due(ship, seat.name, seat.pool, seat.home, source, adapter):
                 return True
             continue
         name = seat.home / source.name
@@ -254,7 +301,12 @@ def _due_of(ship: Ship, found: list[Participant]) -> bool:
 
 
 def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:
-    return _reseed_of(ship, participants(ship, seats))
+    proofs = []
+    for seat, source, adapter in _jailed_reviews(ship, seats):
+        if _review_due(ship, seat.name, seat.pool.name, seat.home, source, adapter):
+            _hold_record(ship, seat.name, seat.pool.name, adapter=adapter)
+            proofs.append(f"{seat.name}: home held for credential review")
+    return proofs + _reseed_of(ship, participants(ship, seats))
 
 
 def _reseed_of(ship: Ship, found: list[Participant]) -> list[str]:
@@ -268,8 +320,8 @@ def _reseed_of(ship: Ship, found: list[Participant]) -> list[str]:
             continue
         adapter = harnesses.native_for(pool.provider)
         if _without_reader(adapter):
-            if _needs_review(seat.home, source, adapter) and not held_for_review(ship, seat.name):
-                _hold_record(ship, seat, review=True)
+            if _review_due(ship, seat.name, seat.pool, seat.home, source, adapter):
+                _hold_record(ship, seat.name, seat.pool, adapter=adapter)
                 proofs.append(f"{seat.name}: home held for credential review")
             continue  # there is no reader to judge a detached file, so never relink it
         link = seat.home / source.name
@@ -313,86 +365,114 @@ HELD = Path("credentials") / "held"
 
 
 def hold_home(ship: Ship, seat: Seat, *, reseed_skipped: bool = False) -> bool:
-    """At temporary-seat teardown, record a detached credential that still needs a reseed or human review.
-
-    Only the seat's own participant counts: present only where ``source_refusal`` lets the seat give its pool a
-    sign-in, and never a usage reader, which ``participants`` adds for the pool beside any seat. A refused seat (a
-    jailed one, or one on an endpoint pool) is no source, so nothing in its home is kept for its pool."""
-    if held_for_review(ship, seat.name):
+    """Retain a temporary home for human review or for a skipped reseed of its own credential."""
+    if held_for_review(ship, seat.name) or kept_after_review(ship, seat.name):
         return True
-    own = next((found for found in participants(ship, [seat]) if not found.usage_reader), None)
+    for jailed, source, adapter in _jailed_reviews(ship, [seat]):
+        if _review_due(ship, jailed.name, jailed.pool.name, jailed.home, source, adapter):
+            _hold_record(ship, jailed.name, jailed.pool.name, adapter=adapter)
+            return True
+    own = next((found for found in participants(ship, [seat]) if found.name == seat.name and not found.usage_reader),
+               None)
     pool = ship.pools.get(own.pool) if own is not None else None
     source = pool_file(pool) if pool is not None else None
     if source is None:
         return False
     adapter = harnesses.native_for(pool.provider)
-    review = _without_reader(adapter)
-    keep = _needs_review(own.home, source, adapter) if review else reseed_skipped and _due_of(ship, [own])
-    if not keep:
+    if _without_reader(adapter):
+        if not _review_due(ship, own.name, own.pool, own.home, source, adapter):
+            return False
+        _hold_record(ship, own.name, own.pool, adapter=adapter)
+    elif reseed_skipped and _due_of(ship, [own]):
+        _hold_record(ship, own.name, own.pool)
+    else:
         return False
-    _hold_record(ship, own, review=review)
     return True
 
 
-def _hold_record(ship: Ship, seat: Participant, *, review: bool) -> None:
-    folder = ship.runtime / HELD
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    data = {"seat": seat.name, "pool": seat.pool}
-    if review:
-        data["review"] = True
-    durable.replace_file(folder / f"{seat.name}.json", json.dumps(data) + "\n")
+@dataclass(frozen=True)
+class Hold:
+    name: str
+    pool: str
+    review: bool
+    adapter: str | None
+    keep: dict | None
 
 
-def _held_record(ship: Ship, record: Path) -> tuple[str | None, str | None, bool]:
-    """Read a hold recorded by the unjailed process in runtime/credentials.
+def _hold_path(ship: Ship, name: str) -> Path:
+    return ship.runtime / HELD / f"{name}.json"
 
-    A renewal authorizes reseeding and removal only for a retired seat and a declared subscription pool.
-    A review hold authorizes neither, and may name a declared seat or a pool since removed from the ship.
-    """
+
+def _hold_record(ship: Ship, name: str, pool: str, *, adapter: harnesses.Harness | None = None) -> None:
+    path = _hold_path(ship, name)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    data = {"seat": name, "pool": pool}
+    if adapter is not None:
+        data.update(review=True, adapter=adapter.name)
+    durable.replace_file(path, json.dumps(data) + "\n")
+
+
+def _held_record(ship: Ship, record: Path) -> Hold | None:
+    """Review records can outlive the seat and pool declarations that first named them."""
     try:
         data = json.loads(record.read_text())
         name, pool, review = data["seat"], data["pool"], data.get("review", False)
+        adapter, keep = data.get("adapter"), data.get("keep")
         if (isinstance(name, str) and name == record.stem and valid_name(name)
                 and isinstance(pool, str) and type(review) is bool
-                and (review or (name not in ship.seats and pool in ship.pools and ship.pools[pool].kind != "endpoint"))):
-            return name, pool, review
+                and (adapter is None or isinstance(adapter, str) and adapter in harnesses.NAMES)
+                and (keep is None or isinstance(keep, dict))
+                and (review or keep is not None
+                     or (name not in ship.seats and pool in ship.pools and ship.pools[pool].kind != "endpoint"))):
+            return Hold(name, pool, review, adapter, keep)
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    return None, None, False
+    return None
 
 
 def held_for_review(ship: Ship, name: str) -> bool:
-    return _held_record(ship, ship.runtime / HELD / f"{name}.json")[2]
+    hold = _held_record(ship, _hold_path(ship, name))
+    return hold is not None and hold.review
+
+
+def kept_after_review(ship: Ship, name: str) -> bool:
+    hold = _held_record(ship, _hold_path(ship, name))
+    return hold is not None and not hold.review and hold.keep is not None
 
 
 def _held(ship: Ship):
     folder = ship.runtime / HELD
     for record in sorted(folder.glob("*.json")) if folder.is_dir() else []:
-        yield record, *_held_record(ship, record)
+        yield record, _held_record(ship, record)
 
 
 def held_words(ship: Ship) -> list[str]:
     """Plain words for the status line, for every home kept for renewal or review."""
     words = []
-    for record, name, pool, review in _held(ship):
-        if name is None:
+    for record, hold in _held(ship):
+        if hold is None:
             words.append(f"{record.stem}: a held renewal's record is unreadable; inspect runtime/{HELD}")
-        elif review:
-            words.append(f"{name}: home held for credential review")
-        else:
-            words.append(f"{name}: a renewal held in a retired seat's home; the service reseeds {pool} from it, then removes it")
+        elif hold.review:
+            words.append(f"{hold.name}: home held for credential review; qd credential release {hold.name}")
+        elif hold.keep is None:
+            words.append(f"{hold.name}: a renewal held in a retired seat's home; the service reseeds {hold.pool} "
+                         "from it, then removes it")
     return words  # law: nothing-waits-silently
 
 
 def settle_held(ship: Ship, *, wait: float = RESEED_WAIT) -> list[str]:
-    """The service's pass: reseed each held home's pool from it, then remove the home and its record; proof lines.
-
-    A record that cannot be read is left for a person, and the status line names it. A skipped round retries."""
-    from . import trusted_files
+    """Complete keep decisions and settle held renewals; unreadable records remain visible."""
     lines = []
-    for record, name, pool, review in _held(ship):
-        if name is None or review:
+    for record, hold in _held(ship):
+        if hold is None:
             continue
+        if hold.review:
+            if hold.keep is not None and (line := _settle_keep(ship, record, wait)):
+                lines.append(line)
+            continue
+        if hold.keep is not None:
+            continue  # a completed keep still identifies the home and names already reviewed
+        name, pool = hold.name, hold.pool
         seat_folder = ship.runtime / "seats" / name
         found = [Participant(name, seat_folder / "home", pool)]
         if _due_of(ship, found):
@@ -411,6 +491,172 @@ def settle_held(ship: Ship, *, wait: float = RESEED_WAIT) -> list[str]:
         record.unlink()
         lines.append(f"{name}'s home removed once its held renewal was judged for {pool}")
     return lines
+
+
+def _identity(info: os.stat_result) -> tuple[int, int, int]:
+    return info.st_dev, info.st_ino, info.st_ctime_ns
+
+
+def _snapshot(home: Path, adapter: harnesses.Harness) -> dict:
+    """The home and both credential names identified by metadata, with no sign-in data read."""
+    folder = _name_info(home.parent)
+    root = _name_info(home)
+    if root is not None and not stat.S_ISDIR(root[0].st_mode):
+        raise ShipError(f"{home}: the held home is not a directory")
+    names = {}
+    for path in _names(home, adapter):
+        label = str(path.relative_to(home))
+        try:
+            metadata = _name_info(path)
+        except (OSError, seat_files.LinkRefused):
+            names[label] = ["unreadable"]
+            continue
+        if metadata is None:
+            names[label] = ["missing"]
+            continue
+        info, target = metadata
+        kind = "link" if target is not None else "file" if stat.S_ISREG(info.st_mode) else "other"
+        names[label] = [kind, target, info.st_mode, *_identity(info)]
+    return {"folder": list(_identity(folder[0])[:2]) if folder is not None else None,
+            "home": list(_identity(root[0])[:2]) if root is not None else None, "names": names}
+
+
+def _save_keep(record: Path, hold: Hold, *, review: bool, snapshot: dict | None) -> None:
+    durable.replace_file(record, json.dumps(dict(seat=hold.name, pool=hold.pool, adapter=hold.adapter,
+                                                 review=review, keep=snapshot)) + "\n")
+
+
+def _settle_keep(ship: Ship, record: Path, wait: float) -> str | None:
+    from . import lifecycle
+
+    try:
+        with lifecycle.claim(ship.runtime, record.stem), _reseeding(ship, wait):
+            hold = _held_record(ship, record)
+            if hold is None or not hold.review or hold.keep is None:
+                return None
+            home = ship.runtime / "seats" / hold.name / "home"
+            try:
+                same = _snapshot(home, credential_review_adapter(hold.adapter)) == hold.keep
+            except (OSError, ShipError):
+                same = False
+            _save_keep(record, hold, review=not same, snapshot=hold.keep if same else None)
+    except (Busy, lifecycle.Busy):
+        return None
+    if same:
+        return f"{hold.name}: home kept in place and credential review cleared"
+    return f"{hold.name}: home changed before the keep decision settled; credential review still held"
+
+
+@contextmanager
+def _release_claim(ship: Ship, name: str):
+    from . import lifecycle, pending
+
+    try:
+        with pending.transient_lock(ship.runtime, name) as unowned:
+            if not unowned:
+                raise ShipError(f"{name}: its temporary operation is still up; the review hold stays")
+            with lifecycle.claim(ship.runtime, name), _reseeding(ship, RESEED_WAIT):
+                yield
+    except Busy:
+        raise ShipError(f"{name}: credential work is in progress; retry the release") from None
+    except OSError as error:
+        raise ShipError(f"{name}: credential release could not access its files ({error}); inspect the review hold") from None
+
+
+def _release_view(ship: Ship, tmux, name: str, record: Path, home: Path):
+    from . import jail_end, seat_migration
+    from .seat import UNREADABLE, _temporary, _temporary_launch, process_alive, process_start
+
+    hold = _held_record(ship, record)
+    if hold is None or not hold.review:
+        raise ShipError(f"{name}: no readable credential review hold")
+    trusted = trusted_files.folder(ship.runtime, name)
+    launch = _temporary_launch(ship, name)
+    if (launch == UNREADABLE or jail_end.held(trusted) is not None or seat_migration.unconfirmed(trusted) is not None
+            or (trusted / trusted_files.RETIRING).exists()):
+        raise ShipError(f"{name}: its retirement is unconfirmed; the review hold stays")
+    if launch is not None:
+        pane = tmux.pane(launch["pane"])
+        start = launch.get("start")
+        if (pane is not None and not pane.dead or process_alive(launch["pid"], start)
+                or start is None and process_start(launch["pid"]) is not None):
+            raise ShipError(f"{name}: its seat is still up; take it down before releasing the held home")
+    temporary = _temporary(ship, name)
+    if temporary == UNREADABLE:
+        raise ShipError(f"{name}: its temporary seat record is unreadable; the review hold stays")
+    return hold, _identity(record.lstat()), _snapshot(home, credential_review_adapter(hold.adapter)), temporary is not None
+
+
+def release(ship: Ship, tmux, name: str, caller: str, choose) -> str:
+    """Offer a choice on the inspected home, then recheck it under the same claims before acting."""
+    from . import acts
+
+    if not valid_name(name):
+        raise ShipError(f"invalid seat name {name!r}")
+    record = _hold_path(ship, name)
+    home = ship.runtime / "seats" / name / "home"
+    with _release_claim(ship, name):
+        view = _release_view(ship, tmux, name, record, home)
+    hold, _, snapshot, temporary = view
+    words = [f"{name}'s held home at {home}"]
+    for path, state in snapshot["names"].items():
+        target = f" -> {ascii(state[1])}" if state[0] == "link" else ""
+        words.append(f"  {path}: {state[0]}{target}")
+    if temporary:
+        words.append(f"Remove deletes the temporary seat folder at {home.parent}.")
+    choice = choose(words)
+    if choice not in ("keep", "remove"):
+        raise ShipError(f"{name}: choose keep or remove; the review hold stays")
+
+    with _release_claim(ship, name):
+        if _release_view(ship, tmux, name, record, home) != view:
+            raise ShipError(f"{name}: the held home changed during review; run the command again")
+        if any(state[0] == "unreadable" for state in snapshot["names"].values()):
+            raise ShipError(f"{name}: an unreadable credential name needs inspection; the review hold stays")
+        if choice == "keep" and snapshot["home"] is None:
+            raise ShipError(f"{name}: the held home is missing; the review hold stays")
+        seat = SimpleNamespace(trusted=trusted_files.folder(ship.runtime, name))
+        act = dict(act=uuid.uuid4().hex[:12], verb="credential-release", at=acts._now(), caller=caller,
+                   seat=name, choice=choice, home=snapshot["home"], outcome="pending")
+        try:
+            acts.write(seat, act)
+        except (OSError, ShipError) as error:
+            raise ShipError(f"{name}: the release could not be recorded ({error}); the review hold stays") from None
+        try:
+            if choice == "keep":
+                _save_keep(record, hold, review=True, snapshot=snapshot)
+                detail = "home kept in place; the next service pass clears its review hold if the home is unchanged"
+            else:
+                path, identity = ((home.parent, snapshot["folder"]) if temporary else (home, snapshot["home"]))
+                if identity is not None:
+                    _remove_home(path, identity)
+                record.unlink()
+                detail = ("held home removed" if snapshot["home"] is not None else "held home already absent")
+                detail += "; credential review cleared"
+        except (OSError, ShipError) as error:
+            detail = f"release failed ({error}); the review hold stays"
+            outcome = "failed"
+        else:
+            outcome = choice
+        try:
+            acts.write(seat, dict(act=act["act"], verb=act["verb"], at=acts._now(), outcome=outcome, detail=detail))
+        except (OSError, ShipError) as error:
+            raise ShipError(f"{name}: {detail}; the outcome could not be recorded ({error})") from None
+        if outcome == "failed":
+            raise ShipError(f"{name}: {detail}")
+    return f"{name}: {detail}"
+
+
+def _remove_home(home: Path, identity: list[int]) -> None:
+    located = seat_files.parent(home, create=False)
+    folder, name = located if located is not None else (os.open(home.parent, seat_files.DIRECTORY), home.name)
+    try:
+        info = os.stat(name, dir_fd=folder, follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode) or [info.st_dev, info.st_ino] != identity:
+            raise ShipError("the held home changed before removal")
+        shutil.rmtree(name, dir_fd=folder)
+    finally:
+        os.close(folder)
 
 
 def _bring_up(source: Path, path: Path, name: str, pool_name: str) -> str:

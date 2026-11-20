@@ -275,8 +275,11 @@ def last(seat) -> dict | None:
 
 
 def describe(act: dict) -> str:
-    what = {"press": f"pressed {act.get('choice')!r}", "set-aside": f"set aside {act.get('journal')!r}"}.get(
-        act.get("verb"), f"typed {act.get('line')!r}")
+    what = {
+        "press": f"pressed {act.get('choice')!r}",
+        "set-aside": f"set aside {act.get('journal')!r}",
+        "credential-release": f"chose {act.get('choice')!r} for the credential review",
+    }.get(act.get("verb"), f"typed {act.get('line')!r}")
     text = f"last act: {what} by {act.get('caller')} at {act.get('at')} · {act.get('outcome')}"
     return text + (f" ({act['detail']})" if act.get("detail") else "")
 

@@ -19,6 +19,13 @@ def credential_aliases(adapter, home: Path) -> tuple[Path, ...]:
     return ()
 
 
+def credential_review_adapter(name: str | None):
+    """The saved adapter. Only Muse had review holds before they saved its name."""
+    from . import get
+
+    return get(name or "muse")
+
+
 def credential(pool: Pool, link: Path, variable: str, *, copy: bool = False) -> Credential | None:
     """How a pool's credential reaches a seat home: a key by environment, a subscription by one link, or by one copy
     for a program that writes its refresh through the link into the pool's own file (``copy``).

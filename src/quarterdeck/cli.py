@@ -180,6 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
              "systems only: move one named, provably stuck delivery journal of a seat into the runtime's evidence")
     p.add_argument("seat", help="the seat whose pending folder holds the journal")
     p.add_argument("journal", help="the journal's file name, as its pending folder lists it")
+    p = verb("credential", cmd_credential, "review a seat home held for its sign-in")
+    p.add_argument("action", choices=("release",))
+    p.add_argument("seat", help="the down seat whose home is held for credential review")
     p = verb("set", cmd_set, "change a seat: writes the ship file, then applies what it can")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("changes", nargs="*", metavar="KEY=VALUE", help="model=…, effort=…, pool=a,b, up=true")
@@ -578,6 +581,19 @@ def cmd_profile_status(args: argparse.Namespace) -> str:
 
 def cmd_set_aside(args: argparse.Namespace) -> str:
     return _act(args, "set-aside", journal=args.journal)
+
+
+def cmd_credential(args: argparse.Namespace) -> str:
+    from . import credential
+
+    ship = load_ship(args)
+
+    def choose(words):
+        print("\n".join(words), file=sys.stderr if args.json else sys.stdout, flush=True)
+        print("Keep the home in place or remove it? [keep/remove] ", end="", file=sys.stderr, flush=True)
+        return sys.stdin.readline().strip().lower()
+
+    return credential.release(ship, Tmux.for_ship(ship), args.seat, caller_of(ship), choose)
 
 
 def cmd_set(args: argparse.Namespace) -> list[str]:

@@ -23,8 +23,18 @@ That observation does not establish token-refresh values or expiry semantics.
 No freshness or grant-expiry fields are guessed. A detached native credential
 is retained and launch refuses pending review. If either credential name becomes
 a regular file or the nested link stops reaching the pool's file, check teardown
-and the service keep the home for human review. The status line names the held
-home. Auth-link handling requires an independent review before landing.
+and the service keep the home for human review, including for jailed seats.
+Jailed seats stay outside pool reseeding.
+
+The status line points to `qd credential release <seat>`. Take the seat down
+before running the command. It shows whether each of the two names is a file,
+a link, or missing, and shows each link's target. Answer `keep` to leave the
+home in place. The next service pass clears the review hold if the inspected
+home and names still match. Answer `remove` to delete the seat's home. For a
+temporary seat this also removes its temporary seat folder. The act and its
+outcome are recorded under `runtime/trusted/<seat>/acts.jsonl`. A failed
+removal leaves the review hold in place. A kept detached credential can still
+need attention before Muse will launch.
 
 The launch removes inherited `META_API_KEY`, `MUSE_AUTH_PATH` and `MUSE_LOGIN`.
 Only this adapter's launch removes these sign-in redirects; other adapters keep
