@@ -233,7 +233,14 @@ def test_forced_cut_is_named_and_the_one_look_submits_it_once(world, monkeypatch
     world.start()
     wait_for(lambda: servicectl.started(runtime))
     assert pending.active(world.seat)
-    look = wait_for(lambda: (world.journal() or {}).get("look"), 60)  # the one look, journalled before its press
+
+    def completed_look():
+        # The one look records "submitting" before Enter and its outcome after Door.submit returns.
+        look = (world.journal() or {}).get("look") or {}
+        if look.get("outcome") not in (None, "submitting"):
+            return look
+
+    look = wait_for(completed_look, 60)
     assert look["outcome"] == "submitted" and wait_for(lambda: world.submitted() == 1, 60) and world.submitted() == 1
 
 
