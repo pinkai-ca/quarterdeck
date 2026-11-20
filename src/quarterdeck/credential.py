@@ -563,7 +563,7 @@ def _release_view(ship: Ship, tmux, name: str, record: Path, home: Path, *, syst
         if (pane is not None and not pane.dead or process_alive(launch["pid"], start)
                 or start is None and process_start(launch["pid"]) is not None):
             raise ShipError(f"{name}: its seat is still up; take it down before releasing the held home")
-    temporary = _temporary(ship, name)
+    temporary = _temporary(ship, name, require_folder=False)
     if temporary == UNREADABLE:
         raise ShipError(f"{name}: its temporary seat record is unreadable; the review hold stays")
     return hold, _identity(record.lstat()), _snapshot(home, credential_review_adapter(hold.adapter)), temporary is not None
@@ -582,12 +582,16 @@ def release(ship: Ship, tmux, name: str, caller: str | None, choose) -> str:
     home = ship.runtime / "seats" / name / "home"
     with _release_claim(ship, name):
         view = _release_view(ship, tmux, name, record, home, systems=systems)
-    hold, _, snapshot, temporary = view
+    hold, review_identity, snapshot, temporary = view
+    source = home.parent if temporary else home
+    source_identity = snapshot["folder" if temporary else "home"]
     words = [f"{name}'s held home at {home}"]
     for path, state in snapshot["names"].items():
         target = f" -> {ascii(state[1])}" if state[0] == "link" else ""
         words.append(f"  {path}: {state[0]}{target}")
-    if temporary and not systems:
+    if not systems and source_identity is None:
+        words.append("The source directory is missing. Remove can finish a verified earlier move.")
+    elif temporary and not systems:
         words.append(f"Remove moves the temporary seat folder at {home.parent} into private evidence.")
     choice = choose(words)
     if systems and choice != "keep":
@@ -599,19 +603,23 @@ def release(ship: Ship, tmux, name: str, caller: str | None, choose) -> str:
     with _release_claim(ship, name):
         if _release_view(ship, tmux, name, record, home, systems=systems) != view:
             raise ShipError(f"{name}: the held home changed during review; run the command again")
-        if any(state[0] == "unreadable" for state in snapshot["names"].values()):
-            raise ShipError(f"{name}: an unreadable credential name needs inspection; the review hold stays")
-        if snapshot["home"] is None and (choice == "keep" or not temporary):
-            raise ShipError(f"{name}: the held home is missing; the review hold stays")
+        if choice == "keep":
+            if any(state[0] == "unreadable" for state in snapshot["names"].values()):
+                raise ShipError(f"{name}: an unreadable credential name needs inspection; the review hold stays")
+            if snapshot["home"] is None:
+                raise ShipError(f"{name}: the held home is missing; the review hold stays")
         seat = SimpleNamespace(trusted=trusted_files.folder(ship.runtime, name))
+        if choice == "remove" and source_identity is None:
+            entry = "seat" if temporary else "home"
+            return _finish_prior_move(ship.runtime, name, seat, record, review_identity, entry)
         actor = caller if systems else ship.operator or "the operator"
         act = dict(act=uuid.uuid4().hex[:12], verb="credential-release", at=acts._now(), caller=actor,
                    seat=name, choice=choice, home=snapshot["home"], outcome="pending")
         if choice == "remove":
-            source = home.parent if temporary else home
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             target = ship.runtime / RECOVERY / f"{name}-{stamp}" / ("seat" if temporary else "home")
-            act["planned_recovery"] = str(target)
+            act.update(planned_recovery=str(target), source_identity=source_identity, review_identity=review_identity)
+        recovery = None
         try:
             acts.write(seat, act)
         except (OSError, ShipError) as error:
@@ -624,21 +632,15 @@ def release(ship: Ship, tmux, name: str, caller: str | None, choose) -> str:
                 detail = "home kept in place; credential review cleared"
             else:
                 _move_home(ship.runtime, source, target, snapshot, temporary=temporary)
-                try:
-                    record.unlink(missing_ok=True)
-                except OSError as error:
-                    raise ShipError(f"held home moved to {target}, but its review record could not be cleared ({error})")
-                detail = f"held home moved to {target}; credential review cleared"
+                recovery = target
+                detail = _clear_moved_hold(record, review_identity, target)
         except (OSError, ShipError) as error:
             detail = f"release failed ({error}); the review hold stays"
             outcome = "failed"
         else:
             outcome = choice
         try:
-            result = dict(act=act["act"], verb=act["verb"], at=acts._now(), outcome=outcome, detail=detail)
-            if outcome == "remove":
-                result["recovery"] = str(target)
-            acts.write(seat, result)
+            _release_outcome(seat, act, outcome, detail, recovery)
         except (OSError, ShipError) as error:
             if outcome == "keep":
                 try:
@@ -651,6 +653,25 @@ def release(ship: Ship, tmux, name: str, caller: str | None, choose) -> str:
         if outcome == "failed":
             raise ShipError(f"{name}: {detail}")
     return f"{name}: {detail}"
+
+
+def _clear_moved_hold(record: Path, review: tuple[int, int, int], target: Path) -> str:
+    try:
+        if _identity(record.lstat()) != review:
+            raise ShipError("the review record changed")
+        record.unlink()
+    except (OSError, ShipError) as error:
+        raise ShipError(f"held home moved to {target}, but its review record could not be cleared ({error})") from None
+    return f"held home moved to {target}; credential review cleared"
+
+
+def _release_outcome(seat, act: dict, outcome: str, detail: str, recovery: Path | None) -> None:
+    from . import acts
+
+    result = dict(act=act["act"], verb=act["verb"], at=acts._now(), outcome=outcome, detail=detail)
+    if recovery is not None:
+        result["recovery"] = str(recovery)
+    acts.write(seat, result)
 
 
 def _directory_at(stack: ExitStack, path: Path | str, *, parent: int | None = None) -> int:
@@ -679,6 +700,100 @@ def _private_recovery_directory(directory: int) -> int:
     if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
         raise ShipError("the recovery destination is not a private mode-0700 directory")
     return directory
+
+
+def _release_attempts(runtime: Path, name: str) -> list[list[dict]]:
+    """Read the service's own act record without following links to a seat's writable files."""
+    attempts: dict[str, list[dict]] = {}
+    with ExitStack() as stack:
+        root = _directory_at(stack, runtime)
+        trusted = _directory_at(stack, trusted_files.TRUSTED, parent=root)
+        folder = _directory_at(stack, name, parent=trusted)
+        flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW
+        with os.fdopen(os.open(trusted_files.ACTS, flags, dir_fd=folder), encoding="utf-8") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+                raise ShipError("the act record is not a trusted regular file")
+            for line in stream:
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("invalid act record")
+                if row.get("verb") == "credential-release":
+                    key = row.get("act")
+                    if not isinstance(key, str) or not key:
+                        raise ValueError("missing credential release act id")
+                    attempts.setdefault(key, []).append(row)
+    return list(attempts.values())
+
+
+def _move_plan(runtime: Path, name: str, review: tuple[int, int, int], entry: str,
+               attempt: list[dict]) -> tuple[dict, Path, list[int]] | None:
+    """Return an unfinished remove's exact path and source identity if it belongs to this hold."""
+    start, *results = attempt
+    if start.get("choice") != "remove" or start.get("seat") != name:
+        return None
+    outcomes = [result.get("outcome") for result in results]
+    if start.get("outcome") != "pending" or outcomes not in ([], ["failed"], ["remove"], ["failed", "remove"]):
+        raise ShipError("the release has an ambiguous act history")
+    if outcomes and outcomes[-1] == "remove":
+        return None
+
+    result = results[-1] if results else None
+    planned = start.get("planned_recovery")
+    if result is not None and "recovery" not in result:
+        detail = result.get("detail")
+        prefix = f"release failed (held home moved to {planned}, but its review record could not be cleared ("
+        if not isinstance(detail, str) or not detail.startswith(prefix):
+            return None  # the previous attempt failed before it confirmed a move
+
+    bound = "review_identity" in start or "source_identity" in start
+    if bound and start.get("review_identity") != list(review):
+        return None
+    target = Path(planned) if isinstance(planned, str) else Path()
+    seat, _, stamp = target.parent.name.rpartition("-")
+    if (seat != name or not RECOVERY_STAMP.fullmatch(stamp)
+            or planned != str(runtime / RECOVERY / target.parent.name / entry)):
+        if bound:
+            raise ShipError("the act names a different recovery entry")
+        return None
+    if bound:
+        identity = start.get("source_identity")
+    else:
+        # The landed record stored the home inode only. It proves a home move, but cannot identify a moved seat folder.
+        seconds, ns = divmod(review[2], 10**9)
+        held_at = datetime.fromtimestamp(seconds, timezone.utc).replace(microsecond=ns // 1000)
+        if entry != "home" or stamp < held_at.strftime("%Y%m%dT%H%M%S%fZ"):
+            return None
+        identity = start.get("home")
+    if not isinstance(identity, list) or len(identity) != 2 or any(type(part) is not int for part in identity):
+        raise ShipError("the act has no source directory identity")
+    if result is not None and result.get("recovery", planned) != planned:
+        raise ShipError("the act outcome names a different recovery entry")
+    return start, target, identity
+
+
+def _finish_prior_move(runtime: Path, name: str, seat, record: Path, review: tuple[int, int, int], entry: str) -> str:
+    """Clear only the still-held review after proving the earlier operator move."""
+    try:
+        plans = [plan for attempt in _release_attempts(runtime, name)
+                 if (plan := _move_plan(runtime, name, review, entry, attempt)) is not None]
+        if len(plans) != 1:
+            raise ShipError("no matching recorded move" if not plans else "more than one recorded move could match")
+        act, target, identity = plans[0]
+        with _recovery_root(runtime, create=False) as root, ExitStack() as stack:
+            folder = _private_recovery_directory(_directory_at(stack, target.parent.name, parent=root))
+            info = os.stat(entry, dir_fd=folder, follow_symlinks=False)
+            if not stat.S_ISDIR(info.st_mode) or list(_identity(info)[:2]) != identity:
+                raise ShipError("the recorded recovery directory identity differs")
+            _clear_moved_hold(record, review, target)
+            detail = f"earlier move verified at {target} and credential review cleared"
+    except (OSError, ShipError, ValueError) as error:
+        raise ShipError(f"{name}: could not finish the earlier move ({error}). The review hold stays.") from None
+    try:
+        _release_outcome(seat, act, "remove", detail, target)
+    except (OSError, ShipError) as error:
+        raise ShipError(f"{name}: {detail}, but the outcome could not be recorded ({error})") from None
+    return f"{name}: {detail}"
 
 
 def recovery_words(runtime: Path) -> list[str]:

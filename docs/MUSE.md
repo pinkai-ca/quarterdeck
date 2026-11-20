@@ -30,8 +30,10 @@ The status line points to `qd credential release <seat>`. Take the seat down
 before running the command. The operator runs it from a shell with `QD_SEAT`
 unset and may choose `keep` or `remove`. A declared systems seat may choose
 `keep` for a seat in a crew session. Other seats are refused before the command
-inspects the home. The review shows the file, link, or missing state of each
-credential name and the target of each link.
+inspects the home. The review shows whether each credential name is a file,
+link, missing, another type, or unreadable, and shows the target of each link.
+An unreadable name blocks `keep`. The operator can still archive the directory
+intact with `remove`.
 
 Choose `keep` to leave the home in place and clear the hold before the command
 returns. The service can hold it again if the home or credential metadata
@@ -42,8 +44,12 @@ for a temporary seat, intact into a private mode-0700 directory under
 status name the recovery location. Any later deletion is a separate decision.
 
 The audit is in `runtime/trusted/<seat>/acts.jsonl`. If a move fails, the review
-hold stays. If the move succeeds and recording fails, the recovery location
-stays visible in status. If recording `keep` fails, the review hold stays.
+hold stays. If the move succeeds but clearing the hold fails, the operator can
+run the same command and choose `remove` again. A matching act and the archived
+directory's identity must establish the earlier move. The retry clears the
+stale hold, records completion and leaves the archive intact. The recovery
+location stays visible in status if recording fails. If recording `keep` fails,
+the review hold stays.
 
 The launch removes inherited `META_API_KEY`, `MUSE_AUTH_PATH` and `MUSE_LOGIN`.
 Only this adapter's launch removes these sign-in redirects; other adapters keep

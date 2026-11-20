@@ -424,6 +424,47 @@ def test_release_refuses_systems_remove(muse_ship, monkeypatch, capsys):
     assert not (seat.ship.runtime / credentialmod.RECOVERY).exists()
 
 
+@pytest.mark.parametrize("caller, choice, refused", [
+    (None, "keep", "an unreadable credential name"),
+    ("systems", "keep", "an unreadable credential name"),
+    ("systems", "remove", "only the operator may choose remove"),
+    (None, "remove", None),
+])
+def test_release_of_a_home_with_an_unreadable_credential_name(muse_ship, monkeypatch, capsys, caller, choice, refused):
+    seat, (main, nested), _ = held_muse(muse_ship, "attached-file")
+    local = seat.home / "local-data"
+    local.write_bytes(b"synthetic home data\n")
+    paths = main, nested, local
+    before = auth_state(*paths)
+    identity = seat.home.stat().st_ino
+    name_info = credentialmod._name_info
+
+    def inspect(path):
+        if path == nested:
+            raise PermissionError("synthetic metadata failure")
+        return name_info(path)
+
+    monkeypatch.setattr(credentialmod, "_name_info", inspect)
+    status = cli.main(release_cli(seat, monkeypatch, caller, choice))
+    out = capsys.readouterr()
+    assert "  config/muse/auth.json: unreadable" in out.out
+    if refused:
+        assert status == 2 and refused in out.err
+        assert credentialmod.held_for_review(seat.ship, seat.name)
+        assert acts.last(seat) is None
+        assert not (seat.ship.runtime / credentialmod.RECOVERY).exists()
+        assert auth_state(*paths) == before
+    else:
+        assert status == 0
+        assert not credentialmod.held_for_review(seat.ship, seat.name)
+        assert not seat.home.exists()
+        act = acts.last(seat)
+        archive = Path(act["planned_recovery"])
+        assert act["outcome"] == "remove"
+        assert archive.stat().st_ino == identity
+        assert auth_state(*(archive / path.relative_to(seat.home) for path in paths)) == before
+
+
 def test_release_refuses_systems_keep_for_a_human_session_before_inspection(muse_ship, monkeypatch):
     seat, _, _ = held_muse(muse_ship, "attached-file")
     human = replace(seat.session, human=True)
@@ -613,6 +654,114 @@ def test_release_reports_the_recovery_even_when_recording_fails(muse_ship, monke
     facts = watch.facts(seat.ship, seat.tmux)
     assert line in facts.credential_recoveries
     assert line in facts.line()
+
+
+def move_with_stale_hold(muse_ship, monkeypatch, *, temporary=False):
+    ship, tmux, source = muse_ship
+    if temporary:
+        spec = SeatSpec("check-muse-0003", "qd-check-muse-0003", "worker", "muse", ("muse-primary",),
+                        model="muse-wonder-1.0", cwd=ship.workspace)
+        with temporary_seat(ship, tmux, spec, [], "qd check") as seat:
+            paths = setup_muse_auth(seat.home, source, "attached-file")
+    else:
+        seat, paths, _ = held_muse(muse_ship, "attached-file")
+    original = auth_state(*paths)
+    record = ship.runtime / credentialmod.HELD / f"{seat.name}.json"
+    unlink = Path.unlink
+
+    def refuse_hold(path, *args, **kwargs):
+        if path == record:
+            raise PermissionError("synthetic hold update failure")
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", refuse_hold)
+        with pytest.raises(ShipError, match="held home moved to .*synthetic hold update failure"):
+            credentialmod.release(ship, tmux, seat.name, None, lambda _: "remove")
+    assert record.is_file() and not seat.home.exists()
+    archive = Path(acts.last(seat)["planned_recovery"])
+    home = archive / "home" if temporary else archive
+    saved = [home / path.relative_to(seat.home) for path in paths]
+    assert auth_state(*saved) == original
+    return seat, record, archive, saved, original
+
+
+@pytest.mark.parametrize("history", ["current", "temporary", "landed-failed", "landed-pending"])
+def test_operator_can_finish_a_proved_prior_move(muse_ship, monkeypatch, history):
+    temporary = history == "temporary"
+    ship, tmux, _ = muse_ship
+    seat, record, archive, saved, original = move_with_stale_hold(muse_ship, monkeypatch, temporary=temporary)
+    audit = acts.path(seat)
+    start, failed = [json.loads(line) for line in audit.read_text().splitlines()]
+    before = archive.stat()
+    if history.startswith("landed-"):
+        del start["source_identity"], start["review_identity"], failed["recovery"]
+        previous = [start] if history == "landed-pending" else [start, failed]
+        audit.write_text("".join(json.dumps(row) + "\n" for row in previous))
+
+    def choose(words):
+        assert any("source directory is missing" in line for line in words)
+        return "remove"
+
+    with monkeypatch.context() as patch:
+        patch.setattr(credentialmod, "_move_home", lambda *a, **k: pytest.fail("repeated the move"))
+        patch.setattr(os, "listdir", lambda *a, **k: pytest.fail("listed evidence"))
+        detail = credentialmod.release(ship, tmux, seat.name, None, choose)
+    assert f"earlier move verified at {archive}" in detail
+    assert not record.exists()
+    assert not seat.home.exists()
+    registered = json.loads(audit.read_text().splitlines()[-1])
+    assert (registered["act"], registered["outcome"], registered["recovery"]) == (start["act"], "remove", str(archive))
+    assert archive.stat() == before
+    assert auth_state(*saved) == original
+
+
+@pytest.mark.parametrize("choice, reason", [("keep", "held home is missing"), ("remove", "only the operator")])
+def test_systems_cannot_finish_a_prior_move(muse_ship, monkeypatch, choice, reason):
+    seat, record, archive, saved, original = move_with_stale_hold(muse_ship, monkeypatch)
+    audit = acts.path(seat).read_bytes()
+    monkeypatch.setattr(credentialmod, "_release_attempts", lambda *a: pytest.fail("inspected recovery acts"))
+    with pytest.raises(ShipError, match=reason):
+        credentialmod.release(with_systems(seat.ship), seat.tmux, seat.name, "systems", lambda _: choice)
+    assert record.exists() and archive.exists()
+    assert auth_state(*saved) == original
+    assert acts.path(seat).read_bytes() == audit
+
+
+@pytest.mark.parametrize("problem, reason", [
+    ("missing", "No such file"),
+    ("different inode", "directory identity differs"),
+    ("ambiguous", "more than one recorded move"),
+    ("different hold", "no matching recorded move"),
+    ("landed temporary", "no matching recorded move"),
+])
+def test_operator_cannot_finish_an_unproved_move(muse_ship, monkeypatch, problem, reason):
+    ship, tmux, _ = muse_ship
+    seat, record, archive, saved, original = move_with_stale_hold(muse_ship, monkeypatch,
+                                                                  temporary=problem == "landed temporary")
+    act_path = acts.path(seat)
+    start, failed = [json.loads(line) for line in act_path.read_text().splitlines()]
+    if problem in {"missing", "different inode"}:
+        displaced = archive.rename(archive.with_name("displaced"))
+        saved = [displaced / path.relative_to(archive) for path in saved]
+        if problem == "different inode":
+            archive.mkdir()
+    elif problem == "ambiguous":
+        acts.write(seat, {**start, "act": "another-start"})
+    elif problem == "different hold":
+        credentialmod.durable.replace_file(record, record.read_text())
+    else:
+        del start["source_identity"], start["review_identity"], failed["recovery"]
+        act_path.write_text(json.dumps(start) + "\n" + json.dumps(failed) + "\n")
+    audit = act_path.read_bytes()
+    hold = record.read_bytes()
+
+    with pytest.raises(ShipError, match=f"{reason}.*review hold stays"):
+        credentialmod.release(ship, tmux, seat.name, None, lambda _: "remove")
+    assert not seat.home.exists()
+    assert record.read_bytes() == hold
+    assert act_path.read_bytes() == audit
+    assert auth_state(*saved) == original
 
 
 def test_release_requires_an_explicit_choice(muse_ship):
