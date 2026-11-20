@@ -54,6 +54,30 @@ def test_failed_check_records_meaningful_safe_reason_and_preserves_proven_mark(t
     assert mark.read_text() == 'synthetic prior proof\n'
 
 
+@pytest.mark.parametrize('reason', ['synthetic private adapter reason', None, 'passed'])
+def test_unlisted_failed_reason_records_a_timed_failure_at_its_step(tmp_path, monkeypatch, reason):
+    failure = check.ProbeCheck('synthetic probe step', False, 'bounded failure detail', reason)
+    monkeypatch.setattr(check, '_check', lambda *args: ([failure], '1.0'))
+    assert check.check(NS(runtime=tmp_path), 'fake', None) == [failure]
+    rows, errors = check_outcome.collect(tmp_path)
+    assert errors == []
+    final = rows[0]['definitive']
+    assert final == rows[0]['latest_attempt']
+    assert (final['outcome'], final['reason'], final['step']) == ('failed', 'unclassified', failure.name)
+    assert final['at'].endswith('+00:00')
+    assert check_outcome.alarms(rows) == [f"fake failed its check at {final['at']}: unclassified failure at {failure.name}"]
+    assert check_outcome.unknown_alarms(rows) == []
+    assert 'synthetic private adapter reason' not in check_outcome.path(tmp_path, 'fake').read_text()
+
+
+def test_unclassified_failure_uses_a_safe_fallback_for_an_invalid_step(tmp_path):
+    observed = check_outcome.event('failed', reason='unclassified', step='synthetic\nforged line')
+    check_outcome.publish(tmp_path, 'fake', observed)
+    row = check_outcome.read(tmp_path, 'fake')
+    assert row['definitive']['step'] == 'check step'
+    assert 'forged line' not in check_outcome.path(tmp_path, 'fake').read_text()
+
+
 def test_same_program_pass_clears_only_its_failure(tmp_path):
     outcome(tmp_path, 'fake', 'failed', 'door')
     outcome(tmp_path, 'codex', 'failed', 'paste')

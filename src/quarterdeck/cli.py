@@ -144,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("seat", nargs="?")
     p.add_argument("--fresh", action="store_true", help="without resume: a new conversation")
     p.add_argument("--pool", help="for this one launch of a down seat: one of its declared pool choices")
-    p = verb("down", cmd_down, "end one seat, a temporary seat its run left behind (check-…, doctor-…), or every seat of the ship and its service")
+    p = verb("down", cmd_down, "end one seat, retire an abandoned temporary seat or check scratch, or bring down the ship")
     p.add_argument("seat", nargs="?")
     p = verb("restart", cmd_restart, "relaunch a seat with resume: the conversation continues")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
@@ -391,6 +391,8 @@ def cmd_down(args: argparse.Namespace) -> list[str] | str:
     if args.seat:
         if seatmod.is_leftover(ship, args.seat):
             return seatmod.down_leftover(ship, Tmux.for_ship(ship), args.seat)  # a temporary seat its run left behind
+        if seatmod.is_check_scratch(ship, args.seat):
+            return seatmod.down_check_scratch(ship, Tmux.for_ship(ship), args.seat)
         relaunch_intent.clear(ship.runtime, args.seat, f'qd down by {caller_of(ship)}')  # the person's word stands
         return seat_of(ship, args.seat).down()
     tmux = Tmux.for_ship(ship)

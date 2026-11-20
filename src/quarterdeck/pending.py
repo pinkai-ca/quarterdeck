@@ -21,7 +21,7 @@ import secrets
 import stat
 import time
 from pathlib import Path
-from typing import Any, Iterator, Sequence, TYPE_CHECKING
+from typing import Any, Callable, Iterator, Sequence, TYPE_CHECKING
 
 from . import durable, pane_obstruction, post, post_dir
 from . import input_receipt
@@ -551,12 +551,14 @@ def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None,
 
 
 @contextmanager
-def transient_lock(runtime: Path, name: str) -> Iterator[bool]:
+def transient_lock(runtime: Path, name: str, *, retire: Callable[[], bool] | None = None) -> Iterator[bool]:
     """Hold a temporary seat's explicit lifetime, or guard its orphan cleanup.
 
     A temporary operation owns this lock before transport through teardown. The
     non-inheritable descriptor releases on owner exit, including a killed owner.
-    Keep the empty file: unlinking could let two processes lock different inodes.
+    A finished check may retire its empty file while still holding it. Every
+    borrower checks the inode after acquiring it, so the retired inode cannot
+    authorize a second operation alongside the file at its name.
     Names alone (including check-*) and stale unlocked files establish no owner.
     """
     path = runtime / "post" / "transient" / f"{name}.lock"
@@ -567,7 +569,22 @@ def transient_lock(runtime: Path, name: str) -> Iterator[bool]:
         except BlockingIOError:
             yield False
         else:
-            yield True
+            opened = os.fstat(descriptor)
+            try:
+                current = path.lstat()
+            except FileNotFoundError:
+                current = None
+            same = current is not None and (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)
+            if not same:
+                yield False
+                return
+            if retire is not None and (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or opened.st_size):
+                raise ShipError(f'{name}: transient check lock is not an empty owned file; retained')
+            try:
+                yield True
+            finally:
+                if retire is not None and retire():
+                    post_dir.remove(path)
     finally:
         os.close(descriptor)
 

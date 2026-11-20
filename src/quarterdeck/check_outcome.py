@@ -28,6 +28,8 @@ REASONS = {
     'answer': ('account holder question', 'an answer for the account holder did not clear its question'),
     'wake': ('human-session waking line', 'the human-session waking line was not proven'),
     'model': ('model', 'the requested model was not confirmed in the program or its record'),
+    'usage-unavailable': ('usage', 'native usage allowance unavailable'),
+    'usage-unreadable': ('usage', 'native usage allowance unreadable'),
     'account-login': ('account holder question', 'account-holder question: login'),
     'account-training': ('account holder question', 'account-holder question: training data'),
     'account-permission': ('account holder question', 'account-holder question: permission'),
@@ -52,12 +54,30 @@ def path(runtime: Path, harness: str) -> Path:
     return runtime / 'proven' / 'check-outcomes' / f'{harness}.json'
 
 
-def event(outcome, version=None, reason='unclassified'):
+def _step_name(step):
+    return isinstance(step, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._()/:-]{0,95}', step) is not None
+
+
+def _classification(outcome, reason, step):
+    if outcome == 'failed' and reason == 'unclassified':
+        return _step_name(step)
     if reason not in REASONS or outcome not in ('passed', 'failed', 'unknown'):
-        raise ValueError('unknown check outcome')
-    step, _ = REASONS[reason]
-    if (outcome == 'unknown') != (reason in UNKNOWN) or (outcome == 'passed') != (reason == 'passed'):
-        raise ValueError('check outcome and reason disagree')
+        return False
+    return ((outcome == 'unknown') == (reason in UNKNOWN)
+            and (outcome == 'passed') == (reason == 'passed') and step == REASONS[reason][0])
+
+
+def failure_reason(reason):
+    return isinstance(reason, str) and reason in REASONS and reason not in UNKNOWN and reason != 'passed'
+
+
+def event(outcome, version=None, reason='unclassified', *, step=None):
+    if outcome == 'failed' and reason == 'unclassified':
+        step = step if _step_name(step) else 'check step'
+    elif reason in REASONS:
+        step = REASONS[reason][0]
+    if not _classification(outcome, reason, step):
+        raise ValueError('invalid check classification')
     version = version if isinstance(version, str) and re.fullmatch(r'[A-Za-z0-9._+\-]{1,128}', version) else None
     return dict(outcome=outcome, at=datetime.now(timezone.utc).isoformat() if outcome != 'unknown' else None,
                 version=version, step=step, reason=reason)
@@ -69,11 +89,7 @@ def _event(data):
     if type(data['sequence']) is not int or not 0 < data['sequence'] < 2**63:
         raise ValueError('invalid check sequence')
     outcome, reason, version = data['outcome'], data['reason'], data['version']
-    if (outcome not in ('passed', 'failed', 'unknown') or reason not in REASONS
-            or (outcome == 'unknown') != (reason in UNKNOWN)
-            or (outcome == 'passed') != (reason == 'passed')):
-        raise ValueError('invalid check outcome')
-    if (data['step'] != REASONS[reason][0]
+    if (not _classification(outcome, reason, data['step'])
             or (version is not None and (not isinstance(version, str)
                 or not re.fullmatch(r'[A-Za-z0-9._+\-]{1,128}', version)))):
         raise ValueError('invalid check classification')
@@ -220,8 +236,15 @@ def collect(runtime):
 
 
 def alarms(outcomes):
-    return [f"{data['harness']} failed its check at {final['at']}: {REASONS[final['reason']][1]}"
-            for data in outcomes if (final := data['definitive']) is not None and final['outcome'] == 'failed']
+    lines = []
+    for data in outcomes:
+        final = data['definitive']
+        if final is None or final['outcome'] != 'failed':
+            continue
+        reason = final['reason']
+        detail = f"unclassified failure at {final['step']}" if reason == 'unclassified' else REASONS[reason][1]
+        lines.append(f"{data['harness']} failed its check at {final['at']}: {detail}")
+    return lines
 
 
 def unknown_alarms(outcomes):

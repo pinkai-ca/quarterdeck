@@ -8,6 +8,7 @@ persona and the window name are display (law: identity).
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import io
 import json
@@ -930,8 +931,8 @@ class Seat:
     def _lifecycle(self, *, automatic: bool = False, wait: bool = False) -> Iterator[None]:
         """One caller owns the whole seat transition, including compound relaunches.
 
-        Keep the empty inode outside removable seat homes. No lifecycle path unlinks
-        it; old binaries do not participate in this advisory coordination protocol.
+        The inode is outside removable seat homes. An ended check can retire it
+        after its session is gone and while holding its temporary lifetime lock.
         """
         from . import lifecycle
 
@@ -1871,7 +1872,9 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
     Callers register only orders this operation opened. Posts and receipts remain;
     a failure to retire transport leaves its home intact for later inspection.
     """
-    spec = replace(spec, temporary=True)  # the jail's own-cwd rule binds declared seats, not this one
+    # The check owns its task folder for the same lifetime as its seat.
+    task = _check_task(ship, spec.name) if minimal_opening is not None else None
+    spec = replace(spec, temporary=True, cwd=task if task is not None else spec.cwd)
     session = shipmod.Session(spec.session, spec.session, human=human)
     treated = replace(ship, sessions={**ship.sessions, spec.session: session}, seats={**ship.seats, spec.name: spec})
     seat = Seat(treated, spec, tmux)
@@ -1884,7 +1887,17 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
         note = validate_selection(seat.spec, seat.harness, version=installed_version, installed=True)
         seat._prepared_observation = installed_version, note
     store = post.Store(ship.runtime)
-    with pending.transient_lock(ship.runtime, seat.name) as owned:
+    storage_retired = False
+    task_created = False
+
+    def retire_storage() -> None:
+        nonlocal storage_retired
+        if check_inbox and not os.path.lexists(seat.trusted / trusted_files.LAUNCH) and not tmux.has_session(session.title):
+            _retire_check_storage(ship.runtime, seat.name, remove_task=task_created)
+            storage_retired = True
+
+    with pending.transient_lock(ship.runtime, seat.name,
+                                retire=(lambda: storage_retired) if check_inbox else None) as owned:
         if not owned:
             raise ShipError(f"{seat.name}: temporary seat ownership is busy; retry {purpose}")
         # A held renewal's record is unlinked after its home is gone. A stop between the two leaves the
@@ -1893,19 +1906,27 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
                 or seat.folder.exists() or seat.trusted.exists() or (ship.runtime / "post" / "pending" / seat.name).exists()
                 or store.for_seat(seat.name)
                 or any(a.seat == seat.name for a in post.Attempts(ship.runtime).all())
-                or _held_for_renewal(ship, spec.name)):
+                or _held_for_renewal(ship, spec.name)
+                or (task is not None and os.path.lexists(task.parent))):
             raise ShipError(f"{seat.name}: temporary seat/session/history already exists; retry {purpose}")
-        seat.folder.mkdir(parents=True, exist_ok=False)
-        trusted_files.make(ship.runtime, seat.name)
-        # Written before anything of it runs: a seat this run leaves behind is named, and qd down takes it, by this.
-        durable.replace_file(seat.trusted / TEMPORARY, json.dumps(
-            {"purpose": purpose, "harness": spec.harness, "pool": spec.pools[0], "human": human}) + "\n")
         session_id = None
-        # Cleanup is registered before publication can fail, and runs before the
-        # outer lease retires. The transient lock remains held around both.
-        with ExitStack() as lifetime, ExitStack() as cleanup:
+        # The seat, its inbox registration and its scratch retire in that order.
+        # The transient lock remains held throughout.
+        with ExitStack() as storage, ExitStack() as lifetime, ExitStack() as cleanup:
+            storage.callback(retire_storage)
+            seat.folder.mkdir(parents=True, exist_ok=False)
             _teardown(cleanup, treated, seat, tmux, orders, purpose,
                       lambda: tmux.kill_session_id(session_id) if session_id is not None else None)
+            trusted_files.make(ship.runtime, seat.name)
+            # Written before anything of it runs: an abandoned seat is named and qd down can take it.
+            durable.replace_file(seat.trusted / TEMPORARY, json.dumps(
+                {"purpose": purpose, "harness": spec.harness, "pool": spec.pools[0], "human": human}) + "\n")
+            if task is not None:
+                from . import sandbox
+
+                sandbox.ensure_check_proof_folder(ship.runtime, seat.name)
+                task.mkdir(exist_ok=False)
+                task_created = True
             lifetime.enter_context(pending.check_inbox_registration(
                 ship.runtime, seat.name, human, enabled=check_inbox))
             session_id = tmux.new_session(session.title, env={"QD_SHIP": str(ship.folder)})
@@ -1989,6 +2010,61 @@ TEARDOWN_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 # A check's seat raised before temporary seats recorded their raising: read from its name alone.
 CHECK_SEAT = re.compile(r"check-(?:wake-)?[a-z][a-z0-9]*(?:-[a-z0-9]+)*-[0-9a-f]{4}")
 UNREADABLE = "unreadable"
+
+
+def _check_task(ship: Ship, name: str) -> Path:
+    from .sandbox import check_proof_folder
+
+    return check_proof_folder(ship.runtime, name) / 'task'
+
+
+def is_check_scratch(ship: Ship, name: str) -> bool:
+    return (name not in ship.seats and CHECK_SEAT.fullmatch(name) is not None
+            and os.path.lexists(_check_task(ship, name).parent))
+
+
+def _remove_check_task(runtime: Path, name: str, *, empty_only: bool) -> None:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    with ExitStack() as folders:
+        try:
+            check_root = os.open(runtime / 'check', flags)
+            folders.callback(os.close, check_root)
+            folder = os.open(name, flags, dir_fd=check_root)
+            folders.callback(os.close, folder)
+            if empty_only:
+                os.rmdir('task', dir_fd=folder)
+            else:
+                shutil.rmtree('task', dir_fd=folder)
+        except FileNotFoundError:
+            pass
+
+
+def _retire_check_storage(runtime: Path, name: str, *, remove_task: bool, empty_only: bool = False) -> None:
+    from . import lifecycle
+
+    _, registration = pending._check_paths(runtime, name)
+    if os.path.lexists(registration):
+        raise ShipError(f"{name}: check inbox registration still stands; scratch and locks retained")
+    with lifecycle.claim(runtime, name, retire=True):
+        if remove_task:
+            _remove_check_task(runtime, name, empty_only=empty_only)
+
+
+def down_check_scratch(ship: Ship, tmux: Tmux, name: str) -> str:
+    """Retire the empty task and coordination of an exact check with no temporary seat."""
+    if not is_check_scratch(ship, name):
+        raise ShipError(f"{name}: no check scratch by that name")
+    retired = False
+    with pending.transient_lock(ship.runtime, name, retire=lambda: retired) as owned:
+        if not owned:
+            raise ShipError(f"{name}: its qd check is still running; scratch retained")
+        if (_held_for_renewal(ship, name) or os.path.lexists(ship.runtime / 'seats' / name)
+                or os.path.lexists(trusted_files.path(ship.runtime, name, TEMPORARY).parent)
+                or tmux.has_session('qd-' + name)):
+            raise ShipError(f"{name}: a check home, hold or session still stands; scratch retained")
+        _retire_check_storage(ship.runtime, name, remove_task=True, empty_only=True)
+        retired = True
+    return f"{name}: empty check scratch and coordination retired"
 
 
 def _temporary(ship: Ship, name: str) -> dict | str | None:
@@ -2091,7 +2167,9 @@ def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
         if credential.held_for_review(ship, name):
             raise ShipError(f"{name}: its home is held for credential review")
         raise ShipError(f"{name}: its home is held for a renewal; the service reseeds its pool from it, then removes it")
-    with pending.transient_lock(ship.runtime, name) as owned:
+    check = record['purpose'] in ('qd check', 'qd check human wake') and CHECK_SEAT.fullmatch(name) is not None
+    storage_retired = False
+    with pending.transient_lock(ship.runtime, name, retire=(lambda: storage_retired) if check else None) as owned:
         if not owned:
             raise ShipError(f"{name}: its {record['purpose']} is still running and takes its own seat down; nothing done")
         launch = _temporary_launch(ship, name)
@@ -2127,6 +2205,9 @@ def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
                     pass
                 finally:
                     os.close(descriptor)
+            if check:
+                _retire_check_storage(ship.runtime, name, remove_task=True)
+                storage_retired = True
             return f"{name} down: " + (downed[0] if downed else "taken down") + " · its session ended, its home removed"
         if credential.held_for_review(ship, name):
             return f"{name}: its session ended; its home is held for credential review"

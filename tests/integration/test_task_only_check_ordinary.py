@@ -59,8 +59,9 @@ def test_the_task_only_check_has_one_door_opening_and_no_second_order(tmp_path, 
         assert adapter.openings == [adapter.minimal_check_task]
         assert len(adapter.readings) == 2 and adapter.readings[0] == adapter.readings[1]
         assert adapter.cwd != ship.workspace
-        assert (adapter.cwd / 'proof.txt').read_text() == 'OK\n'
+        assert not adapter.cwd.exists()
         evidence = adapter.cwd.parent
+        assert (evidence / 'proof.txt').read_text() == 'OK\n'
         assert json.loads((evidence / 'usage-before.json').read_text())['windows'][0]['used'] == .1
         assert json.loads((evidence / 'usage-after.json').read_text())['windows'][0]['used'] == .2
         assert post.Store(ship.runtime).all() == []

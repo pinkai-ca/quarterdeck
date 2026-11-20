@@ -25,7 +25,7 @@ import secrets
 import signal
 import threading
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 
 from . import trusted_files
 from . import check_outcome, harness as harnesses, durable, human_wake, pending, post, providers, record_owner, sandbox, standing
@@ -119,13 +119,17 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None,
                               classification=None if interrupted else 'exception')
         raise
     failures = [c for c in checks if c.passed is False]  # a step not applicable is no failure
-    question = next((c.reason for c in failures if isinstance(c, ProbeCheck)
-                     and c.reason in check_outcome.ACCOUNT_QUESTIONS), None)
-    reason = question or (getattr(failures[0], 'reason', None) if failures else 'passed')
-    if reason is None or not checks:
+    if not checks:
         observed = check_outcome.event('unknown', version, 'unclassified')
+    elif failures:
+        failed = next((c for c in failures if isinstance(c, ProbeCheck)
+                       and isinstance(c.reason, str) and c.reason in check_outcome.ACCOUNT_QUESTIONS), failures[0])
+        reason = getattr(failed, 'reason', None)
+        observed = check_outcome.event('failed', version,
+                                       reason if check_outcome.failure_reason(reason) else 'unclassified',
+                                       step=failed.name)
     else:
-        observed = check_outcome.event('failed' if failures else 'passed', version, reason)
+        observed = check_outcome.event('passed', version, 'passed')
     check_outcome.publish(runtime, name, observed)
     if minimal:
         detail = ('one short task-only opening, no second order' if getattr(harness, 'minimal_check_task', None) is not None
@@ -189,10 +193,6 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
     orders: list[post.Message] = []
     opening = getattr(harness, 'minimal_check_task', None) if minimal else None
     context = {'minimal_opening': opening} if opening is not None else {}
-    if opening is not None:
-        task_folder = ship.runtime / 'check' / seat_name / 'task'
-        task_folder.mkdir(parents=True, exist_ok=False)
-        spec = replace(spec, cwd=task_folder)
     with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version,
                         check_inbox=True, **context) as seat:
         options = {'requested_model': model} if model is not None else {}
@@ -361,9 +361,13 @@ def _check_usage(seat: Seat, stage: str) -> ProbeCheck:
                          json.dumps(data, default=lambda value: value.isoformat()) + '\n')
     known = bool(usage is not None and usage.called and usage.error is None and usage.windows
                  and all(window.used is not None and window.resets_at is not None for window in usage.windows))
-    return ProbeCheck(f'native usage read {stage} the turn', known,
-                      'decoded allowance retained in private check evidence' if known
-                      else (usage.error if usage is not None else 'native check usage unsupported'), 'usage')
+    name = f'native usage read {stage} the turn'
+    if known:
+        return ProbeCheck(name, True, 'decoded allowance retained in private check evidence')
+    unavailable = (usage is None or not usage.called or 'allowance-unavailable' in usage.diagnostics
+                   or (not usage.windows and usage.error is None))
+    reason = 'usage-unavailable' if unavailable else 'usage-unreadable'
+    return ProbeCheck(name, False, check_outcome.REASONS[reason][1], reason)
 
 
 def _probe_task_opening(seat: Seat, opening: str, *, requested_model: str | None) -> list[Check]:
@@ -403,9 +407,10 @@ def _probe_task_opening(seat: Seat, opening: str, *, requested_model: str | None
 
         ended = wait_for(one_turn_ended, PATIENCE)
         checks.append(_probe_record_check(seat, requested_model, bool(ended)))
-        content = proof_file.read_text().strip() if proof_file.exists() else None
-        checks.append(ProbeCheck('task: proof.txt holds OK', content == 'OK',
-                                 'exact short task result' if content == 'OK' else 'task result absent or different', 'file'))
+        matched, detail = proof_verdict(proof_file, 'OK')
+        if matched:
+            durable.replace_file(proof_file.parent.parent / 'proof.txt', 'OK\n')
+        checks.append(ProbeCheck('task: proof.txt holds OK', matched, detail, 'file'))
         if requested_model is not None:
             checks.append(model_confirmation(seat, requested_model, require_record=True))
         return checks

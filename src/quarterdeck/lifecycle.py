@@ -42,8 +42,8 @@ def lock_path(runtime: Path, name: str) -> Path:
 
 
 @contextmanager
-def claim(runtime: Path, name: str, *, wait: float = 0):
-    """Keep the same inode; optionally wait a bounded time, without replaying any effect."""
+def claim(runtime: Path, name: str, *, wait: float = 0, retire: bool = False):
+    """Claim the named inode; a completed temporary check may retire its empty lock."""
     path = lock_path(runtime, name)
     descriptor = None
     try:
@@ -68,9 +68,13 @@ def claim(runtime: Path, name: str, *, wait: float = 0):
             current = path.lstat()
             if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
                 raise ShipError(f'{name}: lifecycle lock identity changed; transition refused')
+            if retire and (opened.st_nlink != 1 or opened.st_size):
+                raise ShipError(f'{name}: lifecycle check lock is not an empty owned file; retained')
         except OSError as error:
             raise ShipError(f'{name}: lifecycle coordination unavailable: {error}') from error
         yield
+        if retire:
+            path.unlink()
     finally:
         if descriptor is not None:
             os.close(descriptor)

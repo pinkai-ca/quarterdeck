@@ -64,7 +64,7 @@ def decode(text: str, at: datetime | None = None) -> Usage:
     allowance = data.get("allowance")
     if allowance is None:
         reason = "no_allowance" if data.get("reason") == "no_allowance" else "allowance unavailable"
-        return Usage((), at, f"Muse usage {reason}")
+        return Usage((), at, f"Muse usage {reason}", diagnostics=("allowance-unavailable",))
     if not isinstance(allowance, dict):
         return Usage((), at, "Muse allowance is not an object")
     windows = []

@@ -484,6 +484,13 @@ check test, `test_the_check_proves_its_seat_ran_the_selected_program` in
 requires the proven mark to name the program the seat ran, and no mark when the
 seat ran another program.
 
+A failed check records its step and a bounded reason. Task-only checks
+distinguish unavailable native allowance from unreadable allowance. They
+retain decoded usage and a matching proof outside their temporary working
+folder. When the check ends, it retires that working folder and its
+coordination locks. `qd down <check-name>` can also retire abandoned empty
+task scratch and its locks once no check owns them. It retains saved evidence.
+
 ## `qd doctor` hands what it finds to a seat
 
 A script names a fault; a program that runs the ship reads the fault and mends
