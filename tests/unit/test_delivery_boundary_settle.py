@@ -1,7 +1,7 @@
 """qd service --settle-delivery: the real act, on a throwaway ship. No tmux server is started.
 
-A stand-in reports the server pid. A child that must exist is a real process of this user. The ship's own
-service, tmux and runtime are never touched.
+A stand-in reports the server pid. Checks that need a real child start one. Journal and pointer tests use a
+synthetic process table when the act scans processes. The ship's own service, tmux and runtime are never touched.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import os
 import resource
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,6 +35,23 @@ def dumpable_again():
     yield
     resource.setrlimit(resource.RLIMIT_CORE, core)
     ctypes.CDLL(None).prctl(delivery_boundary.barrier_settle.PR_SET_DUMPABLE, 1, 0, 0, 0)
+
+
+@pytest.fixture
+def proc(tmp_path):
+    root = tmp_path / 'proc'
+    root.mkdir()
+    return root
+
+
+def descriptor_directory(proc, pid=10_000_000):
+    process = proc / str(pid)
+    descriptors = process / 'fd'
+    descriptors.mkdir(parents=True)
+    (process / 'stat').write_text(f'{pid} (synthetic) S 1\n')
+    (process / 'comm').write_text('synthetic\n')
+    (process / 'environ').write_bytes(b'')
+    return descriptors
 
 
 def plant_pointer(ship, journal, *, kind='pending', token='boundary-token', owner=None, before=False):
@@ -178,7 +196,8 @@ def test_a_qd_ship_carrier_refuses(tmp_path):
         ended(carrier)
 
 
-def test_a_pointer_changed_mid_act_refuses(tmp_path):
+def test_a_pointer_changed_mid_act_refuses(tmp_path, proc):
+    descriptor_directory(proc)
     ship = ship_at(tmp_path)
     pointer = plant_pointer(ship, 'post/pending/ops/synthetic.json')
     raw = pointer.read_bytes()
@@ -190,7 +209,7 @@ def test_a_pointer_changed_mid_act_refuses(tmp_path):
             state['done'] = True
         return scope_of(ship, set())(pid)
 
-    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=reading)
+    result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=reading)
     assert 'changed' in result and result.startswith('refused: '), result
     assert pointer.exists() and pointer.read_bytes() != raw
     assert not (ship.runtime / 'evidence' / 'delivery-boundary').exists()
@@ -198,13 +217,13 @@ def test_a_pointer_changed_mid_act_refuses(tmp_path):
     assert not delivery_boundary.held_journal(ship.runtime, 'post/pending/ops/synthetic.json')
 
 
-def test_a_pointer_finish_resolves_refuses(tmp_path):
+def test_a_pointer_finish_resolves_refuses(tmp_path, proc):
     ship = ship_at(tmp_path)
     journal = evidence(ship.runtime, old_owner(ship.runtime), 'resolvable')
     before = journal.read_bytes()
     pointer = shutdown.pointer_path(ship.runtime)
     assert shutdown.finish_would_resolve(ship.runtime)
-    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
     assert result.startswith('refused: ') and 'a start clears it' in result, result
     assert pointer.is_file() and journal.read_bytes() == before and b'service_stop' not in before
     assert not (ship.runtime / 'evidence' / 'delivery-boundary').exists()
@@ -333,11 +352,41 @@ def test_an_oversize_pointer_refuses(tmp_path):
     assert not (ship.runtime / 'evidence' / 'delivery-boundary').exists()
 
 
-def _settle_unknown(ship, relative, *, kind='pending', before=False):
+@pytest.mark.parametrize('state', ['closed', 'unreadable', 'lock'])
+def test_lock_descriptors_checks_listed_descriptors(tmp_path, monkeypatch, proc, state):
+    ship = ship_at(tmp_path)
+    descriptors = descriptor_directory(proc)
+    pid = int(descriptors.parent.name)
+    (descriptors / '1').touch()
+    candidate = descriptors / '2'
+    candidate.symlink_to(servicectl.lock_path(ship.runtime))
+    stat = os.stat
+    seen = []
+
+    def stat_descriptor(path, *args, **kwargs):
+        if path == candidate:
+            seen.append(path)
+            if state == 'closed':
+                candidate.unlink()  # after listing, before following the descriptor
+            elif state == 'unreadable':
+                raise PermissionError('synthetic descriptor is unreadable')
+        return stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'stat', stat_descriptor)
+    monkeypatch.setattr('quarterdeck.lock_holders.table', lambda: '')
+    held, named, scoped, unstated, why = delivery_boundary.lock_descriptors(
+        ship.runtime, proc=proc, cgroup_of=scope_of(ship, set()))
+    assert seen == [candidate]
+    assert not named and not scoped and why is None
+    assert held == ({pid: 'synthetic'} if state == 'lock' else {})
+    assert unstated == ({pid: 'synthetic'} if state == 'unreadable' else {})
+
+
+def _settle_unknown(ship, relative, *, proc, kind='pending', before=False):
     pointer = plant_pointer(ship, relative, kind=kind, before=before)
     raw = pointer.read_bytes()
     assert shutdown.startup_diagnosis(ship.runtime)
-    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
     assert result.startswith('delivery boundary moved aside unchanged: '), result
     assert not pointer.exists()
     assert shutdown.startup_diagnosis(ship.runtime) is None
@@ -354,11 +403,26 @@ def _settle_unknown(ship, relative, *, kind='pending', before=False):
     return result
 
 
-def test_a_settled_boundary_holds_each_phase_past_prepared(tmp_path, monkeypatch):
+def test_a_settled_boundary_holds_each_phase_past_prepared(tmp_path, monkeypatch, proc):
     def fail_screen(*_args, **_kwargs):
         raise AssertionError('the screen was read')
 
     screen = SimpleNamespace(box='', unknown=False, interruption=False)
+    # A test runner outside the fixture has both a readable and an unreadable descriptor.
+    ambient = tmp_path / 'ambient-proc'
+    descriptors = descriptor_directory(ambient)
+    (descriptors / '1').touch()
+    denied = descriptors / '2'
+    denied.touch()
+    stat = os.stat
+
+    def stat_descriptor(path, *args, **kwargs):
+        if path == denied:
+            raise PermissionError('synthetic ambient process descriptor')
+        return stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'stat', stat_descriptor)
+    monkeypatch.setattr(delivery_boundary, 'settle', partial(delivery_boundary.settle, proc=ambient))
     monkeypatch.setattr('quarterdeck.door.Door.screen', fail_screen)
     for phase in ('pasting', 'submitting', 'submitted', 'queued'):
         root = tmp_path / phase
@@ -368,7 +432,7 @@ def test_a_settled_boundary_holds_each_phase_past_prepared(tmp_path, monkeypatch
         journal = write_journal(ship, attempt, phase)
         relative = journal.relative_to(ship.runtime).as_posix()
         journal_bytes, attempt_bytes = journal.read_bytes(), attempt.path.read_bytes()
-        _settle_unknown(ship, relative)
+        _settle_unknown(ship, relative, proc=proc)
         assert journal.read_bytes() == journal_bytes and attempt.path.read_bytes() == attempt_bytes
         seat = seat_for(ship)
         svc = service_for(ship, store, attempts)
@@ -383,12 +447,12 @@ def test_a_settled_boundary_holds_each_phase_past_prepared(tmp_path, monkeypatch
         assert b'service_stop' not in journal.read_bytes()
 
 
-def test_a_settled_boundary_holds_an_attempt(tmp_path):
+def test_a_settled_boundary_holds_an_attempt(tmp_path, proc):
     ship = ship_at(tmp_path)
     store, attempts, message, attempt = open_attempt(ship)
     relative = attempt.path.relative_to(ship.runtime).as_posix()
     before = attempt.path.read_bytes()
-    _settle_unknown(ship, relative, kind='attempt', before=True)
+    _settle_unknown(ship, relative, proc=proc, kind='attempt', before=True)
     assert attempt.path.read_bytes() == before
     assert len(list(attempts.dir.glob('*.json'))) == 1
     svc = service_for(ship, store, attempts)
@@ -401,7 +465,7 @@ def test_a_settled_boundary_holds_an_attempt(tmp_path):
         (ship.runtime / 'post' / 'pending').rglob('*.json'))
 
 
-def test_a_settled_boundary_holds_a_human_wake(tmp_path):
+def test_a_settled_boundary_holds_a_human_wake(tmp_path, proc):
     for phase in ('prepared', 'pasting'):
         root = tmp_path / phase
         root.mkdir()
@@ -416,19 +480,19 @@ def test_a_settled_boundary_holds_a_human_wake(tmp_path):
             record=None, shown=None, generation=None)) + '\n')
         relative = wake.relative_to(ship.runtime).as_posix()
         before = wake.read_bytes()
-        _settle_unknown(ship, relative, kind='human wake')
+        _settle_unknown(ship, relative, proc=proc, kind='human wake')
         assert wake.read_bytes() == before
         assert human_wake._run(seat) == 'human wake receipt uncertain; never resent; inspect human-wake.json'
         assert wake.read_bytes() == before
 
 
-def test_a_prepared_journal_is_not_cancelled(tmp_path):
+def test_a_prepared_journal_is_not_cancelled(tmp_path, proc):
     ship = ship_at(tmp_path)
     store, attempts, _message, attempt = open_attempt(ship)
     journal = write_journal(ship, attempt, 'prepared', prepared=True)
     relative = journal.relative_to(ship.runtime).as_posix()
     before = journal.read_bytes()
-    _settle_unknown(ship, relative)
+    _settle_unknown(ship, relative, proc=proc)
     assert journal.read_bytes() == before
     svc = service_for(ship, store, attempts)
     pending._reconcile_claimed(svc, seat_for(ship), {attempt.path.name: attempts.all()[0]})
@@ -467,7 +531,7 @@ def plant_bad_mark(ship, shape):
     return path, 'over 1 MiB'
 
 
-def test_an_unreadable_pointer_holds_a_submitted_journal(tmp_path, monkeypatch):
+def test_an_unreadable_pointer_holds_a_submitted_journal(tmp_path, monkeypatch, proc):
     """An unparseable pointer names every unresolved journal, and the submitted one is never typed again."""
     def fail_screen(*_args, **_kwargs):
         raise AssertionError('the screen was read')
@@ -487,7 +551,7 @@ def test_an_unreadable_pointer_holds_a_submitted_journal(tmp_path, monkeypatch):
     pointer = shutdown.pointer_path(ship.runtime)
     pointer.write_text('not json\n')
     journal_bytes, attempt_bytes, wake_bytes = journal.read_bytes(), attempt.path.read_bytes(), wake.read_bytes()
-    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
     assert result.startswith('delivery boundary moved aside unchanged: '), result
     assert 'unreadable delivery pointer' in result, result
     assert not pointer.exists()
@@ -518,7 +582,7 @@ def test_an_unreadable_pointer_holds_a_submitted_journal(tmp_path, monkeypatch):
     assert wake.read_bytes() == wake_bytes
 
 
-def test_an_unreadable_pointer_refuses_when_a_journal_cannot_be_named(tmp_path):
+def test_an_unreadable_pointer_refuses_when_a_journal_cannot_be_named(tmp_path, proc):
     ship = ship_at(tmp_path)
     old_owner(ship.runtime)
     journal = ship.runtime / 'post' / 'pending' / 'ops' / 'hidden.json'
@@ -529,7 +593,7 @@ def test_an_unreadable_pointer_refuses_when_a_journal_cannot_be_named(tmp_path):
     pointer.write_text('not json\n')
     raw = pointer.read_bytes()
     try:
-        result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+        result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
     finally:
         journal.chmod(0o600)
     assert result.startswith('refused: ') and 'could not be named' in result, result
@@ -538,7 +602,7 @@ def test_an_unreadable_pointer_refuses_when_a_journal_cannot_be_named(tmp_path):
     assert not delivery_boundary.mark_path(ship.runtime).exists()
 
 
-def test_a_new_launch_runs_a_new_wake_and_the_old_episode_stays_held(tmp_path, monkeypatch):
+def test_a_new_launch_runs_a_new_wake_and_the_old_episode_stays_held(tmp_path, monkeypatch, proc):
     """A later episode of the same path runs. The episode the act settled stays held."""
     from quarterdeck.door import Door
 
@@ -546,7 +610,7 @@ def test_a_new_launch_runs_a_new_wake_and_the_old_episode_stays_held(tmp_path, m
     wake, old = write_wake(ship, 'ops', 'pasting', pane='%1', pid=111)
     relative = wake.relative_to(ship.runtime).as_posix()
     before = wake.read_bytes()
-    _settle_unknown(ship, relative, kind='human wake')
+    _settle_unknown(ship, relative, proc=proc, kind='human wake')
     assert wake.read_bytes() == before
     mark = [json.loads(line) for line in delivery_boundary.mark_path(ship.runtime).read_text().splitlines()]
     assert mark[-1]['wake'] == shutdown.wake_token(old)
@@ -640,7 +704,7 @@ def test_an_unreadable_mark_holds_instead_of_releasing(tmp_path, monkeypatch, sh
             path.chmod(0o600)
 
 
-def test_a_settling_destination_holds_after_a_new_pointer(tmp_path, monkeypatch):
+def test_a_settling_destination_holds_after_a_new_pointer(tmp_path, monkeypatch, proc):
     """The settled line fails after the rename. A later pointer does not release the journal."""
     def fail_screen(*_args, **_kwargs):
         raise AssertionError('the screen was read')
@@ -660,7 +724,7 @@ def test_a_settling_destination_holds_after_a_new_pointer(tmp_path, monkeypatch)
 
     monkeypatch.setattr(delivery_boundary, '_record', fail_settled)
     plant_pointer(ship, relative)
-    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
     assert 'settled line could not be written' in result, result
     assert not shutdown.pointer_path(ship.runtime).exists()
     rows = [json.loads(line) for line in delivery_boundary.mark_path(ship.runtime).read_text().splitlines()]
@@ -716,7 +780,7 @@ def _delivering_door(monkeypatch):
 
 
 @pytest.mark.parametrize('mark', ['settled', 'unreadable'])
-def test_a_cancelled_wake_is_not_held_and_a_new_reservation_runs(tmp_path, monkeypatch, mark):
+def test_a_cancelled_wake_is_not_held_and_a_new_reservation_runs(tmp_path, monkeypatch, mark, proc):
     """A finished wake, phase cancelled and ended false, is not held. A waiting message makes a new reservation
     on the same launch, after a settle and under an unreadable mark."""
     ship = ship_at(tmp_path)
@@ -727,7 +791,7 @@ def test_a_cancelled_wake_is_not_held_and_a_new_reservation_runs(tmp_path, monke
         old_owner(ship.runtime)
         pointer = shutdown.pointer_path(ship.runtime)
         pointer.write_text('not json\n')
-        result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+        result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
         assert result.startswith('delivery boundary moved aside unchanged: '), result
         assert 'unreadable delivery pointer' in result, result
         text = delivery_boundary.mark_path(ship.runtime).read_text()
@@ -749,7 +813,7 @@ def test_a_cancelled_wake_is_not_held_and_a_new_reservation_runs(tmp_path, monke
 
 
 @pytest.mark.parametrize('mark', ['settled', 'unreadable'])
-def test_a_delivered_wake_waiting_for_its_watch_is_not_held(tmp_path, monkeypatch, mark):
+def test_a_delivered_wake_waiting_for_its_watch_is_not_held(tmp_path, monkeypatch, mark, proc):
     """A wake that was typed and confirmed, phase delivered and ended false, is not held. The ordinary path
     leaves it waiting for its watch, after a settle and under an unreadable mark."""
     ship = ship_at(tmp_path)
@@ -765,7 +829,7 @@ def test_a_delivered_wake_waiting_for_its_watch_is_not_held(tmp_path, monkeypatc
         old_owner(ship.runtime)
         pointer = shutdown.pointer_path(ship.runtime)
         pointer.write_text('not json\n')
-        result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+        result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
         assert result.startswith('delivery boundary moved aside unchanged: '), result
         assert 'unreadable delivery pointer' in result, result
         text = delivery_boundary.mark_path(ship.runtime).read_text()
@@ -786,7 +850,7 @@ def test_a_delivered_wake_waiting_for_its_watch_is_not_held(tmp_path, monkeypatc
     assert wake.read_bytes() == before
 
 
-def test_an_unreadable_pointer_holds_a_submitted_journal_and_not_a_delivered_one(tmp_path, monkeypatch):
+def test_an_unreadable_pointer_holds_a_submitted_journal_and_not_a_delivered_one(tmp_path, monkeypatch, proc):
     """An unparseable pointer holds a journal still being submitted, and not one already delivered."""
     def fail_screen(*_args, **_kwargs):
         raise AssertionError('the screen was read')
@@ -803,7 +867,7 @@ def test_an_unreadable_pointer_holds_a_submitted_journal_and_not_a_delivered_one
     pointer = shutdown.pointer_path(ship.runtime)
     pointer.write_text('not json\n')
     submitted_bytes, delivered_bytes = submitted.read_bytes(), delivered.read_bytes()
-    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
     assert result.startswith('delivery boundary moved aside unchanged: '), result
     assert 'unreadable delivery pointer' in result, result
     rows = [json.loads(line) for line in delivery_boundary.mark_path(ship.runtime).read_text().splitlines()]
@@ -830,7 +894,7 @@ def test_an_unreadable_pointer_holds_a_submitted_journal_and_not_a_delivered_one
     assert json.loads(delivered_attempt.path.read_text())['result'] == 'delivered'
 
 
-def test_an_unreadable_pointer_refuses_an_unclassified_journal(tmp_path):
+def test_an_unreadable_pointer_refuses_an_unclassified_journal(tmp_path, proc):
     """A phase that is neither in flight nor finished cannot be classified, so nothing is moved."""
     ship = ship_at(tmp_path)
     old_owner(ship.runtime)
@@ -839,14 +903,14 @@ def test_an_unreadable_pointer_refuses_an_unclassified_journal(tmp_path):
     pointer = shutdown.pointer_path(ship.runtime)
     pointer.write_text('not json\n')
     raw = pointer.read_bytes()
-    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
     assert result.startswith('refused: ') and 'could not be named' in result, result
     assert pointer.read_bytes() == raw
     assert not (ship.runtime / 'evidence' / 'delivery-boundary').exists()
     assert not delivery_boundary.mark_path(ship.runtime).exists()
 
 
-def test_a_mark_that_cannot_be_synced_moves_nothing(tmp_path, monkeypatch):
+def test_a_mark_that_cannot_be_synced_moves_nothing(tmp_path, monkeypatch, proc):
     """The pointer stays where it is when the settling line cannot be forced to disk."""
     ship = ship_at(tmp_path)
     _store, _attempts, _message, attempt = open_attempt(ship)
@@ -858,7 +922,7 @@ def test_a_mark_that_cannot_be_synced_moves_nothing(tmp_path, monkeypatch):
         raise OSError('synthetic mark sync failed')
 
     monkeypatch.setattr(os, 'fsync', fail_sync)
-    result = delivery_boundary.settle(ship, tmux(), 'ops', cgroup_of=scope_of(ship, set()))
+    result = delivery_boundary.settle(ship, tmux(), 'ops', proc=proc, cgroup_of=scope_of(ship, set()))
     assert result.startswith('refused: ') and 'forced to disk' in result and 'nothing was moved' in result, result
     assert pointer.read_bytes() == raw
     assert not (ship.runtime / 'evidence' / 'delivery-boundary').exists()
