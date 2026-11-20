@@ -22,6 +22,7 @@ at once. Every reseed with something to judge, the watch's, the pass's and a sea
 holds one lock file in runtime/locks, which every jail hides; the pass and the watch wait for it
 at most two seconds and skip the round, a seat going down at most thirty. A temporary seat whose reseed is skipped
 keeps its home while it holds a detached credential, until the pass settles it (``hold_home``, ``settle_held``).
+Without an adapter freshness reader, detached credentials are kept in place for human review.
 """
 
 from __future__ import annotations
@@ -41,7 +42,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from . import harness as harnesses, seat_files
+from . import durable, harness as harnesses, seat_files
+from .harness.home import credential_aliases
 from .seat import Seat
 from .ship import Pool, Ship, ShipError, valid_name
 
@@ -196,11 +198,42 @@ def _due(ship: Ship, seats: list[Seat]) -> bool:
     return _due_of(ship, participants(ship, seats))
 
 
+def _without_reader(adapter: harnesses.Harness) -> bool:
+    return type(adapter).freshness is harnesses.Harness.freshness
+
+
+def _needs_review(home: Path, source: Path, adapter: harnesses.Harness) -> bool:
+    """Look only at credential names and link targets when the format cannot be judged."""
+    primary = home / source.name
+    for name in (primary, *credential_aliases(adapter, home)):
+        try:
+            mode = name.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            return True  # a name we cannot inspect cannot be cleared safely
+        if stat.S_ISREG(mode):
+            return True
+        if name != primary and stat.S_ISLNK(mode):
+            try:
+                if name.resolve() == source.resolve():
+                    continue  # the native name normally reaches the pool through the top-level link
+            except (OSError, RuntimeError):
+                pass  # a link whose target cannot be established also needs review
+            return True
+    return False
+
+
 def _due_of(ship: Ship, found: list[Participant]) -> bool:
     for seat in found:
         pool = ship.pools.get(seat.pool)
         source = pool_file(pool) if pool is not None else None
         if source is None:
+            continue
+        adapter = harnesses.native_for(pool.provider)
+        if _without_reader(adapter):
+            if _needs_review(seat.home, source, adapter):
+                return True
             continue
         name = seat.home / source.name
         try:
@@ -209,7 +242,7 @@ def _due_of(ship: Ship, found: list[Participant]) -> bool:
             continue
         if stat.S_ISLNK(info.st_mode):
             continue
-        if not getattr(harnesses.native_for(pool.provider), "credential_copy", False):
+        if not adapter.credential_copy:
             return True
         try:
             held = source.stat()
@@ -226,15 +259,22 @@ def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:
 
 def _reseed_of(ship: Ship, found: list[Participant]) -> list[str]:
     detached: dict[str, list[tuple[Path, Participant]]] = {}
+    proofs = []
     for seat in found:
         pool_name = seat.pool
-        source = pool_file(ship.pools[pool_name])
+        pool = ship.pools[pool_name]
+        source = pool_file(pool)
         if source is None:
             continue
+        adapter = harnesses.native_for(pool.provider)
+        if _without_reader(adapter):
+            if _needs_review(seat.home, source, adapter) and not held_for_review(ship, seat.name):
+                _hold_record(ship, seat, review=True)
+                proofs.append(f"{seat.name}: home held for credential review")
+            continue  # there is no reader to judge a detached file, so never relink it
         link = seat.home / source.name
         if link.exists() and not link.is_symlink():
             detached.setdefault(pool_name, []).append((link, seat))
-    proofs = []
     for pool_name, candidates in detached.items():
         source = pool_file(ship.pools[pool_name])
         pool = ship.pools[pool_name]
@@ -266,59 +306,82 @@ def _reseed_of(ship: Ship, found: list[Participant]) -> list[str]:
     return proofs
 
 
-# A retired temporary seat's home is removed after its reseed. When that reseed was skipped past its wait and the home
-# still holds a detached credential, a renewal may be the only live token: the home is kept instead, named on the
-# status line, and the service's pass reseeds the pool from it and then removes it. One record each, outside the seat
-# folder (a jail writes all of its own), written by the unjailed qd that took the seat down.
+# A retired temporary seat's home is removed after its reseed. If the reseed skipped a detached credential, the
+# service's pass settles it before removal. A review hold keeps the home for a person. Both are on the status line,
+# with one record each outside the seat folder.
 HELD = Path("credentials") / "held"
 
 
-def hold_home(ship: Ship, seat: Seat) -> bool:
-    """After a skipped reseed at a temporary seat's teardown: whether its home must be kept, and if so record it.
+def hold_home(ship: Ship, seat: Seat, *, reseed_skipped: bool = False) -> bool:
+    """At temporary-seat teardown, record a detached credential that still needs a reseed or human review.
 
     Only the seat's own participant counts: present only where ``source_refusal`` lets the seat give its pool a
     sign-in, and never a usage reader, which ``participants`` adds for the pool beside any seat. A refused seat (a
     jailed one, or one on an endpoint pool) is no source, so nothing in its home is kept for its pool."""
-    own = [found for found in participants(ship, [seat]) if found.name == seat.name and not found.usage_reader]
-    if not own or not _due_of(ship, own):
-        return False  # never a credential's source, or nothing detached (a link is still a link): nothing to keep
-    folder = ship.runtime / HELD
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    record = folder / f"{seat.name}.json"
-    temporary = record.with_name(f".{record.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps({"seat": seat.name, "pool": own[0].pool}) + "\n")
-    os.replace(temporary, record)
+    if held_for_review(ship, seat.name):
+        return True
+    own = next((found for found in participants(ship, [seat]) if not found.usage_reader), None)
+    pool = ship.pools.get(own.pool) if own is not None else None
+    source = pool_file(pool) if pool is not None else None
+    if source is None:
+        return False
+    adapter = harnesses.native_for(pool.provider)
+    review = _without_reader(adapter)
+    keep = _needs_review(own.home, source, adapter) if review else reseed_skipped and _due_of(ship, [own])
+    if not keep:
+        return False
+    _hold_record(ship, own, review=review)
     return True
 
 
-def _held(ship: Ship) -> list[tuple[Path, str | None, str | None]]:
-    """Each record of a held home: its file, and its seat and pool, both None when it cannot be read as one.
-
-    A record is the teardown's word that the seat passed ``source_refusal`` for that pool: written by the unjailed qd
-    that took the seat down, into runtime/credentials, which no jail sees (the runtime is fenced and ``credentials``
-    is not in ``sandbox.RUNTIME_SHOWN``). The retired seat's declaration is gone with its teardown, so its own
-    ``sandbox`` choice cannot be read again here; what can be is judged again: the name is no declared seat's, and
-    the pool is declared and no endpoint pool, whose seats never give a pool a sign-in."""
+def _hold_record(ship: Ship, seat: Participant, *, review: bool) -> None:
     folder = ship.runtime / HELD
-    found = []
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    data = {"seat": seat.name, "pool": seat.pool}
+    if review:
+        data["review"] = True
+    durable.replace_file(folder / f"{seat.name}.json", json.dumps(data) + "\n")
+
+
+def _held_record(ship: Ship, record: Path) -> tuple[str | None, str | None, bool]:
+    """Read a hold recorded by the unjailed process in runtime/credentials.
+
+    A renewal authorizes reseeding and removal only for a retired seat and a declared subscription pool.
+    A review hold authorizes neither, and may name a declared seat or a pool since removed from the ship.
+    """
+    try:
+        data = json.loads(record.read_text())
+        name, pool, review = data["seat"], data["pool"], data.get("review", False)
+        if (isinstance(name, str) and name == record.stem and valid_name(name)
+                and isinstance(pool, str) and type(review) is bool
+                and (review or (name not in ship.seats and pool in ship.pools and ship.pools[pool].kind != "endpoint"))):
+            return name, pool, review
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None, None, False
+
+
+def held_for_review(ship: Ship, name: str) -> bool:
+    return _held_record(ship, ship.runtime / HELD / f"{name}.json")[2]
+
+
+def _held(ship: Ship):
+    folder = ship.runtime / HELD
     for record in sorted(folder.glob("*.json")) if folder.is_dir() else []:
-        try:
-            data = json.loads(record.read_text())
-            name, pool = data["seat"], data["pool"]
-            # The name is an rmtree's folder under runtime/seats: a seat folder's own rule, never a hidden or path name.
-            valid = (isinstance(name, str) and name == record.stem and valid_name(name) and name not in ship.seats
-                     and pool in ship.pools and ship.pools[pool].kind != "endpoint")
-        except (OSError, ValueError, KeyError, TypeError):
-            valid = False
-        found.append((record, name, pool) if valid else (record, None, None))
-    return found
+        yield record, *_held_record(ship, record)
 
 
 def held_words(ship: Ship) -> list[str]:
-    """Plain words for the status line, for every home kept for its renewal, until a pass settles it."""
-    return [f"{name}: a renewal held in a retired seat's home; the service reseeds {pool} from it, then removes it"
-            if name is not None else f"{record.stem}: a held renewal's record is unreadable; inspect runtime/{HELD}"
-            for record, name, pool in _held(ship)]  # law: nothing-waits-silently
+    """Plain words for the status line, for every home kept for renewal or review."""
+    words = []
+    for record, name, pool, review in _held(ship):
+        if name is None:
+            words.append(f"{record.stem}: a held renewal's record is unreadable; inspect runtime/{HELD}")
+        elif review:
+            words.append(f"{name}: home held for credential review")
+        else:
+            words.append(f"{name}: a renewal held in a retired seat's home; the service reseeds {pool} from it, then removes it")
+    return words  # law: nothing-waits-silently
 
 
 def settle_held(ship: Ship, *, wait: float = RESEED_WAIT) -> list[str]:
@@ -327,8 +390,8 @@ def settle_held(ship: Ship, *, wait: float = RESEED_WAIT) -> list[str]:
     A record that cannot be read is left for a person, and the status line names it. A skipped round retries."""
     from . import trusted_files
     lines = []
-    for record, name, pool in _held(ship):
-        if name is None:
+    for record, name, pool, review in _held(ship):
+        if name is None or review:
             continue
         seat_folder = ship.runtime / "seats" / name
         found = [Participant(name, seat_folder / "home", pool)]
@@ -339,7 +402,7 @@ def settle_held(ship: Ship, *, wait: float = RESEED_WAIT) -> list[str]:
             except Busy:
                 lines.append(f"{SKIPPED} for {wait:g} s; {name}'s held renewal waits for the next round")
                 continue
-            if _due_of(ship, found):
+            if held_for_review(ship, name) or _due_of(ship, found):
                 continue  # still detached (a copy not brought up): kept, still named, tried again next pass
         if seat_folder.exists():
             shutil.rmtree(seat_folder)

@@ -12,12 +12,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import post, seat as seatmod
+from quarterdeck import post, seat as seatmod, watch
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.home import credential
 from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.harness.types import Screen
 from quarterdeck.seat import Launched, Seat, temporary_seat
+from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, ShipError, load
 from quarterdeck.tmux import Pane
 
@@ -201,3 +202,85 @@ def test_a_detached_credential_no_newer_than_the_pool_is_replaced_by_the_link(sh
     credential(pool, link, "ANTHROPIC_API_KEY")
     assert link.is_symlink() and link.resolve() == ship.source.resolve()
     assert token(ship.source) == "current"
+
+
+@pytest.fixture
+def muse_ship(tmp_path):
+    pool = tmp_path / "pool"
+    pool.mkdir()
+    source = pool / "auth.json"
+    source.write_bytes(b"synthetic pool file\n")
+    (pool / "other.json").write_bytes(b"synthetic foreign file\n")
+    (tmp_path / "ship.toml").write_text(f'''[ship]
+name="synthetic"
+[pools.muse-primary]
+provider="meta"
+config_dir="{pool}"
+[sessions.crew]
+[seats.muse-worker]
+session="crew"
+harness="muse"
+pool="muse-primary"
+model="muse-wonder-1.0"
+''')
+    return load(tmp_path), Tmux(), source
+
+
+def setup_muse_auth(home, source, change):
+    attached = home / "auth.json"
+    nested = home / "config/muse/auth.json"
+    nested.parent.mkdir(parents=True)
+    if change == "attached-file":
+        attached.write_bytes(b"synthetic detached file\n")
+    else:
+        attached.symlink_to(source)
+    if change == "nested-file":
+        nested.write_bytes(b"synthetic detached file\n")
+    elif change == "foreign-link":
+        nested.symlink_to(source.parent / "other.json")
+    else:
+        nested.symlink_to(attached)
+    return attached, nested
+
+
+def auth_state(*names):
+    return [(name.lstat().st_ino, name.readlink() if name.is_symlink() else name.read_bytes()) for name in names]
+
+
+@pytest.mark.parametrize("change", ["attached-file", "nested-file", "foreign-link", "linked"])
+def test_muse_check_retains_homes_for_credential_review(muse_ship, change):
+    ship, tmux, source = muse_ship
+    spec = SeatSpec("check-muse-0000", "qd-check-muse-0000", "worker", "muse", ("muse-primary",),
+                    model="muse-wonder-1.0", cwd=ship.workspace)
+    with temporary_seat(ship, tmux, spec, [], "qd check") as seat:
+        names = setup_muse_auth(seat.home, source, change)
+        sources = source, source.parent / "other.json"
+        before = auth_state(*sources, *names)
+    Service(ship, tmux).credentials()  # the next service pass must leave review holds in place
+    line = watch.facts(ship, tmux).line()
+    if change == "linked":
+        assert not seat.folder.exists() and not seat.trusted.exists()
+        assert seat.name not in line
+        assert auth_state(*sources) == before[:2]
+    else:
+        assert auth_state(*sources, *names) == before
+        assert f"{seat.name}: home held for credential review" in line
+    assert tmux.sessions == {}
+
+
+@pytest.mark.parametrize("change", ["attached-file", "nested-file", "foreign-link", "linked"])
+def test_muse_service_retains_homes_for_credential_review(muse_ship, change):
+    ship, tmux, source = muse_ship
+    seat = Seat(ship, ship.seat("muse-worker"), tmux)
+    names = setup_muse_auth(seat.home, source, change)
+    names = source, source.parent / "other.json", *names
+    before = auth_state(*names)
+    service = Service(ship, tmux)
+    service.credentials()
+    service.credentials()
+    assert auth_state(*names) == before
+    line = watch.facts(ship, tmux).line()
+    if change == "linked":
+        assert "home held for credential review" not in line
+    else:
+        assert f"{seat.name}: home held for credential review" in line

@@ -1950,8 +1950,9 @@ def _teardown(cleanup: ExitStack, treated: Ship, seat: Seat, tmux: Tmux, orders:
             from . import credential
 
             lines = credential.reseed(treated, [seat], wait=credential.DOWN_WAIT)  # its one pool: a refresh left in the home
-            if any(line.startswith(credential.SKIPPED) for line in lines) and credential.hold_home(treated, seat):
-                return  # not reseeded, so never deleted with its home: kept and named until the service's pass settles it
+            skipped = any(line.startswith(credential.SKIPPED) for line in lines)
+            if credential.hold_home(treated, seat, reseed_skipped=skipped):
+                return  # the home is kept and named until the service or a person can review it
             shutil.rmtree(seat.folder)
             if seat.trusted.is_dir():
                 shutil.rmtree(seat.trusted)  # its trusted files go with it
@@ -2012,7 +2013,7 @@ def _temporary(ship: Ship, name: str) -> dict | str | None:
 
 
 def _held_for_renewal(ship: Ship, name: str) -> bool:
-    """A home its teardown kept for a renewal: the service's pass settles it, and the status line names it so."""
+    """A home kept for reseeding or for human credential review, and named on the status line."""
     from . import credential
     return (ship.runtime / credential.HELD / f"{name}.json").exists()
 
@@ -2047,7 +2048,7 @@ def _leftover(ship: Ship, name: str) -> tuple[dict | str, dict | str | None] | N
 
 def leftover_seats(ship: Ship) -> list[str]:
     """Plain words for every temporary seat that outlived its run, for the status line, until it is gone; and for
-    every retired seat's home kept for a renewal its reseed did not take, until the service's pass settles it."""
+    every home kept for a renewal or human credential review."""
     from . import credential
     folder = ship.runtime / "seats"
     words = credential.held_words(ship)
@@ -2078,6 +2079,8 @@ def is_leftover(ship: Ship, name: str) -> bool:
 
 def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
     """qd down <temporary seat>: take down a seat its run left, by that run's own teardown."""
+    from . import credential
+
     folder = ship.runtime / "seats" / name
     record = _temporary(ship, name)
     if record is None:
@@ -2085,6 +2088,8 @@ def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
     if record == UNREADABLE:
         raise ShipError(f"{name}: its record is unreadable; inspect runtime/trusted/{name}/{TEMPORARY}")
     if _held_for_renewal(ship, name):
+        if credential.held_for_review(ship, name):
+            raise ShipError(f"{name}: its home is held for credential review")
         raise ShipError(f"{name}: its home is held for a renewal; the service reseeds its pool from it, then removes it")
     with pending.transient_lock(ship.runtime, name) as owned:
         if not owned:
@@ -2123,6 +2128,8 @@ def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
                 finally:
                     os.close(descriptor)
             return f"{name} down: " + (downed[0] if downed else "taken down") + " · its session ended, its home removed"
+        if credential.held_for_review(ship, name):
+            return f"{name}: its session ended; its home is held for credential review"
         return (f"{name}: " + (downed[0] if downed else "not taken down")
                 + f" · its home is kept until its program has ended; qd down {name} again")
 

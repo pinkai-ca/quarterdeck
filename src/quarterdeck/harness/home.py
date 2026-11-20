@@ -12,6 +12,13 @@ from ..ship import Pool, ShipError
 from .types import Credential
 
 
+def credential_aliases(adapter, home: Path) -> tuple[Path, ...]:
+    """Additional names in the adapter's native home that reach the shared sign-in."""
+    if adapter.name == "muse":
+        return (home / "config/muse/auth.json",)
+    return ()
+
+
 def credential(pool: Pool, link: Path, variable: str, *, copy: bool = False) -> Credential | None:
     """How a pool's credential reaches a seat home: a key by environment, a subscription by one link, or by one copy
     for a program that writes its refresh through the link into the pool's own file (``copy``).

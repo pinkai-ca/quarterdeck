@@ -21,8 +21,10 @@ seat home is also reached from `config/muse/auth.json`. A native usage call
 rewrote the source file through the link while leaving the link in place.
 That observation does not establish token-refresh values or expiry semantics.
 No freshness or grant-expiry fields are guessed. A detached native credential
-is retained and launch refuses pending review. Auth-link handling requires an
-independent review before landing.
+is retained and launch refuses pending review. If either credential name becomes
+a regular file or the nested link stops reaching the pool's file, check teardown
+and the service keep the home for human review. The status line names the held
+home. Auth-link handling requires an independent review before landing.
 
 The launch removes inherited `META_API_KEY`, `MUSE_AUTH_PATH` and `MUSE_LOGIN`.
 Only this adapter's launch removes these sign-in redirects; other adapters keep
