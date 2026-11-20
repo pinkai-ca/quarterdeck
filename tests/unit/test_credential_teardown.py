@@ -7,7 +7,8 @@ built over a detached credential newer than its pool's.
 
 import io
 import json
-import shutil
+import os
+import stat
 import time
 from dataclasses import replace
 from datetime import timedelta
@@ -223,6 +224,7 @@ config_dir="{pool}"
 [sessions.crew]
 [seats.muse-worker]
 session="crew"
+role="worker"
 harness="muse"
 pool="muse-primary"
 model="muse-wonder-1.0"
@@ -271,7 +273,7 @@ def test_muse_check_retains_homes_for_credential_review(muse_ship, change, jaile
         assert auth_state(*sources) == before[:2]
     else:
         assert auth_state(*sources, *names) == before
-        assert f"{seat.name}: home held for credential review" in line
+        assert f"home held for credential review: qd credential release {seat.name}" in line
     assert tmux.sessions == {}
 
 
@@ -295,7 +297,7 @@ def test_muse_service_retains_homes_for_credential_review(muse_ship, change, jai
     if change == "linked":
         assert "home held for credential review" not in line
     else:
-        assert f"{seat.name}: home held for credential review" in line
+        assert f"home held for credential review: qd credential release {seat.name}" in line
 
 
 def test_hold_home_selects_only_the_seats_own_participant(muse_ship, monkeypatch):
@@ -328,19 +330,38 @@ def held_muse(muse_ship, change):
     return seat, names, service
 
 
-def test_release_command_displays_metadata_and_clears_the_hold_before_the_service_pass(muse_ship, monkeypatch, capsys):
+def with_systems(ship):
+    systems = replace(ship.seat("muse-worker"), name="systems", role="systems")
+    return replace(ship, seats={**ship.seats, systems.name: systems})
+
+
+def release_cli(seat, monkeypatch, caller, choice):
+    ship = with_systems(seat.ship) if caller == "systems" else seat.ship
+    monkeypatch.setattr(cli, "handoff", lambda *_: None)
+    monkeypatch.setattr(cli, "load_ship", lambda _: ship)
+    monkeypatch.setattr(cli.Tmux, "for_ship", lambda _: seat.tmux)
+    if caller is None:
+        monkeypatch.delenv("QD_SEAT", raising=False)
+    else:
+        monkeypatch.setenv("QD_SEAT", caller)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(f"{choice}\n"))
+    return ["--ship", str(seat.ship.folder), "credential", "release", seat.name]
+
+
+@pytest.mark.parametrize("caller", [None, "systems"], ids=["operator", "systems"])
+def test_release_command_displays_metadata_and_clears_the_hold_before_the_service_pass(
+    muse_ship, monkeypatch, capsys, caller,
+):
     seat, (main, nested), service = held_muse(muse_ship, "attached-file")
     before = auth_state(main, nested)
     runtime = seat.ship.runtime
     # Read an already-written review from before the release command existed.
     path = runtime / credentialmod.HELD / f"{seat.name}.json"
     path.write_text(json.dumps(dict(seat=seat.name, pool=seat.pool.name, review=True)))
-    assert f"qd credential release {seat.name}" in watch.facts(seat.ship, seat.tmux).line()
-    monkeypatch.setattr(cli, "handoff", lambda *_: None)
-    monkeypatch.setattr(cli, "load_ship", lambda _: seat.ship)
-    monkeypatch.setattr(cli.Tmux, "for_ship", lambda _: seat.tmux)
-    monkeypatch.setenv("QD_SEAT", "synthetic-operator")
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("keep\n"))
+    line = watch.facts(seat.ship, seat.tmux).line()
+    assert f"qd credential release {seat.name}" in line
+    assert "systems keep; operator archives" in line
+    arguments = release_cli(seat, monkeypatch, caller, "keep")
 
     with monkeypatch.context() as patch:
         for method in ("open", "read_bytes", "read_text"):
@@ -351,12 +372,12 @@ def test_release_command_displays_metadata_and_clears_the_hold_before_the_servic
                 return read(self, *args, **kwargs)
 
             patch.setattr(Path, method, metadata_only)
-        assert cli.main(["--ship", str(seat.ship.folder), "credential", "release", seat.name]) == 0
+        assert cli.main(arguments) == 0
     out = capsys.readouterr()
     assert "auth.json: file" in out.out
     assert f"config/muse/auth.json: link -> {str(main)!r}" in out.out
     assert "synthetic detached file" not in out.out
-    assert "keep/remove" in out.err
+    assert ("[keep/remove]" if caller is None else "[keep]") in out.err
     assert "home kept in place; credential review cleared" in out.out
     assert auth_state(main, nested) == before
     assert not credentialmod.held_for_review(seat.ship, seat.name)
@@ -365,13 +386,53 @@ def test_release_command_displays_metadata_and_clears_the_hold_before_the_servic
     assert json.loads(acknowledged)["keep"]["names"].keys() == {"auth.json", "config/muse/auth.json"}
     act = acts.last(seat)
     assert (act["verb"], act["choice"], act["outcome"], act["caller"]) == (
-        "credential-release", "keep", "keep", "synthetic-operator")
+        "credential-release", "keep", "keep", caller or seat.ship.operator or "the operator")
     assert "credential review" in acts.describe(act)
     service.credentials()
     assert auth_state(main, nested) == before
     assert not credentialmod.held_for_review(seat.ship, seat.name)
     assert path.read_text() == acknowledged
     assert "credential review" not in watch.facts(seat.ship, seat.tmux).line()
+
+
+@pytest.mark.parametrize("caller", ["muse-worker", "unknown", ""])
+def test_release_refuses_an_unauthorized_seat_before_inspection(muse_ship, monkeypatch, capsys, caller):
+    seat, names, _ = held_muse(muse_ship, "attached-file")
+    before = auth_state(*names)
+    arguments = release_cli(seat, monkeypatch, caller, "keep")
+    monkeypatch.setattr(credentialmod, "_release_view", lambda *a, **k: pytest.fail("inspected the held home"))
+    assert cli.main(arguments) == 2
+    out = capsys.readouterr()
+    assert not out.out
+    assert "only a systems seat may keep" in out.err
+    assert "auth.json" not in out.err
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert acts.last(seat) is None
+    assert auth_state(*names) == before
+
+
+def test_release_refuses_systems_remove(muse_ship, monkeypatch, capsys):
+    seat, names, _ = held_muse(muse_ship, "attached-file")
+    before = auth_state(*names)
+    assert cli.main(release_cli(seat, monkeypatch, "systems", "remove")) == 2
+    out = capsys.readouterr()
+    assert "[keep]" in out.err and "[keep/remove]" not in out.err
+    assert "only the operator may choose remove" in out.err
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert acts.last(seat) is None
+    assert auth_state(*names) == before
+    assert not (seat.ship.runtime / credentialmod.RECOVERY).exists()
+
+
+def test_release_refuses_systems_keep_for_a_human_session_before_inspection(muse_ship, monkeypatch):
+    seat, _, _ = held_muse(muse_ship, "attached-file")
+    human = replace(seat.session, human=True)
+    ship = with_systems(replace(seat.ship, sessions={**seat.ship.sessions, human.name: human}))
+    monkeypatch.setattr(credentialmod, "_snapshot", lambda *_: pytest.fail("inspected the held home"))
+    with pytest.raises(ShipError, match="only the operator may release a home in a human's session"):
+        credentialmod.release(ship, seat.tmux, seat.name, "systems", lambda _: pytest.fail("offered a choice"))
+    assert credentialmod.held_for_review(ship, seat.name)
+    assert acts.last(seat) is None
 
 
 def test_keeping_a_temporary_home_clears_both_the_hold_and_leftover_alert(muse_ship):
@@ -381,7 +442,7 @@ def test_keeping_a_temporary_home_clears_both_the_hold_and_leftover_alert(muse_s
     with temporary_seat(ship, tmux, spec, [], "qd check") as seat:
         names = setup_muse_auth(seat.home, source, "foreign-link")
         before = auth_state(*names)
-    credentialmod.release(ship, tmux, seat.name, "operator", lambda _: "keep")
+    credentialmod.release(ship, tmux, seat.name, None, lambda _: "keep")
     assert not credentialmod.held_for_review(ship, seat.name)
     Service(ship, tmux).credentials()
     assert auth_state(*names) == before
@@ -390,39 +451,62 @@ def test_keeping_a_temporary_home_clears_both_the_hold_and_leftover_alert(muse_s
 
 
 @pytest.mark.parametrize("temporary", [False, True], ids=["declared", "temporary"])
-def test_release_removes_the_held_home_and_keeps_the_audit(muse_ship, temporary):
+def test_release_moves_the_held_home_and_keeps_the_recovery_visible(muse_ship, temporary, monkeypatch, capsys):
     ship, tmux, source = muse_ship
     if temporary:
         spec = SeatSpec("check-muse-0002", "qd-check-muse-0002", "worker", "muse", ("muse-primary",),
                         model="muse-wonder-1.0", cwd=ship.workspace)
         with temporary_seat(ship, tmux, spec, [], "qd check") as seat:
-            main, _ = setup_muse_auth(seat.home, source, "foreign-link")
+            main, link = setup_muse_auth(seat.home, source, "foreign-link")
     else:
-        seat, (main, _), _ = held_muse(muse_ship, "foreign-link")
-        (seat.folder / "other-seat-data").touch()
+        seat, (main, link), _ = held_muse(muse_ship, "foreign-link")
+    (seat.folder / "other-seat-data").write_bytes(b"synthetic seat data\n")
+    (seat.home / "local-data").write_bytes(b"synthetic home data\n")
+    unrelated = seat.folder.parent / "unrelated"
+    unrelated.write_bytes(b"synthetic unrelated data\n")
+    shared = ship.runtime / "evidence"
+    shared.mkdir()
+    shared.chmod(0o775)  # Other evidence writers use the operator's usual umask.
+    (shared / "unrelated").write_bytes(b"synthetic unrelated evidence\n")
+    assert credentialmod.recovery_words(ship.runtime) == []
     main.unlink()
     sources = source, source.parent / "other.json"
     before = auth_state(*sources)
-    shown = []
-
-    def choose(words):
-        shown.extend(words)
-        return "remove"
-
-    proof = credentialmod.release(ship, tmux, seat.name, "operator", choose)
-    assert "  auth.json: missing" in shown
-    assert f"  config/muse/auth.json: link -> {str(sources[1])!r}" in shown
-    assert "held home removed" in proof
-    assert not seat.home.exists()
-    if temporary:
-        assert not seat.folder.exists()
-    else:
-        assert (seat.folder / "other-seat-data").exists()
-    assert auth_state(*sources) == before
-    assert credentialmod.held_words(ship) == []
+    moved = seat.folder if temporary else seat.home
+    identity = moved.stat().st_dev, moved.stat().st_ino
+    home_before = auth_state(seat.home / "local-data", link)
+    target = SimpleNamespace(ship=ship, name=seat.name, tmux=tmux)
+    assert cli.main(release_cli(target, monkeypatch, None, "remove")) == 0
+    out = capsys.readouterr()
+    assert "  auth.json: missing" in out.out
+    assert f"  config/muse/auth.json: link -> {str(sources[1])!r}" in out.out
     start, done = [json.loads(row) for row in acts.path(seat).read_text().splitlines()]
     assert start["outcome"] == "pending" and start["choice"] == "remove"
     assert start["act"] == done["act"] and done["outcome"] == "remove"
+    recovery = Path(done["recovery"])
+    assert start["planned_recovery"] == str(recovery)
+    assert f"held home moved to {recovery}" in out.out
+    assert recovery.parent.parent == ship.runtime / credentialmod.RECOVERY
+    assert stat.S_IMODE(recovery.parent.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(recovery.parent.stat().st_mode) == 0o700
+    assert (recovery.stat().st_dev, recovery.stat().st_ino) == identity
+    assert not seat.home.exists()
+    if temporary:
+        assert not seat.folder.exists()
+        assert (recovery / "other-seat-data").read_bytes() == b"synthetic seat data\n"
+        recovered_home = recovery / "home"
+    else:
+        assert (seat.folder / "other-seat-data").read_bytes() == b"synthetic seat data\n"
+        recovered_home = recovery
+    assert auth_state(recovered_home / "local-data", recovered_home / link.relative_to(seat.home)) == home_before
+    assert unrelated.read_bytes() == b"synthetic unrelated data\n"
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o775
+    assert (shared / "unrelated").read_bytes() == b"synthetic unrelated evidence\n"
+    assert auth_state(*sources) == before
+    Service(ship, tmux).credentials()
+    assert not credentialmod.held_for_review(ship, seat.name)
+    relative = recovery.relative_to(ship.folder)
+    assert f"recovery at {relative}" in watch.facts(ship, tmux).line()
 
 
 def test_release_refuses_an_up_seat_before_offering_a_choice(muse_ship):
@@ -434,7 +518,7 @@ def test_release_refuses_an_up_seat_before_offering_a_choice(muse_ship):
     Launched(pane.id, pane.pid, post.now().isoformat(), seat.pool.name, None, ["muse"], "synthetic", "muse").write(
         seat.trusted / "launch.json")
     with pytest.raises(ShipError, match="still up"):
-        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: pytest.fail("offered a choice"))
+        credentialmod.release(seat.ship, seat.tmux, seat.name, None, lambda _: pytest.fail("offered a choice"))
     assert auth_state(*names) == before
     assert credentialmod.held_for_review(seat.ship, seat.name)
     assert acts.last(seat) is None
@@ -450,7 +534,7 @@ def test_release_refuses_a_home_that_changed_during_the_choice(muse_ship, choice
         return choice
 
     with pytest.raises(ShipError, match="held home changed"):
-        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", choose)
+        credentialmod.release(seat.ship, seat.tmux, seat.name, None, choose)
     assert seat.home.is_dir()
     assert seat.home.with_name("previous-home").is_dir()
     assert credentialmod.held_for_review(seat.ship, seat.name)
@@ -464,19 +548,78 @@ def test_failed_removal_preserves_the_review_hold_and_records_the_failure(muse_s
     def refuse(*_args, **_kwargs):
         raise PermissionError("synthetic write failure")
 
-    monkeypatch.setattr(shutil, "rmtree", refuse)
+    monkeypatch.setattr(os, "rename", refuse)
     with pytest.raises(ShipError, match="write failure.*review hold stays"):
-        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "remove")
+        credentialmod.release(seat.ship, seat.tmux, seat.name, None, lambda _: "remove")
     assert auth_state(*names) == before
     assert credentialmod.held_for_review(seat.ship, seat.name)
     assert acts.last(seat)["outcome"] == "failed"
+    assert list((seat.ship.runtime / credentialmod.RECOVERY).iterdir()) == []
+
+
+def test_release_rechecks_the_source_directory_at_the_move(muse_ship, monkeypatch):
+    seat, names, _ = held_muse(muse_ship, "attached-file")
+    before = auth_state(*names)
+    former = seat.home.with_name("former-home")
+    write = acts.write
+
+    def record(audited, act):
+        write(audited, act)
+        if act["outcome"] == "pending":
+            seat.home.rename(former)
+            seat.home.mkdir()
+
+    monkeypatch.setattr(acts, "write", record)
+    with pytest.raises(ShipError, match="held home changed before the move.*review hold stays"):
+        credentialmod.release(seat.ship, seat.tmux, seat.name, None, lambda _: "remove")
+    assert seat.home.is_dir()
+    assert auth_state(*(former / name.relative_to(seat.home) for name in names)) == before
+    assert credentialmod.held_for_review(seat.ship, seat.name)
+    assert acts.last(seat)["outcome"] == "failed"
+
+
+@pytest.mark.parametrize("failure", ["hold", "outcome"])
+def test_release_reports_the_recovery_even_when_recording_fails(muse_ship, monkeypatch, failure):
+    seat, names, service = held_muse(muse_ship, "attached-file")
+    before = auth_state(*names)
+    record = seat.ship.runtime / credentialmod.HELD / f"{seat.name}.json"
+    write, unlink = acts.write, Path.unlink
+
+    def refuse_outcome(audited, entry):
+        if entry["outcome"] == "remove":
+            raise PermissionError("synthetic outcome write failure")
+        write(audited, entry)
+
+    def refuse_unlink(path, *args, **kwargs):
+        if path == record:
+            raise PermissionError("synthetic hold update failure")
+        unlink(path, *args, **kwargs)
+
+    if failure == "hold":
+        monkeypatch.setattr(Path, "unlink", refuse_unlink)
+    else:
+        monkeypatch.setattr(acts, "write", refuse_outcome)
+    with pytest.raises(ShipError, match="held home moved to .*synthetic") as error:
+        credentialmod.release(seat.ship, seat.tmux, seat.name, None, lambda _: "remove")
+    act = acts.last(seat)
+    recovery = Path(act["planned_recovery"])
+    assert str(recovery) in str(error.value)
+    assert not seat.home.exists()
+    assert auth_state(*(recovery / name.relative_to(seat.home) for name in names)) == before
+    service.credentials()
+    assert credentialmod.held_for_review(seat.ship, seat.name) is (failure == "hold")
+    assert act["outcome"] == ("failed" if failure == "hold" else "pending")
+    line = f"recovery at {recovery.relative_to(seat.ship.folder)}"
+    facts = watch.facts(seat.ship, seat.tmux)
+    assert line in facts.credential_recoveries
+    assert line in facts.line()
 
 
 def test_release_requires_an_explicit_choice(muse_ship):
     seat, names, _ = held_muse(muse_ship, "attached-file")
     before = auth_state(*names)
     with pytest.raises(ShipError, match="choose keep or remove"):
-        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "")
+        credentialmod.release(seat.ship, seat.tmux, seat.name, None, lambda _: "")
     assert auth_state(*names) == before
     assert credentialmod.held_for_review(seat.ship, seat.name)
     assert acts.last(seat) is None
@@ -496,7 +639,7 @@ def test_failed_keep_snapshot_preserves_the_review_hold_and_records_the_failure(
 
     monkeypatch.setattr(credentialmod.durable, "replace_file", refuse_keep)
     with pytest.raises(ShipError, match="snapshot write failure.*review hold stays"):
-        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "keep")
+        credentialmod.release(seat.ship, seat.tmux, seat.name, None, lambda _: "keep")
     assert record.read_text() == previous
     assert acts.last(seat)["outcome"] == "failed"
     service.credentials()
@@ -519,7 +662,7 @@ def test_failed_keep_outcome_restores_the_review_hold(muse_ship, monkeypatch):
 
     monkeypatch.setattr(acts, "write", refuse_outcome)
     with pytest.raises(ShipError, match="outcome write failure.*review hold stays"):
-        credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "keep")
+        credentialmod.release(seat.ship, seat.tmux, seat.name, None, lambda _: "keep")
     assert record.read_text() == previous
     assert acts.last(seat)["outcome"] == "pending"
     service.credentials()
@@ -529,7 +672,7 @@ def test_failed_keep_outcome_restores_the_review_hold(muse_ship, monkeypatch):
 
 def test_service_holds_changed_metadata_again_after_keep(muse_ship):
     seat, (main, _), service = held_muse(muse_ship, "attached-file")
-    credentialmod.release(seat.ship, seat.tmux, seat.name, "operator", lambda _: "keep")
+    credentialmod.release(seat.ship, seat.tmux, seat.name, None, lambda _: "keep")
     assert not credentialmod.held_for_review(seat.ship, seat.name)
     main.unlink()
     main.write_bytes(b"synthetic later file")

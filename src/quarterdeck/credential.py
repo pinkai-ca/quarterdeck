@@ -33,9 +33,10 @@ import fcntl
 import json
 import math
 import os
+import re
 import stat
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -362,6 +363,8 @@ def _reseed_of(ship: Ship, found: list[Participant]) -> list[str]:
 # service's pass settles it before removal. A review hold keeps the home for a person. Both are on the status line,
 # with one record each outside the seat folder.
 HELD = Path("credentials") / "held"
+RECOVERY = Path("evidence") / "credential-release"
+RECOVERY_STAMP = re.compile(r"[0-9]{8}T[0-9]{12}Z")
 
 
 def hold_home(ship: Ship, seat: Seat, *, reseed_skipped: bool = False) -> bool:
@@ -447,13 +450,14 @@ def _held(ship: Ship):
 
 
 def held_words(ship: Ship) -> list[str]:
-    """Plain words for the status line, for every home kept for renewal or review."""
+    """Plain words for homes held for renewal or review, for the status line."""
     words = []
     for record, hold in _held(ship):
         if hold is None:
             words.append(f"{record.stem}: a held renewal's record is unreadable; inspect runtime/{HELD}")
         elif hold.review:
-            words.append(f"{hold.name}: home held for credential review; qd credential release {hold.name}")
+            words.append(f"home held for credential review: qd credential release {hold.name} "
+                         "(systems keep; operator archives)")
         elif hold.keep is None:
             words.append(f"{hold.name}: a renewal held in a retired seat's home; the service reseeds {hold.pool} "
                          "from it, then removes it")
@@ -531,9 +535,19 @@ def _release_claim(ship: Ship, name: str):
         raise ShipError(f"{name}: credential release could not access its files ({error}); inspect the review hold") from None
 
 
-def _release_view(ship: Ship, tmux, name: str, record: Path, home: Path):
+def _release_view(ship: Ship, tmux, name: str, record: Path, home: Path, *, systems: bool):
     from . import jail_end, seat_migration
     from .seat import UNREADABLE, _temporary, _temporary_launch, process_alive, process_start
+
+    if systems:
+        spec = ship.seats.get(name)
+        if spec is not None:
+            if ship.session_of(spec).human:
+                raise ShipError(f"{name}: only the operator may release a home in a human's session")
+        else:
+            temporary = _temporary(ship, name, require_folder=False)
+            if not isinstance(temporary, dict) or temporary["human"]:
+                raise ShipError(f"{name}: only the operator may release a home without a known crew session")
 
     hold = _held_record(ship, record)
     if hold is None or not hold.review:
@@ -555,37 +569,49 @@ def _release_view(ship: Ship, tmux, name: str, record: Path, home: Path):
     return hold, _identity(record.lstat()), _snapshot(home, credential_review_adapter(hold.adapter)), temporary is not None
 
 
-def release(ship: Ship, tmux, name: str, caller: str, choose) -> str:
+def release(ship: Ship, tmux, name: str, caller: str | None, choose) -> str:
     """Offer a choice on the inspected home, then recheck it under the same claims before acting."""
     from . import acts
 
+    systems = caller is not None
+    if systems and (reason := acts.authority(ship, caller, action="may keep a home held for credential review")):
+        raise ShipError(reason)
     if not valid_name(name):
         raise ShipError(f"invalid seat name {name!r}")
     record = _hold_path(ship, name)
     home = ship.runtime / "seats" / name / "home"
     with _release_claim(ship, name):
-        view = _release_view(ship, tmux, name, record, home)
+        view = _release_view(ship, tmux, name, record, home, systems=systems)
     hold, _, snapshot, temporary = view
     words = [f"{name}'s held home at {home}"]
     for path, state in snapshot["names"].items():
         target = f" -> {ascii(state[1])}" if state[0] == "link" else ""
         words.append(f"  {path}: {state[0]}{target}")
-    if temporary:
-        words.append(f"Remove deletes the temporary seat folder at {home.parent}.")
+    if temporary and not systems:
+        words.append(f"Remove moves the temporary seat folder at {home.parent} into private evidence.")
     choice = choose(words)
+    if systems and choice != "keep":
+        reason = "only the operator may choose remove" if choice == "remove" else "choose keep"
+        raise ShipError(f"{name}: {reason}; the review hold stays")
     if choice not in ("keep", "remove"):
         raise ShipError(f"{name}: choose keep or remove; the review hold stays")
 
     with _release_claim(ship, name):
-        if _release_view(ship, tmux, name, record, home) != view:
+        if _release_view(ship, tmux, name, record, home, systems=systems) != view:
             raise ShipError(f"{name}: the held home changed during review; run the command again")
         if any(state[0] == "unreadable" for state in snapshot["names"].values()):
             raise ShipError(f"{name}: an unreadable credential name needs inspection; the review hold stays")
-        if choice == "keep" and snapshot["home"] is None:
+        if snapshot["home"] is None and (choice == "keep" or not temporary):
             raise ShipError(f"{name}: the held home is missing; the review hold stays")
         seat = SimpleNamespace(trusted=trusted_files.folder(ship.runtime, name))
-        act = dict(act=uuid.uuid4().hex[:12], verb="credential-release", at=acts._now(), caller=caller,
+        actor = caller if systems else ship.operator or "the operator"
+        act = dict(act=uuid.uuid4().hex[:12], verb="credential-release", at=acts._now(), caller=actor,
                    seat=name, choice=choice, home=snapshot["home"], outcome="pending")
+        if choice == "remove":
+            source = home.parent if temporary else home
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            target = ship.runtime / RECOVERY / f"{name}-{stamp}" / ("seat" if temporary else "home")
+            act["planned_recovery"] = str(target)
         try:
             acts.write(seat, act)
         except (OSError, ShipError) as error:
@@ -597,19 +623,22 @@ def release(ship: Ship, tmux, name: str, caller: str, choose) -> str:
                 durable.replace_file(record, json.dumps(kept) + "\n")
                 detail = "home kept in place; credential review cleared"
             else:
-                path, identity = ((home.parent, snapshot["folder"]) if temporary else (home, snapshot["home"]))
-                if identity is not None:
-                    _remove_home(path, identity)
-                record.unlink()
-                detail = ("held home removed" if snapshot["home"] is not None else "held home already absent")
-                detail += "; credential review cleared"
+                _move_home(ship.runtime, source, target, snapshot, temporary=temporary)
+                try:
+                    record.unlink(missing_ok=True)
+                except OSError as error:
+                    raise ShipError(f"held home moved to {target}, but its review record could not be cleared ({error})")
+                detail = f"held home moved to {target}; credential review cleared"
         except (OSError, ShipError) as error:
             detail = f"release failed ({error}); the review hold stays"
             outcome = "failed"
         else:
             outcome = choice
         try:
-            acts.write(seat, dict(act=act["act"], verb=act["verb"], at=acts._now(), outcome=outcome, detail=detail))
+            result = dict(act=act["act"], verb=act["verb"], at=acts._now(), outcome=outcome, detail=detail)
+            if outcome == "remove":
+                result["recovery"] = str(target)
+            acts.write(seat, result)
         except (OSError, ShipError) as error:
             if outcome == "keep":
                 try:
@@ -624,16 +653,103 @@ def release(ship: Ship, tmux, name: str, caller: str, choose) -> str:
     return f"{name}: {detail}"
 
 
-def _remove_home(home: Path, identity: list[int]) -> None:
-    located = seat_files.parent(home, create=False)
-    folder, name = located if located is not None else (os.open(home.parent, seat_files.DIRECTORY), home.name)
+def _directory_at(stack: ExitStack, path: Path | str, *, parent: int | None = None) -> int:
+    descriptor = os.open(path, seat_files.DIRECTORY, dir_fd=parent)
+    stack.callback(os.close, descriptor)
+    return descriptor
+
+
+@contextmanager
+def _recovery_root(runtime: Path, *, create: bool):
+    """Open the evidence namespace without following links in the runtime."""
+    with ExitStack() as stack:
+        directory = _directory_at(stack, runtime)
+        for part in RECOVERY.parts:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=directory)
+                except FileExistsError:
+                    pass
+            directory = _directory_at(stack, part, parent=directory)
+        yield _private_recovery_directory(directory)
+
+
+def _private_recovery_directory(directory: int) -> int:
+    info = os.fstat(directory)
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ShipError("the recovery destination is not a private mode-0700 directory")
+    return directory
+
+
+def recovery_words(runtime: Path) -> list[str]:
+    """Use the moved directory's entry as evidence even when an outcome could not be written."""
+    words = []
     try:
-        info = os.stat(name, dir_fd=folder, follow_symlinks=False)
-        if not stat.S_ISDIR(info.st_mode) or [info.st_dev, info.st_ino] != identity:
-            raise ShipError("the held home changed before removal")
-        shutil.rmtree(name, dir_fd=folder)
-    finally:
-        os.close(folder)
+        with _recovery_root(runtime, create=False) as root:
+            for folder in sorted(os.listdir(root)):
+                name, _, stamp = folder.rpartition("-")
+                if not valid_name(name) or not RECOVERY_STAMP.fullmatch(stamp):
+                    continue
+                path = Path("runtime") / RECOVERY / folder
+                try:
+                    with ExitStack() as stack:
+                        directory = _private_recovery_directory(_directory_at(stack, folder, parent=root))
+                        for entry in ("home", "seat"):
+                            try:
+                                info = os.stat(entry, dir_fd=directory, follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+                            if not stat.S_ISDIR(info.st_mode):
+                                raise ShipError("the recovery entry is not a directory")
+                            words.append(f"recovery at {path / entry}")
+                except FileNotFoundError:
+                    continue
+                except (OSError, ShipError):
+                    words.append(f"{name}: recovery evidence unreadable at {path}")
+    except FileNotFoundError:
+        pass  # no evidence namespace yet
+    except (OSError, ShipError):
+        words.append(f"credential release evidence unreadable at runtime/{RECOVERY}")
+    return words
+
+
+def _move_home(runtime: Path, source: Path, target: Path, snapshot: dict, *, temporary: bool) -> None:
+    """Rename the reviewed directory as one unit, using only directory descriptors and metadata."""
+    with _recovery_root(runtime, create=True) as root, ExitStack() as stack:
+        seats = _directory_at(stack, "seats", parent=_directory_at(stack, runtime))
+        folder = seats if temporary else _directory_at(stack, source.parent.name, parent=seats)
+        if not temporary and list(_identity(os.fstat(folder))[:2]) != snapshot["folder"]:
+            raise ShipError("the held seat folder changed before the move")
+        identity = snapshot["folder" if temporary else "home"]
+
+        wrapper = target.parent.name
+        os.mkdir(wrapper, mode=0o700, dir_fd=root)
+        moved = False
+        try:
+            into = _private_recovery_directory(_directory_at(stack, wrapper, parent=root))
+            try:
+                os.stat(target.name, dir_fd=into, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ShipError(f"the recovery destination is occupied: {target}")
+            info = os.stat(source.name, dir_fd=folder, follow_symlinks=False)
+            if not stat.S_ISDIR(info.st_mode) or list(_identity(info)[:2]) != identity:
+                raise ShipError("the held home changed before the move")
+            os.rename(source.name, target.name, src_dir_fd=folder, dst_dir_fd=into)
+            moved = True
+            try:
+                info = os.stat(target.name, dir_fd=into, follow_symlinks=False)
+            except OSError as error:
+                raise ShipError(f"the move could not be confirmed at {target} ({error})") from None
+            if not stat.S_ISDIR(info.st_mode) or list(_identity(info)[:2]) != identity:
+                raise ShipError(f"the move could not be confirmed at {target}: the directory identity differs")
+        finally:
+            if not moved:
+                try:
+                    os.rmdir(wrapper, dir_fd=root)
+                except OSError:
+                    pass  # leave any entry that appeared here untouched
 
 
 def _bring_up(source: Path, path: Path, name: str, pool_name: str) -> str:

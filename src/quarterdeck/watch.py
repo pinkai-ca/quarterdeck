@@ -406,6 +406,7 @@ def render_table(data: dict) -> list[str]:
     if startup_delivery := getattr(facts, "startup_delivery", None):
         recovery_lines.append(startup_delivery)
     recovery_lines += list(getattr(facts, "leftover_seats", None) or [])
+    recovery_lines += list(getattr(facts, "credential_recoveries", None) or [])
     recovery_lines += list(getattr(facts, "post_waits", None) or [])
     recovery_lines += list(getattr(facts, "pool_forecasts", None) or [])
     rows = [head, *recovery_lines, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
@@ -630,6 +631,7 @@ class Facts:
     pool_forecast_headlines: list[str] = field(default_factory=list)
     oldest_waiting_seat: str | None = None
     usage_errors: list[str] = field(default_factory=list)
+    credential_recoveries: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         from .headlines import status_line
@@ -1243,6 +1245,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         held=held,
         move_holds=move_reasons,
         leftover_seats=leftover_seats(ship),
+        credential_recoveries=credential.recovery_words(ship.runtime),
         raises=raise_notice.unseen(ship.runtime, store),
         request_waits=[request_queue.headline(row) for row in
                        (request_queue.pending(ship.runtime) if request_rows is None else request_rows)],

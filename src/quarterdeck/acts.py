@@ -221,17 +221,17 @@ def path(seat) -> Path:
     return seat.trusted / trusted_files.ACTS
 
 
-def authority(ship: Ship, caller: str | None, seat) -> str | None:
-    """Why ``caller`` may not act on ``seat``, or None: only a systems seat, never in a human's session."""
-    if seat.session.human:
+def authority(ship: Ship, caller: str | None, seat=None, *, action: str = "acts on a screen") -> str | None:
+    """Why ``caller`` cannot act as a systems seat, including the session check for screen acts."""
+    if seat is not None and seat.session.human:
         return f"refused: {seat.name} sits in a human's session; nothing is pressed or typed there, whoever asks"
     if not caller:
-        return "refused: only a systems seat acts on a screen, and QD_SEAT names no seat here"
+        return f"refused: only a systems seat {action}, and QD_SEAT names no seat here"
     spec = ship.seats.get(caller)
     if spec is None:
-        return f"refused: {caller} is not a seat of {ship.name}; only a systems seat acts on a screen"
+        return f"refused: {caller} is not a seat of {ship.name}; only a systems seat {action}"
     if spec.role != "systems":
-        return f"refused: {caller} is a {spec.role} seat; only a systems seat acts on a screen"
+        return f"refused: {caller} is a {spec.role} seat; only a systems seat {action}"
     return None
 
 

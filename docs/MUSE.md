@@ -27,15 +27,23 @@ and the service keep the home for human review, including for jailed seats.
 Jailed seats stay outside pool reseeding.
 
 The status line points to `qd credential release <seat>`. Take the seat down
-before running the command. It shows whether each of the two names is a file,
-a link, or missing, and shows each link's target. Answer `keep` to leave the
-home in place and clear the review hold before the command returns. If the
-home or credential metadata changes afterward, the service can hold it for a
-new review. Answer `remove` to delete the seat's home. For a temporary seat
-this also removes its temporary seat folder. The act and its outcome are
-recorded under `runtime/trusted/<seat>/acts.jsonl`. If recording `keep` or
-removing the home fails, the review hold stays in place. A kept detached
-credential can still need attention before Muse will launch.
+before running the command. The operator runs it from a shell with `QD_SEAT`
+unset and may choose `keep` or `remove`. A declared systems seat may choose
+`keep` for a seat in a crew session. Other seats are refused before the command
+inspects the home. The review shows the file, link, or missing state of each
+credential name and the target of each link.
+
+Choose `keep` to leave the home in place and clear the hold before the command
+returns. The service can hold it again if the home or credential metadata
+changes. A kept detached credential can still need attention before Muse will
+launch. Choose `remove` to move the reviewed home, or the entire seat folder
+for a temporary seat, intact into a private mode-0700 directory under
+`runtime/evidence/credential-release/<seat>-<time>/`. The result, audit and
+status name the recovery location. Any later deletion is a separate decision.
+
+The audit is in `runtime/trusted/<seat>/acts.jsonl`. If a move fails, the review
+hold stays. If the move succeeds and recording fails, the recovery location
+stays visible in status. If recording `keep` fails, the review hold stays.
 
 The launch removes inherited `META_API_KEY`, `MUSE_AUTH_PATH` and `MUSE_LOGIN`.
 Only this adapter's launch removes these sign-in redirects; other adapters keep

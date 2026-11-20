@@ -587,13 +587,16 @@ def cmd_credential(args: argparse.Namespace) -> str:
     from . import credential
 
     ship = load_ship(args)
+    caller = os.environ.get("QD_SEAT")
 
     def choose(words):
         print("\n".join(words), file=sys.stderr if args.json else sys.stdout, flush=True)
-        print("Keep the home in place or remove it? [keep/remove] ", end="", file=sys.stderr, flush=True)
+        prompt = ("Keep the home or move it to private evidence? [keep/remove] " if caller is None
+                  else "Keep the home in place? [keep] ")
+        print(prompt, end="", file=sys.stderr, flush=True)
         return sys.stdin.readline().strip().lower()
 
-    return credential.release(ship, Tmux.for_ship(ship), args.seat, caller_of(ship), choose)
+    return credential.release(ship, Tmux.for_ship(ship), args.seat, caller, choose)
 
 
 def cmd_set(args: argparse.Namespace) -> list[str]:

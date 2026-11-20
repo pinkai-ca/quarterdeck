@@ -116,6 +116,7 @@ def sections(facts, *, detailed=False) -> Headline:
     )
     forecasts = facts.pool_forecasts if detailed else facts.pool_forecast_headlines
     lower = (
+        _named(facts.credential_recoveries, 'credential recoveries', singular='credential recovery'),
         _named(facts.pane_obstructions, 'pane holds', singular='pane hold'),
         _named(facts.ending, 'programs ending', singular='program ending'),
         _named(facts.manual_fresh, 'need fresh', singular='needs fresh'),

@@ -2067,11 +2067,12 @@ def down_check_scratch(ship: Ship, tmux: Tmux, name: str) -> str:
     return f"{name}: empty check scratch and coordination retired"
 
 
-def _temporary(ship: Ship, name: str) -> dict | str | None:
+def _temporary(ship: Ship, name: str, *, require_folder: bool = True) -> dict | str | None:
     """What temporary_seat recorded of a seat it raised whose home is still here: purpose, harness, pool and human;
-    UNREADABLE when that record cannot be used; None when the name is no temporary seat's home."""
+    UNREADABLE when that record cannot be used; None when the name is no temporary seat's home.
+    The release authority check reads the trusted record before looking for the folder."""
     folder = ship.runtime / "seats" / name
-    if name in ship.seats or not shipmod.valid_name(name) or not folder.is_dir():
+    if name in ship.seats or not shipmod.valid_name(name) or (require_folder and not folder.is_dir()):
         return None
     try:
         record = json.loads(trusted_files.path(ship.runtime, name, TEMPORARY).read_text())
