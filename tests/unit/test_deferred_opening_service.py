@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from quarterdeck import launch_opening, pending, recovery
+from quarterdeck import launch_opening, pending, recovery, trusted_files
 from quarterdeck.door import Delivery
 from quarterdeck.harness.types import Screen
 from quarterdeck.seat import Launched, Seat
@@ -16,16 +16,18 @@ from quarterdeck.ship import ShipError
 def opening(tmp_path, monkeypatch):
     launched = Launched('%synthetic', 123, datetime.now(timezone.utc).isoformat(),
                         'synthetic', None, ['synthetic'], 'synthetic')
-    folder = tmp_path / 'seat'
-    folder.mkdir()
-    launched.write(folder / 'launch.json')
+    runtime = tmp_path / 'runtime'
+    folder = runtime / 'seats' / 'synthetic'
+    folder.mkdir(parents=True)
+    trusted = trusted_files.make(runtime, 'synthetic')  # the launch and its opening journal; no jail sees it
+    launched.write(trusted / trusted_files.LAUNCH)
     adapter = SimpleNamespace(name='synthetic', start_seconds=60,
         opening_readiness=lambda home, screen: (not screen.starting, 'synthetic startup proof'),
         opening_current=lambda home: True)
-    seat = SimpleNamespace(folder=folder, home=folder/'home', harness=adapter,
-        name='synthetic', ship=SimpleNamespace(runtime=tmp_path), defer_opening=True)
+    seat = SimpleNamespace(folder=folder, trusted=trusted, home=folder/'home', harness=adapter,
+        name='synthetic', ship=SimpleNamespace(runtime=runtime), defer_opening=True)
     def current():
-        return Launched(**json.loads((folder/'launch.json').read_text()))
+        return Launched(**json.loads((trusted/trusted_files.LAUNCH).read_text()))
     seat.launched = current
     monkeypatch.setattr(pending, 'current_identity', lambda _: launch_opening.binding(seat, current()))
     screen = [Screen('', box=None, starting=True)]
@@ -83,7 +85,7 @@ def test_expired_startup_stays_held_without_a_transport(opening):
     seat, screen, sent, confirmations = opening
     old = seat.launched()
     stale = Launched(**{**old.__dict__, 'at': (old.when - timedelta(seconds=61)).isoformat()})
-    stale.write(seat.folder/'launch.json')
+    stale.write(seat.trusted/trusted_files.LAUNCH)
     launch_opening.prepare(seat, stale, 'synthetic opening')
     with pytest.raises(ShipError, match='synthetic startup proof'):
         launch_opening.advance(seat)

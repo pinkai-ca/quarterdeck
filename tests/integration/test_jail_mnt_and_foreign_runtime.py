@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import sandbox, seat as seatmod, ship as shipmod
+from quarterdeck import sandbox, seat as seatmod, ship as shipmod, trusted_files
 from quarterdeck.ship import ShipError
 
 from .test_sandbox import namespaces_allowed
@@ -319,7 +319,7 @@ print(json.dumps(dict(
 """
     seen = run_probe(jail, probe, str(project), str(ship.runtime), path=path)
     assert seen['alpha'] is None and seen['beta'] is None and seen['office'] is None, seen
-    allowed = {*sandbox.RUNTIME_SHOWN, 'seats', 'tmux', 'locks', 'trusted', 'post', 'check', 'brief'}
+    allowed = {*sandbox.RUNTIME_SHOWN, 'seats', 'tmux', 'locks', trusted_files.TRUSTED, 'post', 'check', 'brief'}
     assert set(seen['own']) <= allowed and 'ledger.sqlite' not in seen['own'], seen['own']
 
 

@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import door as doormod, pending
+from quarterdeck import door as doormod, pending, trusted_files
 from quarterdeck.door import Door, Reading
 from quarterdeck.harness.base import Harness, Keys
 from quarterdeck.harness import muse_home, muse_program
@@ -346,9 +346,12 @@ def snapshot(folder: Path) -> dict:
 
 @pytest.fixture
 def joined(tmp_path, monkeypatch):
-    """A seat whose current fresh launch has exactly one proved join, built by hand, never by Seat."""
-    folder = tmp_path / "seat"
-    folder.mkdir()
+    """A seat whose current fresh launch has exactly one proved join, built by hand, never by Seat. The join's
+    evidence is in the seat's trusted folder (trusted_files); its own folder, which its jail writes, holds none."""
+    runtime = tmp_path / "runtime"
+    folder = runtime / "seats" / "synthetic"
+    folder.mkdir(parents=True)
+    trusted = trusted_files.make(runtime, "synthetic")
     records = tmp_path / "records"
     records.mkdir()
     record = records / "synthetic-session.json"
@@ -362,14 +365,14 @@ def joined(tmp_path, monkeypatch):
                       argv=["synthetic"], version="0", harness="codex", records_before=[str(old)])
     pane = SimpleNamespace(id="%7", pid=4242, dead=False)
     state = SimpleNamespace(launch=launch, pane=pane)
-    (folder / "record").write_text(str(record) + "\n")
-    (folder / "record-readers.jsonl").write_text(
+    (trusted / trusted_files.RECORD).write_text(str(record) + "\n")
+    (trusted / trusted_files.READERS).write_text(
         json.dumps(dict(record=str(old), harness="codex")) + "\n" + json.dumps(dict(record=str(record), harness="codex")) + "\n")
-    (folder / "record-launches.jsonl").write_text(
+    (trusted / trusted_files.LAUNCHES).write_text(
         json.dumps(dict(record=str(old), at=(START - timedelta(days=1)).isoformat(), pool="synthetic-pool",
                         harness="codex", price=None)) + "\n"
         + json.dumps(dict(record=str(record), at=launch.at, pool="synthetic-pool", harness="codex", price=None)) + "\n")
-    seat = SimpleNamespace(name="synthetic", folder=folder, harness=Recorded(), tmux=SimpleNamespace(),
+    seat = SimpleNamespace(name="synthetic", folder=folder, trusted=trusted, harness=Recorded(), tmux=SimpleNamespace(),
                            session=SimpleNamespace(human=False), launched=lambda: state.launch,
                            pane=lambda: state.pane)
 
@@ -381,13 +384,14 @@ def joined(tmp_path, monkeypatch):
     for name in ("register", "remember", "bindings", "pinned_reader"):
         if hasattr(record_owner, name):
             monkeypatch.setattr(record_owner, name, forbidden)
-    return SimpleNamespace(seat=seat, folder=folder, record=record, old=old, state=state)
+    return SimpleNamespace(seat=seat, folder=folder, trusted=trusted, record=record, old=old, state=state)
 
 
 def read(joined):
-    before = snapshot(joined.folder), joined.record.read_bytes()
+    before = snapshot(joined.folder), snapshot(joined.trusted), joined.record.read_bytes()
     result = Door(joined.seat).adapter_state()
-    assert (snapshot(joined.folder), joined.record.read_bytes()) == before, "reading wrote evidence"
+    assert (snapshot(joined.folder), snapshot(joined.trusted), joined.record.read_bytes()) == before, \
+        "reading wrote evidence"
     return result
 
 
@@ -396,19 +400,39 @@ def test_the_exact_current_fresh_join_supplies_native_state(joined):
     assert state is not None and state.turn_open is True and state.conversation == "synthetic-conversation"
 
 
+def test_the_join_planted_only_in_the_seats_own_folder_is_never_read(joined):
+    """The jail writes its own seat folder: the very evidence, moved there from the trusted folder, joins nothing."""
+    for name in (trusted_files.RECORD, trusted_files.READERS, trusted_files.LAUNCHES):
+        (joined.trusted / name).rename(joined.folder / name)
+    assert read(joined) is None, "evidence in the seat's own folder supplies no current facts"
+
+
+def test_a_conflicting_copy_in_the_seats_own_folder_changes_nothing(joined):
+    """A pin to another record, a second reader and a second join, all written at the old place, are never read:
+    the trusted join alone supplies the state, exactly as it does with none of them there."""
+    (joined.folder / trusted_files.RECORD).write_text(str(joined.old) + "\n")
+    (joined.folder / trusted_files.READERS).write_text(
+        json.dumps(dict(record=str(joined.record), harness="claude")) + "\n")
+    (joined.folder / trusted_files.LAUNCHES).write_text(
+        json.dumps(dict(record=str(joined.old), at=joined.state.launch.at, pool="synthetic-pool",
+                        harness="codex", price=None)) + "\n")
+    state = read(joined)
+    assert state is not None and state.turn_open is True and state.conversation == "synthetic-conversation"
+
+
 def test_unknown_before_the_current_launch_has_joined(joined):
-    (joined.folder / "record-launches.jsonl").write_text(
-        (joined.folder / "record-launches.jsonl").read_text().splitlines()[0] + "\n")
+    (joined.trusted / trusted_files.LAUNCHES).write_text(
+        (joined.trusted / trusted_files.LAUNCHES).read_text().splitlines()[0] + "\n")
     assert read(joined) is None, "a historical join supplies no current facts"
 
 
 def test_no_join_journal_at_all_is_unknown(joined):
-    (joined.folder / "record-launches.jsonl").unlink()
+    (joined.trusted / trusted_files.LAUNCHES).unlink()
     assert read(joined) is None
 
 
 def test_historical_reader_registry_alone_is_not_a_current_join(joined):
-    (joined.folder / "record").write_text(str(joined.old) + "\n")
+    (joined.trusted / trusted_files.RECORD).write_text(str(joined.old) + "\n")
     assert read(joined) is None
 
 
@@ -434,13 +458,13 @@ def test_another_programs_launch_is_unknown(joined):
 
 
 def test_two_readers_named_for_the_record_are_unknown(joined):
-    with (joined.folder / "record-readers.jsonl").open("a") as stream:
+    with (joined.trusted / trusted_files.READERS).open("a") as stream:
         stream.write(json.dumps(dict(record=str(joined.record), harness="claude")) + "\n")
     assert read(joined) is None
 
 
 def test_a_conflicting_second_join_for_the_same_launch_is_unknown(joined):
-    with (joined.folder / "record-launches.jsonl").open("a") as stream:
+    with (joined.trusted / trusted_files.LAUNCHES).open("a") as stream:
         stream.write(json.dumps(dict(record=str(joined.old), at=joined.state.launch.at, pool="synthetic-pool",
                                      harness="codex", price=None)) + "\n")
     assert read(joined) is None
@@ -453,23 +477,23 @@ def test_a_join_charged_to_another_pool_is_unknown(joined):
 
 @pytest.mark.parametrize("pin", ["", "relative/record.json\n"])
 def test_an_empty_or_relative_pin_is_unknown(joined, pin):
-    (joined.folder / "record").write_text(pin)
+    (joined.trusted / trusted_files.RECORD).write_text(pin)
     assert read(joined) is None
 
 
-@pytest.mark.parametrize("name", ["record", "record-readers.jsonl", "record-launches.jsonl"])
+@pytest.mark.parametrize("name", [trusted_files.RECORD, trusted_files.READERS, trusted_files.LAUNCHES])
 def test_a_linked_operational_file_is_unknown(joined, name):
-    target = joined.folder / name
-    real = joined.folder.parent / f"elsewhere-{name}"
+    target = joined.trusted / name
+    real = joined.folder / f"elsewhere-{name}"  # the link leads into the seat's own folder, which its jail writes
     real.write_bytes(target.read_bytes())
     target.unlink()
     os.symlink(real, target)
     assert read(joined) is None
 
 
-@pytest.mark.parametrize("name", ["record-readers.jsonl", "record-launches.jsonl"])
+@pytest.mark.parametrize("name", [trusted_files.READERS, trusted_files.LAUNCHES])
 def test_malformed_journal_rows_are_unknown(joined, name):
-    with (joined.folder / name).open("a") as stream:
+    with (joined.trusted / name).open("a") as stream:
         stream.write("{not json\n")
     assert read(joined) is None
 
@@ -505,10 +529,10 @@ def test_a_record_that_changes_while_read_is_unknown(joined):
     assert Door(joined.seat).adapter_state() is None
 
 
-@pytest.mark.parametrize("name", ["record", "record-readers.jsonl", "record-launches.jsonl"])
+@pytest.mark.parametrize("name", [trusted_files.RECORD, trusted_files.READERS, trusted_files.LAUNCHES])
 def test_operational_evidence_that_changes_while_read_is_unknown(joined, name):
     def touch():
-        with (joined.folder / name).open("a") as stream:
+        with (joined.trusted / name).open("a") as stream:
             stream.write("\n")
     joined.seat.harness = Recorded(touch)
     assert Door(joined.seat).adapter_state() is None

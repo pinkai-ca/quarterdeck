@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import credential, sandbox, seat as seatmod, ship as shipmod
+from quarterdeck import credential, sandbox, seat as seatmod, ship as shipmod, trusted_files
 from quarterdeck.harness import home as harness_home
 from quarterdeck.ship import Pool
 
@@ -79,22 +79,23 @@ def decoys(tmp_path: Path, *names: str) -> dict[str, Path]:
 def test_a_planted_launch_script_and_home_file_are_replaced_never_followed_and_the_launch_works(ship, tmux, tmp_path):
     decoy = decoys(tmp_path, "launch-target", "settings-target", "trusted-target")
     own = ship.runtime / "seats" / "worker-1"
-    plant(ship, tmp_path, {own / "launch.sh": decoy["launch-target"],
+    plant(ship, tmp_path, {own / trusted_files.LAUNCH_SCRIPT: decoy["launch-target"],
                            own / "home" / "settings.json": decoy["settings-target"]})
     # launch.sh now lives in the seat's trusted folder, which no jail sees (trusted_files); were a link ever made
     # there, by anyone, the write replaces it too.
-    trusted = ship.runtime / "trusted" / "worker-1"
-    trusted.mkdir(parents=True)
-    (trusted / "launch.sh").symlink_to(decoy["trusted-target"])
+    trusted = trusted_files.make(ship.runtime, "worker-1")
+    (trusted / trusted_files.LAUNCH_SCRIPT).symlink_to(decoy["trusted-target"])
 
     worker = seatmod.Seat(ship, ship.seat("worker-1"), tmux)
     worker.up(resume=False)
 
     assert all(path.read_text() == DECOY for path in decoy.values()), "no decoy was written through"
-    assert not (own / "launch.sh").exists() and not (own / "launch.sh").is_symlink(), "nothing writes it there any more"
+    old = own / trusted_files.LAUNCH_SCRIPT
+    assert not old.exists() and not old.is_symlink(), "nothing writes it there any more"
     set_aside = list((ship.runtime / "evidence" / "seat-move").glob("worker-1-*/launch.sh"))
     assert len(set_aside) == 1 and set_aside[0].is_symlink(), "the move set the jail's link aside, as a link, unfollowed"
-    assert not (trusted / "launch.sh").is_symlink() and (trusted / "launch.sh").read_text().startswith("#!/bin/sh")
+    script = trusted / trusted_files.LAUNCH_SCRIPT
+    assert not script.is_symlink() and script.read_text().startswith("#!/bin/sh")
     assert not (own / "home" / "settings.json").is_symlink()
     assert worker.is_up, "the launch still works"
     worker.down()

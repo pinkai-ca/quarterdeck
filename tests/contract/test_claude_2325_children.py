@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import idle
+from quarterdeck import idle, trusted_files
 from quarterdeck.harness import claude, reading_scope
 
 AT = datetime(2032, 4, 5, 6, 7, tzinfo=timezone.utc)
@@ -175,19 +175,17 @@ def test_child_only_updates_invalidate_a_presentation_cache(tmp_path, monkeypatc
 def trusted(record):
     """runtime/trusted/<seat>, where the service writes a seat's launch evidence since it left the seat's folder."""
     seat = record.parent.parent.parent.parent
-    folder = seat.parent.parent/'trusted'/seat.name
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
+    return trusted_files.make(seat.parent.parent, seat.name)
 
 
 def launch(record, second=5, *, joined=True):
     folder = trusted(record)
     data = dict(at=(AT+timedelta(seconds=second)).isoformat(), harness='claude', version='2.1.325',
                 resume=SESSION, pid=12345, pool='synthetic-pool')
-    (folder/'launch.json').write_text(json.dumps(data))
-    (folder/'record').write_text(str(record)+'\n')
+    (folder/trusted_files.LAUNCH).write_text(json.dumps(data))
+    (folder/trusted_files.RECORD).write_text(str(record)+'\n')
     if joined:
-        (folder/'record-launches.jsonl').write_text(json.dumps(dict(record=str(record),at=data['at'],
+        (folder/trusted_files.LAUNCHES).write_text(json.dumps(dict(record=str(record),at=data['at'],
             pool=data['pool'],harness='claude'))+'\n')
 
 
@@ -241,12 +239,12 @@ def test_unproved_launch_time_does_not_end_a_child_command(tmp_path, missing):
     record, _ = fixture(root)
     launch(record)
     folder = trusted(record)
-    data = json.loads((folder/'launch.json').read_text())
+    data = json.loads((folder/trusted_files.LAUNCH).read_text())
     data['at'] = '2032-04-05T06:07:05'
     if missing:
         data.pop('at')
-    (folder/'launch.json').write_text(json.dumps(data))
-    (folder/'record-launches.jsonl').write_text(json.dumps(dict(record=str(record), at=data.get('at'),
+    (folder/trusted_files.LAUNCH).write_text(json.dumps(data))
+    (folder/trusted_files.LAUNCHES).write_text(json.dumps(dict(record=str(record), at=data.get('at'),
         pool=data['pool'], harness='claude'))+'\n')
     assert claude.state(record).pending_tools == ('Bash', 'Agent')
 
@@ -307,7 +305,8 @@ def test_the_launch_is_read_from_the_trusted_folder_alone(tmp_path):
     record, _ = fixture(root)
     launch(record)
     own = record.parent.parent.parent.parent
-    assert not any((own/name).exists() for name in ('launch.json', 'record', 'record-launches.jsonl'))
+    assert not any((own/name).exists() for name in (trusted_files.LAUNCH, trusted_files.RECORD,
+                                                    trusted_files.LAUNCHES))
     reader = claude._Reader(record)
     state = reader.state()
     assert reader.children.tasks['synthetic-child-call'].phase == 'ended-by-relaunch'
@@ -320,7 +319,7 @@ def test_a_launch_planted_in_the_seats_own_folder_changes_nothing(tmp_path):
     record, _ = fixture(root)
     launch(record)
     own = record.parent.parent.parent.parent
-    for name in ('launch.json', 'record', 'record-launches.jsonl'):
+    for name in (trusted_files.LAUNCH, trusted_files.RECORD, trusted_files.LAUNCHES):
         (trusted(record)/name).rename(own/name)  # the very evidence, planted where the jail can write
     state = claude.state(record)
     assert state.pending_tools == ('Bash', 'Agent'), 'no trusted launch: the old child command stays pending'

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import cli
+from quarterdeck import cli, trusted_files
 
 from .test_jailed_cwd_at_launch import desk_of, qd
 from .test_sandbox import namespaces_allowed
@@ -111,4 +111,4 @@ def test_a_declared_name_that_looks_secret_refuses_the_launch(newcomer, capsys, 
     monkeypatch.setattr(endpoint, 'key', lambda pool: {endpoint.KEY_VARIABLE: 'decoy-key'})
     code, said = qd(capsys, office, 'up', 'desk')
     assert code != 0 and 'QD_ENDPOINT_KEY, which looks secret' in said and 'decoy-key' not in said, said[-2000:]
-    assert not (office / 'runtime' / 'trusted' / 'desk' / 'launch.json').exists()
+    assert not trusted_files.path(office / 'runtime', 'desk', trusted_files.LAUNCH).exists()

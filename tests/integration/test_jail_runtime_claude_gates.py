@@ -20,7 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cascade_runtime, ledger as ledgermod, post, post_view, sandbox, ship as shipmod, watch_broker
+from quarterdeck import (cascade_runtime, ledger as ledgermod, post, post_view, sandbox, ship as shipmod,
+                         trusted_files, watch_broker)
 
 
 def clean_path() -> str:
@@ -156,7 +157,7 @@ def test_a_jail_sees_only_what_a_seat_needs_of_the_runtime_and_every_tmpfs_is_bo
     assert 'secrets' not in seen, seen.get('secrets')
     hidden = {'pool-usage', 'credentials', 'log', 'evidence', 'grading', 'ledger.sqlite'}
     assert not hidden & set(seen['top']), seen['top']
-    assert set(seen['top']) <= {*sandbox.RUNTIME_SHOWN, 'post', 'brief', 'seats', 'tmux', 'locks', 'trusted', 'check'}, seen['top']
+    assert set(seen['top']) <= {*sandbox.RUNTIME_SHOWN, 'post', 'brief', 'seats', 'tmux', 'locks', trusted_files.TRUSTED, 'check'}, seen['top']
     assert seen['ledger'] in ('OperationalError', 'DatabaseError'), seen['ledger']
     assert seen['runtime_write'] in ('OSError', 'PermissionError'), 'the runtime fence is read-only inside'
     assert seen['locks_flood'] == 'OSError', 'a hidden tmpfs is bounded: a large write fails'
