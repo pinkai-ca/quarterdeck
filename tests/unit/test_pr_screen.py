@@ -1042,7 +1042,8 @@ def test_the_live_down_reads_the_hand_beneath_its_hold(world, monkeypatch, launc
     interrupted_hold(runtime, 'hand-a', journal=False)
     monkeypatch.setattr(Tmux, 'for_ship', classmethod(lambda cls, ship: None))
     monkeypatch.setattr(seatmod, 'read_seat', lambda ship, spec, tmux: SimpleNamespace(
-        name=spec.name, pane=lambda: None, launched=lambda: launched))
+        name=spec.name, pane=lambda: None, launched=lambda: launched,
+        is_working=lambda: False))  # as the real seat answers with no pane: off, not working
     ship = SimpleNamespace(runtime=runtime, folder=runtime.parent, seat=lambda name: SimpleNamespace(name=name))
     live = pr_screen.LiveHands(ship, Path('qd'), hands_root)
     monkeypatch.setattr(live, '_qd', lambda *args, timeout=300: subprocess.CompletedProcess(args, 0, '', ''))
