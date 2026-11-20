@@ -85,6 +85,7 @@ def test_fresh_handoff_renders_first_and_self_questions_are_only_indexed(tmp_pat
 
 def test_actual_resume_has_index_without_retyping_self_handoff(tmp_path, monkeypatch):
     seat, opened = prepared(tmp_path, monkeypatch)
+    seat.home.mkdir(mode=0o700, parents=True)
     handoff = publish(seat, 'own-handoff', 'Retain this in the resumed conversation.', sender='builder')
     monkeypatch.setattr(seat, '_resume_target', lambda: resume_target.Target('synthetic-session', seat.home / 'record.jsonl'))
     seat._up(resume=True)
