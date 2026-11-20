@@ -35,8 +35,7 @@ CREATE TABLE IF NOT EXISTS usage_samples (
 
 
 def same_reset(first, second):
-    """Whether two reset times name the same week: within RESET_TOLERANCE. The one rule for both the forecast's run
-    and the once-per-reset report, so neither breaks nor repeats on the jitter."""
+    """The tolerance used to join observations and deduplicate reports for a window."""
     return first is not None and second is not None and abs(first - second) <= RESET_TOLERANCE
 
 
@@ -76,18 +75,24 @@ class Forecast:
     def warning(self):
         return self.spent_at < self.resets_at
 
+    @property
+    def display_name(self):
+        return self.pool if self.window == '7d' else f'{self.pool} {self.window}'
+
     def headline(self):
-        return f'{self.pool} spent by {self.spent_at.astimezone():%d %b %H:%M}'
+        return f'{self.display_name} spent by {self.spent_at.astimezone():%d %b %H:%M}'
 
     def describe(self, *, detail=False):
         spent = self.spent_at.astimezone()
         reset = self.resets_at.astimezone()
-        text = (f'{self.pool}: spent by {spent:%d %b %H:%M} at this rate '
+        text = (f'{self.display_name}: spent by {spent:%d %b %H:%M} at this rate '
                 f'(reset {reset:%d %b %H:%M}) · {self.rate_per_hour:.1%}/h')
         if detail:
             hours = (self.read_at - self.first_at).total_seconds() / 3600
-            text += (f' over {hours:.1f}h ({self.samples} readings); '
-                     f'{self.window}; warning only')
+            text += f' over {hours:.1f}h ({self.samples} readings)'
+            if self.window == '7d':
+                text += '; 7d'
+            text += '; warning only'
         return text
 
 
@@ -126,12 +131,10 @@ def estimate(reading, rows, now):
 
 
 def collect(book, now, pools=None):
-    """One weekly exhaustion estimate per pool: the earliest among the windows that warn, so a window that runs out
-    only after its own earlier reset cannot hide another's real warning; the earliest overall where none warns.
-    Older books have none."""
+    """One exhaustion estimate per observed weekly window, in pool and window order."""
     if not book.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_samples'").fetchone():
         return []
-    found = {}
+    found = []
     for reading in book.usage.rows():
         if pools is not None and reading.pool not in pools:
             continue
@@ -141,11 +144,9 @@ def collect(book, now, pools=None):
             WHERE pool=? AND window=? AND read_at>=? ORDER BY read_at''',
             (reading.pool, reading.window,
              (now - LOOKBACK - timedelta(seconds=MAX_AGE)).astimezone(timezone.utc).isoformat())).fetchall()
-        forecast = estimate(reading, rows, now)
-        rank = lambda item: (not item.warning, item.spent_at)
-        if forecast is not None and (reading.pool not in found or rank(forecast) < rank(found[reading.pool])):
-            found[reading.pool] = forecast
-    return [found[pool] for pool in sorted(found)]
+        if (forecast := estimate(reading, rows, now)) is not None:
+            found.append(forecast)
+    return found
 
 
 def readings(ship, now=None, *, wall_state=False):
@@ -164,6 +165,17 @@ def readings(ship, now=None, *, wall_state=False):
         return []  # unavailable history proves no rate
 
 
+def _legacy_window(body):
+    """Recover the window named in either of the old saved report formats."""
+    if not body.endswith('; warning only'):
+        return None
+    window = body.rsplit('; ', 2)[-2]
+    if weekly(window):
+        return window
+    window = body.rsplit(' · ', 1)[-1].partition(', ')[0]
+    return window if weekly(window) else None
+
+
 def notify(service):
     """Save fixed report intents before publishing; retain deduplication until reset."""
     from .compaction_alert import publish
@@ -179,31 +191,39 @@ def notify(service):
             or not isinstance(journal.get('periods'), list)):
         raise ShipError('pool forecast alarm journal unsupported')
     now = post.now()
+    known, reserved = [], set()
     for period in journal['periods']:
         if (not isinstance(period, dict) or not isinstance(period.get('pool'), str)
-                or parse(period.get('reset')) is None or not isinstance(period.get('reports'), list)):
+                or (reset := parse(period.get('reset'))) is None or not isinstance(period.get('reports'), list)):
+            raise ShipError('pool forecast alarm period unsupported')
+        window = period.get('window')
+        if 'window' in period and (not isinstance(window, str) or not weekly(window)):
             raise ShipError('pool forecast alarm period unsupported')
         for intent in period['reports']:
             message = post.Message.from_json(intent)
             if message.kind != 'report' or message.sender != post.SHIP or message.re is not None:
                 raise ShipError('pool forecast alarm intent unsupported')
+            reserved.add(message.short)
+            if window is None:
+                window = _legacy_window(message.body)
+        known.append((period['pool'], window, reset))
     # Publish saved alarms even after the reading cleared or the service restarted.
     recipients = sorted(spec.name for spec in service.ship.seats.values() if spec.role == 'systems')
-    known = [(period['pool'], parse(period['reset'])) for period in journal['periods']]
+    taken = None
     for forecast in readings(service.ship, now):
+        # If a legacy row has no recoverable window, retain its original pool-wide deduplication.
         if (not forecast.warning or not recipients
-                or any(pool == forecast.pool and same_reset(reset, forecast.resets_at) for pool, reset in known)):
-            continue  # one report per pool and week, though each reading names its reset a little differently
-        reports, planned = [], set()
-        for name in recipients:
-            while True:
-                message = service.store.prepare('report', post.SHIP, name, forecast.describe(detail=True))
-                if message.short not in planned:
-                    break
-            reports.append(message.to_json())
-            planned.add(message.short)
-        journal['periods'].append(dict(pool=forecast.pool, reset=forecast.resets_at.isoformat(), reports=reports))
-        known.append((forecast.pool, forecast.resets_at))
+                or any(pool == forecast.pool and window in (None, forecast.window)
+                       and same_reset(reset, forecast.resets_at) for pool, window, reset in known)):
+            continue
+        if taken is None:
+            taken = reserved | post.window_shorts(runtime)
+        body = forecast.describe(detail=True)
+        reports = [service.store.prepare('report', post.SHIP, name, body, taken=taken).to_json()
+                   for name in recipients]
+        journal['periods'].append(dict(pool=forecast.pool, window=forecast.window,
+                                       reset=forecast.resets_at.isoformat(), reports=reports))
+        known.append((forecast.pool, forecast.window, forecast.resets_at))
     if not journal['periods']:
         return
     text = json.dumps(journal, sort_keys=True) + '\n'

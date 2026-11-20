@@ -8,10 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import post, usage_forecast as forecast
+from quarterdeck import cli, post, usage_forecast as forecast
+from quarterdeck.harness.claude_limits import snapshot as claude_usage
 from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.ledger import Ledger
 from quarterdeck.ledger_reading import collect as ledger_reading, render_pools
+from quarterdeck.ship import load
 from quarterdeck.watch import Facts
 
 AT = datetime(2030, 1, 1, tzinfo=timezone.utc)
@@ -150,12 +152,14 @@ def test_only_accepted_weekly_blocking_readings_enter_bounded_history(book):
     assert forecast.collect(book, AT + timedelta(hours=25)) == []
 
 
-def test_earliest_scoped_weekly_exhaustion_is_selected_per_declared_pool(book):
-    record(book, [(0, .1), (.5, .2), (1, .3)])
-    record(book, [(0, .1), (.5, .4), (1, .7)], window='family / 7d', group='family')
+def test_each_weekly_window_is_selected_for_the_declared_pool(book):
+    record_two(book, RESET, RESET)
     record(book, [(0, .1), (.5, .4), (1, .7)], pool='other')
-    result, = forecast.collect(book, AT + timedelta(hours=1), {'sample'})
-    assert result.window == 'family / 7d' and result.spent_at == AT + timedelta(hours=1.5)
+    results = forecast.collect(book, AT + timedelta(hours=1), {'sample'})
+    assert [(result.pool, result.window, result.spent_at) for result in results] == [
+        ('sample', '7d', AT + timedelta(hours=4.5)),
+        ('sample', 'family / 7d', AT + timedelta(hours=2.25)),
+    ]
 
 
 def test_older_book_is_read_without_a_schema_migration(book):
@@ -237,6 +241,35 @@ def test_notification_recovers_the_saved_identity_after_publication_interruption
     assert message.id == identity and message.to_json() == intent
 
 
+@pytest.mark.parametrize(('other', 'detail'), [
+    ('family / 7d', '40.0%/h over 1.0h (3 readings); 7d; warning only'),
+    ('7d', '40.0%/h over 1.0h (3 readings); family / 7d; warning only'),
+    ('7d', 'family / 7d, 40.0%/h over 1.0h (3 readings); warning only'),
+])
+def test_legacy_alarm_replays_as_saved_and_deduplicates_only_its_window(book, monkeypatch, other, detail):
+    service = make_service(book)
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(hours=1))
+    old_body = f'sample: spent by 01 Jan 02:15 at this rate (reset 08 Jan 00:00) · {detail}'
+    saved = service.store.prepare('report', post.SHIP, 'system', old_body)
+    period = dict(pool='sample', reset=RESET.isoformat(), reports=[saved.to_json()])
+    target = book.path.parent / 'pool-forecast-alerts.json'
+    target.write_text(json.dumps(dict(version=1, periods=[period]), sort_keys=True) + '\n')
+    reset = RESET + timedelta(seconds=.4)
+    record_two(book, reset, reset)
+
+    # An unpublished legacy intent must reserve its short while the new window is planned.
+    draws = iter((saved.short, 'abcdef' if saved.short != 'abcdef' else 'fedcba'))
+    monkeypatch.setattr(post, 'secrets', SimpleNamespace(token_hex=lambda _: next(draws)))
+    forecast.notify(make_service(book))
+    forecast.notify(make_service(book))
+    old, new = json.loads(target.read_text())['periods']
+    assert old == period and new['window'] == other
+    filed = {message.id: message for message in service.store.all()}
+    added = post.Message.from_json(new['reports'][0])
+    assert added.short != saved.short
+    assert filed == {saved.id: saved, added.id: added}
+
+
 def test_no_system_recipient_keeps_the_warning_without_claiming_an_alarm(book, monkeypatch):
     service = make_service(book)
     service.ship.seats.clear()
@@ -272,6 +305,65 @@ def test_ledger_detail_exposes_rate_and_observation_span(book, monkeypatch):
     result, = data['usage_forecasts']
     assert result.rate_per_hour == pytest.approx(.4)
     assert any('40.0%/h' in line for line in render_pools(data))
+
+
+@pytest.mark.parametrize('scoped', [False, True])
+def test_weekly_names_in_status_tmux_ledger_and_notices(tmp_path, monkeypatch, capsys, scoped):
+    (tmp_path / 'ship.toml').write_text('''[ship]
+name = "synthetic"
+[pools.sample]
+provider = "anthropic"
+[sessions.crew]
+title = "Crew"
+[seats.system]
+session = "crew"
+role = "systems"
+harness = "claude"
+pool = "sample"
+''')
+    for key in ('QD_SHIP', 'QD_SEAT', 'QD_TMUX_SOCKET'):
+        monkeypatch.delenv(key, raising=False)
+    now = AT + timedelta(hours=1)
+    monkeypatch.setattr(post, 'now', lambda: now)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr('quarterdeck.ledger_reading.datetime', Clock)
+    ship = load(tmp_path)
+    with Ledger(ship.runtime / 'ledger.sqlite') as book:
+        def observe(hours, whole, fable, jitter=0):
+            reset = (RESET + timedelta(seconds=jitter)).isoformat()
+            native = {'seven_day': {'utilization': whole, 'resets_at': reset}}
+            if scoped:
+                native['seven_day_fable'] = {'utilization': fable, 'resets_at': reset}
+            book.record_usage('sample', claude_usage(native, AT + timedelta(hours=hours)))
+
+        for point in ((0, 10, 10), (.5, 20, 30), (1, 30, 50)):
+            observe(*point)
+
+        names = ['sample', 'sample fable / 7d'] if scoped else ['sample']
+        for args, phrase in ((['status'], ': spent by '), (['status', '--line'], ' spent by '),
+                             (['ledger'], ': spent by ')):
+            assert cli.main(['--ship', str(tmp_path), *args]) == 0
+            output = capsys.readouterr().out
+            assert all(name + phrase in output for name in names)
+            assert output.count('spent by ') == len(names)
+
+        service = SimpleNamespace(ship=ship, store=post.Store(ship.runtime))
+        forecast.notify(service)
+        messages = service.store.all()
+        assert sorted(message.body.split(': spent by ', 1)[0] for message in messages) == names
+        assert all(message.to == 'system' for message in messages)
+        journal = json.loads((ship.runtime / 'pool-forecast-alerts.json').read_text())
+        assert [period['window'] for period in journal['periods']] == (['7d', 'fable / 7d'] if scoped else ['7d'])
+
+        now = AT + timedelta(hours=1.5)
+        observe(1.5, 40, 70, jitter=.9)
+        forecast.notify(SimpleNamespace(ship=ship, store=post.Store(ship.runtime)))
+        assert service.store.all() == messages
 
 
 # The provider's reset time jitters below the second from read to read: the recorded shape is a reset at the same
@@ -334,19 +426,8 @@ def record_two(book, early_reset, later_reset):
                                            Window('7d', slow, later_reset)), AT + timedelta(hours=hours)))
 
 
-def test_a_window_that_warns_is_shown_over_an_earlier_one_that_does_not(book):
-    # The family window runs out soonest, but only after its own reset at 2h: no warning. The plain one runs out
-    # later, at 4.5h, but before its reset: the real warning, which must not be hidden.
+def test_each_forecast_compares_exhaustion_with_its_own_reset(book):
     record_two(book, AT + timedelta(hours=2), RESET)
-    forecasts = [forecast.estimate(reading, book.db.execute(
-        'SELECT read_at,used,resets_at,group_name,bucket FROM usage_samples WHERE window=? ORDER BY read_at',
-        (reading.window,)).fetchall(), AT + timedelta(hours=1)) for reading in book.usage.rows()]
-    assert sorted((f.window, f.warning) for f in forecasts) == [('7d', True), ('family / 7d', False)]
-    result, = forecast.collect(book, AT + timedelta(hours=1))
-    assert result.window == '7d' and result.warning and result.spent_at == AT + timedelta(hours=4.5)
-
-
-def test_with_no_window_warning_the_earliest_exhaustion_is_still_the_detail(book):
-    record_two(book, AT + timedelta(hours=2), AT + timedelta(hours=3))
-    result, = forecast.collect(book, AT + timedelta(hours=1))
-    assert not result.warning and result.window == 'family / 7d' and result.spent_at == AT + timedelta(hours=2.25)
+    whole, family = forecast.collect(book, AT + timedelta(hours=1))
+    assert whole.window == '7d' and whole.warning and whole.spent_at == AT + timedelta(hours=4.5)
+    assert family.window == 'family / 7d' and not family.warning and family.spent_at == AT + timedelta(hours=2.25)
