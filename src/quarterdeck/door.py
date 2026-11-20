@@ -18,8 +18,8 @@ from pathlib import Path
 
 from . import ledger as ledgermod, pending, input_receipt, quota, pane_obstruction, trusted_files
 from .harness.base import Harness, Screen, record_fingerprint
-from .harness.capabilities import persistent_screen_queue
-from .harness.types import _cells
+from .harness.capabilities import held_box_wrap_rule, persistent_screen_queue
+from .harness.types import _cells, held_box_matches
 from .quota import reset_text, stamp
 from .seat import Seat
 from .ship import ShipError
@@ -941,18 +941,20 @@ class Door:
                     and scroll.matches(box, screen.box, columns, self.harness.wrap_slack))
 
     def held_matches(self, box, screen: Screen) -> bool:
-        """qd submit and the second look: the adapter's comparison, or the box with its trailing spaces
-        and soft wraps at this pane's width, as read now, taken out (harness.types.held_box_matches)."""
+        """qd submit and the second look compare the whole composer, allowing supported soft wraps."""
         if self.matches(box, screen):
             return True
         if getattr(self.harness, 'exact_input_text', False):
             return False
-        from .harness.types import held_box_matches
         pane = self.seat.pane()
         if pane is None or screen.box is None:
             return False
         columns = self.harness.box_columns_for_screen(pane.width, screen)
-        return held_box_matches(box.text, self.harness.box_comparison(screen, pane.width), columns, pane.width)
+        shown = self.harness.box_comparison(screen, pane.width)
+        if held_box_matches(box.text, shown, columns, pane.width):
+            return True
+        rule = held_box_wrap_rule(self.harness.name)
+        return rule is not None and rule(box.text, shown, columns, pane.width)
 
     def activity_screen(self, seconds: float | None = None) -> Screen | None:
         """Wait through a redraw, without acting on an unreadable intermediate frame."""

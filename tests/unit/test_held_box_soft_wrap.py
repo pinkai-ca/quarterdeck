@@ -8,6 +8,8 @@ import pytest
 from quarterdeck import pending, post
 from quarterdeck.door import Door
 from quarterdeck.harness.claude import ClaudeHarness
+from quarterdeck.harness.codex import CodexHarness
+from quarterdeck.harness.types import _cells, held_box_matches
 from quarterdeck.post_message import typed
 
 
@@ -52,9 +54,10 @@ def pane_text(text: str, width: int, *, rows: list[str] | None = None, padding: 
     'pane': each box row, as the adapter reads it, padded with spaces to the pane's whole width, as
     the two held readings were ('padded at the screen width'). 'measured': padded only to the two
     cells beyond the text area that 2.1.317 was measured to paint, which the adapter already accepts.
+    'none': keep each supplied row's own padding.
     """
     rows = rows_for(text, width - 4) if rows is None else rows
-    pad = width if padding == 'pane' else width - 2
+    pad = {'pane': width, 'measured': width - 2, 'none': 0}[padding]
     body = [('❯ ' if index == 0 else '  ') + row.ljust(pad) for index, row in enumerate(rows)]
     return '\n'.join(['earlier output', '─' * width, *body, '─' * width, '  ⏵⏵ bypass permissions on'])
 
@@ -80,7 +83,6 @@ def test_a_padded_wrapped_message_of_a_thousand_characters_is_accepted(width, pa
     assert 980 <= len(MESSAGE) <= 1100
     proof, refusal = candidate(MESSAGE, pane_text(MESSAGE, width, padding=padding), width)
     assert proof is not None, refusal
-    from quarterdeck.harness.types import held_box_matches
     assert held_box_matches(MESSAGE + '\n', ClaudeHarness().screen(pane_text(MESSAGE, width)).box,
                             width - 4, width)
 
@@ -121,7 +123,6 @@ def test_any_other_difference_is_refused(width, change):
 
 
 def test_a_wrap_is_soft_only_where_the_row_reaches_the_text_edge():
-    from quarterdeck.harness.types import held_box_matches
     # Text area 10 columns, pane 12: rows may carry painted spaces up to the pane's width.
     assert held_box_matches('alpha beta gamma', 'alpha beta'.ljust(12) + '\ngamma', 10, 12)
     assert held_box_matches('alpha beta gamma', 'alpha beta\ngamma', 10, 12)  # a full row, unpadded
@@ -136,6 +137,56 @@ def test_a_wrap_is_soft_only_where_the_row_reaches_the_text_edge():
     assert not held_box_matches('alpha beta gamma', 'alpha beta'.ljust(13) + '\ngamma', 10, 12)  # past the pane
     assert not held_box_matches('one \ntwo', 'one'.ljust(12) + '\ntwo', 10, 12)  # a trailing space of its own
     assert not held_box_matches('alpha', 'alpha', None, 12) and not held_box_matches('alpha', None, 10, 12)
+
+
+@pytest.mark.parametrize('case', ['exact edge', 'wide cells', 'changed character', 'missing newline',
+                                  'missing separator', 'word fits', 'row too short', 'padding too short'])
+def test_a_held_claude_word_can_wrap_at_the_exact_text_edge(case):
+    edge = 315
+    width = edge + 4
+    header, first = words(50), words(edge, 1)
+    second = 'seventh ' + words(303, 2)
+    last = 'end ' + words(61, 3)
+    if case == 'wide cells':
+        second = second[:-2] + '界'
+        last = '界x' + last[3:]
+    elif case == 'word fits':
+        last = 'to ' + words(62, 3)
+    elif case == 'row too short':
+        second = second[:-1]
+        last = 'last ' + words(60, 3)
+
+    second_padding = edge - _cells(second)
+    if case == 'padding too short':
+        second_padding -= 1
+    rows = [header, first, second + ' ' * second_padding, last + ' ' * (317 - _cells(last))]
+    captured = pane_text('', width, rows=rows, padding='none')
+    payload = header + '\n' + first + ' ' + second + ' ' + last + '\n'
+    if case == 'changed character':
+        payload = payload[:-2] + 'Z\n'
+    elif case == 'missing newline':
+        payload = payload.replace('\n', ' ', 1)
+    elif case == 'missing separator':
+        payload = header + '\n' + first + ' ' + second + last + '\n'
+
+    proof, refusal = candidate(payload, captured, width)
+    if case in ('exact edge', 'wide cells'):
+        harness = ClaudeHarness()
+        screen = harness.screen(captured)
+        shown = screen.box
+        assert [(_cells(row.rstrip(' ')), _cells(row)) for row in shown.split('\n')] == [
+            (50, 50), (315, 315), (311, 315), (65, 317),
+        ]
+        assert not harness.box(payload).matches(shown, edge, harness.wrap_slack)
+        assert not held_box_matches(payload, shown, edge, width)
+        assert proof is not None, refusal
+
+        # Give Codex the same text edge with its three-column inset.
+        codex = CodexHarness()
+        seat = SimpleNamespace(harness=codex, tmux=None, pane=lambda: SimpleNamespace(width=edge + 3))
+        assert not Door(seat).held_matches(codex.box(payload), screen)
+    else:
+        assert proof is None and 'not exactly a pending message' in refusal
 
 
 def sentry_shape(kind_short: str, sender: str, body_length: int, seed: int):

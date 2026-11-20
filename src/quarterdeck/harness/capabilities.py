@@ -17,6 +17,14 @@ def persistent_screen_queue(harness: str):
     return None
 
 
+def held_box_wrap_rule(harness: str):
+    """Optional rule for a program's measured held composer wraps."""
+    if harness == "claude":
+        from .claude_held_box import held_edge_wraps
+        return held_edge_wraps
+    return None
+
+
 @dataclass(frozen=True)
 class SuggestedValue:
     value: str | None

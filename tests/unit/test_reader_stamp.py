@@ -54,6 +54,24 @@ def test_non_reader_change_and_installation_location_leave_keys_unchanged(tmp_pa
     assert all(before.values())
 
 
+@pytest.mark.parametrize('module', ('door.py', 'harness/capabilities.py', 'harness/claude_held_box.py'))
+def test_held_composer_changes_leave_reader_and_attribution_keys_unchanged(tmp_path, module):
+    root = copied_modules(tmp_path)
+    source = Path(reader_stamp.__file__).parent.parent / module
+    control = root / module
+    shutil.copyfile(source, control)
+    readers = reader_stamp.readers(root)
+    attributions = reader_stamp.attributions(root)
+    assert set(readers) == set(attributions) == set(harness.NAMES)
+    assert all(readers.values()) and all(attributions.values())
+
+    with control.open('ab') as stream:
+        stream.write(b'\n# synthetic held composer revision\n')
+
+    assert reader_stamp.readers(root) == readers
+    assert reader_stamp.attributions(root) == attributions
+
+
 def test_missing_reader_code_never_certifies_reuse(tmp_path):
     root = copied_modules(tmp_path)
     (root / 'harness/grok_record.py').unlink()

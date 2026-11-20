@@ -215,6 +215,7 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | `check_evidence.py` | bounded tool evidence from a check's own pinned record, never a receipt |
 | `claude_background.py` | Claude Code's root Bash background tasks, apart from turn accounting |
 | `claude_children.py` | Claude Code 2.1.325's subagent records joined to their root: a child's own background commands and its Agent call's lifetime |
+| `claude_held_box.py` | Claude's exact-edge word wraps in the Door's held composer comparison |
 | `claude_limits.py` | Claude's native allowance fields, model families and safe shape diagnostics |
 | `claude_extra_usage.py` | timestamped refusal metadata, status and doctor wording, and durable private Desk notices |
 | `claude_statusline.py` | Claude Code's default footer, run as a standalone standard-library script |
