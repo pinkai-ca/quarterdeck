@@ -8,6 +8,7 @@ persona and the window name are display (law: identity).
 from __future__ import annotations
 
 import copy
+import errno
 import fcntl
 import hashlib
 import io
@@ -2032,7 +2033,12 @@ def _remove_check_task(runtime: Path, name: str, *, empty_only: bool) -> None:
             folder = os.open(name, flags, dir_fd=check_root)
             folders.callback(os.close, folder)
             if empty_only:
-                os.rmdir('task', dir_fd=folder)
+                try:
+                    os.rmdir('task', dir_fd=folder)
+                except OSError as error:
+                    if error.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                        raise ShipError(f"{runtime / 'check' / name / 'task'} still holds files") from None
+                    raise
             else:
                 shutil.rmtree('task', dir_fd=folder)
         except FileNotFoundError:

@@ -195,28 +195,39 @@ def test_credential_hold_keeps_its_home_while_check_scratch_retires(task_check, 
     assert not any(path.exists() for path in pending._check_paths(runtime, RUN))
 
 
-def test_down_retires_only_the_exact_empty_scratch_and_never_calls_a_check(tmp_path, monkeypatch):
+@pytest.fixture
+def abandoned_scratch(tmp_path, monkeypatch):
     name = 'check-muse-0c64'
     ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, {}, {}, {})
     runtime = ship.runtime
     evidence = runtime / 'check' / name
     task = evidence / 'task'
     task.mkdir(parents=True)
-    (evidence / 'usage-before.json').write_bytes(b'synthetic saved usage\n')
-    (evidence / 'proof.txt').write_bytes(b'synthetic saved proof\n')
     history = check_outcome.path(runtime / 'minimal-checks', 'muse')
     history.parent.mkdir(parents=True)
-    history.write_bytes(b'synthetic saved history\n')
+    saved = {
+        evidence / 'usage-before.json': b'synthetic saved usage\n',
+        evidence / 'proof.txt': b'synthetic saved proof\n',
+        history: b'synthetic saved history\n',
+    }
+    for path, content in saved.items():
+        path.write_bytes(content)
     transient, _ = pending._check_paths(runtime, name)
     with pending.transient_lock(runtime, name), lifecycle.claim(runtime, name):
         pass
     lifecycle_lock = lifecycle.lock_path(runtime, name)
-    neighbor = runtime / 'check' / 'check-muse-0c65'
-    neighbor.mkdir()
     monkeypatch.setattr(cli, 'load_ship', lambda _: ship)
     monkeypatch.setattr(cli.Tmux, 'for_ship', lambda _: SimpleNamespace(has_session=lambda _: False))
-    monkeypatch.setattr(check.harnesses, 'get', lambda *a: pytest.fail('cleanup must not select a program'))
     monkeypatch.setattr(seats.Seat, 'up', lambda *a, **k: pytest.fail('cleanup must not launch'))
+    return ship, name, task, transient, lifecycle_lock, saved
+
+
+def test_down_retires_only_the_exact_empty_scratch_and_never_calls_a_check(abandoned_scratch, monkeypatch):
+    ship, name, task, transient, lifecycle_lock, saved = abandoned_scratch
+    runtime = ship.runtime
+    neighbor = runtime / 'check' / 'check-muse-0c65'
+    neighbor.mkdir()
+    monkeypatch.setattr(check.harnesses, 'get', lambda *a: pytest.fail('cleanup must not select a program'))
     args = SimpleNamespace(seat=name)
     with pending.transient_lock(runtime, name):
         with pytest.raises(ShipError, match='still running'):
@@ -224,7 +235,24 @@ def test_down_retires_only_the_exact_empty_scratch_and_never_calls_a_check(tmp_p
     assert task.is_dir() and transient.is_file() and lifecycle_lock.is_file()
     assert cli.cmd_down(args) == f'{name}: empty check scratch and coordination retired'
     assert not task.exists() and not transient.exists() and not lifecycle_lock.exists()
-    assert (evidence / 'usage-before.json').read_bytes() == b'synthetic saved usage\n'
-    assert (evidence / 'proof.txt').read_bytes() == b'synthetic saved proof\n'
-    assert history.read_bytes() == b'synthetic saved history\n'
+    for path, content in saved.items():
+        assert path.read_bytes() == content
     assert neighbor.is_dir()
+
+
+def test_down_refuses_nonempty_check_scratch_and_retains_its_artifacts(abandoned_scratch, capsys):
+    ship, name, task, transient, lifecycle_lock, saved = abandoned_scratch
+    leftover = task / 'leftover.txt'
+    leftover.write_bytes(b'synthetic task contents\n')
+    coordination = {path: path.stat().st_ino for path in (transient, lifecycle_lock)}
+
+    assert cli.main(['--ship', str(ship.folder), 'down', name]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert captured.err == f'qd: {task} still holds files\n'
+    assert list(task.iterdir()) == [leftover]
+    assert leftover.read_bytes() == b'synthetic task contents\n'
+    for path, inode in coordination.items():
+        assert path.stat().st_ino == inode and path.read_bytes() == b''
+    for path, content in saved.items():
+        assert path.read_bytes() == content

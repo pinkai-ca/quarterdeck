@@ -489,7 +489,9 @@ distinguish unavailable native allowance from unreadable allowance. They
 retain decoded usage and a matching proof outside their temporary working
 folder. When the check ends, it retires that working folder and its
 coordination locks. `qd down <check-name>` can also retire abandoned empty
-task scratch and its locks once no check owns them. It retains saved evidence.
+task scratch and its locks once no check owns them. If the task folder still
+holds files, `qd down` names it in a refusal and leaves the folder and locks in
+place. Saved evidence stays in either case.
 
 ## `qd doctor` hands what it finds to a seat
 
