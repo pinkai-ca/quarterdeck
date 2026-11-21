@@ -114,6 +114,18 @@ qd --ship office attach  # opens your office, where the desk is
 
 From any other folder, run setup's Desk access line, which names the office's full path. Your desk is there. [How to use it](#how-to-use-it) has what to say to it, and the commands you can use beside it.
 
+### On an API key
+
+Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one line each, such as `anthropic = "<your key>"`. Keep it private to you (`chmod 600`). A pool in the ship's file names the key, never holds it: `api_key = "keys:anthropic"`. List a key after a subscription and an agent falls back to it when the subscription is spent, and returns when the subscription has room. A `budget` limits what the key may spend.
+
+Proved live so far, with a real key:
+
+- Claude Code 2.1.317 on an Anthropic API key: one live call, on `claude-haiku-5-5`.
+- OpenCode 1.19.5 and pi 0.79.0 on an Anthropic key, through Anthropic's OpenAI-compatible address: one live call each, on `claude-haiku-5-5`, each in its jail.
+- A whole crew on one provider, the default setup: desk, captain and engineer all on Claude Code on an Anthropic key, raised with `qd setup`, carried one small change from its order to its landing on `claude-sonnet-5-5`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
+
+No other provider's key is proven live yet.
+
 ## How to use it
 
 ### Ask your desk (recommended)

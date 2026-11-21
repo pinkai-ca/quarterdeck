@@ -19,6 +19,7 @@ from tests.testrunner.socket_paths import SOCKET_LIMIT, SOCKET_MARGIN, SESSION_P
 OPENBLAS_AT_IMPORT = os.environ.get('OPENBLAS_NUM_THREADS')
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+MARK_PATIENCE = 5.0  # seconds another controller may take between creating its mark and writing it
 TEST_TICK = 0.1  # seconds: every test ship's declared [ship] tick, so the service passes quickly (production: 1.0)
 
 
@@ -48,18 +49,45 @@ def socket_parent():
         raise pytest.UsageError(f'cannot verify the project-owned socket anchor for {ROOT}: {error}') from error
 
 
-def plain_temp():
-    """TMPDIR of plain pytest: owned memory storage, or the verified disk fallback .testruns/t."""
+def plain_temp(*, controller=True):
+    """TMPDIR of plain pytest: owned memory storage, or the verified disk fallback .testruns/t. The controller marks it
+    as the test tool's before any worker starts; a worker only reads the mark."""
     project = socket_project()
     memory = scratch.plain(project)
     if memory is not None:
+        if controller:
+            own_plain_temp(memory, os.open(memory, layout.DIRECTORY))
         return memory
     root = layout.Root(project)
+    folder = project / layout.ROOT_NAME / layout.PLAIN_TEMP
     try:
-        os.close(root.child(layout.PLAIN_TEMP))
+        descriptor = root.child(layout.PLAIN_TEMP)
+        if controller:
+            own_plain_temp(folder, descriptor)
+        else:
+            os.close(descriptor)
     finally:
         root.close()
-    return project / layout.ROOT_NAME / layout.PLAIN_TEMP
+    return folder
+
+
+def own_plain_temp(folder, descriptor):
+    """Mark a plain run's folder once, as a tool run's scratch is marked: a ship inside a marked folder never opens the
+    account's key file, whatever its environment (keyfile.path). A valid mark stays; anything else there ends the
+    session, since an unmarked folder would read as a real ship's."""
+    from quarterdeck import keyfile
+
+    try:
+        try:
+            owned.mark(descriptor)
+        except FileExistsError:
+            deadline = time.monotonic() + MARK_PATIENCE  # another run's controller between creating and writing it
+            while not keyfile.marked(Path(folder)) and time.monotonic() < deadline:
+                time.sleep(0.01)
+    finally:
+        os.close(descriptor)
+    if not keyfile.marked(Path(folder)):
+        raise pytest.UsageError(f'{folder}: its {owned.MARKER} is not a valid owner mark; remove that file and run again')
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -70,13 +98,15 @@ def pytest_configure(config):
         config._qd_memory_limit = resources.apply_from_environment()
     except (ValueError, RuntimeError) as error:
         raise pytest.UsageError(str(error)) from error
+    from quarterdeck import keyfile
+    os.environ[keyfile.TEST_CONFIG] = '/nonexistent/quarterdeck-test-config'  # never the account's key file
     # Native tmux must not infer the caller's live server or pane.
     os.environ.pop('TMUX', None)
     os.environ.pop('TMUX_PANE', None)
     config._qd_synthetic_memory_checks = set()
     if os.environ.get('TESTRUNS_RUN'):
         return
-    folder = plain_temp()
+    folder = plain_temp(controller=not hasattr(config, 'workerinput'))
     os.environ['TMPDIR'] = str(folder)
     config._qd_scratch_path = folder
     extra = [Path(config.option.basetemp).absolute()] if config.option.basetemp else []
@@ -386,6 +416,30 @@ def no_default_tmux_server(monkeypatch):
     from quarterdeck import tmux as tmuxmod
 
     monkeypatch.setattr(tmuxmod, '_default_sockets', lambda: [])
+
+
+class KeyFile:
+    """A scratch key file, the one this test's ships read (keyfile.TEST_CONFIG)."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def write(self, **keys):
+        """Keys by name, an underscore in the argument standing for the name's hyphen."""
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.path.parent.chmod(0o700)
+        self.path.write_text(''.join(f'{name.replace("_", "-")} = "{value}"\n' for name, value in keys.items()))
+        self.path.chmod(0o600)
+        return self.path
+
+
+@pytest.fixture
+def key_file(tmp_path, monkeypatch):
+    from quarterdeck import keyfile
+
+    config = tmp_path / 'scratch-config'
+    monkeypatch.setenv(keyfile.TEST_CONFIG, str(config))
+    return KeyFile(config / 'quarterdeck' / 'keys.toml')
 
 
 @pytest.fixture

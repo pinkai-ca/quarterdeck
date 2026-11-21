@@ -10,22 +10,21 @@ import math
 import sqlite3
 import time
 
+from . import keyfile
 from .harness.limits import Wall, Usage
 from .provenance import UNKNOWN
 
 
 
 def candidate_pools(seat) -> tuple[str, ...]:
-    """Later declared choices, then earlier choices, excluding the current pool and any pool paid by a key.
-
-    A launch on a key is refused (ship.key_refusal), so a key pool is no destination: a seat whose other choices
-    are spent is held at its limit with no eligible destination, and the status line says so."""
+    """Later declared choices, then earlier choices, excluding the current pool and any whose key is missing or
+    refused: a launch there would be refused, so a seat with no other choice is held at its limit and the line says so."""
     pools = seat.spec.pools
     source = seat.pool.name
     if source not in pools:
         return ()  # automatic moves require a declared source in the ordering
     current = pools.index(source)
-    return tuple(name for name in pools[current + 1:] + pools[:current] if not seat.ship.pool(name).paid_by_key)
+    return tuple(name for name in pools[current + 1:] + pools[:current] if keyfile.usable(seat.ship.pool(name)))
 
 
 @dataclass(frozen=True)
@@ -119,7 +118,7 @@ def cached_open(ship, book, pool_name: str, seat=None) -> bool:
     from . import harness as harnesses
 
     pool = ship.pools[pool_name]
-    if pool.kind == 'key' and pool.budget is not None and book.catching_up():
+    if getattr(pool, 'paid_by_key', False) and pool.budget is not None and book.catching_up():
         return False  # configured spend cannot be inferred from an unfinished history
     if pool.kind in ("key", "endpoint"):
         return not book.walled(pool_name, ship)
@@ -419,6 +418,21 @@ def observe_screen(book, seat, screen, launched, now: datetime | None = None, *,
     from .seat import declared_launch_pool
     book.quota.observe(source, seat.name, declared_launch_pool(seat, launched, UNKNOWN),
                        replace(event, key=event.error_id or event.key), now, commit=commit)
+
+
+def observe_key_refusal(book, seat, now: datetime | None = None, *, commit: bool = True) -> None:
+    """A provider's refusal of a key's work, once, for the launch that met it (harness.key_limits)."""
+    from .harness import key_limits
+
+    launched = seat.launched()
+    if launched is None or not seat.ship.pools.get(launched.pool) or not seat.ship.pools[launched.pool].paid_by_key:
+        return
+    event = key_limits.refusal(seat)
+    now = now or datetime.now(timezone.utc)
+    if (event is None or event.resets_at <= now or event.at < datetime.fromisoformat(launched.at)
+            or book.quota.recognized(seat.name, event)):
+        return
+    book.quota.observe(f'key:{seat.name}:{launched.at}', seat.name, launched.pool, event, now, commit=commit)
 
 
 BACKOFF_MAX = 3600  # a refusal holds its pool at most an hour

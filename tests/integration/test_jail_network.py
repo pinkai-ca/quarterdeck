@@ -218,3 +218,68 @@ def test_a_relay_that_dies_takes_the_jail_with_it(drydock: Path, tmp_path: Path,
             os.killpg(relay.pid, signal.SIGKILL)
         subprocess.run(['pkill', '-KILL', '-s', str(relay.pid)], capture_output=True)
         shutil.rmtree(sandbox.relay_folder(jail), ignore_errors=True)
+
+
+HTTPS_PROBE = r"""
+import json, os, socket
+from urllib.parse import urlsplit
+proxy = urlsplit(os.environ['HTTPS_PROXY'])
+def through(target):
+    client = socket.create_connection((proxy.hostname, proxy.port), timeout=10)
+    client.sendall(f'CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n'.encode())
+    answer = b''
+    while b'\r\n\r\n' not in answer:
+        part = client.recv(4096)
+        if not part:
+            return dict(status=None)
+        answer += part
+    status = int(answer.split()[1])
+    echoed = None
+    if status == 200:
+        client.sendall(b'client hello, passed through unchanged')
+        echoed = client.recv(4096).decode()
+    client.close()
+    return dict(status=status, echoed=echoed)
+print(json.dumps(dict(own=through('api.example.test:443'), other_name=through('elsewhere.example.test:443'),
+                      other_port=through('api.example.test:444'), https_proxy=os.environ['HTTPS_PROXY'] == os.environ['https_proxy'])))
+"""
+
+
+def test_a_jailed_seat_reaches_a_remote_https_endpoint_on_443_and_nothing_else(drydock: Path, tmp_path: Path):
+    """A jail cannot bind 443, so its forwarder is the program's proxy, for the endpoint's own name and port alone."""
+    outside = socket.socket()
+    outside.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    outside.bind(('127.0.0.1', 0))
+    outside.listen(8)
+
+    def echo():
+        while True:
+            try:
+                connection, _ = outside.accept()
+            except OSError:
+                return
+            with connection:
+                if data := connection.recv(4096):
+                    connection.sendall(data)
+    threading.Thread(target=echo, daemon=True).start()
+    jail = jail_for(drydock, tmp_path, endpoint='https://api.example.test/v1')
+    argv = sandbox.command(jail, [sys.executable, '-I', '-c', HTTPS_PROBE])
+    relay = argv.index('quarterdeck.endpoint_relay')
+    assert argv[relay + 2:relay + 5] == ['api.example.test', '443', 'api.example.test']
+    assert '443:api.example.test' in argv
+    argv[relay + 2:relay + 4] = ['127.0.0.1', str(outside.getsockname()[1])]  # the stand-in for the remote host
+    try:
+        seen = probe(argv)
+    finally:
+        outside.close()
+    assert seen['own'] == {'status': 200, 'echoed': 'client hello, passed through unchanged'}
+    assert seen['other_name']['status'] == 403 and seen['other_port']['status'] == 403 and seen['https_proxy'] is True
+
+
+@pytest.mark.parametrize('address,forwarded', [('https://api.example.test/v1', '443:api.example.test'),
+                                               ('https://api.example.test:8443/v1', '8443'),
+                                               ('http://127.0.0.1:8000/v1', '8000')])
+def test_the_forwarder_is_a_proxy_only_where_a_jail_cannot_bind_the_port(drydock: Path, tmp_path: Path, address, forwarded):
+    argv = sandbox.command(jail_for(drydock, tmp_path, endpoint=address), ['program'])
+    from quarterdeck import endpoint_relay
+    assert argv[argv.index(endpoint_relay.INSIDE) + 2] == forwarded

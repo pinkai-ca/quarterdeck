@@ -81,7 +81,7 @@ def test_default_account_aliases_share_one_read_other_accounts_and_keys_stay_sep
     ship = declared_ship(tmp_path, 'empty')
     ship.pools['google-alias'] = Pool('google-alias', 'antigravity')
     ship.pools['different-account'] = Pool('different-account', 'antigravity', config_dir=tmp_path/'another-account')
-    ship.pools['key-pool'] = Pool('key-pool', 'antigravity', api_key='env:SYNTHETIC_KEY')
+    ship.pools['key-pool'] = Pool('key-pool', 'antigravity', api_key='keys:synthetic-key')
     calls = []
     def fetch():
         calls.append('default-sign-in')

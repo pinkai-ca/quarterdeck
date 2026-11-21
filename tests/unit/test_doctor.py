@@ -90,15 +90,10 @@ def test_a_missing_working_directory_and_a_missing_program_fail_by_name(drydock:
 
 
 def test_a_pool_is_ready_when_its_credential_is_there(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("SYNTHETIC_KEY", raising=False)
     absent = doctor.pool_check(Pool("claude-secondary", "claude", config_dir=tmp_path / "nowhere"))
     assert not absent.passed and absent.detail.startswith("no credential at") and "sign in to the program there" in absent.detail
-    refused = "its pool api is paid by a key, and no seat runs on a key until the routed key isolation lands"
-    key = doctor.pool_check(Pool("api", "claude", api_key="env:SYNTHETIC_KEY"))
-    assert not key.passed and key.detail == refused  # never ready while a key would reach its seat (ship.key_refusal)
-    monkeypatch.setenv("SYNTHETIC_KEY", "x")
-    key = doctor.pool_check(Pool("api", "claude", api_key="env:SYNTHETIC_KEY"))
-    assert not key.passed and key.detail == refused, "a present key changes nothing"
+    key = doctor.pool_check(Pool("api", "claude", api_key="keys:synthetic-key"))  # no ship: no key file is opened
+    assert not key.passed and key.detail.startswith("key refused: key file: no ship names where it is")
     signed = tmp_path / "signed"
     signed.mkdir()
     (signed / ".credentials.json").write_text('{"claudeAiOauth": {"refreshTokenExpiresAt": 4102444800000}}')

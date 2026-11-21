@@ -80,7 +80,7 @@ def test_step_amounts_and_uncertainty_reach_each_rollup_spend_and_json(tmp_path,
     monkeypatch.delenv('QD_SHIP', raising=False)
     monkeypatch.delenv('QD_SEAT', raising=False)
     (tmp_path / 'ship.toml').write_text('[ship]\nname="synthetic"\n[pools.pool]\nprovider="claude"\n'
-                                     'api_key="env:SYNTHETIC_UNUSED"\nbudget="100 USD/month"\n')
+                                     'api_key="keys:synthetic-unused"\nbudget="100 USD/month"\n')
     monkeypatch.setattr(ledger_reading.Budget, 'period_start', lambda self, now: AT-timedelta(seconds=1))
     path = tmp_path / 'record'
     reader = source(path, name, steps)

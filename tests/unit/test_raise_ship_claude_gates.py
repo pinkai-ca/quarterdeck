@@ -256,12 +256,11 @@ def test_pools_are_referenced_by_path_and_no_sign_in_is_copied(project, tmp_path
     assert holding == [], 'a sign-in was copied'
 
 
-@pytest.mark.parametrize('key', ['file:/synthetic/key', 'xai-synthetic-literal-key'])
-def test_a_key_pool_is_raised_only_by_its_environment_reference(project, key):
+@pytest.mark.parametrize('key', ['file:/synthetic/key', 'env:SYNTHETIC_KEY', 'xai-synthetic-literal-key'])
+def test_a_key_pool_is_raised_only_by_its_key_name(project, key):
     root, office, calls = project
     with office.file.open('a') as stream:
         stream.write(f'\n[pools.keyed]\nprovider = "anthropic"\napi_key = "{key}"\n')
-    office = ship.load(office.folder) if key.startswith('file:') else office
     parsed = args('shuttle', 'mission', '--accept', 'yes')
     parsed.pool = ['anthropic=keyed', 'openai=codex']
     with pytest.raises(ShipError):

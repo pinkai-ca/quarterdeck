@@ -70,6 +70,10 @@ def seats_hidden(argv: object) -> bool | None:
     if (not isinstance(argv, (list, tuple)) or not argv or not argv[0]
             or any(not isinstance(arg, str) for arg in argv)):
         return None
+    if list(argv[1:4]) == ['-I', '-m', 'quarterdeck.key_launch'] and '--' in argv:
+        argv = argv[list(argv).index('--') + 1:]  # a seat on a key starts behind the launcher that hands it its key
+        if not argv:
+            return None
     if list(argv[1:4]) == ['-I', '-m', 'quarterdeck.jail_environment'] and '--' in argv:
         argv = argv[list(argv).index('--') + 1:]  # a jail starts behind the launcher that empties its environment
         if not argv:
@@ -1032,7 +1036,9 @@ def command(jail: Jail, argv: list[str], environment: dict[str, str] | None = No
 
     host, port, name = endpoint_parts(jail.endpoint)
     python = os.path.realpath(sys.executable)  # the machine's own interpreter, which every jail sees read-only
+    # A jail cannot bind a port below 1024: there the forwarder is the program's proxy for this one name and port.
+    proxied = bool(name) and port < 1024 and jail.endpoint.startswith('https:')
     inside = [python, "-I", "-c", endpoint_relay.INSIDE, f"{endpoint_relay.INSIDE_FOLDER}/{endpoint_relay.SOCKET}",
-              str(port), "--", *argv]
+              f"{port}:{name}" if proxied else str(port), "--", *argv]
     return [*launcher, sys.executable, "-I", "-m", "quarterdeck.endpoint_relay", str(relay), host, str(port), name or "", "--",
             *args, "--", *inside]

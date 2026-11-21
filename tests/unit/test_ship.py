@@ -295,9 +295,9 @@ def test_an_endpoint_pool_names_no_credential_directory_and_is_an_http_url(tmp_p
         (tmp_path / "ship.toml").write_text(f'[pools.local]\nprovider = "local"\n{pool}\n')
         with pytest.raises(ShipError, match=reason):
             shipmod.load(tmp_path)
-    (tmp_path / "ship.toml").write_text('[pools.remote]\nprovider = "openrouter"\nendpoint = "https://example.invalid/v1"\napi_key = "env:ROUTER_KEY"\n')
+    (tmp_path / "ship.toml").write_text('[pools.remote]\nprovider = "openrouter"\nendpoint = "https://example.invalid/v1"\napi_key = "keys:router-key"\n')
     pool = shipmod.load(tmp_path).pools["remote"]
-    assert pool.kind == "endpoint" and pool.api_key == "env:ROUTER_KEY", "a key beside an endpoint pays a remote service"
+    assert pool.kind == "endpoint" and pool.api_key == "keys:router-key", "a key beside an endpoint pays a remote service"
 
 
 @pytest.mark.parametrize('value', ['0', '1', '[]', '{}', '"false"', '"true"', '0.0'])

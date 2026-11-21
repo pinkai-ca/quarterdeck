@@ -24,7 +24,7 @@ provider="google"
 provider="synthetic"  # native program without a usage reader
 [pools.key]
 provider="anthropic"
-api_key="env:SYNTHETIC_UNUSED"
+api_key="keys:synthetic-unused"
 [pools.local]
 provider="local"
 endpoint="http://127.0.0.1:1/v1"

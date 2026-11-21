@@ -117,6 +117,27 @@ def pool_file(pool: Pool) -> Path | None:
     return pool.config_dir / name if pool.config_dir and name else None
 
 
+def drop_plain_copy(ship: Ship, adapter, home: Path) -> None:
+    """A home moving onto a key leaves the copy of a subscription's sign-in its program kept, where that copy is byte
+    for byte a declared pool's own file, so nothing is lost. A copy that differs may hold the only live token: it
+    stays, and the build that follows refuses and says so."""
+    if not getattr(adapter, 'credential_copy', False) or not adapter.credential_file:
+        return
+    held = seat_files.read_with_times(home / adapter.credential_file)
+    if held is None:
+        return
+    for pool in ship.pools.values():
+        if pool.kind != 'subscription' or harnesses.native_for(pool.provider).name != adapter.name:
+            continue
+        source = pool_file(pool)
+        try:
+            if source is not None and source.read_bytes() == held[0]:
+                seat_files.unlink(home / adapter.credential_file)
+                return
+        except OSError:
+            continue
+
+
 def freshness(pool: Pool, path: Path) -> tuple[float, float] | None:
     """The pool adapter judges a detached credential; endpoint labels name no credential reader."""
     if pool.kind == "endpoint":

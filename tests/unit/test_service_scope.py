@@ -54,25 +54,24 @@ def test_the_service_names_no_pool_key_whatever_the_ship_file_declares():
     assert not hasattr(servicectl, 'pool_keys')
 
 
-def test_an_unjailed_seat_refuses_a_secret_name_but_the_one_its_pools_declared_key_fills(monkeypatch):
+def test_an_unjailed_seat_refuses_every_secret_name_in_its_launch_environment(monkeypatch):
     import pytest
     from quarterdeck.seat import refuse_secret_names
     from quarterdeck.ship import Pool, ShipError
     from quarterdeck.harness.home import key_environment
 
     caller = {'PATH': '/bin', 'HOME': '/h', 'POOL_KEY_NAME': 'k-123', 'UNDECLARED_API_KEY': 'u-456', 'QD_SEAT': 'signer'}
-    keyed = Pool('keyed', 'anthropic', api_key='env:POOL_KEY_NAME')
+    keyed = Pool('keyed', 'anthropic', api_key='keys:pool-key-name')
     plain = Pool('plain', 'anthropic')
     # The service starts from its declared environment: no key, declared or not, and no seat.
     service = je.service_environment(caller)
     assert 'POOL_KEY_NAME' not in service and 'UNDECLARED_API_KEY' not in service and 'QD_SEAT' not in service
     monkeypatch.setattr(os, 'environ', dict(caller))  # the rule below is the unjailed seat's own, read where it is
-    filled = key_environment(keyed, 'PROGRAM_API_KEY')  # as a harness fills its program's key variable
-    refuse_secret_names('w', {'HOME': '/h', **filled}, keyed)  # the key pool still launches with its key
-    with pytest.raises(ShipError, match='names OTHER_TOKEN, which looks secret'):
-        refuse_secret_names('w', {**filled, 'OTHER_TOKEN': 'x'}, keyed)
-    with pytest.raises(ShipError, match='names PROGRAM_API_KEY, which looks secret'):
-        refuse_secret_names('w', filled, plain)  # no declared key: nothing secret-named passes
+    assert key_environment(keyed, 'PROGRAM_API_KEY') == {}, 'a key travels by its launcher, never a launch environment'
+    refuse_secret_names('w', {'HOME': '/h'}, keyed)
+    for pool in (keyed, plain):  # on a key pool too: no secret-named variable reaches a seat by its launch
+        with pytest.raises(ShipError, match='names PROGRAM_API_KEY, which looks secret'):
+            refuse_secret_names('w', {'PROGRAM_API_KEY': 'x'}, pool)
     refuse_secret_names('w', {'HOME': '/h', 'XDG_CONFIG_HOME': '/c'}, plain)
 
 

@@ -169,7 +169,7 @@ def test_a_home_is_not_built_over_a_detached_credential_newer_than_its_pool(ship
 
 
 def test_an_api_key_home_preserves_a_detached_subscription_refresh_without_guessing_its_source(tmp_path):
-    pool = Pool("synthetic-key-destination", "claude", api_key="env:SYNTHETIC_NOT_READ")
+    pool = Pool("synthetic-key-destination", "claude", api_key="keys:synthetic-not-read")
     link = tmp_path / ".credentials.json"
     link.write_text(live("only-refresh", 3600))
     before = link.read_bytes()
@@ -181,7 +181,7 @@ def test_an_api_key_home_preserves_a_detached_subscription_refresh_without_guess
 
 @pytest.mark.parametrize("left", ["link", "stub", "missing"])
 def test_an_api_key_home_still_removes_old_links_and_stubs_without_reading_a_key(tmp_path, left):
-    pool = Pool("synthetic-key-destination", "claude", api_key="env:SYNTHETIC_NOT_READ")
+    pool = Pool("synthetic-key-destination", "claude", api_key="keys:synthetic-not-read")
     link = tmp_path / ".credentials.json"
     source = tmp_path / "subscription"
     source.write_text(live("source-refresh", 3600))

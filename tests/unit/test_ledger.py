@@ -90,7 +90,7 @@ def test_pool_windows_and_walls(tmp_path: Path):
 def test_a_key_pools_budget_is_a_wall_when_its_spend_is_stated(tmp_path: Path):
     from quarterdeck.ship import Pool, Ship
 
-    pool = Pool("anthropic-api", "claude", api_key="env:ANTHROPIC_API_KEY", budget="200 USD/month")
+    pool = Pool("anthropic-api", "claude", api_key="keys:anthropic-api-key", budget="200 USD/month")
     ship = Ship(tmp_path, "t", "operator", tmp_path, {pool.name: pool}, {}, {})
     book = Ledger(tmp_path / "ledger.sqlite")
     now = datetime.now(timezone.utc)

@@ -20,7 +20,7 @@ def test_unused_unsupported_provider_is_refused_by_pool_before_metadata_consumer
         text += '[pools.valid]\nprovider="claude"\n'
     text += '[pools.spare]\nprovider="synthetic-unknown"\n'
     if key:
-        text += 'api_key="env:SYNTHETIC_KEY"\n'
+        text += 'api_key="keys:synthetic-key"\n'
     (tmp_path / "ship.toml").write_text(text)
     kind = "key" if key else "subscription"
     with pytest.raises(ShipError, match=f"pool spare: unsupported {kind} provider 'synthetic-unknown'.*declare an endpoint URL"):
@@ -32,10 +32,10 @@ def test_unused_unsupported_provider_is_refused_by_pool_before_metadata_consumer
 def test_endpoint_labels_and_valid_siblings_work_across_generic_metadata(tmp_path, monkeypatch, label, key):
     text = ('[ship]\nname="synthetic"\n'
             '[pools.valid]\nprovider="claude"\n'
-            '[pools.valid-key]\nprovider="claude"\napi_key="env:SYNTHETIC_KEY"\n'
+            '[pools.valid-key]\nprovider="claude"\napi_key="keys:synthetic-key"\n'
             f'[pools.local]\nprovider="{label}"\nendpoint="http://synthetic.invalid/v1"\n')
     if key:
-        text += 'api_key="env:SYNTHETIC_KEY"\n'
+        text += 'api_key="keys:synthetic-key"\n'
     (tmp_path / "ship.toml").write_text(text)
     ship = load(tmp_path)
     endpoint = ship.pools["local"]

@@ -31,8 +31,8 @@ An unproven version of a harness still runs, on the newest facts Quarterdeck kno
 A harness runs on a pool, one way of paying:
 
 - **A subscription** you are signed in to, used only inside the harness of the company that sells the subscription.
-- **An API key.** A company's own harness takes that company's key.
-- **An endpoint**: a model served at an OpenAI-compatible URL, local or remote, such as a local model, or OpenRouter with an API key. The open harnesses, OpenCode and pi, take compatible endpoints, with an optional key.
+- **An API key.** Claude Code, Codex and Grok Build each take their own company's key; Antigravity takes none. Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one line each, such as `anthropic = "<your key>"`, and a pool names it: `api_key = "keys:anthropic"`. [What has been proved on a key](#what-has-been-proved-on-an-api-key) is short.
+- **An endpoint**: a model served at an OpenAI-compatible URL, local or remote, such as a local model, or OpenRouter with an API key. The open harnesses, OpenCode and pi, take compatible endpoints, with an optional key from the same file.
 
 ## In the ship's file
 
@@ -56,7 +56,17 @@ Pi 0.79.0 needs five pane rows for its empty box; an unfolded payload needs four
 Each harness proven live launched, took a long paste that the harness's own record confirmed, wrote a named file, posted a report with `qd post`, and had the turn read by Quarterdeck.
 
 - Every check ran on the ship that builds Quarterdeck: one ship, one person, that person's own hardware.
-- Each harness is proven as one agent's harness in a crew. A whole crew on one harness alone should work by design, and has not been run yet.
+- Each harness is proven as one agent's harness in a crew. A whole crew on one harness alone has been run once, on Claude Code with an Anthropic key, as the next section says. On any other harness it should work by design, and has not been run yet.
+
+## What has been proved on an API key
+
+Live, with a real key, on 21 November 2026:
+
+- **Claude Code 2.1.317** on an Anthropic API key: one live call, on `claude-haiku-5-5`.
+- **OpenCode 1.19.5 and pi 0.79.0** on an Anthropic key, through Anthropic's OpenAI-compatible address: one live call each, on `claude-haiku-5-5`, each in its jail.
+- **A whole crew on one provider**, the default setup: desk, captain and engineer all on Claude Code on an Anthropic key, raised with `qd setup`, carried one small change from its order to its landing on `claude-sonnet-5-5`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
+
+No other provider's key is proven live yet.
 
 ## For maintainers
 

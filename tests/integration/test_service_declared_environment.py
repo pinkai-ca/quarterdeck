@@ -44,8 +44,8 @@ def seeded(monkeypatch) -> None:
 def test_the_service_holds_only_its_declared_environment(drydock: Path, tmux, monkeypatch):
     file = drydock / 'ship.toml'
     text = file.read_text() + ('\n[pools.keyed]\nprovider = "local"\nendpoint = "http://127.0.0.1:9/v1"\n'
-                               f'api_key = "env:{POOL_KEY}"\n'
-                               f'\n[pools.paid]\nprovider = "synthetic"\napi_key = "env:{KEY_POOL_KEY}"\n')
+                               f'api_key = "keys:decoy-pool-key"\n'
+                               f'\n[pools.paid]\nprovider = "synthetic"\napi_key = "keys:decoy-key-pool-key"\n')
     file.write_text(text)
     ship = shipmod.load(drydock)
     seeded(monkeypatch)
@@ -62,7 +62,7 @@ def test_the_service_holds_only_its_declared_environment(drydock: Path, tmux, mo
         assert not names & {'QD_TMUX_SOCKET', 'GIT_DIR'}, 'a caller\'s socket and repository stay with the caller'
         assert 'service started' in proof and ('in its own scope qd-service-' in proof
                                                or "in the caller's scope: systemd-run" in proof), proof
-        assert not names & {POOL_KEY, KEY_POOL_KEY}, 'no seat runs on a key, so the service holds none'
+        assert not names & {POOL_KEY, KEY_POOL_KEY}, 'each launch reads its own key, so the service holds none'
         assert {'PATH', 'HOME', 'QD_SHIP', *SESSION} <= names, 'it may start the server unjailed panes inherit'
         shipped = Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
         assert f'QD_SHIP={ship.folder}'.encode() in shipped, 'its own ship, whatever the caller held'

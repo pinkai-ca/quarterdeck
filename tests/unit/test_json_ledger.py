@@ -72,7 +72,7 @@ def test_rollups_and_tools_keep_partial_measurements_and_never_write(invoke, dry
 def test_windows_spend_endpoints_failures_and_walls_are_source_data(invoke, drydock):
     declaration = drydock / "ship.toml"
     declaration.write_text(declaration.read_text() + '\n[pools.key]\nprovider="fake"\nkind="key"\n'
-                           'api_key="env:SYNTHETIC_UNUSED_KEY"\nbudget="20 USD/month"\n'
+                           'api_key="keys:synthetic-unused-key"\nbudget="20 USD/month"\n'
                            '\n[pools.local]\nprovider="synthetic-endpoint"\nkind="endpoint"\nendpoint="http://127.0.0.1:1/v1"\n')
     at = datetime.now(timezone.utc) - timedelta(minutes=10)
     reset = at + timedelta(days=7)

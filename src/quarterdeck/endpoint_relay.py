@@ -11,6 +11,9 @@ other host is reachable from inside. A seat on an endpoint pool still reaches it
 - Inside, a forwarder (``INSIDE``, standard library only, so no import of the framework is needed in the jail) listens
   on the endpoint's own port on the jail's loopback, then hands its process to the program. Each connection there is
   carried over the unix socket. When the outside half is gone, a connection is refused, never routed elsewhere.
+  A jail holds no capability, so it cannot bind a port below 1024, and a remote HTTPS endpoint is on 443. There the
+  forwarder listens on a free port instead and is the program's HTTPS proxy: it answers ``CONNECT`` for the endpoint's
+  own name and port and refuses anything else, and the program's TLS still runs end to end with the real name.
 
 Bytes pass through unchanged in both directions as they arrive, so a streamed answer streams, and TLS to a named
 remote endpoint is end to end: the jail's hosts file maps that name to its loopback, the program checks the real
@@ -37,18 +40,40 @@ INSIDE_FOLDER = '/run/qd-endpoint'  # where the relay's folder is bound in the j
 # The inside half. It binds before the program starts, so the endpoint answers from the program's first request.
 INSIDE = r'''
 import os, socket, sys, threading
-relay, port, argv = sys.argv[1], int(sys.argv[2]), sys.argv[4:]
+relay, where, argv = sys.argv[1], sys.argv[2], sys.argv[4:]
+port, _, name = where.partition(":")
+port = int(port)
 listeners = []
-for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")) if not name else ((socket.AF_INET, "127.0.0.1"),):
     try:
         listener = socket.socket(family, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((host, port))
+        listener.bind((host, 0 if name else port))
         listener.listen(64)
         listeners.append(listener)
     except OSError:
         if family == socket.AF_INET:
             raise
+if name:
+    proxy = "http://127.0.0.1:%d" % listeners[0].getsockname()[1]
+    os.environ.update(HTTPS_PROXY=proxy, https_proxy=proxy)
+    for variable in ("NO_PROXY", "no_proxy"):
+        os.environ.pop(variable, None)
+def opened(client):
+    """The bytes after an accepted CONNECT to the endpoint itself, or None for anything else."""
+    data = b""
+    while b"\r\n\r\n" not in data:
+        part = client.recv(4096)
+        if not part or len(data) > 8192:
+            return None
+        data += part
+    head, _, rest = data.partition(b"\r\n\r\n")
+    words = head.split(b"\r\n", 1)[0].split()
+    if len(words) != 3 or words[0] != b"CONNECT" or words[1].lower() != ("%s:%d" % (name, port)).lower().encode():
+        client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        return None
+    client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+    return rest
 def pump(source, target):
     try:
         while True:
@@ -71,6 +96,17 @@ def carry(client):
         client.close()
         outward.close()
         return
+    if name:
+        try:
+            first = opened(client)
+            if first is None:
+                raise OSError
+            if first:
+                outward.sendall(first)
+        except OSError:
+            client.close()
+            outward.close()
+            return
     back = threading.Thread(target=pump, args=(outward, client), daemon=True)
     back.start()
     pump(client, outward)
@@ -207,6 +243,11 @@ def end_descendants() -> list[int]:
     return signalled
 
 
+def _args_descriptor(argv: list[str]) -> tuple[int, ...]:
+    """The pipe bwrap reads a key's words from (key_launch), the one descriptor the jail's start must inherit."""
+    return (int(argv[argv.index('--args') + 1]),) if '--args' in argv else ()
+
+
 def run(folder: Path, host: str, port: int, name: str | None, argv: list[str]) -> int:
     """Serve the jail started from ``argv`` until it ends; its exit status is the relay's. The relay is a subreaper,
     and before it exits, by the pane's hangup or its jail's end, it ends and reaps everything left under it."""
@@ -217,7 +258,7 @@ def run(folder: Path, host: str, port: int, name: str | None, argv: list[str]) -
     listener.bind(str(folder / SOCKET))
     listener.listen(64)
     threading.Thread(target=_serve, args=(listener, host, port), daemon=True).start()
-    child = subprocess.Popen(argv)
+    child = subprocess.Popen(argv, pass_fds=_args_descriptor(argv))
 
     def forward(signum, frame):
         try:

@@ -13,7 +13,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from . import doctor, harness, providers, ship as ships, standing
+from . import doctor, harness, keyfile, providers, ship as ships, standing
 from .drill import Check
 from .ship import Ship, ShipError
 from .setup_answers import Conversation, MAPS, SCALARS, ROLES, MISSING, read_answers
@@ -419,7 +419,9 @@ def safe_endpoint(value: str) -> str:
 
 
 def pool_answers(conversation: Conversation, selected: list[str], defaults: dict,
-                 *, operations: Operations, existing: Ship | None = None) -> tuple[dict, dict]:
+                 *, operations: Operations, existing: Ship | None = None,
+                 fallbacks: dict | None = None) -> tuple[dict, dict]:
+    """Each program's pool and served model; ``fallbacks`` gains the key a subscription falls back to, where one is named."""
     pools, models = {}, {}
     for name in selected:
         reader = harness.get(name)
@@ -454,9 +456,8 @@ def pool_answers(conversation: Conversation, selected: list[str], defaults: dict
             present = operations.credential_present(values["config_dir"], reader.credential_file)
             conversation.say("Credential file present; sign-in not checked." if present else "Credential file not found; sign-in will need attention.")
         if kind == "key":
-            suggested_key = hints.key_env if not endpoint_key or providers.canonical(provider) == hints.key_provider else None
-            variable = saved.api_key.removeprefix("env:") if saved and saved.api_key and saved.api_key.startswith("env:") else suggested_key
-            variable = conversation.ask(f"key_env.{name}", f"{name}'s API key variable NAME (never the key)", variable)
+            suggested_key = keyfile.name_of(saved.api_key) if saved and saved.api_key else suggested_key_name(provider)
+            variable = conversation.ask(f"key_env.{name}", f"{name}'s key NAME in {keyfile.SHOWN} (never the key)", suggested_key)
             values["api_key"] = key_reference(variable)
         if kind == "endpoint" or endpoint_key:
             given = conversation.supplied(f"endpoint.{name}")
@@ -484,24 +485,42 @@ def pool_answers(conversation: Conversation, selected: list[str], defaults: dict
                 if saved:
                     if not saved.api_key:
                         variable = "none"
-                    elif saved.api_key.startswith("env:"):
-                        variable = saved.api_key.removeprefix("env:")
-                variable = conversation.ask(f"key_env.{name}", f"{name}'s key variable NAME, or none if no key is needed", variable)
+                    else:
+                        variable = keyfile.name_of(saved.api_key)
+                variable = conversation.ask(f"key_env.{name}", f"{name}'s key NAME in {keyfile.SHOWN}, or none if no key is needed", variable)
                 if variable != "none":
                     values["api_key"] = key_reference(variable)
                 else:
                     values.pop("api_key", None)
         pool = ships._pool(name, values)
-        if reason := reader.accepts(pool):
+        if reason := keyfile.accepts(reader, pool):
             raise ShipError(f"{reason}; choose a payment method supported by {name} and rerun qd setup")
         pools[name] = values
+        if fallbacks is not None and kind == "subscription":
+            key_pool = ships.Pool(f"{name}-key", provider, api_key=f"{keyfile.PREFIX}{name}")
+            if keyfile.accepts(reader, key_pool) is None:
+                chosen = conversation.supplied(f"key_fallback.{name}")
+                if chosen is not MISSING and chosen != "none":
+                    fallbacks[name] = {"provider": provider, "api_key": key_reference(chosen)}
+                elif chosen is MISSING and conversation.interactive:
+                    conversation.say(f"An API key can take over when this subscription is spent: answer "
+                                     f"key_fallback.{name} with its name in {keyfile.SHOWN}.")
     return pools, models
 
 
-def key_reference(name: str) -> str:
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-        raise ShipError("key_env must be an environment variable NAME, never a key value; set the variable outside qd and pass its name")
-    return f"env:{name}"
+def suggested_key_name(provider: str | None) -> str | None:
+    """A provider's usual name in the key file, where its canonical spelling is a valid one."""
+    name = providers.canonical(provider) if provider else None
+    return name if keyfile.name_of(f"{keyfile.PREFIX}{name}") else None
+
+
+def key_reference(name: str | None) -> str:
+    """A pool's ``api_key``. What was answered is never echoed: a pasted key would be printed."""
+    reference = f"{keyfile.PREFIX}{name}"
+    if keyfile.name_of(reference) is None:
+        raise ShipError(f"key_env must be the NAME of a key in {keyfile.SHOWN} (lowercase letters, digits and hyphens), "
+                        "never a key value; put the key in that file and pass its name")
+    return reference
 
 
 def new_text(text: str, edits: list[tuple[str, str, object]]) -> str:

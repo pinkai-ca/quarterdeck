@@ -10,7 +10,7 @@ from .ledger import Budget, Ledger, PLUS_NOTE, UNATTRIBUTED, figure
 from .provenance import UNKNOWN
 from .ship import Ship
 from .usage_cache import Reading, parse
-from . import providers
+from . import keyfile, providers
 
 
 @dataclass(frozen=True)
@@ -93,7 +93,7 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
         if pool.kind == "key":
             budget = Budget.parse(pool.budget)
             since = budget.period_start(now) if budget else now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            spent, unpriced = book.spend(pool.name, since)
+            spent, unpriced = book.key_spend(ship, pool, since)
             item.update(budget=budget, spent=spent, unpriced=unpriced, since=since, wall=f"{pool.name} budget" in walls)
         elif pool.kind == "endpoint":
             item.update(endpoint=pool.endpoint)
@@ -106,6 +106,8 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
         item["wall"] = any(w == row.label or w.startswith(row.label + " ·") for w in walls)
         windows.append(item)
     from .usage_forecast import collect as forecasts
+    if ship is not None and (spends := key_spends(ship, book, now)):
+        data["key_spends"] = spends
     return {**data, "observed_at": now, "windows": windows, "pools": pools,
             "usage_forecasts": forecasts(book, now, {p.name for p in ship.pools.values() if p.kind == 'subscription'}
                                         if ship is not None else None),
@@ -173,6 +175,32 @@ def render_tools(data: dict) -> list[str]:
     return lines
 
 
+def key_spends(ship, book, now: datetime) -> list[str]:
+    """One line for each key the ship's pools name: what it has spent, and what is left of a declared budget."""
+    named: dict[str, list] = {}
+    for pool in ship.pools.values():
+        if pool.paid_by_key:
+            named.setdefault(keyfile.name_of(pool.api_key) or pool.name, []).append(pool)
+    lines = []
+    for name, pools in named.items():
+        budget = next((parsed for pool in pools if (parsed := Budget.parse(pool.budget))), None)
+        since = budget.period_start(now) if budget else now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        spent, unpriced = book.key_spend(ship, pools[0], since)
+        currency = budget.currency if budget else "USD"
+        stated = f"{figure(spent, unpriced, '.2f')} {currency} spent" if spent is not None else "no cost stated"
+        line = f"key {name}: {stated} since {since.date()}"
+        if budget:
+            line += f" of {budget.shown}"
+            if spent is not None:
+                line += f", {max(budget.amount - spent, 0):.2f} left"
+            if budget.ended(now):
+                line += ", ended"
+        if unpriced:
+            line += f" ({unpriced} turns with no price)"
+        lines.append(line)
+    return lines
+
+
 def render_pools(data: dict) -> list[str]:
     lines = [f"pool {p['name']} · provider {p['provider_name']} · {p['kind']} · native harness {p['native_harness'] or 'none'}"
              + (f" · {p['unread_spans']} unread span{'s' if p['unread_spans'] != 1 else ''}: turns unknown"
@@ -188,12 +216,13 @@ def render_pools(data: dict) -> list[str]:
         budget, spent, unpriced = pool["budget"], pool["spent"], pool["unpriced"]
         stated = f"{figure(spent, unpriced, '.2f')} {budget.currency if budget else ''}".strip() if spent is not None else "no cost stated"
         note = f" ({unpriced} turns with no price: the program states none and no table is carried)" if unpriced else ""
-        limit = f" of {budget.amount:.0f} {budget.currency}/{budget.period}" if budget else ""
+        limit = f" of {budget.shown}" if budget else ""
         wall = "  WALL" if pool["wall"] else ""
         lines.append(f"{pool['name']:<20} {'spend':<8} {stated}{limit}{note}{wall}")
     for pool in data["pools"]:
         if pool["kind"] == "endpoint":
             lines.append(f"{pool['name']:<20} {'endpoint':<8} {pool['endpoint']} · no quota, no wall")
+    lines += data.get("key_spends", [])
     if data["usage_absent_reason"]:
         lines.append(data["usage_absent_reason"])
     return lines + [f"{a['pool']} latest usage read: {a['error']}" for a in data["usage_attempts"] if a["error"]] + [

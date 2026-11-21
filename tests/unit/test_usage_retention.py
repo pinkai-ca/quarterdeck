@@ -325,7 +325,7 @@ def test_inactive_non_google_fallback_recovers_at_attempt_cadence_across_restart
 
 def test_fallback_key_and_no_usage_cases_do_not_query_provider(tmp_path: Path) -> None:
     ship = declared_ship(tmp_path, "empty")
-    ship.pools["key"] = Pool("key", "claude", api_key="env:SYNTHETIC_KEY")
+    ship.pools["key"] = Pool("key", "claude", api_key="keys:synthetic-key")
     ship.pools["unmeasured"] = Pool("unmeasured", "fake")
     svc = Service(ship, SimpleNamespace())
 

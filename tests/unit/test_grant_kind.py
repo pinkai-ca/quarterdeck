@@ -123,7 +123,7 @@ def test_an_unknown_grant_kind_never_counts_and_reads_unknown(tmp_path, monkeypa
     assert credential.grant_detail(pool) == "; grant kind unknown"
 
 
-@pytest.mark.parametrize("pool", [Pool("synthetic-key", "anthropic", api_key="env:SYNTHETIC_KEY"),
+@pytest.mark.parametrize("pool", [Pool("synthetic-key", "anthropic", api_key="keys:synthetic-key"),
                                   Pool("synthetic-google", "google")])
 def test_a_pool_without_a_credential_file_has_no_grant_reading(pool):
     assert credential.grant_detail(pool) == ""

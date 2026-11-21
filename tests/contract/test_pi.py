@@ -183,7 +183,7 @@ effort = "max"
     assert not (tmp_path / "runtime").exists(), "an unsupported effort never reaches launch"
 
 
-def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_and_nothing_of_the_projects(tmp_path: Path, served, monkeypatch):
+def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_and_nothing_of_the_projects(tmp_path: Path, served, monkeypatch, key_file):
     harness = PiHarness()
     pool = Pool("local-a", "local", endpoint="http://127.0.0.1:8000/v1")
     seat = SeatSpec("w", "crew", "worker", "pi", ("local-a",), model="qwen3.8-27b", effort="high", cwd=tmp_path / "work", settings={"theme": "dark"})
@@ -212,12 +212,12 @@ def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_an
     harness.build_home(home, plain, pool, None)
     assert json.loads((home / "agent" / "models.json").read_text())["providers"]["local-a"]["models"][0]["reasoning"] is False, "no effort: no thinking"
     assert "--thinking" not in harness.launch(plain, pool, home, brief, None, None).argv
-    monkeypatch.setenv("LOCAL_KEY", "secret-value")
-    keyed = Pool("remote", "openrouter", endpoint="https://example.invalid/v1", api_key="env:LOCAL_KEY")
+    key_file.write(local_key="secret-value")
+    keyed = Pool("remote", "openrouter", endpoint="https://example.invalid/v1", api_key="keys:local-key", ship_folder=tmp_path)
     assert harness.build_home(home, plain, keyed, None).variable == "QD_ENDPOINT_KEY"
     assert json.loads((home / "agent" / "models.json").read_text())["providers"]["remote"]["apiKey"] == "QD_ENDPOINT_KEY", "a variable's name, as pi reads it"
     assert "secret-value" not in (home / "agent" / "models.json").read_text()
-    assert harness.launch(plain, keyed, home, brief, None, None).env["QD_ENDPOINT_KEY"] == "secret-value"
+    assert harness.launch(plain, keyed, home, brief, None, None).env["QD_ENDPOINT_KEY"] == "keys:local-key", "its reference: the launcher fills the variable"
 
 
 def test_the_version_is_read_from_the_error_stream_where_pi_prints_it(monkeypatch):

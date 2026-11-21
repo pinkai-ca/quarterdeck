@@ -16,7 +16,7 @@ import re
 import shlex
 import sys
 
-from . import setup, ship as ships, standing
+from . import keyfile, setup, ship as ships, standing
 from .ship import ShipError
 
 KINDS = ("default", "forum", "cascade", "shuttle")
@@ -297,8 +297,8 @@ def proposal(args: argparse.Namespace, office: ships.Ship) -> Proposal:
         if chosen not in office.pools:
             raise ShipError(f"template pool {alias} needs an office pool; pass --pool {alias}=OFFICE_POOL")
         pool = dict(office_data["pools"][chosen])
-        if "api_key" in pool and not re.fullmatch(r"env:[A-Za-z_][A-Za-z0-9_]*", pool["api_key"]):
-            raise ShipError(f"office pool {chosen}: raise accepts env:NAME key references only, never key values")
+        if "api_key" in pool and keyfile.name_of(pool["api_key"]) is None:
+            raise ShipError(f"office pool {chosen}: raise accepts keys:<name> references only, never key values")
         if "endpoint" in pool:
             pool["endpoint"] = setup.safe_endpoint(pool["endpoint"])
         for key in ("config_dir", "home"):

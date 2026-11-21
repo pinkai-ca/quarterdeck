@@ -28,6 +28,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from . import trusted_files
+from . import key_launch, keyfile
 from . import check_outcome, harness as harnesses, durable, human_wake, pending, post, providers, record_owner, sandbox, standing
 from .door import Delivery, Door
 from .drill import Check, wait_for
@@ -139,13 +140,13 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None,
 
 
 def check_pool(ship: Ship, harness) -> tuple[object | None, str | None]:
-    """The pool qd check launches its seat on: the first declared pool the program runs on that no key pays. With
-    none, the refusal where only a key pays for a pool it runs on (ship.key_refusal), else None as well. The nightly
+    """The pool qd check launches its seat on: the first declared pool the program runs on whose key, if a key pays
+    for it, can be read. With none, why not, where only such a key stands in the way, else None as well. The nightly
     live check reads the same pool (daily_live.wall_reason)."""
-    compatible = [p for p in ship.pools.values() if harness.accepts(p) is None]
-    pool = next((p for p in compatible if not p.paid_by_key), None)
+    compatible = [p for p in ship.pools.values() if keyfile.accepts(harness, p) is None]
+    pool = next((p for p in compatible if keyfile.usable(p)), None)
     if pool is None and compatible:
-        return None, f"check-{harness.name}: {shipmod.key_refusal(compatible[0])}"
+        return None, f"check-{harness.name}: its pool {compatible[0].name}: {keyfile.problem(compatible[0])}; nothing was started"
     return pool, None
 
 
@@ -202,7 +203,7 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
                    else probe(seat.ship, seat, orders, **options))
         if selected is not None:
             launched = seat.launched()
-            ran = launched is not None and str(selected) in (launched.argv[:1] if pin is not None else launched.argv)
+            ran = launched is not None and str(selected) in (key_launch.inner(launched.argv)[:1] if pin is not None else launched.argv)
             checks.append(ProbeCheck("the seat ran the program doctor shows", ran,
                                      f"{selected} in launch.json" if ran else f"{selected} not in the seat's launch", 'program'))
     if not all(c.passed is True for c in checks):

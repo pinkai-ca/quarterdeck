@@ -205,7 +205,7 @@ def test_the_keys_the_controls_and_the_pool_it_runs_on():
     assert [c.name for c in harness.controls()] == ["model"] and harness.control("model").session is None
     assert harness.accepts(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")) is None
     assert "native harness codex" in harness.accepts(Pool("codex", "codex", config_dir=Path("/x")))
-    assert "names no endpoint" in harness.accepts(Pool("api", "openai", api_key="env:KEY"))
+    assert "names no endpoint" in harness.accepts(Pool("api", "openai", api_key="keys:key"))
 
 
 def test_the_record_reads_five_turns_their_tools_and_tokens_and_marks_the_aborted_step_unmeasured(tmp_path: Path):
@@ -277,7 +277,7 @@ def served(monkeypatch):
     monkeypatch.setattr(endpoint, "models", lambda url, timeout=0, **kwargs: [endpoint.Served("qwen3.8-27b", 98304), endpoint.Served("small", None)])
 
 
-def test_the_home_is_built_from_the_endpoint_and_each_launch_gets_a_data_directory_of_its_own(tmp_path: Path, served, monkeypatch):
+def test_the_home_is_built_from_the_endpoint_and_each_launch_gets_a_data_directory_of_its_own(tmp_path: Path, served, monkeypatch, key_file):
     harness = OpenCodeHarness()
     pool = Pool("local-a", "local", endpoint="http://127.0.0.1:8000/v1")
     seat = SeatSpec("w", "crew", "worker", "opencode", ("local-a",), model="qwen3.8-27b", cwd=tmp_path / "work", settings={"theme": "opencode"})
@@ -301,13 +301,13 @@ def test_the_home_is_built_from_the_endpoint_and_each_launch_gets_a_data_directo
     assert harness.launch(seat, pool, home, brief, None, None).env["XDG_DATA_HOME"] == str(home / "data-002"), "a fresh launch takes the next directory"
     with pytest.raises(ShipError, match="no record in .* holds the session ses_9999"):
         harness.launch(seat, pool, home, brief, "ses_9999", None)
-    monkeypatch.setenv("LOCAL_KEY", "secret-value")
-    keyed = Pool("remote", "openrouter", endpoint="https://example.invalid/v1", api_key="env:LOCAL_KEY")
+    key_file.write(local_key="secret-value")
+    keyed = Pool("remote", "openrouter", endpoint="https://example.invalid/v1", api_key="keys:local-key", ship_folder=tmp_path)
     assert harness.build_home(home, seat, keyed, None).variable == "QD_ENDPOINT_KEY"
     config = json.loads((home / "config" / "opencode" / "opencode.json").read_text())
     assert config["provider"]["remote"]["options"]["apiKey"] == "{env:QD_ENDPOINT_KEY}", "the variable's name; the key never lands in a file"
     assert "secret-value" not in (home / "config" / "opencode" / "opencode.json").read_text()
-    assert harness.launch(seat, keyed, home, brief, None, None).env["QD_ENDPOINT_KEY"] == "secret-value"
+    assert harness.launch(seat, keyed, home, brief, None, None).env["QD_ENDPOINT_KEY"] == "keys:local-key", "its reference: the launcher fills the variable"
     with pytest.raises(ShipError, match="does not serve 'huge'; it serves qwen3.8-27b, small"):
         harness.build_home(home, SeatSpec("w", "crew", "worker", "opencode", ("local-a",), model="huge"), pool, None)
     unnamed = harness.build_home(home, SeatSpec("w", "crew", "worker", "opencode", ("local-a",)), pool, None)

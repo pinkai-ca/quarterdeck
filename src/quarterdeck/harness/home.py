@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import json
 import tomllib
 from pathlib import Path
@@ -92,21 +91,10 @@ def _newer(pool: Pool, link: Path, source: Path | None) -> bool:
 
 
 def key_environment(pool: Pool, variable: str) -> dict[str, str]:
-    """The variable a key pool's program reads, from ``env:NAME`` or ``file:PATH`` in the ship file."""
-    if not pool.api_key:
-        return {}
-    kind, _, where = pool.api_key.partition(":")
-    if kind == "env":
-        value = os.environ.get(where)
-        if not value:
-            raise ShipError(f"pool {pool.name}: {where} is not set in the environment")
-        return {variable: value}
-    if kind == "file":
-        try:
-            return {variable: Path(where).expanduser().read_text().strip()}
-        except OSError as error:
-            raise ShipError(f"pool {pool.name}: cannot read {where}: {error}") from None
-    raise ShipError(f"pool {pool.name}: api_key must be env:NAME or file:PATH, not {pool.api_key!r}")
+    """Nothing: no key travels in a launch's environment, which tmux and bwrap take as arguments. The launcher puts it
+    in the program (key_launch, by the route in keyfile.ROUTES). The adapters' launches still call this by name, so
+    that their reader stamps stay as they are."""
+    return {}
 
 
 def merged(base: dict, layer: dict) -> dict:

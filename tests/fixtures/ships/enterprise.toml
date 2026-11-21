@@ -21,7 +21,7 @@ config_dir = "~/.config/agy"
 
 [pools.anthropic-api]
 provider = "anthropic"
-api_key = "env:ANTHROPIC_API_KEY"     # the key is named, never written here
+api_key = "keys:anthropic-api-key"     # the key is named, never written here
 budget = "200 USD/month"             # optional: a wall when spent
 
 [pools.local]

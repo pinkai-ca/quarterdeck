@@ -10,6 +10,7 @@ refreshed by tmux itself, so a dead service never looks like a healthy idle ship
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import trusted_files
+from . import keyfile, trusted_files
 from . import post_retirement, accounting_health, acts, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, post_dir, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.capabilities import selection_label
@@ -384,15 +385,27 @@ def status_reading(ship: Ship, tmux: Tmux, *, store=None, collected=None) -> dic
             "requests": requests, "facts": (collected if collected is not None else
                 facts(ship, tmux, store=store, post_held=post_held, check_reading=outcomes)),
             "usage": headline_readings(ship), "extra_usage": extra_usage.readings(ship), **providers.identities(ship)}
+    if keyed := [pool for pool in getattr(ship, 'pools', {}).values() if getattr(pool, 'paid_by_key', False)]:
+        inside = _caller_jailed(ship)
+        data['key_pools'] = [keyfile.status_line(pool, jailed_caller=inside) for pool in keyed]
     try:
         book = ledger.Ledger.reading(ship.runtime / 'ledger.sqlite')
         if book is not None:
             with book:
                 if book.catching_up():
                     data['accounting_note'] = 'accounting catching up; historical figures are last known'
+                if keyed:
+                    from .ledger_reading import key_spends
+                    data['key_pools'] += key_spends(ship, book, datetime.now().astimezone())
     except (OSError, sqlite3.Error):
         pass
     return data
+
+
+def _caller_jailed(ship: Ship) -> bool:
+    """Whether the seat asking may be in a jail, where the key file cannot be seen. Display only: it reads no key."""
+    spec = ship.seats.get(os.environ.get('QD_SEAT') or '')
+    return spec is not None and any(ship.jailed(spec.for_pool(name), ship.pools[name]) for name in spec.pools)
 
 
 def render_table(data: dict) -> list[str]:
@@ -422,6 +435,7 @@ def render_table(data: dict) -> list[str]:
             rows.append(f"  {r.compaction}")
         if r.wake:
             rows.append(f"  {r.wake}")
+    rows += data.get('key_pools', [])
     # Each program's last use and its check outcome: detail, before the open orders.
     for program in data.get('programs', []):
         working = program['working_now']

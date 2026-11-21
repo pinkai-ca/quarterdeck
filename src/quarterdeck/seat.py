@@ -31,6 +31,7 @@ from pathlib import Path
 
 from . import providers, durable, harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
 from . import carriage as carriagemod
+from . import key_launch, keyfile
 from .harness.base import Harness, Join, Launch, _version_in_runtime
 from .harness.capabilities import validate_selection
 from .provenance import remember_launch, retained_launch
@@ -190,23 +191,14 @@ def launch_words(path: str, argv: list[str], *, socket: str | None, tmux_tmpdir:
 
 def refuse_secret_names(seat: str, env: dict[str, str], pool) -> None:
     """An unjailed seat's program receives no variable whose name looks secret, by the jail's rule (jail_environment):
-    a refusal before anything opens. One exception: the one variable its own pool's declared key (api_key) fills,
-    which is how its program pays. That variable is found by holding the key, never by its name or by showing it."""
+    a refusal before anything opens. A pool's key is not among them: it travels by the launcher (key_launch)."""
     from . import jail_environment
 
     # A refused name is dropped at the window, never judged here: naming it does not stop the launch.
     secret = sorted(name for name in env if jail_environment.looks_secret(name) and not jail_environment.refused(name))
-    if secret and getattr(pool, 'api_key', None):
-        from .harness.home import key_environment
-
-        key = key_environment(pool, 'key')['key']
-        filled = [name for name in secret if env[name] == key]
-        if len(filled) == 1:
-            secret.remove(filled[0])
     if secret:
         raise ShipError(f"{seat}: its program's environment names {', '.join(secret)}, which looks secret; no "
-                        "secret-named variable reaches a seat but the one its own pool's declared key fills, so "
-                        "nothing was started")
+                        "secret-named variable reaches a seat by its launch, so nothing was started")
 
 
 def launch_script(seat: str, words: list[str]) -> str:
@@ -498,8 +490,8 @@ class Seat:
         (``quota.cached_open``): a choice whose room is unknown, with no ledger, its usage not yet read or its
         history still catching up, is never taken over the saved one. The saved choice stays while the ledger does
         not show it walled; with no choice that has room, the saved choice stays, or the first declared one. A
-        choice paid by a key is never taken while another is not shown walled, a saved one included
-        (ship.key_refusal); left alone, its launch is refused.
+        choice whose key is missing or refused is never taken while another is not shown walled, a saved one included
+        (keyfile); left alone, its launch is refused and says why.
         """
         pools = self.spec.pools
         current = self.pool.name
@@ -515,8 +507,8 @@ class Seat:
         unknown = []
         try:
             for name in pools:
-                if self.ship.pool(name).paid_by_key:
-                    continue  # never a launch's choice, saved or not: its launch is refused (ship.key_refusal)
+                if not keyfile.usable(self.ship.pool(name)):
+                    continue  # never a launch's choice, saved or not: its launch would be refused
                 if current_walled and name == current:
                     continue  # the running seat proved this wall before choosing the relaunch destination
                 if name == saved:
@@ -537,9 +529,9 @@ class Seat:
                 return unknown[0], (f'its saved {saved} is no longer declared; the first declared choice not shown '
                                     f'walled, its room unknown')
             return pools[0], f'its saved {saved} is no longer declared and every declared choice is walled'
-        if unknown and self.ship.pool(saved).paid_by_key:
-            return unknown[0], (f'its saved {saved} is paid by a key; the first declared choice not shown walled, '
-                                'its room unknown')
+        if unknown and not keyfile.usable(self.ship.pool(saved)):
+            return unknown[0], (f'the key of its saved {saved} is missing or refused; the first declared choice not '
+                                'shown walled, its room unknown')
         if unknown:
             return current, f"saved choice retained; room unknown on {', '.join(unknown)}"
         return current, 'every declared choice is walled; its saved choice stays'
@@ -1047,10 +1039,10 @@ class Seat:
         if paid.name not in selected.pools:
             raise ShipError(self.pool_move_hold or f"{self.name}: pool {paid.name!r} is no longer declared")
         reader = self._adapter_for(selected)
-        if reason := reader.accepts(paid):
+        if reason := keyfile.accepts(reader, paid):
             raise ShipError(f"{self.name}: {reason}")
-        if reason := shipmod.key_refusal(paid):  # every launch door passes here, before anything of a launch is made
-            raise shipmod.KeyRefused(f"{self.name}: {reason}")
+        if found := keyfile.problem(paid):  # every launch door passes here, before anything of a launch is made
+            raise shipmod.KeyRefused(f"{self.name}: its pool {paid.name}: {found}; nothing was started")
         validate_selection(selected, reader)
         reader.check_defaults(selected, self.ship.folder / 'homes' / reader.name)
 
@@ -1161,7 +1153,18 @@ class Seat:
         pool = self.pool
         ship_home = self.ship.folder / "homes" / self.harness.name
         spec = self.adapter_spec()  # the adapter sees the seat's real working directory, as every preflight does
+        if pool.paid_by_key:
+            from . import credential
+            credential.drop_plain_copy(self.ship, self.harness, self.home)
         self.harness.build_home(self.home, spec, pool, ship_home if ship_home.is_dir() else None)
+        key_route = keyfile.route(self.harness.name, pool)
+        key_file = None
+        if key_route is not None:
+            try:
+                keyfile.prepare_home(key_route, self.home)
+                key_file = keyfile.path(self.ship.folder)
+            except keyfile.KeyProblem as problem:
+                raise shipmod.KeyRefused(f"{self.name}: its pool {pool.name}: {problem}") from None
         resume_id = target.id if target else None
         if resume and target is None and prior:
             self.harness.preflight_resume(spec, self.home, lambda: None)
@@ -1185,6 +1188,11 @@ class Seat:
                 launch = self.harness.launch(spec, pool, self.home, brief, resume_id, opening)
             if shutil.which(launch.argv[0], path=path) is None:
                 raise ShipError(f"{self.name}: {launch.argv[0]} is not on the PATH qd runs with; install it, or put it on that PATH")
+            if key_route is not None:  # the launcher fills it: a launch's environment reaches tmux's and bwrap's arguments
+                from .harness import key_prices
+                launch = replace(launch, env={name: value for name, value in launch.env.items()
+                                              if name != key_route.variable},
+                                 price=launch.price or key_prices.snapshot(self.harness.name, pool))
             argv = list(launch.argv)
             if jailed:
                 from . import sandbox  # the sandbox reads the ship and the standing orders, so it is imported here, not above
@@ -1195,6 +1203,9 @@ class Seat:
                 argv = sandbox.command(jail, argv, launch.env)  # the jail starts from nothing but these
             else:
                 refuse_secret_names(self.name, launch.env, pool)
+            if key_route is not None:
+                argv = key_launch.command(key_file, pool, key_route, launch.argv[0], argv, home=self.home,
+                                          private=self.trusted, jailed=jailed)
             return launch, argv
 
         self._launch_tmpdir = self._fresh_tmux_tmpdir()
@@ -1562,9 +1573,13 @@ class Seat:
             time.sleep(0.01 if self.harness.synthetic else 0.05)
             pane = self.tmux.pane(pane_id)
             if pane is not None and pane.dead:
-                shown = " ".join(self.tmux.capture(pane_id, history=20).split())[-240:]  # its last words scroll above the death notice
                 exit_detail = ("exited at once; exit status not yet known" if pane.exit_status is None
                                else f"exited {pane.exit_status} at once")
+                if getattr(getattr(self, 'pool', None), 'paid_by_key', False):  # a failing program may print part of its key
+                    raise ShipError(f"{self.name}: {program} {exit_detail}; its pane stays for a look, and "
+                                    f"qd up {self.name} tries again. What it printed is not quoted on a key pool; "
+                                    f"qd doctor reads the key")
+                shown = " ".join(self.tmux.capture(pane_id, history=20).split())[-240:]  # its last words scroll above the death notice
                 raise ShipError(f"{self.name}: {program} {exit_detail}; its pane stays for a look, and "
                                 f"qd up {self.name} tries again. It printed: {shown}")
             if pane is not None and self.harness.synthetic and self.harness.synthetic_ready(self.home):
@@ -2197,7 +2212,7 @@ def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
             raise ShipError(f"{name}: {_unreadable_launch(name)}")
         harness_name = (launch or {}).get("harness") or record["harness"]
         pool = (launch or {}).get("pool") or record["pool"] or next(
-            (p.name for p in ship.pools.values() if harnesses.get(harness_name).accepts(p) is None), None)
+            (p.name for p in ship.pools.values() if keyfile.accepts(harnesses.get(harness_name), p) is None), None)
         if pool not in ship.pools:
             raise ShipError(f"{name}: its pool {pool!r} is not declared: declare it again, then qd down {name}")
         title = "qd-" + name

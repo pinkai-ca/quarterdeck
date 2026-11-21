@@ -414,8 +414,8 @@ def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
 
     from . import jail_environment
 
-    # Declared, never inherited: not the caller's seat (QD_SEAT) nor the desktop's secrets, nor any pool's key. No seat
-    # runs on a key until the routed key isolation lands (ship.key_refusal), so the service needs none, and an unjailed
+    # Declared, never inherited: not the caller's seat (QD_SEAT) nor the desktop's secrets, nor any pool's key. Each
+    # launch's own launcher reads its key from the key file (key_launch), so the service needs none, and an unjailed
     # seat of the same user could read one in its /proc/<pid>/environ.
     environment = jail_environment.service_environment(os.environ)
     environment['QD_SHIP'] = str(ship.folder)

@@ -2551,7 +2551,9 @@ class Service:
                     incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
                     if turns:
                         qualify = getattr(reader, "price_turn", lambda turn, price: turn)
-                        turns = [qualify(t, book.provenance.price(record, t.started, t.ended)) for t in turns]
+                        from .harness import key_prices
+                        launch_prices = [book.provenance.price(record, t.started, t.ended) for t in turns]
+                        turns = [key_prices.priced(qualify(t, price), price) for t, price in zip(turns, launch_prices)]
                         figures = {turns[-1].index: meter.result()} if live and record == current and meter and state.turn_open is False else {}
                         written = book.ingest(seat.name, UNKNOWN, record, turns, self.store, figures, commit=False)
                         if written:
@@ -2639,6 +2641,12 @@ class Service:
         for seat in self.resolved_seats():
             if getattr(seat, 'withdrawn_pool', None) is not None:
                 continue  # the running launch can receive post while its move is held
+            if getattr(seat.pool, 'paid_by_key', False) and seat.is_up:
+                try:
+                    with self.ledger.record_pass() as book:
+                        quota.observe_key_refusal(book, seat, commit=False)
+                except (OSError, ValueError) as error:
+                    self.log("failover", seat=seat.name, skipped=f"key refusal unread: {type(error).__name__}")
             if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up:
                 continue
             if (getattr(seat.harness, 'screen_walls', False) and self.ledger.catching_up()
@@ -2648,6 +2656,7 @@ class Service:
                     with self.ledger.record_pass() as book:
                         quota.observe_screen(book, seat, screen, seat.launched(), commit=False)
             if not quota.current_walled(seat, self.ledger):
+                self._back_from_key(seat)
                 continue
             binding, came_from = move_hold.generation(seat), seat.pool.name
             unproved = None
@@ -2705,6 +2714,28 @@ class Service:
             notice = f"moved to pool {target} from {came_from} at its wall"
             self.report_pool_move(seat, notice)
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
+
+    def _back_from_key(self, seat: Seat) -> None:
+        """A seat on a key that is not spent goes back, when idle, to the first subscription before it in its list that
+        has room: a key pays only while the subscriptions are spent."""
+        if not getattr(seat.pool, 'paid_by_key', False) or seat.pool.name not in seat.spec.pools:
+            return
+        earlier = seat.spec.pools[:seat.spec.pools.index(seat.pool.name)]
+        target = next((name for name in earlier if self.ship.pools[name].kind == 'subscription'
+                       and self.known_open(seat, name)), None)
+        if target is None or self._wall_idle_hold(seat) is not None:
+            return
+        from . import relaunch_intent
+        from .harness import resume_target
+        came_from = seat.pool.name
+        try:
+            with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
+                proof = seat.failover_to(target)
+        except resume_target.Unproved as error:
+            self.log("failover", seat=seat.name, pool=target, skipped=str(error))  # it stays on its key, which still works
+            return
+        self.report_pool_move(seat, f"moved back to pool {target} from its key {came_from}: the subscription has room")
+        self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
 
     def not_idle(self, seat: Seat) -> str | None:
         """The ordinary live proof shared by failover, select and relaunch."""

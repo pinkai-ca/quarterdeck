@@ -21,6 +21,8 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from . import keyfile
+
 RUNTIME = "runtime"
 TICK = 1.0  # the service's default wait after each pass, in seconds
 TICK_BOUNDS = (0.05, 5.0)  # inclusive; the heartbeat stays well inside servicectl's stale age
@@ -34,7 +36,7 @@ class ShipError(Exception):
 
 
 class KeyRefused(ShipError):
-    """A launch refused because a key pays for its pool (key_refusal): the one seat stays down, no other."""
+    """A launch refused because its pool's key is missing or refused (keyfile): the one seat stays down, no other."""
 
 
 class ProgramPinError(ShipError):
@@ -111,6 +113,7 @@ class Pool:
     context: int | None = None  # the context window of what the endpoint serves, where the endpoint does not say
     price: dict | None = None  # explicit USD rates per million tokens; validated on load
     output: int | None = None  # endpoint response allowance; omission preserves the native adapter default
+    ship_folder: Path | None = field(default=None, compare=False)  # where its key file is decided (keyfile.path)
 
     def __post_init__(self):
         if not isinstance(self.provider, str) or not self.provider.strip():
@@ -133,20 +136,6 @@ class Pool:
     def paid_by_key(self) -> bool:
         """Whether a key pays for this pool: a key pool, or an endpoint with a key named beside its URL."""
         return bool(self.api_key)
-
-
-def key_refusal(pool: Pool) -> str | None:
-    """Why no seat launches on this pool for now, or None: a pool paid by a key is refused at every door.
-
-    Until the routed key isolation lands, a key reaches a seat's program, and so the model's tool commands, by its
-    environment and its launch; nothing yet keeps it out of their reach. So no seat runs on a key: qd up, fresh,
-    restart, a pool move, the service's relaunch, qd check and qd doctor all say this line, and nothing is started.
-    A subscription and a keyless endpoint are unchanged.
-    """
-    if not pool.paid_by_key:
-        return None
-    return (f"its pool {pool.name} is paid by a key, and no seat runs on a key until the routed key isolation "
-            "lands; nothing was started")
 
 
 @dataclass(frozen=True)
@@ -464,7 +453,7 @@ def _from_text(text: str, folder: Path) -> Ship:
         code = code_mode(head)
     except (ValueError, TypeError):
         raise ShipError('ship.code must be absent, or "checkout"') from None
-    pools = {name: _pool(name, table) for name, table in data.get("pools", {}).items()}
+    pools = {name: _pool(name, table, folder) for name, table in data.get("pools", {}).items()}
     sessions = {
         name: _session(name, table, head.get("name", folder.name))
         for name, table in data.get("sessions", {}).items()
@@ -593,7 +582,7 @@ def _group(name: str, table: dict) -> Group:
     return Group(name, tuple(members), lead)
 
 
-def _pool(name: str, table: dict) -> Pool:
+def _pool(name: str, table: dict, folder: Path | None = None) -> Pool:
     config_dir = table.get("config_dir", table.get("home"))
     endpoint = table.get("endpoint")
     price = table.get("price")
@@ -604,8 +593,12 @@ def _pool(name: str, table: dict) -> Pool:
             price = asdict(Price.parse(price))
         except ValueError as error:
             raise ShipError(f"pool {name}: {error}") from None
-        if not endpoint:
-            raise ShipError(f"pool {name}: stated price is supported only for an endpoint pool")
+        if not endpoint and "api_key" not in table:
+            raise ShipError(f"pool {name}: stated price is supported only for an endpoint pool or a pool paid by a key")
+    if "api_key" in table:
+        # Never quotes what was written: a pasted key would be printed from a committed file.
+        if reason := keyfile.reference_refusal(name, table["api_key"]):
+            raise ShipError(reason)
     return Pool(
         name=name,
         provider=table["provider"],
@@ -613,7 +606,7 @@ def _pool(name: str, table: dict) -> Pool:
         api_key=table.get("api_key"),
         budget=table.get("budget"),
         endpoint=str(endpoint).rstrip("/") if endpoint else None,
-        context=table.get("context"), price=price, output=table.get("output"),
+        context=table.get("context"), price=price, output=table.get("output"), ship_folder=folder,
     )
 
 
@@ -803,7 +796,7 @@ def _validate(ship: Ship) -> None:
                 harness.check_defaults(selected, ship.folder / 'homes' / harness.name)
             except ShipError as error:
                 raise ShipError(f"pool {pool}: {error}") from None
-            if reason := harness.accepts(ship.pools[pool]):
+            if reason := keyfile.accepts(harness, ship.pools[pool]):
                 raise ShipError(f"seat {seat.name}: {reason}")
             if seat.pool_choices and selected.remote_control and not harness.remote_control:
                 raise ShipError(f"seat {seat.name}: {harness.name} has no Remote Control")

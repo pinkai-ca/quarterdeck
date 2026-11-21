@@ -88,9 +88,8 @@ def test_the_choice_is_written_in_the_home_and_read_back_at_launch(tmp_path: Pat
         endpoint.Choice.read(tmp_path / "nowhere")
 
 
-def test_the_key_beside_an_endpoint_travels_by_environment_and_describe_lists_what_is_served(monkeypatch):
+def test_the_key_beside_an_endpoint_is_named_never_carried_and_describe_lists_what_is_served(monkeypatch):
     assert endpoint.key(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")) == {}
-    monkeypatch.setenv("SOME_KEY", "value")
-    assert endpoint.key(Pool("remote", "x", endpoint="https://example.invalid/v1", api_key="env:SOME_KEY")) == {"QD_ENDPOINT_KEY": "value"}
+    assert endpoint.key(Pool("remote", "x", endpoint="https://example.invalid/v1", api_key="keys:some-key")) == {"QD_ENDPOINT_KEY": "keys:some-key"}
     monkeypatch.setattr(endpoint, "models", lambda url, timeout=0, **kwargs: [endpoint.Served("a", 98304), endpoint.Served("b", None)])
     assert endpoint.describe(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")) == "http://127.0.0.1:8000/v1 answers; serves a (98,304 tokens), b"

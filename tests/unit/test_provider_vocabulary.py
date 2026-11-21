@@ -18,7 +18,7 @@ name="synthetic"
 provider="{provider}"
 '''
     if key:
-        text += 'api_key="env:SYNTHETIC_KEY"\n'
+        text += 'api_key="keys:synthetic-key"\n'
     if endpoint:
         text += 'endpoint="http://synthetic.invalid/v1"\n'
     text += f'[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="{program}"\npool="paid"\n'
@@ -59,6 +59,10 @@ def test_open_harness_requires_an_endpoint_for_a_key_and_preserves_operator_iden
 
 @pytest.mark.parametrize("company,program", PAIRS)
 def test_native_harness_takes_its_own_company_key(tmp_path, company, program):
+    if program == "antigravity":  # measured: it stops at its own sign-in, whatever key it is given
+        with pytest.raises(ShipError, match="antigravity takes no key"):
+            declaration(tmp_path, company, program, key=True)
+        return
     assert declaration(tmp_path, company, program, key=True).pool("paid").kind == "key"
 
 

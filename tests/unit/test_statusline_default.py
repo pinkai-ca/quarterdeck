@@ -40,7 +40,7 @@ def plain(text):
 def test_declared_subscriptions_use_generic_ledger_windows():
     providers = ("anthropic", "openai", "google", "xai", "new-provider")
     pools = {f"sample-{n}": {"provider": provider} for n, provider in enumerate(providers)}
-    pools.update(key={"provider": "openai", "api_key": "env:SYNTHETIC_KEY"},
+    pools.update(key={"provider": "openai", "api_key": "keys:synthetic-key"},
                  local={"provider": "synthetic", "endpoint": "http://example.invalid"})
     windows = [window(name, (n + 1) / 10) for n, name in enumerate(list(pools)[:5])]
     rows = line.allowances(cache(windows), {"pools": pools}, "sample-1")

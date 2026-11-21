@@ -206,11 +206,10 @@ def test_a_move_to_another_pool_replaces_the_link_and_copies_no_token(tmp_path: 
     assert json.loads((tmp_path / "b" / ".credentials.json").read_text())["claudeAiOauth"]["refreshToken"] == "b", "nothing of pool a reached pool b"
 
 
-def test_a_key_pool_reaches_the_program_by_environment(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    pool = Pool("anthropic-api", "claude", api_key="env:ANTHROPIC_API_KEY")
+def test_a_key_pool_puts_no_key_in_the_launch_environment(tmp_path: Path):
+    pool = Pool("anthropic-api", "claude", api_key="keys:anthropic-api-key")
     seat = SeatSpec("w", "crew", "worker", "claude", ("anthropic-api",))
     home = tmp_path / "home"
     credential = ClaudeHarness().build_home(home, seat, pool, None)
     assert credential.variable == "ANTHROPIC_API_KEY" and not (home / ".credentials.json").exists()
-    assert ClaudeHarness().launch(seat, pool, home, tmp_path / "b.md", None, None).env["ANTHROPIC_API_KEY"] == "sk-test"
+    assert "ANTHROPIC_API_KEY" not in ClaudeHarness().launch(seat, pool, home, tmp_path / "b.md", None, None).env

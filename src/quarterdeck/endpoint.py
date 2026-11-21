@@ -16,7 +16,7 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .harness.base import key_environment
+from . import key_proof, keyfile
 from . import durable
 from .ship import Pool, ShipError
 from .pricing import save_price, saved_price
@@ -51,9 +51,12 @@ def models(url: str, timeout: float = TIMEOUT, *, api_key: str | None = None,
     headers = {"User-Agent": "quarterdeck"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+        headers.update(key_proof.listing_headers(url))
     request = urllib.request.Request(f"{url.rstrip('/')}/models", headers=headers)
     try:
-        opening = (urllib.request.urlopen if allow_redirects else
+        # urllib carries the auth header across a redirect, so a call with a key follows none.
+        opening = (urllib.request.build_opener(_NoRedirect()).open if api_key and allow_redirects else
+                   urllib.request.urlopen if allow_redirects else
                    urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open)
         with opening(request, timeout=timeout) as response:
             data = json.load(response)
@@ -107,7 +110,7 @@ def choose(pool: Pool, wanted: str | None) -> Choice:
     if not pool.endpoint:
         raise ShipError(f"pool {pool.name} names no endpoint")
     try:
-        served = models(pool.endpoint, api_key=key(pool).get(KEY_VARIABLE))
+        served = models(pool.endpoint, api_key=_secret(pool))
     except ShipError as error:
         raise ShipError(f"pool {pool.name}: {error}; start the server, or point the pool at one that answers") from None
     if not served:
@@ -130,13 +133,24 @@ def choose(pool: Pool, wanted: str | None) -> Choice:
 
 
 def key(pool: Pool) -> dict[str, str]:
-    """The environment carrying the key named beside an endpoint; empty for an endpoint that takes none."""
-    return key_environment(pool, KEY_VARIABLE)
+    """The variable a keyed endpoint's program reads, holding the key's reference and never the key; empty for an
+    endpoint that takes none. A launch takes the name out and the launcher fills it (key_launch)."""
+    return {KEY_VARIABLE: pool.api_key} if pool.api_key else {}
+
+
+def _secret(pool: Pool) -> str | None:
+    """The key itself, for the one call to the endpoint's own listing; None for an endpoint that takes none."""
+    if not pool.api_key:
+        return None
+    try:
+        return keyfile.value(pool)
+    except keyfile.KeyProblem as problem:
+        raise ShipError(str(problem)) from None
 
 
 def describe(pool: Pool) -> str:
     """What an endpoint pool serves, for ``qd doctor``; a ShipError says why it cannot be read."""
-    served = models(pool.endpoint or "", api_key=key(pool).get(KEY_VARIABLE))
+    served = models(pool.endpoint or "", api_key=_secret(pool))
     names = ", ".join(f"{m.id} ({m.context:,} tokens)" if m.context else m.id for m in served) or "nothing"
     output = f"; output {pool.output:,} tokens (declared)" if pool.output is not None else ''
     return f"{pool.endpoint} answers; serves {names}{output}"

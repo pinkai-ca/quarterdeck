@@ -71,12 +71,13 @@ UNJAILED_PREFIXES = (*FROM_PANE_PREFIXES, *DESKTOP_PREFIXES)
 # The service starts from a declared list too, named exactly, with no prefix but the unjailed list's own: the
 # unjailed panes' list (it may start the ship's server, which they inherit), what it needs to run (a test namespace's
 # tmux folder, certificates and proxies for its readers), its own ship (QD_SHIP, QD_DEFAULT_SHIP) and git's identity.
-# No pool's key: no seat runs on one (ship.key_refusal). Never QD_SEAT; no other QD_ or GIT_ name, so neither
+# No pool's key: the launcher reads each from the key file (key_launch). Never QD_SEAT; no other QD_ or GIT_ name, so neither
 # GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY nor GIT_SSH*. QD_TMUX_SOCKET passes only where it is
 # declared (servicectl.start): a test's or the drill's private namespace.
 GIT_IDENTITY = ('GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL')
 SERVICE = (*UNJAILED, 'TMUX_TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
            'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy', 'QD_SHIP', 'QD_DEFAULT_SHIP',
+           'QD_TEST_CONFIG_HOME',  # a test's scratch for the key file (keyfile.TEST_CONFIG); no real ship sets it
            *GIT_IDENTITY)
 SERVICE_PREFIXES = UNJAILED_PREFIXES
 NEVER = ('QD_SEAT',)
@@ -84,7 +85,7 @@ NEVER = ('QD_SEAT',)
 
 def declared(environ, names, prefixes, keys=()) -> dict[str, str]:
     """The variables of ``environ`` a list names, by name or prefix, but never QD_SEAT nor a secret-looking name; then
-    the ``keys`` named exactly. No caller of the framework passes ``keys`` now that no pool's key is carried; the
+    the ``keys`` named exactly. No caller of the framework passes ``keys``, since no pool's key is carried here; the
     tests pass it to prove that a refused name is dropped from both, whatever names it. Names are judged, never
     values."""
     kept = {name: value for name, value in environ.items()
@@ -100,7 +101,7 @@ def unjailed_environment(environ) -> dict[str, str]:
 
 
 def service_environment(environ) -> dict[str, str]:
-    """What the service starts with: its own list, and no pool's key (ship.key_refusal: no seat runs on one)."""
+    """What the service starts with: its own list, and no pool's key."""
     return declared(environ, SERVICE, SERVICE_PREFIXES)
 
 

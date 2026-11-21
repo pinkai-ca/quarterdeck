@@ -108,5 +108,5 @@ def test_the_grant_expiry_is_read_as_metadata_and_warned_two_days_ahead(tmp_path
     ship, pool, _ = ship_with_pool(tmp_path / "later", json.dumps({"claudeAiOauth": {"refreshToken": "x", "refreshTokenExpiresAt": int(later.timestamp() * 1000)}}))
     assert credential.login_needed(ship) == []
     assert credential.grant_expiry(Pool("codex", "openai", config_dir=tmp_path)) is None, "no file, no claim"
-    assert credential.pool_file(Pool("api", "anthropic", api_key="env:K")) is None
+    assert credential.pool_file(Pool("api", "anthropic", api_key="keys:k")) is None
     assert credential.freshness(pool, tmp_path / "pool" / ".credentials.json") is not None

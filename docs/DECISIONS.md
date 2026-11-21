@@ -516,16 +516,9 @@ the doctor's result, with no session left open.
 A provider is paid by subscription, by API key or through an endpoint. A pool is
 one way of paying, and a ship declares a pool for each way the ship pays, with
 any number of pools for one provider. A subscription pool names the folder of a
-sign-in. A key pool names its key as `env:NAME` or `file:PATH`; the ship file
-never holds the key, and the key reaches the program by an environment
-variable. A key pool is measured by spend, and an optional budget per day, week
-or month is its wall.
-
-Until the routed key isolation lands, no seat launches on a pool paid by a key,
-a key pool or a keyed endpoint, jailed or not: the key would reach the seat's
-program by its environment, and so the model's tool commands. Every launch door
-refuses it with a line naming that change; the ship file still loads, so a seat
-already running on a key can be seen and stopped.
+sign-in. A key pool names its key as `keys:<name>`, a name in the one key file;
+the ship file never holds the key. A key pool is measured by spend, and an
+optional budget per day, week or month is its wall.
 
 An endpoint pool is a model served at an OpenAI-compatible URL, local or
 remote, with no credential of its own and no quota wall. The machine that runs a
@@ -625,3 +618,10 @@ that counts each.
 Changed: ordinary framework and test-tool writes request no file or folder sync, and the ledger uses `synchronous=OFF`; the initial delivery attempt retains barriers for `one-door`, refusal quarantine and compaction transition records retain them for `context-is-cache`, and SQLite keeps its own hot-journal recovery syncs before OFF applies.
 Risk accepted: power or operating-system failure can lose recent writes and can corrupt the SQLite ledger, requiring automatic reconstruction from the programs’ records; the original database stays as named evidence until its alarm is acknowledged.
 Why rename stays: a writer closes its complete temporary before replacing the destination, so a reader and a process restart see a whole old or new file.
+
+## A seat paid by a key works as a seat on a subscription does
+
+Changed: the refusal of every launch on a key is lifted, and so is the plan to run a key holder outside a forced jail. A key pool is declared and chosen like any other, and a seat on it is confined exactly as it would be on a subscription.
+Why: the ship trusts its own models, and a key is protected by what its provider lets it spend. What must hold is that a key is never printed, stored by qd or put on a command line.
+How: every key lives in one file, read at each launch by a small launcher, so a key is in neither tmux's nor bwrap's arguments. The file's path comes from the account, so every process reads the same file. The ship file accepts only `keys:<name>`.
+Risk accepted: any seat of the same user that is not jailed can read the key file and another seat's environment, as it can read a subscription's sign-in. The limit on the key is what bounds that.

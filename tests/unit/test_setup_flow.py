@@ -148,11 +148,21 @@ def test_program_and_role_flags_may_be_omitted_when_seat_answers_supply_them(ans
 def test_key_payment_stores_only_variable_reference(answers):
     answers["payment"] = {"codex": "key"}
     answers["provider"] = {"codex": "openai"}
-    answers["key_env"] = {"codex": "EXAMPLE_SETUP_KEY"}
+    answers["key_env"] = {"codex": "example-setup-key"}
     execute(answers)
     current = ship.load(Path(answers["folder"]))
-    assert current.pool("codex").api_key == "env:EXAMPLE_SETUP_KEY"
+    assert current.pool("codex").api_key == "keys:example-setup-key"
     assert current.pool("codex").config_dir is None
+
+
+def test_a_subscription_can_name_a_key_to_fall_back_to(answers):
+    answers["key_fallback"] = {"codex": "openai"}
+    execute(answers)
+    current = ship.load(Path(answers["folder"]))
+    assert current.pool("codex-key").api_key == "keys:openai" and current.pool("codex-key").provider == "openai"
+    assert current.pool("codex").kind == "subscription"
+    assert all(seat.pools[-1] == "codex-key" and seat.pools[0] == "codex" for seat in current.seats.values()
+               if seat.harness == "codex")
 
 
 @pytest.mark.parametrize("program", ["pi", "opencode"])
@@ -173,9 +183,9 @@ def test_explicit_endpoint_operator_model_and_no_key(answers, program, payment):
 def test_endpoint_key_is_explicit_reference(answers):
     answers.update(programs="pi", desk="pi", captain="pi", engineer="pi", payment={"pi": "endpoint"},
                    provider={"pi": "example-operator"}, endpoint={"pi": "https://example.invalid/v1"},
-                   model={"pi": "example-model"}, key_env={"pi": "EXAMPLE_ENDPOINT_KEY"})
+                   model={"pi": "example-model"}, key_env={"pi": "example-endpoint-key"})
     execute(answers)
-    assert ship.load(Path(answers["folder"])).pool("pi").api_key == "env:EXAMPLE_ENDPOINT_KEY"
+    assert ship.load(Path(answers["folder"])).pool("pi").api_key == "keys:example-endpoint-key"
 
 
 def test_adapter_rejects_unsupported_subscription(answers):
@@ -231,7 +241,7 @@ def test_existing_keep_does_not_rewrite_declaration(answers):
 def test_existing_update_reuses_set_boundary_and_reports_relaunch(answers):
     execute(answers)
     original_orders = (Path(answers["folder"]) / "orders.md").read_bytes()
-    answers.update(existing="update", payment={"codex": "key"}, provider={"codex": "openai"}, key_env={"codex": "EXAMPLE_SETUP_KEY"})
+    answers.update(existing="update", payment={"codex": "key"}, provider={"codex": "openai"}, key_env={"codex": "example-setup-key"})
     result, _, operations = execute(answers)
     assert any(isinstance(call, tuple) and call[0] == "set" for call in operations.calls)
     assert "up" not in operations.calls
@@ -315,16 +325,16 @@ def test_flags_override_answers_file(answers, tmp_path):
     merged = setup.read_answers(args)
     assert merged["name"] == "renamed"
     assert merged["payment"] == {"codex": "key"}
-    execute(merged | {"provider": {"codex": "openai"}, "key_env": {"codex": "EXAMPLE_SETUP_KEY"}})
+    execute(merged | {"provider": {"codex": "openai"}, "key_env": {"codex": "example-setup-key"}})
 
 
 def test_cli_flags_bind_setup_answers():
     parser = cli.build_parser()
     args = parser.parse_args(["setup", "--folder", "/example/crew", "--programs", "codex", "--payment", "codex=key",
-                              "--key-env", "codex=EXAMPLE_SETUP_KEY", "--provider", "codex=openai", "--desk", "codex", "--captain", "codex",
+                              "--key-env", "codex=example-setup-key", "--provider", "codex=openai", "--desk", "codex", "--captain", "codex",
                               "--engineer", "codex", "--workspace", "/example/work", "--name", "example",
                               "--check", "yes", "--start", "no"])
-    assert setup.read_answers(args)["key_env"] == {"codex": "EXAMPLE_SETUP_KEY"}
+    assert setup.read_answers(args)["key_env"] == {"codex": "example-setup-key"}
     assert args.run is cli.cmd_setup
 
 
@@ -362,10 +372,11 @@ def test_missing_program_doctor_row(tmp_path, monkeypatch):
     assert "PATH" in row.detail
 
 
-@pytest.mark.parametrize("value", ["not a variable", "env:EXAMPLE_KEY", "example-key-value"])
+@pytest.mark.parametrize("value", ["not a name", "env:EXAMPLE_KEY", "EXAMPLE_KEY", "sk-synthetic-" + "a" * 40])
 def test_key_answer_is_a_name(value):
-    with pytest.raises(ship.ShipError, match="environment variable NAME"):
+    with pytest.raises(ship.ShipError, match="the NAME of a key") as refused:
         setup.key_reference(value)
+    assert value not in str(refused.value), "what was answered may be a pasted key"
 
 
 @pytest.mark.parametrize("value", ["https://name:password@example.invalid/v1", "https://example.invalid/v1?key=example", "file:///example"])
@@ -385,12 +396,12 @@ def test_openrouter_is_not_an_automatic_payment_route(answers):
 def test_explicit_openrouter_key_uses_declared_endpoint_and_variable(answers):
     answers.update(programs="pi", desk="pi", captain="pi", engineer="pi", payment={"pi": "key"},
                    provider={"pi": "openrouter"}, model={"pi": "example-model"},
-                   key_env={"pi": "EXAMPLE_ROUTER_KEY"})
+                   key_env={"pi": "example-router-key"})
     execute(answers)
     current = ship.load(Path(answers["folder"]))
     assert current.pool("pi").provider == "openrouter"
     assert current.pool("pi").endpoint == "https://openrouter.ai/api/v1"
-    assert current.pool("pi").api_key == "env:EXAMPLE_ROUTER_KEY"
+    assert current.pool("pi").api_key == "keys:example-router-key"
 
 
 def test_interactive_readiness_wait_is_person_driven_and_rereads(answers):

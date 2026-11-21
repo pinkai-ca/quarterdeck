@@ -13,13 +13,14 @@ budget.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import json
 import secrets
 from contextlib import contextmanager
 from copy import copy
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from .harness.base import Turn, Usage
@@ -34,11 +35,12 @@ from .usage_cache import UsageCache, aware, parse
 
 UNATTRIBUTED = "-"
 PERIODS = {"day": 1, "week": 7, "month": 30}
+PREPAID = re.compile(r"(\d+(?:\.\d+)?)\s+([A-Z]{3})\s+from\s+(\d{4}-\d{2}-\d{2})\s+until\s+(\d{4}-\d{2}-\d{2})")
 
 
 @dataclass(frozen=True)
 class Budget:
-    """A key pool's wall: ``200 USD/month`` in the ship file."""
+    """A key pool's wall: ``200 USD/month`` in the ship file, or a one-off credit (PrepaidBudget)."""
 
     amount: float
     currency: str
@@ -48,6 +50,14 @@ class Budget:
     def parse(cls, text: str | None) -> "Budget | None":
         if not text:
             return None
+        if prepaid := PREPAID.fullmatch(text.strip()):
+            try:
+                start, end = date.fromisoformat(prepaid[3]), date.fromisoformat(prepaid[4])
+            except ValueError:
+                start, end = None, None
+            if start is None or end < start:
+                raise ShipError(f"a prepaid budget runs from one date until a later one, not {text!r}") from None
+            return PrepaidBudget(float(prepaid[1]), prepaid[2], "prepaid", start.isoformat(), end.isoformat())
         try:
             figure, period = text.split("/")
             amount, currency = figure.split()
@@ -55,7 +65,15 @@ class Budget:
                 raise ValueError(period)
             return cls(float(amount), currency.strip(), period.strip())
         except ValueError:
-            raise ShipError(f"a budget reads like \"200 USD/month\" (day, week or month), not {text!r}") from None
+            raise ShipError(f"a budget reads like \"200 USD/month\" (day, week or month) or "
+                            f"\"50 USD from 2026-11-21 until 2026-12-15\", not {text!r}") from None
+
+    def ended(self, now: datetime) -> bool:
+        return False
+
+    @property
+    def shown(self) -> str:
+        return f"{self.amount:.0f} {self.currency}/{self.period}"
 
     def period_start(self, now: datetime) -> datetime:
         if self.period == "month":
@@ -63,6 +81,25 @@ class Budget:
         if self.period == "week":
             return (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+@dataclass(frozen=True)
+class PrepaidBudget(Budget):
+    """A one-off credit, ``50 USD from 2026-11-21 until 2026-12-15``: spend counts from the first date, and the wall
+    stands once the amount is spent or the last date has passed, so that a seat moves before the provider refuses."""
+
+    start: str = ""
+    end: str = ""
+
+    def ended(self, now: datetime) -> bool:
+        return now.date() > date.fromisoformat(self.end)
+
+    @property
+    def shown(self) -> str:
+        return f"{self.amount:.0f} {self.currency} prepaid until {self.end}"
+
+    def period_start(self, now: datetime) -> datetime:
+        return datetime.combine(date.fromisoformat(self.start), time.min, tzinfo=now.tzinfo)
 
 
 SCHEMA = """
@@ -668,6 +705,14 @@ class Ledger:
                               (pool, since.astimezone().isoformat())).fetchone()
         return row[0], row[1] or 0
 
+    def key_spend(self, ship, choice, since: datetime) -> tuple[float | None, int]:
+        """What the key this pool names has cost since a moment, over every pool of the ship that names the same key."""
+        names = ([pool.name for pool in ship.pools.values() if pool.api_key == choice.api_key]
+                 if choice.api_key else [choice.name])
+        readings = [self.spend(name, since) for name in names]
+        known = [cost for cost, _ in readings if cost is not None]
+        return (sum(known) if known else None), sum(unpriced for _, unpriced in readings)
+
     def tools(self) -> list[tuple[str, int, float, int, int, int]]:
         """Tool calls by name: count, seconds, failures; then how many calls had no duration and how many no verdict."""
         return self.db.execute(
@@ -713,8 +758,8 @@ class Ledger:
                 continue
             budget = Budget.parse(choice.budget)
             if budget is not None:
-                spent, _ = self.spend(choice.name, budget.period_start(now))
-                if spent is not None and spent >= budget.amount:
+                spent, _ = self.key_spend(ship, choice, budget.period_start(now))
+                if budget.ended(now) or spent is not None and spent >= budget.amount:
                     found.append(f"{choice.name} budget")
         return found + self.quota.walls(now, scope=scope, pool=pool, ship=ship)
 

@@ -146,6 +146,9 @@ The modules that the framework table does not list, the module of each part amon
 | `inbox_watch.py` | a seat's own inbox watch: its registration and its live generation |
 | `jail_end.py` | a seat's sandbox ends whole: its tree and orphans at the stop, a hold where they do not end, and the sweep of a stray sandbox |
 | `jail_environment.py` | what an environment may hold, named once: the jail's allowlist, the unjailed panes' and the service's declared lists, the pattern of names that look secret, and the launcher that starts each jail from bwrap's `--clearenv` |
+| `key_launch.py` | the launcher that puts a pool's key into its program, on no process's command line |
+| `key_proof.py` | qd doctor's proof that a key works, by one call to the provider that spends nothing |
+| `keyfile.py` | the one file of API keys: where it is, whether it may be read, and what a pool's key is |
 | `ledger.py` | the Ledger: turns, tokens, tool calls and machine use, by pool, seat and order; the service writes the Ledger, and every reading opens the Ledger read-only |
 | `lifecycle.py` | the seat-transition claim that lifecycle acts and ordinary delivery share: an explicit act waits a bounded time for it, a delivery never waits |
 | `model_mismatch.py` | differences between a seat's recorded model and the ship file, and one fixed notice to the systems seats for each |
@@ -211,6 +214,9 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | --- | --- |
 | `base.py` | the `Harness` interface: everything an adapter knows about one program |
 | `antigravity.py`, `claude.py`, `codex.py`, `grok.py`, `opencode.py`, `pi.py` | the adapters for Antigravity, Claude Code, Codex, Grok, OpenCode and pi |
+| `key_limits.py` | a provider refusing a key for spend or rate, in the forms measured on the real programs |
+| `key_prices.py` | what a turn on a key costs where the program states none: the pool's price or Anthropic's list |
+| `key_routes.py` | how each program takes an API key at launch: a table of names, never a value |
 | `fake.py` | the fake harness adapter, the reference implementation of the interface; the fake program writes back the launch's startup token once the program has drawn a first screen, which ends a live launch's survival wait early, while a real program's launch keeps the whole wait |
 | `antigravity_models.py` | exact Antigravity scope facts; a model's name alone establishes no quota membership |
 | `check_evidence.py` | bounded tool evidence from a check's own pinned record, never a receipt |

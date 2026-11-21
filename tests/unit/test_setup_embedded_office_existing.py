@@ -43,7 +43,7 @@ def test_keep_on_the_ship_that_holds_the_desk_succeeds_and_writes_nothing(embedd
 def test_update_on_the_ship_that_holds_the_desk_updates_its_crew_and_makes_no_office(embedded, tmp_path):
     orders = (Path(embedded['folder']) / 'orders.md').read_bytes()
     first_step({**embedded, 'existing': 'update', 'payment': {'codex': 'key'}, 'provider': {'codex': 'openai'},
-                'key_env': {'codex': 'EXAMPLE_SETUP_KEY'}})
+                'key_env': {'codex': 'example-setup-key'}})
     current = ship.load(Path(embedded['folder']))
     assert current.pool(current.seat('captain').pools[0]).kind == 'key', 'the crew updated'
     assert (current.folder / 'orders.md').read_bytes() == orders

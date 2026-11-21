@@ -19,8 +19,9 @@ import tempfile
 from pathlib import Path
 
 from . import copy_state, credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, shutdown, watch
+from . import key_proof, keyfile
 from .drill import Check, wait_for
-from .harness.base import _version_in_runtime, key_environment, program_version, program_where
+from .harness.base import _version_in_runtime, program_version, program_where
 from .harness.capabilities import validate_selection
 from .seat import program_path, temporary_seat
 from .ship import CARRY_BYTES, Pool, SeatSpec, Ship, ShipError
@@ -261,9 +262,14 @@ def framework_check(ship: Ship) -> Check:
 def pool_check(pool: Pool) -> Check:
     """A pool is ready when the credential it names is there, or its endpoint answers; expiry is read as metadata, never a token.
 
-    A pool paid by a key is not ready, whatever its key: no seat launches on it (ship.key_refusal)."""
-    if reason := shipmod.key_refusal(pool):
-        return Check(f"pool {pool.name}", False, reason.removesuffix("; nothing was started"))
+    A pool paid by a key is ready when its key is in the key file and one call that spends nothing does not refuse it."""
+    if pool.paid_by_key:
+        line = keyfile.status_line(pool).removeprefix(f"pool {pool.name}: ")
+        if keyfile.problem(pool) is not None:
+            return Check(f"pool {pool.name}", False, line)
+        passed, proof = key_proof.prove(pool)
+        note = " · other accounts can read the key file; 0600 is advised" if keyfile.open_to_others(pool) else ""
+        return Check(f"pool {pool.name}", passed, f"{line} · {proof}{note}")
     if pool.kind == "endpoint":
         try:
             return Check(f"pool {pool.name}", True, endpoint.describe(pool))
@@ -273,12 +279,6 @@ def pool_check(pool: Pool) -> Check:
         harnesses.native_for(pool.provider).preflight()
     except ShipError as error:
         return Check(f"pool {pool.name}", False, str(error))
-    if pool.kind == "key":
-        try:
-            key_environment(pool, "KEY")
-            return Check(f"pool {pool.name}", True, f"key present in {pool.api_key}")
-        except ShipError as error:
-            return Check(f"pool {pool.name}", False, str(error))
     file = credential.pool_file(pool)
     if file is None:
         return Check(f"pool {pool.name}", True, "the program holds its own sign-in")
@@ -291,11 +291,12 @@ def fix(ship: Ship, failed: list[Check], tmux: Tmux) -> list[Check]:
     """Open a throwaway seat on the first pool whose program runs, hand it the failures as an order, and wait for its report."""
     searched = program_path()
     candidates = [(pool, reader) for pool in ship.pools.values() for name in harnesses.NAMES
-                  if (reader := harnesses.get(name)).accepts(pool) is None and shutil.which(reader.program, path=searched)]
-    available = next(((pool, reader) for pool, reader in candidates if not pool.paid_by_key), None)
+                  if keyfile.accepts(reader := harnesses.get(name), pool) is None and shutil.which(reader.program, path=searched)]
+    available = next(((pool, reader) for pool, reader in candidates if keyfile.usable(pool)), None)
     if available is None and candidates:
-        # Only pools a key pays for could carry its seat: the cause is the key refusal, not a missing program.
-        return [Check("seat opened", False, f"doctor: {shipmod.key_refusal(candidates[0][0])}")]
+        # Only pools whose key cannot be read could carry its seat: that is the cause, not a missing program.
+        unusable = candidates[0][0]
+        return [Check("seat opened", False, f"doctor: its pool {unusable.name}: {keyfile.problem(unusable)}; nothing was started")]
     if available is None:
         return [Check("seat opened", False, "no declared pool's program is on the PATH, so no seat can be asked; install one first")]
     pool, reader = available

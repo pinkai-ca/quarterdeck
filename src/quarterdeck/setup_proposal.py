@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import harness, providers, standing
+from . import harness, keyfile, providers, standing
 from .ship import Ship, ShipError
 from .setup_answers import MISSING, ROLES, put
 
@@ -88,7 +88,7 @@ def keep_unchanged(c, ship: Ship) -> None:
             if provider is not MISSING and providers.canonical(provider) != pool.provider:
                 raise ShipError(f"answer provider.{effective.harness} changes a kept ship; choose existing=update")
             same(f"endpoint.{effective.harness}", pool.endpoint)
-            variable = pool.api_key.removeprefix("env:") if pool.api_key and pool.api_key.startswith("env:") else None if pool.api_key else "none"
+            variable = keyfile.name_of(pool.api_key) if pool.api_key else "none"
             same(f"key_env.{effective.harness}", variable)
             home = c.supplied(f"subscription_home.{effective.harness}")
             if home is not MISSING and (pool.config_dir is None or Path(home).expanduser().resolve() != pool.config_dir.resolve()):
@@ -230,7 +230,9 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
             fields.update(c.control(role, field, suggestion))
         seats[role] = fields
     selected = list(dict.fromkeys([fields["harness"] for fields in seats.values()] + (candidates if programs is not MISSING else [])))
-    pools, served = setup.pool_answers(c, selected, defaults, operations=operations, existing=existing)
+    key_fallbacks: dict = {}
+    pools, served = setup.pool_answers(c, selected, defaults, operations=operations, existing=existing,
+                                       fallbacks=key_fallbacks)
     names, edits = {}, ([("ship", "operator", operator)] if desk_only else
                         [("ship", "name", name), ("ship", "operator", operator), ("ship", "workspace", str(workspace))])
     if include_desk and not existing and office != "Office":
@@ -250,6 +252,14 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
         return pool_name
     for program, values in pools.items():
         declare_pool(program, values)
+    key_pools = {}
+    for program, values in key_fallbacks.items():
+        pool_name, index = f"{program}-key", 1
+        while existing and pool_name in existing.pools and existing.pools[pool_name] != ships._pool(pool_name, values):
+            pool_name, index = f"{program}-key-{index}", index + 1
+        key_pools[program] = pool_name
+        pool_harnesses.setdefault(pool_name, set()).add(program)
+        edits.extend((f"pools.{pool_name}", key, value) for key, value in values.items())
     # Keep the historical explicit programs inclusion behavior for unused programs.
     for program in selected:
         if program not in {fields["harness"] for fields in seats.values()}:
@@ -268,6 +278,8 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
                 seats[key]["effort"] = effort[1]
     pool_specs = dict(existing.pools) if existing else {}
     pool_specs.update({names[program]: ships._pool(names[program], values) for program, values in pools.items()})
+    pool_specs.update({key_pools[program]: ships._pool(key_pools[program], values)
+                       for program, values in key_fallbacks.items()})
     for role, fields in seats.items():
         program, primary = fields["harness"], names[fields["harness"]]
         if "model" not in fields and "model_mode" not in fields:
@@ -278,15 +290,17 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
             raise ShipError(f"answer seats.{role}.model_mode: {program} needs an explicit served model")
         default_pools = [primary] + [name for name, pool in pool_specs.items() if name != primary
                                    and program in pool_harnesses.get(name, ())
-                                   and pool.kind == pool_specs[primary].kind and harness.get(program).accepts(pool) is None]
+                                   and pool.kind == pool_specs[primary].kind and keyfile.accepts(harness.get(program), pool) is None]
         if role in ROLES:
             saved = existing.seats.get(role) if existing else None
             if saved and saved.harness == program and primary in saved.pools:
                 raw = tomllib.loads(existing.file.read_text())["seats"][role]["pool"]
                 default_pools = raw if isinstance(raw, list) else [raw]
+            if program in key_pools and key_pools[program] not in default_pools:
+                default_pools = [*default_pools, key_pools[program]]  # last: a key pays when the subscriptions are spent
             choices = c.value(f"seats.{role}.pools", f"{ROLE_LABELS[role]} fallback order (comma-separated pools; /other adds another harness)", default_pools)
         else:
-            choices = default_pools
+            choices = [*default_pools, *([key_pools[program]] if program in key_pools else [])]
         if not isinstance(choices, list) or not choices:
             raise ShipError(f"answer seats.{role}.pools must be a nonempty ordered list")
         for index, choice in enumerate(choices):
@@ -491,18 +505,15 @@ def summary(ship: Ship, display_control, *, existing: Ship | None = None, office
                 if pool.config_dir is not None:
                     detail += f" ({pool.config_dir})"
             elif pool.kind == "key":
-                # The setup validator accepts only env:NAME; never render a direct key value.
-                variable = pool.api_key.removeprefix("env:") if pool.api_key and pool.api_key.startswith("env:") else "variable unknown"
-                detail = f"an API key ({variable})"
+                # The ship file accepts only keys:<name>; never render a direct key value.
+                detail = f"an API key ({keyfile.name_of(pool.api_key) or 'name unknown'}, in {keyfile.SHOWN})"
             else:
                 if local_endpoint(pool.endpoint):
                     detail = f"a local model at {pool.endpoint}"
-                elif pool.api_key and pool.api_key.startswith("env:"):
-                    detail = f"an API key ({pool.api_key.removeprefix('env:')}) at {pool.endpoint}"
+                elif pool.api_key:
+                    detail = f"an API key ({keyfile.name_of(pool.api_key) or 'name unknown'}, in {keyfile.SHOWN}) at {pool.endpoint}"
                 else:
                     detail = f"a model at {pool.endpoint}"
-            if pool.paid_by_key:  # declared as asked, and named refused before anything is written (ship.key_refusal)
-                detail += "; refused for now: no seat runs on a key until the routed key isolation lands"
             if detail not in runs.setdefault(program, []):
                 runs[program].append(detail)
         if len(seat.pools) > 1:
