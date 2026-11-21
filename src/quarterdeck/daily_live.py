@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -320,6 +321,46 @@ def _release(tmux: Tmux | None, parent: Path | None) -> str | None:
     return None
 
 
+def _stage_program_pin(origin: Ship, copied: Ship, program: str) -> None:
+    """Give the check its own copy of the verified executable for this program."""
+    pin = origin.program_pins.get(program)
+    staged = copied.program_pins.get(program)
+    if pin is None and staged is None:
+        return
+    if pin is None or staged is None or (pin.path.name, pin.sha256) != (staged.path.name, staged.sha256):
+        raise shipmod.ProgramPinError(f"{program} pin declaration changed while preparing the check. Try again.")
+
+    changed = f"{program} pin {pin.path}: file changed while preparing the check. Restore the declared runtime copy."
+    try:
+        original = pin.path.lstat()
+        pin.verified()
+        staged.path.parent.parent.mkdir(mode=0o700)
+        staged.path.parent.mkdir(mode=0o700)
+        # Reopen without following links, and copy only the inode the origin verifier saw.
+        directory = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        with ExitStack() as opened:
+            runtime_fd = os.open(origin.runtime, directory)
+            opened.callback(os.close, runtime_fd)
+            programs_fd = os.open('programs', directory, dir_fd=runtime_fd)
+            opened.callback(os.close, programs_fd)
+            fd = os.open(pin.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=programs_fd)
+            with os.fdopen(fd, 'rb') as source:
+                before = os.fstat(fd)
+                if not os.path.samestat(original, before) or original.st_ctime_ns != before.st_ctime_ns:
+                    raise shipmod.ProgramPinError(changed)
+                with staged.path.open('xb') as target:
+                    shutil.copyfileobj(source, target)
+                    os.fchmod(target.fileno(), 0o500)
+                if os.fstat(fd).st_ctime_ns != before.st_ctime_ns:
+                    raise shipmod.ProgramPinError(changed)
+    except FileNotFoundError:
+        raise shipmod.ProgramPinError(
+            f"{program} pin {pin.path}: file is missing. Restore the declared runtime copy."
+        ) from None
+    except OSError as error:
+        raise shipmod.ProgramPinError(f"{program} pin {pin.path}: could not stage the executable: {error}") from None
+
+
 def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
     """``qd check PROGRAM --minimal`` with every copied seat's workspace inside the throwaway.
 
@@ -327,7 +368,7 @@ def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
     Remove both with the throwaway and its server afterward.
     """
     parent = root / f"qd-daily-live-{secrets.token_hex(8)}"
-    parent.mkdir(parents=True, exist_ok=False)
+    parent.mkdir(mode=0o700, parents=True, exist_ok=False)
     tmux = None
     code: int | None = None
     output = ""
@@ -344,6 +385,7 @@ def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
         for name in copied.seats:
             declaration = shipmod.edit(declaration, f'seats.{name}', 'cwd', str(workspace))
         durable.replace_file(folder / 'ship.toml', declaration)
+        _stage_program_pin(origin, copied, program)
         tmux = open_private(parent)
         start_private(tmux)
         socket = tmux.socket
@@ -354,7 +396,7 @@ def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
         )
         code = completed.returncode
         output = _bounded(completed.stdout + completed.stderr)
-    except (OSError, TmuxError, shutil.Error) as error:
+    except (OSError, TmuxError, shipmod.ProgramPinError) as error:
         code = None
         output = _bounded(f"check did not finish: {error}")
     finally:

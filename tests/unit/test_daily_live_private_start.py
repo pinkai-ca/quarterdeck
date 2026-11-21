@@ -1,5 +1,6 @@
 """Creator bootstrap and timer completion; only synthetic commands run here."""
 
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -43,6 +44,72 @@ print('synthetic observer completed once')
     assert not Path(result.place).exists()
     assert not Path(result.socket).parent.exists()
     assert {key: os.environ[key] for key in before} == before
+
+
+@pytest.mark.parametrize('problem', [None, 'wrong digest', 'missing'])
+def test_check_child_uses_a_private_copy_of_the_declared_pin(tmp_path, problem):
+    origin = ship(tmp_path / 'origin')
+    executable = b'#!/bin/sh\nprintf "synthetic pin 1.2.3\\n"\n'
+    digest = hashlib.sha256(executable).hexdigest()
+    origin.file.write_text(origin.file.read_text() + f'''
+[programs.grok]
+path = "runtime/programs/synthetic-grok"
+sha256 = "{digest}"
+''')
+    origin = daily_live.shipmod.load(origin.folder)
+    pin = origin.program_pins['grok'].path
+    pin.parent.mkdir(mode=0o700, parents=True)
+    (pin.parent / 'undeclared').write_text('do not copy this file')
+    (origin.runtime / 'other').write_text('do not copy this file either')
+    contents = b'different synthetic executable' if problem == 'wrong digest' else executable
+    original = None
+    if problem != 'missing':
+        pin.write_bytes(contents)
+        pin.chmod(0o500)
+        original = pin.stat()
+
+    command = tmp_path / 'synthetic-check'
+    source = Path(daily_live.__file__).resolve().parents[1]
+    command.write_text(f'''#!{sys.executable}
+import os, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, {str(source)!r})
+from quarterdeck.harness import get
+from quarterdeck.ship import load, program_adapter
+assert sys.argv[1:] == ['--ship', os.environ['QD_SHIP'], 'check', 'grok', '--minimal']
+copied = load(Path(sys.argv[2]))
+assert os.environ['QD_TMUX_SOCKET']
+assert copied.program_pins['grok'].sha256 == {digest!r}
+selected = program_adapter(copied, get('grok')).selected_program()
+assert selected == copied.runtime / 'programs' / 'synthetic-grok'
+assert not selected.samefile({str(pin)!r})
+assert list(selected.parent.iterdir()) == [selected]
+assert list(copied.runtime.iterdir()) == [selected.parent]
+print(subprocess.check_output([selected, '--version'], text=True).strip())
+''')
+    command.chmod(0o700)
+
+    result = daily_live.invoke(origin, 'grok', tmp_path / 'scratch', str(command))
+
+    assert result.retained is None
+    assert not Path(result.place).exists()
+    if problem is None:
+        assert result.exit_code == 0, result.output
+        assert result.output == 'synthetic pin 1.2.3'
+        assert not Path(result.socket).parent.exists()
+    else:
+        assert result.exit_code is None and result.socket is None
+        assert f'grok pin {pin}' in result.output
+        reason = 'SHA-256 does not match ship.toml' if problem == 'wrong digest' else 'file is missing'
+        assert reason in result.output
+    if original is None:
+        assert not pin.exists()
+    else:
+        assert pin.read_bytes() == contents
+        after = pin.stat()
+        assert os.path.samestat(original, after)
+        assert (after.st_mode, after.st_mtime_ns, after.st_ctime_ns) == (
+            original.st_mode, original.st_mtime_ns, original.st_ctime_ns)
 
 
 @pytest.mark.parametrize('inherited', [False, True])
