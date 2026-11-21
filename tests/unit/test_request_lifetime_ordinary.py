@@ -37,8 +37,11 @@ def enqueue(runtime, kind='relaunch', **extra):
         # The seat's own request, filed from its pane: this test process stands in for the pane process.
         data.setdefault('origin', dict(pane='%1', pid=os.getpid(), at=AT.isoformat(), harness='synthetic',
                                        start=process_start(os.getpid())))
-    return request_queue.enqueue(runtime, kind, data,
-                                 name=f'request-orchid-{next(IDS)}-zz')
+    path = request_queue.enqueue(runtime, kind, data, name=f'request-orchid-{next(IDS)}-zz')
+    if kind == 'select':
+        stamp = post.now().timestamp()
+        os.utime(path, (stamp, stamp))
+    return path
 
 
 def service(runtime, answer):
@@ -180,24 +183,44 @@ def test_service_wait_is_visible_and_cancelled_request_is_settled(runtime):
     assert not path.exists() and 'cancelled' in path.with_suffix('.done').read_text()
 
 
-def test_superseding_request_settles_previous_one_with_same_owner(runtime, monkeypatch):
-    first = enqueue(runtime)
+@pytest.mark.parametrize('kind', ['relaunch', 'select'])
+def test_superseding_request_settles_previous_one_with_same_owner(runtime, monkeypatch, kind):
+    first = enqueue(runtime, kind)
     monkeypatch.setattr(post, 'now', lambda: AT.replace(second=1))
-    second = enqueue(runtime)
+    second = enqueue(runtime, kind)
     assert first != second and first.exists()
     seen = []
     runner = service(runtime, lambda data: seen.append(data) or None)
     runner.requests()
     assert len(seen) == 1 and not first.exists()
-    assert 'superseded' in first.with_suffix('.done').read_text()
+    assert f'{kind} request {first.stem} superseded by {second.stem}' in first.with_suffix('.done').read_text()
     assert request_queue.metadata(second)['retired'] == [first.stem]
     assert [row['id'] for row in request_queue.pending(runtime)] == [second.stem]
 
 
+def test_newer_select_cannot_retire_a_claimed_select_or_affect_other_requests(runtime, monkeypatch):
+    first = enqueue(runtime, 'select', pool='earlier-key')
+    request_queue.claim(first, first.read_text(), request_queue.metadata(first))
+    relaunch = enqueue(runtime)
+    other = enqueue(runtime, 'select', seat='other-seat', pool='other-key')
+    monkeypatch.setattr(post, 'now', lambda: AT.replace(second=1))
+    later = enqueue(runtime, 'select', pool='later-key')
+    seen = []
+    runner = service(runtime, lambda data: seen.append((data['kind'], data['seat'])) or 'synthetic answer')
+    runner.requests()
+    assert set(seen) == {('select', 'other-seat'), ('relaunch', SEAT)}
+    assert relaunch.with_suffix('.done').read_text() == other.with_suffix('.done').read_text() == 'synthetic answer\n'
+    assert first.exists() and request_queue.claimed(first) is True
+    assert later.exists() and request_queue.claimed(later) is False
+    assert not first.with_suffix('.done').exists() and not later.with_suffix('.done').exists()
+    assert request_queue.view(later)['dimension'] == 'outcome-unknown'
+
+
+@pytest.mark.parametrize('kind', ['relaunch', 'select'])
 @pytest.mark.parametrize('resolution', ['cancel', 'newer'])
-def test_equal_time_relaunches_stay_held_until_order_is_resolved(runtime, monkeypatch, resolution):
-    first = enqueue(runtime)
-    second = enqueue(runtime, resume=False)
+def test_equal_time_requests_stay_held_until_order_is_resolved(runtime, monkeypatch, resolution, kind):
+    first = enqueue(runtime, kind)
+    second = enqueue(runtime, kind, resume=False)
     seen = []
     runner = service(runtime, lambda data: seen.append(data) or 'synthetic answer')
     runner.requests()
@@ -208,17 +231,17 @@ def test_equal_time_relaunches_stay_held_until_order_is_resolved(runtime, monkey
         assert path.exists() and not path.with_suffix('.claimed').exists()
         assert not path.with_suffix('.done').exists()
         assert request_queue.metadata(path)['waiting']['dimension'] == 'order-unknown'
-        assert 'relaunch order unknown' in request_queue.view(path)['reason']
+        assert f'{kind} order unknown' in request_queue.view(path)['reason']
     assert not (runtime / 'requests' / 'failed').exists()
     if resolution == 'cancel':
         request_queue.cancel(runtime, SEAT, first.stem)
         runner.requests()
-        assert seen == [dict(kind='relaunch', seat=SEAT, resume=False)]
+        assert seen == [dict(kind=kind, seat=SEAT, resume=False)]
     else:
         monkeypatch.setattr(post, 'now', lambda: AT.replace(second=1))
-        newest = enqueue(runtime)
+        newest = enqueue(runtime, kind)
         runner.requests()
-        assert seen == [dict(kind='relaunch', seat=SEAT, resume=True)]
+        assert seen == [dict(kind=kind, seat=SEAT, resume=True)]
         assert not newest.exists()
         assert all('superseded' in path.with_suffix('.done').read_text() for path in (first, second))
 

@@ -19,6 +19,7 @@ from .ship import ShipError
 
 
 SEAT_KINDS = frozenset({'relaunch', 'control', 'select', 'stop', 'submit', 'press', 'type', 'set-aside'})
+SUPERSEDING_KINDS = frozenset({'relaunch', 'select'})
 QUICK_KINDS = frozenset({'submit', 'resend'})
 NOTICE_RECEIPTS = 'request-notices.json'  # canonical trusted file; service alone writes it
 RESTART_SETTLEMENT = 'settled without applying: the service that claimed it restarted'
@@ -594,12 +595,13 @@ def direct(runtime, name, kind):
 
 
 def supersede(runtime, path, data):
-    """Service-owned retirement, before any pending relaunch can dispatch.
+    """Service-owned retirement, before a pending relaunch or pool selection can dispatch.
 
     The caller holds writer coordination. Client publication never takes it,
     so a paused publication cannot block a healthy seat's request.
     """
-    if data.get('kind') != 'relaunch' or not isinstance(data.get('seat'), str):
+    kind = data.get('kind')
+    if kind not in SUPERSEDING_KINDS or not isinstance(data.get('seat'), str):
         return True
     candidates = []
     for other in sorted((runtime / 'requests').glob('*.json')):
@@ -609,7 +611,7 @@ def supersede(runtime, path, data):
             continue
         except (OSError, ValueError, ShipError):
             continue  # unrelated unreadable requests retain their own named outcome
-        if item.get('kind') != 'relaunch' or item.get('seat') != data['seat']:
+        if item.get('kind') != kind or item.get('seat') != data['seat']:
             continue
         try:
             meta = metadata(other)
@@ -617,14 +619,14 @@ def supersede(runtime, path, data):
                 continue
             at = datetime.fromisoformat(created(other, meta))
         except (OSError, ValueError, TypeError, ShipError):
-            raise RequestHold('order-unknown', 'relaunch order unknown; creation time unreadable; retained') from None
+            raise RequestHold('order-unknown', f'{kind} order unknown; creation time unreadable; retained') from None
         candidates.append((at, other.stem, other, item, meta))
     if not candidates:
         return True
     latest = max(row[0] for row in candidates)
     newest = [row for row in candidates if row[0] == latest]
     if len(newest) != 1:
-        raise RequestHold('order-unknown', 'relaunch order unknown; creation times are equal; retained')
+        raise RequestHold('order-unknown', f'{kind} order unknown; creation times are equal; retained')
     _, _, winner, _, meta = newest[0]
     older = [row for row in candidates if row[2] != winner]
     if not older:
@@ -635,7 +637,7 @@ def supersede(runtime, path, data):
     meta['retired'] = sorted(set(meta.get('retired', [])) | {old.stem for _, _, old, _, _ in older})
     save_metadata(winner, meta)
     for _, _, old, item, _ in older:
-        terminal(old, item, f'{data["seat"]}: relaunch request {old.stem} superseded by '
+        terminal(old, item, f'{data["seat"]}: {kind} request {old.stem} superseded by '
                  f'{winner.stem}; never applied by this request')
     return path == winner
 

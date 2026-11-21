@@ -1415,7 +1415,7 @@ class Service:
                     # The final name is the client's completion signal, never an open writer.
                     retired = meta.get('retired')
                     if retired:
-                        answer += f'; retired pending relaunch request(s): {", ".join(retired)}'
+                        answer += f'; retired pending {data["kind"]} request(s): {", ".join(retired)}'
                     Service.complete_request_notice(self, path, data, meta, answer, dispatched=True)
                     request_queue.answer(path, answer)
                     self.log("request", **data, answer=answer)

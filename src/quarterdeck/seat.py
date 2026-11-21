@@ -23,7 +23,7 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, nullcontext
 from typing import Iterator
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -486,6 +486,13 @@ class Seat:
     def _saved_name(self) -> str | None:
         return self._selection_name() or None
 
+    def _explicit_launch_pool(self) -> str | None:
+        try:
+            chosen = (self.trusted / EXPLICIT).read_text().strip()
+        except FileNotFoundError:
+            return None
+        return chosen if chosen in self.spec.pools and chosen == self.pool.name else None
+
     def launch_choice(self, *, current_walled: bool = False) -> tuple[str, str]:
         """The pool a launch of this down seat takes, and why: the ship file is the Admiral's order.
 
@@ -501,12 +508,8 @@ class Seat:
         pools = self.spec.pools
         current = self.pool.name
         saved = self._saved_name() or current
-        try:
-            explicit = (self.trusted / EXPLICIT).read_text().strip()
-        except FileNotFoundError:
-            explicit = None
-        if explicit == current and explicit in pools:
-            return current, 'chosen for this launch by qd set'
+        if (explicit := self._explicit_launch_pool()) is not None:
+            return explicit, 'chosen for this launch by qd set'
         from . import ledger, quota
         book = ledger.Ledger.reading(self.ship.runtime / 'ledger.sqlite')
         unknown = []
@@ -964,16 +967,24 @@ class Seat:
                     and self._last_delivered_order_reported())
         if reported:
             resume = False
-        def proof(text):
-            return text + (' · fresh: its last order is reported' if reported else '')
         from . import relaunch_intent
+        explicit = None
+        if not recorded:
+            explicit = pool if pool is not None else self._explicit_launch_pool()
+
+        def start(*args, **kwargs):
+            selection = relaunch_intent.selecting_pool(self, explicit) if explicit is not None else nullcontext()
+            with selection:
+                text = self._up(*args, **kwargs)
+            return text + (' · fresh: its last order is reported' if reported else '')
+
         resume = resume and self.resumable()
         if self.withdrawn_pool is not None and not (fresh_after_order or recorded):
             raise ShipError(self.pool_move_hold)
         if (len(self.spec.pools) < 2 and self.withdrawn_pool is None) or self.is_up:
             prepared = self._require_resume(expected=expected) if resume and require_resume_target else None
             relaunch_intent.record_destination(self, resume, target=prepared)
-            return proof(self._up(resume, target=prepared))
+            return start(resume=resume, target=prepared)
         from .recovery import require_clear
         require_clear(self)
         if pool is None:
@@ -992,7 +1003,7 @@ class Seat:
         relaunch_intent.record_destination(self, resume, pool=target, harness=selected.harness, target=prepared)
         if target == current and pool is None and why == 'its saved choice':
             (self.trusted / EXPLICIT).unlink(missing_ok=True)
-            return proof(self._up(resume, target=prepared))  # nothing chosen: the launch is as it always was
+            return start(resume=resume, target=prepared)  # nothing chosen: the launch is as it always was
         observation = self._observe_selection(selected, self.ship.pool(target))
         if prior_launch is not None:
             self._relaunch_down()  # retain the old record and reseed its source pool before changing selection
@@ -1004,7 +1015,7 @@ class Seat:
         self.spec = selected
         if not same_program:
             self.harness = self._adapter_for(selected)
-        started = proof(self._up(resume=resume, observation=observation, target=prepared))
+        started = start(resume=resume, observation=observation, target=prepared)
         if not resume and target != current:
             started += f' · {resume_target.NEW_CONVERSATION}'
         moved = f"{self.name}: launched on {target} ({why})" + (
