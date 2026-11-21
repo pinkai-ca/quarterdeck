@@ -25,6 +25,7 @@ from . import trusted_files
 from .ship import Ship, ShipError
 from .tmux import TmuxError
 
+FOLD = re.compile(r"[ \t]*\n[ \t]*")  # where a program folded the box's text onto its next row
 SCREEN_LINES = 60  # the screen as shown, bounded: its last lines, as many characters at most
 SCREEN_CHARS = 6000
 LINE_CHARS = 2000
@@ -243,6 +244,33 @@ def bounded(text: str) -> str:
     return shown[-SCREEN_CHARS:]
 
 
+def masked_box(text: str) -> str:
+    """The box's text with anything shaped like a key masked, also where the program folded it across rows.
+
+    The shapes are matched on the text with its folds taken out, from every row's start as well, since a row's start
+    is a word's start only before the fold is removed. A word after a key's last row may be masked with it."""
+    from .pending import SECRET_SHAPES
+    dropped = {at for fold in FOLD.finditer(text) for at in range(*fold.span())}
+    index = [at for at in range(len(text)) if at not in dropped]
+    flat = "".join(text[at] for at in index)
+    starts = {0} | {sum(1 for at in index if at < fold.end()) for fold in FOLD.finditer(text)}
+    spans = [found.span() for found in SECRET_SHAPES.finditer(flat)]
+    for start in starts:
+        if found := SECRET_SHAPES.match(flat[start:]):
+            spans.append((start, start + found.end()))
+    kept, cursor = [], 0
+    for start, end in sorted(spans):
+        first, past = index[start], index[end - 1] + 1
+        if past <= cursor:
+            continue
+        if first > cursor:
+            kept.append(text[cursor:first])
+        if first >= cursor:
+            kept.append("[masked]")
+        cursor = past
+    return "".join(kept) + text[cursor:]
+
+
 def write(seat, entry: dict) -> None:
     """Append one complete line; raises OSError when writing fails, or seat_files.LinkRefused when a link stands at
     the name or on its way, so nothing is sent."""
@@ -399,7 +427,8 @@ def type_line(service, seat, line: str, caller: str | None) -> str:
     if screen.box is None:
         return f"refused: {seat.name}'s box is not on the screen; nothing is typed"
     if screen.box.strip():
-        shown = screen.box if len(screen.box) <= 80 else screen.box[:77] + "..."
+        box_text = masked_box(screen.box)  # masked first, so that the cut cannot leave part of a key unmatched
+        shown = box_text if len(box_text) <= 80 else box_text[:77] + "..."
         return f"refused: {seat.name}'s box is not empty, it shows {shown!r}; nothing is typed"
     if reason := guard(screen, line=line, program=seat.harness.name):
         told = tell_desk(service, seat, launched, caller, f"type {line!r}", reason, screen)
@@ -420,7 +449,7 @@ def type_line(service, seat, line: str, caller: str | None) -> str:
         box = door.harness.box(line)
         shown = door.box_shows(box, BOX_SECONDS)
         if shown is None or not door.matches(box, shown):
-            seen = shown.box if shown is not None else None
+            seen = masked_box(shown.box) if shown is not None and shown.box is not None else None
             return _finish(seat, act, "not submitted", f"the box showed {seen!r}, not the line; it stays for a look")
         if seat.launched() != launched:
             return _finish(seat, act, "not submitted", "the launch changed after the paste")
@@ -436,6 +465,8 @@ def type_line(service, seat, line: str, caller: str | None) -> str:
 
 
 def _finish(seat, act: dict, outcome: str, detail: str) -> str:
+    from .pending import SECRET_SHAPES
+    detail = SECRET_SHAPES.sub("[masked]", detail)  # before the record and the reply alike
     try:
         write(seat, dict(act=act["act"], verb=act["verb"], at=_now(), outcome=outcome, detail=detail))
         kept = ""

@@ -346,6 +346,82 @@ def test_a_key_drawn_on_a_refused_screen_is_masked_in_the_desks_post(ship, shape
     assert "Do you trust the authors of this project? [masked]" in notice.body and shape not in notice.body
 
 
+def _box_after_paste(live, drawn):
+    live["screen"] = "› \n\n  test low · /work\n"
+    live["after"] = lambda kind, value: live.update(screen=f"› {drawn}\n\n  test low · /work\n")
+
+
+def _last_act_line(seat):
+    """Watch's line of the last act alone: its live reading of the box is the screen, shown as it is."""
+    rows = watch.render_full(dict(watch.seat_reading(seat)))
+    return next(row for row in "\n".join(rows).split("\n") if "last act:" in row)
+
+
+def _no_part_of(key, *texts):
+    for text in texts:
+        assert key not in text and key[:12] not in text and key[-8:] not in text
+
+
+@pytest.mark.parametrize("shape", KEY_SHAPES)
+def test_a_key_the_box_shows_after_a_paste_is_masked_in_the_record_the_reply_and_watch(ship, shape):
+    svc, seat, live = ship
+    _box_after_paste(live, f"note {shape}")
+    reply = svc.answer(dict(kind="type", seat="worker", line="please go on", caller="sentry"))
+    shown = _last_act_line(seat)
+    assert "not submitted" in reply and "[masked]" in reply and "[masked]" in acts_of(seat)[-1]["detail"]
+    assert "[masked]" in shown
+    _no_part_of(shape, reply, acts.path(seat).read_text(), shown)
+
+
+@pytest.mark.parametrize("shape", KEY_SHAPES)
+def test_a_key_in_a_box_that_refuses_a_type_is_masked_in_the_refusal(ship, shape):
+    svc, seat, live = ship
+    live["screen"] = f"› a draft {shape} and more\n\n  test low · /work\n"
+    line = svc.answer(dict(kind="type", seat="worker", line="go on", caller="sentry"))
+    assert line.startswith("refused: worker's box is not empty") and "[masked]" in line
+    _no_part_of(shape, line)
+    assert live["sent"] == []
+
+
+def test_the_refusals_cut_cannot_leave_part_of_a_key(ship):
+    svc, seat, live = ship
+    key = "sk-" + _BODY * 3
+    live["screen"] = f"› {'a' * 70} {key}\n\n  test low · /work\n"
+    line = svc.answer(dict(kind="type", seat="worker", line="go on", caller="sentry"))
+    assert line.startswith("refused: worker's box is not empty")
+    _no_part_of(key, line)
+    assert key[:6] not in line
+
+
+@pytest.mark.parametrize("width", [5, 9, 20, 40])
+def test_a_key_folded_across_the_boxs_rows_leaves_no_row_of_it(ship, width):
+    svc, seat, live = ship
+    key = "sk-" + "ant-" + _BODY * 3
+    rows = [key[at:at + width] for at in range(0, len(key), width)]
+    drawn = "\n  ".join(rows)
+    live["screen"] = f"› {drawn}\n\n  test low · /work\n"
+    assert "\n" in seat.harness.screen(live["screen"]).box, "the program's box holds the fold"
+    refused = svc.answer(dict(kind="type", seat="worker", line="go on", caller="sentry"))
+    _box_after_paste(live, drawn)
+    reply = svc.answer(dict(kind="type", seat="worker", line="please go on", caller="sentry"))
+    record = acts.path(seat).read_text()
+    shown = _last_act_line(seat)
+    for text in (refused, reply, record, shown):
+        assert "[masked]" in text
+        assert not any(len(row) >= 5 and row in text for row in rows)
+
+
+def test_a_folded_key_after_words_on_the_row_before_is_masked():
+    key = "sk-" + _BODY * 2
+    assert acts.masked_box(f"a note\n{key[:20]}\n{key[20:]}\nlast").startswith("a note\n[masked]")
+    assert key[20:] not in acts.masked_box(f"a note\n{key[:20]}\n{key[20:]}")
+
+
+def test_a_box_with_no_key_is_kept_as_it_was():
+    for text in ("a person's draft", "two\n  rows of words", "", "  spaced  out  "):
+        assert acts.masked_box(text) == text
+
+
 def test_the_screens_cut_cannot_leave_the_end_of_a_key():
     key = "sk-" + _BODY
     shown = acts.bounded(key + "y" * (acts.SCREEN_CHARS - 10))
