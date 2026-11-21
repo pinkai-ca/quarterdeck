@@ -153,7 +153,8 @@ class CodexShape(_Writer):
         from . import codex
 
         t = tokens_for(self.text, reply, len(codex.turns(self.path)))
-        last = {"input_tokens": t["read_uncached"] + t["read_cached"], "cached_input_tokens": t["read_cached"],
+        last = {"input_tokens": t["read_uncached"] + t["read_cached"] + t["cache_written"],
+                "cached_input_tokens": t["read_cached"],
                 "cache_write_input_tokens": t["cache_written"], "output_tokens": t["written"],
                 "reasoning_output_tokens": 0, "total_tokens": sum(t.values())}
         self.total = {k: self.total[k] + last[k] for k in self.total}

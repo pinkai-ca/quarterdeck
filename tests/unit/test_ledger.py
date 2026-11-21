@@ -9,7 +9,7 @@ from pathlib import Path
 
 from quarterdeck import ledger as ledgermod, machine, post
 from quarterdeck.harness.synthetic_record import ClaudeShape
-from quarterdeck.harness import claude
+from quarterdeck.harness import claude, codex
 from quarterdeck.harness.base import Usage, Window
 from quarterdeck.ledger import Ledger, Machine, attribution
 from quarterdeck.post import Store
@@ -47,6 +47,77 @@ def test_ingestion_is_idempotent_and_sums_the_classes(tmp_path: Path):
     record2.end("done")
     assert book.ingest("captain", "fake", record, claude.turns(record), store) == 1
     book.close()
+
+
+def test_codex_accounting_partitions_subscription_tokens_and_prices_key_moves(tmp_path):
+    from dataclasses import replace
+    import json
+    from types import SimpleNamespace
+
+    from quarterdeck.harness.key_prices import priced, snapshot
+    from quarterdeck.harness.types import Tokens
+    from quarterdeck.seat import Seat
+    from quarterdeck.service import Service
+    from quarterdeck.ship import Pool, SeatSpec, Session, Ship
+
+    rates = dict(currency="USD", unit="million_tokens", input=7, output=11, cache_read=2, cache_write=13)
+    pools = {name: Pool(name, "openai", api_key=f"keys:{name}", price=rates) for name in ("key-a", "key-b")}
+    pools["subscription"] = Pool("subscription", "openai")
+    spec = SeatSpec("worker", "crew", "worker", "codex", tuple(pools), cwd=tmp_path)
+    ship = Ship(tmp_path, "synthetic", "operator", tmp_path, pools, {"crew": Session("crew", "crew")},
+                {spec.name: spec})
+    service = Service(ship, SimpleNamespace())
+    seat = Seat(ship, spec, service.tmux)
+    record = seat.home / "sessions/2026/11/21/rollout-synthetic.jsonl"
+    record.parent.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
+    cases = [
+        ("key-a", [(14029, 0, 14026, 5, 0, 14034)]),
+        ("key-b", [(14004, 0, 14001, 65, 0, 14069), (14092, 14001, 88, 5, 0, 14097)]),
+        ("subscription", [(420394, 419712, 0, 439, 136, 420833)]),
+        ("key-b", [(0, 0, 0, 0, 0, 71452)]),
+    ]
+    fields = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+              "output_tokens", "reasoning_output_tokens", "total_tokens")
+    origin = datetime(2026, 11, 21, 12, tzinfo=timezone.utc)
+    rows, launches = [], []
+    for i, (pool, usages) in enumerate(cases):
+        launched = origin + timedelta(minutes=i)
+        launches.append(dict(record=str(record), at=launched.isoformat(), pool=pool,
+                             harness="codex", price=snapshot("codex", pools[pool])))
+        started = launched + timedelta(seconds=1)
+        events = [
+            ("turn_context", {"model": "synthetic"}),
+            ("event_msg", {"type": "task_started"}),
+            *(("event_msg", {"type": "token_count", "info": {"last_token_usage": dict(zip(fields, usage))}})
+              for usage in usages),
+            ("event_msg", {"type": "task_complete", "last_agent_message": "done"}),
+        ]
+        rows.extend(dict(timestamp=(started + timedelta(seconds=j)).isoformat(), type=kind, payload=payload)
+                    for j, (kind, payload) in enumerate(events))
+    record.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    (seat.trusted / "record-launches.jsonl").write_text("".join(json.dumps(row) + "\n" for row in launches))
+
+    expected = [Tokens(0, 3, 14026, 5), Tokens(14001, 6, 14089, 70), Tokens(419712, 682, 0, 439), Tokens.unknown()]
+    turns = codex.turns(record)
+    measured = [turn.tokens for turn in turns]
+    assert measured == expected
+    assert [tokens.total for tokens in measured[:3]] == [14034, 28166, 420833]
+    with service.ledger as book:
+        for turn, launch in zip(turns, launches):
+            tokens = turn.tokens
+            old = replace(tokens, read_uncached=tokens.read_uncached + tokens.cache_written, unmeasured=0)
+            book.ingest(seat.name, launch["pool"], record,
+                        [priced(replace(turn, tokens=old), launch["price"])], service.store)
+        service.account_records(process_table={})
+        rollups = {row.key: row for row in book.rollup("pool")}
+        for row, tokens in zip((rollups["key-a"], rollups["key-b"], rollups["subscription"]), expected):
+            assert (row.read_cached, row.read_uncached, row.cache_written, row.written) == (
+                tokens.read_cached, tokens.read_uncached, tokens.cache_written, tokens.written)
+        assert book.spend("key-a", origin) == (pytest.approx((3 * 7 + 14026 * 13 + 5 * 11) / 1e6), 0)
+        assert book.spend("key-b", origin) == (pytest.approx((6 * 7 + 14001 * 2 + 14089 * 13 + 70 * 11) / 1e6), 1)
+        assert rollups["key-b"].unmeasured == rollups["key-b"].unpriced == 1
+        assert rollups["subscription"].cost is None and rollups["subscription"].unmeasured == 0
 
 
 def test_attribution_claimed_then_only_open_then_closing_turn(tmp_path: Path):

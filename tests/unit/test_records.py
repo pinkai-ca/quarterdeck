@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,26 @@ def test_an_ended_turn_sums_its_steps(tmp_path: Path, shape, reader):
     assert not state.turn_open and state.turns == 1 and state.model == "fake-1"
     assert state.effort == (None if reader is antigravity else "high")
     assert state.last_input == "hello there" and state.open_tool is None
+
+
+def test_synthetic_codex_writer_includes_cache_writes_in_input_and_reads_old_rows(tmp_path):
+    record = CodexShape(tmp_path, tmp_path, "synthetic", "synthetic")
+    record.begin("go", "synthetic", "low")
+    record.end("done")
+    counts = tokens_for("go", "done", 0)
+    wanted = Tokens(**counts)
+    rows = [json.loads(line) for line in record.path.read_text().splitlines()]
+    info = next(row["payload"]["info"] for row in rows if row["payload"].get("type") == "token_count")
+    last = info["last_token_usage"]
+    assert last["input_tokens"] == wanted.read_uncached + wanted.read_cached + wanted.cache_written
+    assert last["total_tokens"] == wanted.total
+    assert codex.turns(record.path)[0].tokens == wanted
+
+    for usage in (last, info["total_token_usage"]):
+        usage["input_tokens"] -= wanted.cache_written
+    record.path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    assert codex.turns(record.path)[0].tokens == wanted
+    assert codex.usage_tokens(last) == Tokens.unknown()  # only the old synthetic record proves this layout
 
 
 @pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex", "antigravity"])

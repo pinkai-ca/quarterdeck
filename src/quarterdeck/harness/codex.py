@@ -141,17 +141,30 @@ def session_id(record: Path) -> str | None:
     return None
 
 
-def usage_tokens(usage: dict) -> Tokens:
+def usage_tokens(usage: object, *, legacy_synthetic: bool = False) -> Tokens:
     measured = Tokens.from_usage(usage, ("cached_input_tokens", "input_tokens", "cache_write_input_tokens", "output_tokens"),
                                  total="total_tokens")
     if not measured.complete:
         return Tokens.unknown()
-    uncached = measured.read_uncached - measured.read_cached if "input_tokens" in usage else 0
-    if uncached < 0:
+    # Codex 0.166.0 copies the Responses API counts, including both cache classes
+    # within input and reasoning within output. Older rollouts omit cache writes.
+    input_tokens = measured.read_uncached
+    if "input_tokens" in usage:
+        if legacy_synthetic and usage.get("total_tokens") == input_tokens + measured.cache_written + measured.written:
+            input_tokens += measured.cache_written  # the old fake writer left cache writes outside input
+        uncached = input_tokens - measured.read_cached - measured.cache_written
+    else:
+        uncached = 0  # sparse legacy measurements carry only the classes they name
+    tokens = Tokens.measured(read_cached=measured.read_cached, read_uncached=uncached,
+                             cache_written=measured.cache_written, written=measured.written)
+    reasoning = usage.get("reasoning_output_tokens", 0)
+    if type(reasoning) is not int or not 0 <= reasoning <= tokens.written:
         return Tokens.unknown()
-    return Tokens.measured(read_cached=measured.read_cached,
-                           read_uncached=uncached,
-                           cache_written=measured.cache_written, written=measured.written)
+    # Native context estimates and context-window fills can carry only a total.
+    # A total that does not reconcile cannot certify a billable breakdown.
+    if "total_tokens" in usage and usage["total_tokens"] != tokens.total:
+        return Tokens.unknown()
+    return tokens
 
 
 def _text(content: list | str | None) -> str:
@@ -382,6 +395,7 @@ class _Reader(JsonLinesReader):
         self.active_processes = {}
         self.orphan_failure = None  # an error ending no turn this record opened
         self.unbound_inputs = []
+        self.synthetic_record = False
         super().__init__(record, snapshot)
 
     def state(self):
@@ -409,7 +423,10 @@ class _Reader(JsonLinesReader):
             self.tools_known = False
             return
         kind, sub, at = entry.get("type"), payload.get("type"), when(entry.get("timestamp"))
-        if kind == "turn_context":
+        if kind == "session_meta":
+            self.synthetic_record = (payload.get("originator") == "qd-fakeharness"
+                                     and payload.get("cli_version") == "fake")
+        elif kind == "turn_context":
             self.model = payload.get("model") or self.model
             self.effort = payload.get("effort") or self.effort
         elif kind == "event_msg":
@@ -431,7 +448,7 @@ class _Reader(JsonLinesReader):
         elif sub == "token_count" and self.open is not None:
             info = payload.get("info")
             last = info.get("last_token_usage") if isinstance(info, dict) else None
-            self.open["tokens"] = self.open["tokens"] + usage_tokens(last)
+            self.open["tokens"] = self.open["tokens"] + usage_tokens(last, legacy_synthetic=self.synthetic_record)
             if isinstance(last, dict):
                 counts = [last.get(k) for k in ('output_tokens', 'reasoning_output_tokens')]
                 if any(type(n) is int and n > 0 for n in counts):

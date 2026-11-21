@@ -1,11 +1,12 @@
 """Actual preceding code writes/reads synthetic saved seats across spelling changes."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from quarterdeck import record_owner
-from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape
+from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.ledger import Ledger
 from quarterdeck.post import Store
 from quarterdeck.seat import Seat
@@ -15,6 +16,16 @@ from .test_price_rollback import old  # noqa: F401
 from .test_provider_vocabulary import PAIRS, declaration
 
 BASE = "27129131c0347cdff18fed8f076de5fa5ad8d745"
+
+CODEX_RECORD = '''
+import sys
+from quarterdeck.harness.synthetic_record import CodexShape
+cwd, home = map(Path, sys.argv[1:])
+source = CodexShape(home, cwd, "synthetic-session", "synthetic-model")
+source.begin("synthetic input", "synthetic-model", "high")
+source.end("synthetic reply")
+print(source.path)
+'''
 
 SEED = '''
 import sys
@@ -64,13 +75,17 @@ def test_upgrade_edit_rollback_preserves_saved_launch_selection_records_and_ledg
     declaration(tmp_path, program, program)
     original = (tmp_path / "ship.toml").read_text()
     home = tmp_path / "runtime/seats/worker/home"
-    shape = {"codex": CodexShape, "antigravity": AntigravityShape}.get(program, ClaudeShape)
-    source = shape(home, tmp_path, "synthetic-session", "synthetic-model")
-    source.begin("synthetic input", "synthetic-model", "high")
-    source.end("synthetic reply")
-    assert old(SEED, tmp_path, source.path, program).strip().endswith("seeded")
+    if program == "codex":
+        record = Path(old(CODEX_RECORD, tmp_path, home).strip())
+    else:
+        shape = AntigravityShape if program == "antigravity" else ClaudeShape
+        source = shape(home, tmp_path, "synthetic-session", "synthetic-model")
+        source.begin("synthetic input", "synthetic-model", "high")
+        source.end("synthetic reply")
+        record = source.path
+    assert old(SEED, tmp_path, record, program).strip().endswith("seeded")
     assert old(READ, tmp_path).strip().endswith("readable")
-    source_bytes = source.path.read_bytes()
+    source_bytes = record.read_bytes()
     folder = home.parent
     retained = {name: (folder / name).read_bytes() for name in
                 ("launch.json", "pool", "record", "record-readers.jsonl", "record-launches.jsonl")}
@@ -87,14 +102,14 @@ def test_upgrade_edit_rollback_preserves_saved_launch_selection_records_and_ledg
         ship = load(tmp_path)
         seat = Seat(ship, ship.seat("worker"), SimpleNamespace())
         assert seat.pool.name == "paid" and seat.pool.provider == company
-        assert seat.record() == source.path
+        assert seat.record() == record
         owned = record_owner.records(seat)
-        assert [(r.path, r.name) for r in owned] == [(source.path, program)]
+        assert [(r.path, r.name) for r in owned] == [(record, program)]
         with Ledger(ship.runtime / "ledger.sqlite") as book:
             _, turns = owned[0].read()
-            assert book.ingest("worker", "paid", source.path, turns, Store(ship.runtime)) == 0
+            assert book.ingest("worker", "paid", record, turns, Store(ship.runtime)) == 0
             assert book.rollup("pool")[0].turns == 1
-        assert source.path.read_bytes() == source_bytes
+        assert record.read_bytes() == source_bytes
         assert all((folder / name).read_bytes() == data for name, data in retained.items())
         if f'provider="{company}"' in text:
             # The old parser must reject new declarations: restore aliases BEFORE downgrade.

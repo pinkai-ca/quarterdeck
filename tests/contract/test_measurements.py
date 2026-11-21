@@ -44,6 +44,21 @@ def test_cache_only_measurement_keeps_omitted_classes_zero():
     assert codex.usage_tokens({'input_tokens': 2, 'cached_input_tokens': 7}) == Tokens.unknown()
 
 
+@pytest.mark.parametrize("usage, expected", [
+    ({"input_tokens": 10, "cached_input_tokens": 7, "output_tokens": 2, "total_tokens": 12},
+     Tokens(read_cached=7, read_uncached=3, written=2)),
+    ({"input_tokens": 10, "cached_input_tokens": 7, "cache_write_input_tokens": 3},
+     Tokens(read_cached=7, cache_written=3)),
+    ({"total_tokens": 0}, Tokens()),
+    ({"total_tokens": 71452}, Tokens.unknown()),
+    ({"input_tokens": 10, "output_tokens": 2, "total_tokens": 13}, Tokens.unknown()),
+    ({"input_tokens": 10, "cached_input_tokens": 7, "cache_write_input_tokens": 4}, Tokens.unknown()),
+    ({"input_tokens": 10, "output_tokens": 2, "reasoning_output_tokens": 3}, Tokens.unknown()),
+])
+def test_codex_preserves_valid_older_counts_and_rejects_unreconciled_usage(usage, expected):
+    assert codex.usage_tokens(usage) == expected
+
+
 def test_proto_presence_proves_zero_but_absence_and_bad_wire_measurements_do_not():
     assert antigravity_record._parse_usage(None) == Tokens.unknown()
     assert antigravity_record._parse_usage(b"") == Tokens(), "present proto3 scalar defaults are zero"
