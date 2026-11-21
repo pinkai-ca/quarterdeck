@@ -1,8 +1,9 @@
 """Registration of a change, retirement of a run's scratch, same-change recovery of abandoned runs, ``clean``
 after a change is merged or deliberately dropped, ``keep`` and ``release``. Eligibility comes from
-registration and Git state, never from a file's name; anything unrecorded refuses."""
+registration and Git state. A retired worktree may hold ignored Python bytecode caches."""
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 import fcntl
 import os
 from pathlib import Path
@@ -604,9 +605,81 @@ def clean_within(root: Root, args) -> int:
         os.close(changes_fd)
 
 
+@contextmanager
+def open_directories(path: Path, parent_fd: int | None = None):
+    """Open each component as a directory without following links."""
+    with ExitStack() as stack:
+        fd = parent_fd
+        for part in path.parts:
+            fd = os.open(part, DIRECTORY, dir_fd=fd)
+            stack.callback(os.close, fd)
+        yield fd
+
+
+def bytecode_stamp(info: os.stat_result) -> list:
+    return [*identity(info), info.st_mode, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def cache_contents(worktree_fd: int, path: Path) -> dict[str, list]:
+    with open_directories(path, worktree_fd) as fd:
+        directory = bytecode_stamp(os.fstat(fd))
+        entries = {str(path): directory}
+        for name in sorted(os.listdir(fd)):
+            leaf = path / name
+            try:
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except OSError as error:
+                raise Refused(f'{leaf}: cannot inspect ({error.strerror})') from None
+            if leaf.suffix != '.pyc' or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise Refused(f'{leaf}: expected a regular .pyc file without links')
+            entries[str(leaf)] = bytecode_stamp(info)
+        with open_directories(path, worktree_fd) as current:
+            if bytecode_stamp(os.fstat(current)) != directory:
+                raise Refused(f'{path}: cache directory changed while inspecting it')
+        return entries
+
+
+def worktree_bytecode(worktree: Path, expected: list) -> dict[str, list]:
+    """Record the exact ignored bytecode entries and refuse other Git-visible material."""
+    try:
+        with open_directories(worktree) as fd:
+            if identity(os.fstat(fd)) != expected:
+                raise Refused(f'{worktree} is not the registered worktree (replaced or a link); nothing touched')
+            caches, refused = {}, []
+            for code, name in gitops.status(worktree):
+                path = Path(name)
+                if (code != '!!' or not name.endswith('/') or path.name != '__pycache__'
+                        or path.is_absolute() or '..' in path.parts):
+                    refused.append(f'{code} {name}')
+                    continue
+                try:
+                    caches.update(cache_contents(fd, path))
+                except Refused as error:
+                    refused.append(f'{code} {name}: {error}')
+                except OSError as error:
+                    refused.append(f'{code} {name}: cannot inspect ({error.strerror})')
+            if refused:
+                shown = '\n  '.join(refused[:30])
+                raise Refused(f'{worktree} holds material the tool did not record (modified, untracked or ignored); '
+                              f'its owner removes it or commits it first; nothing touched:\n  {shown}')
+            with open_directories(worktree) as current:
+                if identity(os.fstat(current)) != expected:
+                    raise Refused(f'{worktree} is not the registered worktree (replaced or a link); nothing touched')
+            return caches
+    except OSError as error:
+        raise Refused(f'{worktree} cannot be opened as the registered worktree ({error.strerror}); '
+                      'nothing touched') from None
+
+
+def unused_worktree(worktree: Path) -> int:
+    users, uninspectable = procs.users_of(worktree)
+    if users:
+        raise Refused(f'{worktree} is in use by {users}; nothing touched')
+    return uninspectable
+
+
 def eligible(project: Path, worktree: Path, data: dict, branch: str, tip: str | None) -> list[dict]:
-    """What may go, proven now: the registered worktree, unchanged and holding nothing unrecorded, and the
-    branch. A worktree or branch already gone (a resumed clean) is simply not in the plan."""
+    """Plan removal of the verified worktree and branch. A resumed clean may find either already gone."""
     plan = []
     if os.path.lexists(worktree):
         if identity(os.lstat(worktree)) != data['worktree_identity']:
@@ -614,20 +687,15 @@ def eligible(project: Path, worktree: Path, data: dict, branch: str, tip: str | 
         listed = gitops.worktrees(project).get(worktree)
         if listed is None or listed.get('branch') != f'refs/heads/{branch}':
             raise Refused(f'{worktree} is not a Git worktree on {branch}; nothing touched')
-        entries = gitops.status(worktree)
-        if entries:
-            shown = '\n  '.join(f'{code} {path}' for code, path in entries[:30])
-            raise Refused(f'{worktree} holds material the tool did not record (modified, untracked or ignored); '
-                          f'its owner removes it or commits it first; nothing touched:\n  {shown}')
-        users, uninspectable = procs.users_of(worktree)
-        if users:
-            raise Refused(f'{worktree} is in use by {users}; nothing touched')
+        caches = worktree_bytecode(worktree, data['worktree_identity'])
+        uninspectable = unused_worktree(worktree)
         parent = os.open(worktree.parent, DIRECTORY)
         try:
             counts = owned.measure(parent, worktree.name, data['worktree_identity'], worktree).as_dict()
         finally:
             os.close(parent)
         plan.append({'what': f'worktree {worktree}', 'kind': 'worktree', 'path': str(worktree), 'counts': counts,
+                     'identity': data['worktree_identity'], 'bytecode': caches,
                      'uninspectable_processes_not_participants': uninspectable})
     if tip is not None:
         plan.append({'what': f'branch {branch} at {tip}', 'kind': 'branch', 'branch': branch, 'tip': tip})
@@ -636,7 +704,16 @@ def eligible(project: Path, worktree: Path, data: dict, branch: str, tip: str | 
 
 def perform(project: Path, step: dict, drop: dict | None) -> dict:
     if step['kind'] == 'worktree':
-        gitops.git(project, 'worktree', 'remove', step['path'])  # not forced: Git refuses anything unclean
+        worktree = Path(step['path'])
+        unused_worktree(worktree)
+        planned = step['bytecode']
+        current = worktree_bytecode(worktree, step['identity'])
+        if current != planned:
+            changed = next(path for path in sorted(current.keys() | planned.keys())
+                           if current.get(path) != planned.get(path))
+            raise Refused(f'{worktree / changed}: ignored bytecode cache changed during clean; nothing touched')
+        # Git removes the validated caches with the worktree and still checks tracked and untracked changes.
+        gitops.git(project, 'worktree', 'remove', step['path'])
         if os.path.lexists(step['path']):
             raise Refused(f'{step["path"]} remains after git worktree remove')
         return {'what': step['what'], 'counts': step['counts']}

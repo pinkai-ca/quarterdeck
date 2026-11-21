@@ -1,15 +1,17 @@
-"""tests/testrun.py clean and keep, and recovery of an abandoned run, on synthetic projects: only a registered
-change that is merged or deliberately dropped goes; anything unrecorded, live or replaced refuses; results,
-reports and failure output survive; recovery touches its own change's runs only."""
+"""Synthetic projects for clean, keep and abandoned-run recovery. A retired worktree may have ignored
+bytecode caches. Other unrecorded material, in-use worktrees and replaced identities hold cleanup."""
 import json
 import os
 from pathlib import Path
 import signal
 import subprocess
 
+import pytest
+
 from tests.conftest import git
 from tests.integration.testrun_synthetic import (WAIT_TEST, add_worktree, admin_entries, commit, make, result,
                                                  results, scratch, start, started_marker, tool, wait_for)
+from tests.testrunner import clean, cli
 
 
 def registration(project, change='feature'):
@@ -20,6 +22,14 @@ def ran(project, worktree, failing=False):
     done = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
     assert done.returncode == (1 if failing else 0), done.stdout + done.stderr
     return results(project)[-1]
+
+
+def bytecode_in(parent):
+    cache = parent / '__pycache__'
+    cache.mkdir()
+    bytecode = cache / 'a.cpython-314.pyc'
+    bytecode.write_bytes(b'synthetic bytecode')
+    return bytecode
 
 
 def test_a_merged_change_is_retired_and_its_results_reports_and_failures_stay(tmp_path):
@@ -38,6 +48,30 @@ def test_a_merged_change_is_retired_and_its_results_reports_and_failures_stay(tm
     assert [step['what'] for step in journal['done']] == [step['what'] for step in journal['plan']]
     again = tool('clean', '--change', 'feature', cwd=project)
     assert again.returncode == 0 and 'already retired' in again.stdout
+
+
+def test_ignored_bytecode_caches_go_with_a_merged_worktree(tmp_path):
+    project, worktree = make(tmp_path, {})
+    run = ran(project, worktree)
+    receipts = {name: (run / name).read_bytes() for name in ('result.json', 'report.md')}
+    git(project, 'merge', '-q', '--ff-only', 'feature')
+    root_bytecode = bytecode_in(worktree)
+    nested_bytecode = bytecode_in(worktree / 'src' / 'synth')
+    optimized = nested_bytecode.with_name('b.cpython-314.opt-1.pyc')
+    optimized.write_bytes(b'more bytecode')
+
+    done = tool('clean', '--change', 'feature', cwd=project)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not worktree.exists() and git(project, 'branch', '--list', 'feature') == ''
+    assert admin_entries(project) == []
+    retired = registration(project)['retired']
+    assert retired['merged'] and retired['removed'][0]['what'] == f'worktree {worktree}'
+    journal = run.parent.parent / 'changes' / 'feature.clean.json'
+    plan = json.loads(journal.read_text())['plan']
+    recorded = (root_bytecode.parent, root_bytecode, nested_bytecode.parent, nested_bytecode, optimized)
+    assert {str(path.relative_to(worktree)) for path in recorded} == plan[0]['bytecode'].keys()
+    assert {name: (run / name).read_bytes() for name in receipts} == receipts
 
 
 def test_an_unmerged_change_goes_only_by_a_recorded_drop_bound_to_its_tip(tmp_path):
@@ -75,21 +109,88 @@ def test_unrecorded_ignored_material_refuses_by_name_and_nothing_goes(tmp_path):
     git(project, 'merge', '-q', '--ff-only', 'feature')
     (worktree / '.venv').mkdir()
     (worktree / '.venv' / 'pyvenv.cfg').write_text('synthetic')
-    (worktree / 'src' / 'synth' / '__pycache__').mkdir()
-    (worktree / 'src' / 'synth' / '__pycache__' / 'a.cpython-314.pyc').write_bytes(b'not the tool\'s')
+    bytecode = bytecode_in(worktree / 'src' / 'synth')
     done = tool('clean', '--change', 'feature', cwd=project)
-    assert done.returncode == 2 and '.venv/' in done.stderr and '__pycache__' in done.stderr
-    assert (worktree / '.venv' / 'pyvenv.cfg').exists() and git(project, 'branch', '--list', 'feature')
+    assert done.returncode == 2 and '.venv/' in done.stderr
+    assert (worktree / '.venv' / 'pyvenv.cfg').read_text() == 'synthetic'
+    assert bytecode.read_bytes() == b'synthetic bytecode' and git(project, 'branch', '--list', 'feature')
+
+
+@pytest.mark.parametrize('material', ['notes.txt', 'directory.pyc', 'symlink.pyc', 'hardlink.pyc'])
+def test_mixed_cache_contents_refuse_by_name_and_nothing_goes(tmp_path, material):
+    project, worktree = make(tmp_path, {})
+    ran(project, worktree)
+    git(project, 'merge', '-q', '--ff-only', 'feature')
+    bytecode = bytecode_in(worktree / 'src' / 'synth')
+    unwanted = bytecode.with_name(material)
+    target = tmp_path / 'keep.txt'
+    target.write_text('outside the worktree')
+    if material == 'directory.pyc':
+        unwanted.mkdir()
+    elif material == 'symlink.pyc':
+        unwanted.symlink_to(target)
+    elif material == 'hardlink.pyc':
+        unwanted.hardlink_to(target)
+    else:
+        unwanted.write_text('mixed material')
+
+    done = tool('clean', '--change', 'feature', cwd=project)
+
+    assert done.returncode == 2 and str(unwanted.relative_to(worktree)) in done.stderr
+    assert unwanted.exists() and bytecode.read_bytes() == b'synthetic bytecode'
+    assert target.read_text() == 'outside the worktree'
+    assert git(project, 'branch', '--list', 'feature') and registration(project)['retired'] is None
+
+
+def test_tracked_and_untracked_changes_refuse_with_an_ignored_cache(tmp_path):
+    project, worktree = make(tmp_path, {})
+    ran(project, worktree)
+    git(project, 'merge', '-q', '--ff-only', 'feature')
+    bytecode = bytecode_in(worktree / 'tests')
+    tracked = worktree / 'tests' / 'test_base.py'
+    untracked = worktree / 'notes.txt'
+    tracked.write_text('edited')
+    untracked.write_text('untracked')
+
+    done = tool('clean', '--change', 'feature', cwd=project)
+
+    assert done.returncode == 2 and 'tests/test_base.py' in done.stderr and 'notes.txt' in done.stderr
+    assert tracked.read_text() == 'edited' and untracked.read_text() == 'untracked'
+    assert bytecode.read_bytes() == b'synthetic bytecode'
+
+
+def test_cache_replaced_after_planning_refuses_before_git_removes_the_tree(tmp_path, monkeypatch, capsys):
+    project, worktree = make(tmp_path, {})
+    ran(project, worktree)
+    git(project, 'merge', '-q', '--ff-only', 'feature')
+    bytecode = bytecode_in(worktree / 'tests')
+    replacement = tmp_path / 'replacement.pyc'
+    replacement.write_bytes(bytecode.read_bytes())
+    new_inode = replacement.stat().st_ino
+    perform = clean.perform
+
+    def replace_then_perform(project, step, drop):
+        replacement.replace(bytecode)
+        return perform(project, step, drop)
+
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(clean, 'perform', replace_then_perform)
+
+    assert cli.main(['clean', '--change', 'feature'], []) == 2
+    assert 'tests/__pycache__' in capsys.readouterr().err
+    assert bytecode.stat().st_ino == new_inode and git(project, 'branch', '--list', 'feature')
+    assert registration(project)['retired'] is None
 
 
 def test_a_worktree_in_use_or_replaced_refuses(tmp_path):
     project, worktree = make(tmp_path, {})
     ran(project, worktree)
     git(project, 'merge', '-q', '--ff-only', 'feature')
+    bytecode = bytecode_in(worktree)
     user = subprocess.Popen(['sleep', '60'], cwd=worktree)
     try:
         done = tool('clean', '--change', 'feature', cwd=project)
-        assert done.returncode == 2 and 'in use' in done.stderr and worktree.exists()
+        assert done.returncode == 2 and 'in use' in done.stderr and bytecode.exists()
     finally:
         user.kill()
         user.wait()
