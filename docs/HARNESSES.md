@@ -57,7 +57,7 @@ Pi 0.79.0 needs five pane rows for its empty box; an unfolded payload needs four
 Each harness proven live launched, took a long paste that the harness's own record confirmed, wrote a named file, posted a report with `qd post`, and had the turn read by Quarterdeck.
 
 - Every check ran on the ship that builds Quarterdeck: one ship, one person, that person's own hardware.
-- Each harness is proven as one agent's harness in a crew. A whole crew on one harness alone has been run once, on Claude Code with an Anthropic key, as the next section says. On any other harness it should work by design, and has not been run yet.
+- Each harness is proven as one agent's harness in a crew. The whole default crew has run on Claude Code with an Anthropic key and on Codex with a Codex subscription, as described below.
 
 ## What has been proved on an API key
 
@@ -65,9 +65,13 @@ Live, with a real key, on 21 November 2026:
 
 - **Claude Code 2.1.317** on an Anthropic API key: one live call, on `claude-haiku-5-5`.
 - **OpenCode 1.19.5 and pi 0.79.0** on an Anthropic key, through Anthropic's OpenAI-compatible address: one live call each, on `claude-haiku-5-5`, each in its jail.
-- **A whole crew on one provider**, the default setup: desk, captain and engineer all on Claude Code on an Anthropic key, raised with `qd setup`, carried one small change from its order to its landing on `claude-sonnet-5-5`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
+- **Codex 0.166.0** on an OpenAI API key made one live call on `gpt-6-luna`.
+- **OpenCode 1.19.5 and pi 0.79.0** on an OpenAI API key through `https://api.openai.com/v1` each made one live call on `gpt-6-luna` in its jail.
+- A live Codex seat moved from an OpenAI API key to a Codex subscription and back using `qd down` and `qd up` with a pool choice. It resumed the same conversation after each move and remembered the earlier task.
 
-No other provider's key is proven live yet.
+xAI and Google API keys are still awaiting live proof.
+
+The default crew raised with `qd setup` carried one small change from its order to its landing in each of two runs on 21 November 2026. In one run the desk, captain and engineer all used Claude Code on an Anthropic key with `claude-sonnet-5-5`. In the other they all used Codex on a Codex subscription with `gpt-6.2-sol`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
 
 ## For maintainers
 

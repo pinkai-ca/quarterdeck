@@ -120,13 +120,17 @@ Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one lin
 
 Use `qd set SEAT pool=NAME` to select a pool already declared for the seat. A running seat moves after its turn and queued input have cleared, and resumes the same conversation when the program can prove it. The pending move appears in `qd status` and `qd watch SEAT`. A key chosen this way stays selected for that launch while it can pay. For a down seat, the choice applies to its next `qd up`. To edit a simple pool list, use `qd set SEAT pool=FIRST,SECOND` or `qd set --declare SEAT pool=ONLY`. Edit inline choices in the ship file.
 
-Proved live so far, with a real key:
+Proved live with API keys on 21 November 2026:
 
 - Claude Code 2.1.317 on an Anthropic API key: one live call, on `claude-haiku-5-5`.
 - OpenCode 1.19.5 and pi 0.79.0 on an Anthropic key, through Anthropic's OpenAI-compatible address: one live call each, on `claude-haiku-5-5`, each in its jail.
-- A whole crew on one provider, the default setup: desk, captain and engineer all on Claude Code on an Anthropic key, raised with `qd setup`, carried one small change from its order to its landing on `claude-sonnet-5-5`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
+- Codex 0.166.0 on an OpenAI API key made one live call on `gpt-6-luna`.
+- OpenCode 1.19.5 and pi 0.79.0 on an OpenAI API key through `https://api.openai.com/v1` each made one live call on `gpt-6-luna` in its jail.
+- A live Codex seat moved from an OpenAI API key to a Codex subscription and back using `qd down` and `qd up` with a pool choice. It resumed the same conversation after each move and remembered the earlier task.
 
-No other provider's key is proven live yet.
+xAI and Google API keys are still awaiting live proof.
+
+The default crew raised with `qd setup` carried one small change from its order to its landing in each of two runs on 21 November 2026. In one run the desk, captain and engineer all used Claude Code on an Anthropic key with `claude-sonnet-5-5`. In the other they all used Codex on a Codex subscription with `gpt-6.2-sol`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
 
 ## How to use it
 
