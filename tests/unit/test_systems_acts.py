@@ -417,8 +417,37 @@ def test_a_folded_key_after_words_on_the_row_before_is_masked():
     assert key[20:] not in acts.masked_box(f"a note\n{key[:20]}\n{key[20:]}")
 
 
+_CLOUD_ID = "AK" + "IA" + _BODY[:16].upper()
+_VALUE = _BODY[:20]
+FOLDS_THAT_TAKE_A_BOUNDARY = {  # what is drawn, and the pieces of the key it draws
+    "whole cloud id, a word on the next row": (f"{_CLOUD_ID}\n  word", [_CLOUD_ID]),
+    "whole cloud id, a blank row, then a word": (f"{_CLOUD_ID}\n\n  word", [_CLOUD_ID]),
+    "folded cloud id, a word on the next row": (f"{_CLOUD_ID[:11]}\n  {_CLOUD_ID[11:]}\n  word",
+                                                [_CLOUD_ID[:11], _CLOUD_ID[11:]]),
+    "keyword, its value on the next row": (f"password\n{_VALUE}", [_VALUE]),
+    "keyword, its value indented on the next row": (f"password\n    {_VALUE}", [_VALUE]),
+}
+
+
+@pytest.mark.parametrize("name", sorted(FOLDS_THAT_TAKE_A_BOUNDARY))
+def test_a_fold_that_takes_a_shapes_boundary_leaves_no_key_in_the_refusal_the_record_or_watch(ship, name):
+    svc, seat, live = ship
+    drawn, pieces = FOLDS_THAT_TAKE_A_BOUNDARY[name]
+    assert acts.masked_box(drawn).count("[masked]") >= 1
+    live["screen"] = f"› {drawn}\n\n  test low · /work\n"
+    refused = svc.answer(dict(kind="type", seat="worker", line="go on", caller="sentry"))
+    assert refused.startswith("refused: worker's box is not empty")
+    _box_after_paste(live, drawn)
+    reply = svc.answer(dict(kind="type", seat="worker", line="please go on", caller="sentry"))
+    assert "not submitted" in reply
+    detail = acts_of(seat)[-1]["detail"]
+    for text in (refused, reply, detail, acts.path(seat).read_text(), _last_act_line(seat)):
+        assert not any(piece in text for piece in pieces)
+
+
 def test_a_box_with_no_key_is_kept_as_it_was():
-    for text in ("a person's draft", "two\n  rows of words", "", "  spaced  out  "):
+    for text in ("a person's draft", "two\n  rows of words", "", "  spaced  out  ",
+                 "the password\n  is short", "a token\n\n  of thanks", "AKIA\n  is a word here"):
         assert acts.masked_box(text) == text
 
 

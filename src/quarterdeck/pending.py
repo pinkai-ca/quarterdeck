@@ -53,7 +53,7 @@ SCREEN_ROWS, SCREEN_COLUMNS, SCREEN_CHARS = 120, 320, 24_000
 SECRET_SHAPES = re.compile(
     r"\b(?:sk|xai|ghp|gho|ghs|ghu|github_pat|glpat)[-_][A-Za-z0-9_\-]{16,}"  # provider and forge tokens
     r"|\bAIza[0-9A-Za-z_\-]{16,}"  # a Google API key
-    r"|\bAKIA[0-9A-Z]{16}\b"  # a cloud access key id
+    r"|\bAKIA[0-9A-Z]{16}"  # a cloud access key id; no boundary after it, which a fold in a box can take away
     r"|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"  # a signed web token
     r"|(?i:\b(?:bearer|authorization|api[_-]?key|token|password|secret)\b\s*[:=]?\s*)[^\s'\"]{12,}")
 

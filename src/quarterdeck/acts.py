@@ -248,19 +248,21 @@ def masked_box(text: str) -> str:
     """The box's text with anything shaped like a key masked, also where the program folded it across rows.
 
     The shapes are matched on the text with its folds taken out, from every row's start as well, since a row's start
-    is a word's start only before the fold is removed. A word after a key's last row may be masked with it."""
+    is a word's start only before the fold is removed, and on the text as drawn, since a shape can need the boundary
+    or the space that a fold is. A word after a key's last row may be masked with it."""
     from .pending import SECRET_SHAPES
     dropped = {at for fold in FOLD.finditer(text) for at in range(*fold.span())}
     index = [at for at in range(len(text)) if at not in dropped]
     flat = "".join(text[at] for at in index)
     starts = {0} | {sum(1 for at in index if at < fold.end()) for fold in FOLD.finditer(text)}
-    spans = [found.span() for found in SECRET_SHAPES.finditer(flat)]
+    joined = [found.span() for found in SECRET_SHAPES.finditer(flat)]
     for start in starts:
         if found := SECRET_SHAPES.match(flat[start:]):
-            spans.append((start, start + found.end()))
+            joined.append((start, start + found.end()))
+    spans = [found.span() for found in SECRET_SHAPES.finditer(text)]
+    spans += [(index[start], index[end - 1] + 1) for start, end in joined]
     kept, cursor = [], 0
-    for start, end in sorted(spans):
-        first, past = index[start], index[end - 1] + 1
+    for first, past in sorted(spans):
         if past <= cursor:
             continue
         if first > cursor:
