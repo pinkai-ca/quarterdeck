@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import json
 import re
 
-from . import alarms, compaction, idle, pending, post, post_dir, recovery, relaunch_intent
+from . import alarms, compaction, idle, lifecycle, pending, post, post_dir, recovery, relaunch_intent
 from .harness import resume_target
 from .ship import ShipError
 
@@ -107,14 +107,14 @@ def _unavailable(seat, launched, pane):
 
 
 def request(seat, *, reason, caller=None, expected_launch=None, service=None, restart=False,
-            pool=None, enclosed=False, immediate=None):
+            pool=None, enclosed=False, immediate=None, ready=None):
     """Stage once per live launch, or start immediately when this program cannot take a turn.
 
     ``pool`` is a destination the caller already chose. ``immediate`` defaults to that choice being set, which is
     how a walled program starts at once: it cannot write its handoff. A caller whose current pool is still open
     passes ``immediate=False`` so the same handoff is staged, bound to ``pool``, and started at the idle break
     after the report. A later request for the same launch does not start another. ``enclosed`` means the caller
-    already holds this seat's relaunch section.
+    already holds this seat's relaunch section. An explicit move supplies its own idle proof before starting.
     """
     runtime, name = seat.ship.runtime, seat.name
     reason = reason.rstrip('.')
@@ -172,6 +172,8 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                     disposition = 'already-staged' if current else 'staged'
                     return FreshHandoffResult(disposition, f'{name}: {reason}. The handoff order {order.short} '
                                               'waits for its report and an idle break before starting a new conversation.')
+                if ready is not None and not ready():
+                    return FreshHandoffResult('waiting-idle', f'{name}: the pool move still waits for an idle break.')
                 data['phase'] = 'starting'
                 if pool is not None:
                     data['pool'] = pool
@@ -182,6 +184,8 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
             return FreshHandoffResult('started', _start(service, seat, store, data, unable=not immediate,
                                                         pool=pool, enclosed=enclosed))
     except (OSError, ShipError) as error:
+        if ready is not None and isinstance(error, lifecycle.Busy):
+            raise
         return FreshHandoffResult('held', f'{name}: the conversation handoff is held. {error}')
 
 
@@ -254,7 +258,7 @@ def _start(service, seat, store, data, *, unable=False, pool=None, enclosed=Fals
     if enclosed:
         proof = begin()
     else:
-        with relaunch_intent.section(service, seat, 'fresh-handoff', resume=False):
+        with relaunch_intent.section(service, seat, 'fresh-handoff', resume=False, selected_pool=pool):
             proof = begin()
     return f'{proof}\n{note}'
 

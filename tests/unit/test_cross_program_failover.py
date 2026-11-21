@@ -76,7 +76,7 @@ def running(tmp_path, monkeypatch, request):
     monkeypatch.setattr(seatmod.shutil, 'which', lambda *a, **k: '/usr/bin/sh')
     for adapter in (CodexHarness, ClaudeHarness):
         monkeypatch.setattr(adapter, 'version', lambda self: 'synthetic')
-        monkeypatch.setattr(adapter, 'screen', lambda *a: Screen('', ''))
+        monkeypatch.setattr(adapter, 'screen', lambda *a: Screen('', '', working=False))
         monkeypatch.setattr(adapter, 'usage', lambda *a: pytest.fail('test queried a real provider'))
     monkeypatch.setattr(service, 'seats', lambda *a: [seat])
     monkeypatch.setattr(service.machine, 'processes', lambda: {})

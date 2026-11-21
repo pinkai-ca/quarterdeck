@@ -54,6 +54,7 @@ RELAUNCHING, RELEASED, FINISHING, FAILED = 'relaunching', 'released', 'finishing
 KINDS = frozenset({'after-order', 'relaunch', 'refusal', 'failover', 'select', 'compaction', 'server-recovery', 'fresh-handoff'})
 ROUTING = frozenset({'after-order', 'relaunch', 'refusal', 'fresh-handoff'})
 _active = ContextVar('relaunch_intent', default=None)
+_selection = ContextVar('relaunch_pool_selection', default=None)
 
 
 # A hold that keeps a seat down, added later, registers a reader here: seat -> reason or None. Its writer calls
@@ -297,7 +298,27 @@ def record_destination(seat, resume: bool, *, pool: str | None = None, harness: 
 
 
 @contextmanager
-def section(service, seat, kind: str, *, resume):
+def selecting_pool(seat, pool):
+    token = _selection.set((seat, pool))
+    try:
+        yield
+    finally:
+        _selection.reset(token)
+
+
+def explicit_pool(seat, pool: str) -> str | None:
+    """The operator's choice applies only to the launch being built for this seat and pool."""
+    return pool if _selection.get() == (seat, pool) else None
+
+
+@contextmanager
+def section(service, seat, kind: str, *, resume, selected_pool=None):
+    with selecting_pool(seat, selected_pool), _section(service, seat, kind, resume=resume):
+        yield
+
+
+@contextmanager
+def _section(service, seat, kind: str, *, resume):
     """One relaunch of ``seat``: intent and log line before the down, log line after the up, a stop held between.
 
     Outside a running service (a person's qd, a check, a test) it does nothing and reads nothing. ``resume`` is
@@ -456,7 +477,9 @@ def finish(service) -> None:
                         target = seat._require_resume(expected=expected) if resume else None
                         proof = seat._up(resume=resume, target=target)
                     else:
-                        proof = seat._up_on_recorded_pool(**destination, resume=data['resume'], expected=expected)
+                        selected = destination['pool'] if data['kind'] == 'select' else None
+                        with selecting_pool(seat, selected):
+                            proof = seat._up_on_recorded_pool(**destination, resume=data['resume'], expected=expected)
                     if destination is not None and not data['resume'] and data['kind'] in ('failover', 'select', 'server-recovery'):
                         service.store.new('report', 'ship', seat.name,
                                           f"Moved to pool {destination['pool']} and {resume_target.NEW_CONVERSATION}.")

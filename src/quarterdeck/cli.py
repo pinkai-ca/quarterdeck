@@ -183,10 +183,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("credential", cmd_credential, "review a seat home held for its sign-in")
     p.add_argument("action", choices=("release",))
     p.add_argument("seat", help="the down seat whose home is held for credential review")
-    p = verb("set", cmd_set, "change a seat: writes the ship file, then applies what it can")
+    p = verb("set", cmd_set, "select a declared pool, or write and apply seat settings")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("changes", nargs="*", metavar="KEY=VALUE", help="model=…, effort=…, pool=a,b, up=true")
     p.add_argument("--adopt", action="store_true", help="write what the seat is running into the ship file")
+    p.add_argument("--declare", action="store_true", help="edit the seat declaration, including a one-pool list")
     p = verb("controls", cmd_controls, "list a seat's controls with the form each has")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("--harness", choices=harnesses.NAMES, help="read a program's capabilities without a ship")
@@ -600,10 +601,12 @@ def cmd_credential(args: argparse.Namespace) -> str:
 
 
 def cmd_set(args: argparse.Namespace) -> list[str]:
-    return set_seat(load_ship(args), args.seat, list(args.changes), adopt_running=args.adopt)
+    return set_seat(load_ship(args), args.seat, list(args.changes), adopt_running=args.adopt,
+                    declaration_edit=getattr(args, 'declare', False))
 
 
-def set_seat(ship: shipmod.Ship, name: str | None, changes: list[str], *, adopt_running: bool = False) -> list[str]:
+def set_seat(ship: shipmod.Ship, name: str | None, changes: list[str], *, adopt_running: bool = False,
+             declaration_edit: bool = False) -> list[str]:
     """The qd set selection/write/application path, also used by setup's existing-seat edits."""
     if name and "=" in name:  # qd set model=x from inside a seat: the seat is this one
         changes.insert(0, name)
@@ -618,9 +621,14 @@ def set_seat(ship: shipmod.Ship, name: str | None, changes: list[str], *, adopt_
             key = change.partition("=")[0].removeprefix("settings.")
             if change.startswith("settings.") or key in {"harness", "model", "effort", "model_mode", "effort_mode"} or key not in shipmod.SEAT_KEYS:
                 raise ShipError("inline pool choices: edit harness, model, effort and program settings in ship.toml; qd set cannot select their scope")
-    if (seat.spec.pool_choices or getattr(seat, 'withdrawn_pool', None) is not None) and any(
-            change.partition("=")[0] == "pool" for change in changes):
-        return [select(ship, seat, changes)]
+    pool_changes = [raw for key, _, raw in (change.partition("=") for change in changes) if key == "pool"]
+    if pool_changes:
+        inline = seat.declaration.pool_choices or seat.withdrawn_pool is not None
+        standalone_pool = len(changes) == 1 and changes[0].startswith("pool=") and "," not in pool_changes[0]
+        if not declaration_edit and (inline or standalone_pool):
+            return [select(ship, seat, changes)]
+        if inline:
+            raise ShipError("inline pool choices: edit the pool declaration in ship.toml")
     parsed = []
     for change in changes:
         key, equals, raw = change.partition("=")
@@ -661,17 +669,18 @@ def set_seat(ship: shipmod.Ship, name: str | None, changes: list[str], *, adopt_
 def select(ship: shipmod.Ship, seat: seatmod.Seat, changes: list[str]) -> str:
     """Select a declared destination by the path failover uses.
 
-    The selection is the seat's runtime state, so nothing is written to the ship file; the service checks
-    the destination and the seat's idleness exactly as failover does, and refuses rather than waits.
+    The service applies a live choice at the next proved idle break. The declaration is untouched.
     """
     if len(changes) != 1:
         raise ShipError(f"{seat.name}: select a pool alone, as in qd set {seat.name} pool=<choice>")
     pool = changes[0].partition("=")[2]
-    if pool not in seat.spec.pools:
-        raise ShipError(f"{seat.name}: {pool!r} is not one of its declared choices ({', '.join(seat.spec.pools)})")
+    pools = seat.declaration.pools
+    if pool not in pools:
+        raise ShipError(f"{seat.name}: {pool!r} is not one of its declared choices ({', '.join(pools)})")
     if not seat.is_up:
         return choose_for_launch(seat, pool)
-    return service.request(ship.runtime, "select", seat=seat.name, pool=pool)
+    from .request_queue import launch_binding
+    return service.request(ship.runtime, "select", seat=seat.name, pool=pool, origin=launch_binding(seat))
 
 
 @lifecycle.explicit()

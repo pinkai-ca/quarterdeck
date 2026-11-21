@@ -144,7 +144,7 @@ class Operations:
 
     def change_seat(self, ship: Ship, name: str, changes: list[str]) -> list[str]:
         from .cli import set_seat
-        return set_seat(ship, name, changes)
+        return set_seat(ship, name, changes, declaration_edit=True)
 
     def up(self, ship: Ship):
         from .cli import cmd_up

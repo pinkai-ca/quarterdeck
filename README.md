@@ -118,6 +118,8 @@ From any other folder, run setup's Desk access line, which names the office's fu
 
 Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one line each, such as `anthropic = "<your key>"`. Keep it private to you (`chmod 600`). A pool in the ship's file names the key, never holds it: `api_key = "keys:anthropic"`. List a key after a subscription and an agent falls back to it when the subscription is spent, and returns when the subscription has room. A `budget` limits what the key may spend. A key beside an `endpoint` travels only over https, or over http to your own machine, and an endpoint's address holds no credentials, query or fragment.
 
+Use `qd set SEAT pool=NAME` to select a pool already declared for the seat. A running seat moves after its turn and queued input have cleared, and resumes the same conversation when the program can prove it. The pending move appears in `qd status` and `qd watch SEAT`. A key chosen this way stays selected for that launch while it can pay. For a down seat, the choice applies to its next `qd up`. To edit a simple pool list, use `qd set SEAT pool=FIRST,SECOND` or `qd set --declare SEAT pool=ONLY`. Edit inline choices in the ship file.
+
 Proved live so far, with a real key:
 
 - Claude Code 2.1.317 on an Anthropic API key: one live call, on `claude-haiku-5-5`.

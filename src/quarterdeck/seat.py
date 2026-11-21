@@ -93,6 +93,7 @@ class Launched:
     notice: str | None = None
     answered: list[dict] | None = None  # the account holder's questions the framework answered in this launch
     start: str | None = None  # the program process's start time, read from /proc at launch: its identity with pid
+    pool_selected: str | None = None  # the key pool explicitly selected for this live launch
 
     def write(self, path: Path) -> None:
         data = asdict(self)
@@ -103,6 +104,8 @@ class Launched:
             data.pop('notice')
         if data['answered'] is None:
             data.pop('answered')  # unchanged launch shape until a question is answered
+        if data['pool_selected'] is None:
+            data.pop('pool_selected')
         if data['start'] is None:
             data.pop('start')  # unchanged launch shape where the start was not read
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)  # the seat's trusted folder (trusted_files)
@@ -226,7 +229,7 @@ _LAUNCH_FIELDS = {
     'pane': (str,), 'pid': (int,), 'at': (str,), 'pool': (str,), 'resume': (str, type(None)), 'argv': (list,),
     'version': (str, type(None)), 'harness': (str, type(None)), 'records_before': (list,),
     'recovery': (dict, type(None)), 'notice': (str, type(None)), 'answered': (list, type(None)),
-    'start': (str, type(None)),
+    'start': (str, type(None)), 'pool_selected': (str,),
 }
 _LAUNCH_REQUIRED = ('pane', 'pid', 'at', 'pool', 'resume', 'argv', 'version')
 
@@ -271,6 +274,8 @@ def parse_launch(text: str, name: str) -> dict:
     for key, value in data.items():
         if not isinstance(value, _LAUNCH_FIELDS[key]) or isinstance(value, bool):
             raise refuse(f"field {key!r} of the wrong type")
+    if 'pool_selected' in data and data['pool_selected'] != data['pool']:
+        raise refuse('explicit pool selection disagrees with the launch pool')
     if data['pid'] <= 0 or not all(isinstance(item, str) for item in [*data['argv'], *data.get('records_before', [])]):
         raise refuse('a field out of its range')
     try:
@@ -536,9 +541,14 @@ class Seat:
             return current, f"saved choice retained; room unknown on {', '.join(unknown)}"
         return current, 'every declared choice is walled; its saved choice stays'
 
-    def failover_to(self, pool: str) -> str:
+    def failover_to(self, pool: str, *, ready=None) -> str | None:
         """Preserve the source before selecting another program or paying pool."""
-        with self._lifecycle():
+        with self._lifecycle(automatic=ready is not None):
+            if ready is not None:
+                if not ready():
+                    return None
+                from . import compaction
+                compaction.disarm(self, adopt_successor=True)
             return self._failover_to(pool)
 
     def _failover_to(self, pool: str) -> str:
@@ -1251,9 +1261,11 @@ class Seat:
                 raise ShipError(f'{self.name}: bounded carriage could not be published ({error}); nothing was started') from None
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
+        from . import relaunch_intent
+        selected = relaunch_intent.explicit_pool(self, pool.name) if pool.paid_by_key else None
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, version, self.spec.harness,
                             sorted(map(str, prior)), launch.price, launch.recovery, notice=launch.notice,
-                            start=process_start(pane.pid))
+                            start=process_start(pane.pid), pool_selected=selected)
         if launch.deferred_opening is not None:
             from . import launch_opening
             try:
@@ -1272,6 +1284,8 @@ class Seat:
             pass  # unmarked, the next message carries the change once more: nothing is lost
         if self.spec.pool_choices:
             self.move_to(pool.name)
+        else:
+            (self.trusted / EXPLICIT).unlink(missing_ok=True)
         if resume_id:
             self.record()  # retain the resumed record's new pool boundary immediately
         self._survives(pane.id, launch.argv[0])

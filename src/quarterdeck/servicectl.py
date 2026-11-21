@@ -745,6 +745,13 @@ def request(runtime: Path, kind: str, **data) -> str:
             answer.unlink()
             request_queue.acknowledged(path)
             return proof
+        if kind == 'select':
+            try:
+                meta = request_queue.metadata(path)
+                if meta.get('select_wait') is True and request_queue.claimed(path) is False:
+                    return f"accepted: {data['seat']} {meta['waiting']['reason']} (request {name}); applies at an idle break"
+            except (OSError, ValueError, TypeError, KeyError, ShipError):
+                pass  # the service's final answer or ordinary pending reading will say what is known
         time.sleep(0.1)
     late = stale(runtime)
     if answer.exists():

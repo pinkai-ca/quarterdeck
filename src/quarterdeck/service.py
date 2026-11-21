@@ -1583,10 +1583,11 @@ class Service:
         if kind == "relaunch":
             return self.relaunch_request(data)
         if kind == "select":  # the seats failover acts on: a seat whose selection is unknown is held, not guessed
+            self.refresh_ship()
             seat = next((s for s in self.resolved_seats() if s.name == data["seat"]), None)
             if seat is None:
                 return f"{data['seat']} not moved: its pool selection is unknown or held; inspect with qd status"
-            return self.select(seat, str(data["pool"]))
+            return self.select_request(seat, str(data["pool"]), data)
         return f"unknown request {kind!r}"
 
     def tell_held(self, data, meta, answer) -> None:
@@ -2616,14 +2617,17 @@ class Service:
                                        restart=True, pool=pool, immediate=False)
         return result.proof
 
-    def _fresh_unproved_move(self, seat: Seat, error, pool: str, came_from: str, *, kind: str, binding) -> str | None:
+    def _fresh_unproved_move(self, seat: Seat, error, pool: str, came_from: str, *, kind: str, binding,
+                             ready=None) -> str | None:
         """The shared fresh handoff, at once, on the pool this move already chose. The caller holds its section.
 
         ``binding`` is the seat's generation before the move, so a start that does not run can still publish its hold.
         """
         from . import fresh_handoff
         result = fresh_handoff.request(seat, reason=error.reason, expected_launch=error.launch, service=self,
-                                       restart=True, pool=pool, enclosed=True)
+                                       restart=True, pool=pool, enclosed=True, ready=ready)
+        if result.disposition == 'waiting-idle':
+            return None
         if result.disposition != 'started':
             self._name_unproved_hold(seat, binding, came_from, pool)
             self.log(kind, seat=seat.name, pool=pool, skipped=result.proof)
@@ -2720,6 +2724,8 @@ class Service:
         has room: a key pays only while the subscriptions are spent."""
         if not getattr(seat.pool, 'paid_by_key', False) or seat.pool.name not in seat.spec.pools:
             return
+        if getattr(seat.launched(), 'pool_selected', None) == seat.pool.name:
+            return  # the operator chose this key for the current launch
         earlier = seat.spec.pools[:seat.spec.pools.index(seat.pool.name)]
         target = next((name for name in earlier if self.ship.pools[name].kind == 'subscription'
                        and self.known_open(seat, name)), None)
@@ -2768,7 +2774,56 @@ class Service:
         """Compatibility wrapper for callers that already hold the service."""
         return idle.reading(seat)
 
-    def select(self, seat: Seat, pool: str) -> str:
+    def select_request(self, seat: Seat, pool: str, data: dict) -> str | None:
+        """Leave an accepted choice in the normal request queue until this launch is at rest."""
+        from . import relaunch_intent, request_queue
+        origin = request_queue.launch_binding(seat)
+        meta = getattr(self, 'request_metadata', {})
+        expected = data.get('origin', meta.get('select_origin', origin))
+        if origin is None or expected != origin or not seat.is_up:
+            return f'{seat.name} not moved: its launch changed or ended'
+        if pool not in seat.declaration.pools or pool == seat.pool.name:
+            return self.select(seat, pool)
+        if reason := relaunch_intent.held(seat):
+            return f'{seat.name} not moved: {reason}'
+        seat._accept_pool(seat.declaration.for_pool(pool), self.ship.pool(pool))
+        proved_record = None
+
+        def wait(dimension, reason):
+            meta.update(select_wait=True, select_origin=origin)
+            self.request_wait = (dimension, f'move to pool {pool}: {reason}')
+            return False
+
+        def ready():
+            nonlocal proved_record
+            if request_queue.launch_binding(seat) != origin or not seat.is_up:
+                raise ShipError(f'{seat.name}: its launch changed or ended before the pool move')
+            if reason := relaunch_intent.held(seat):
+                raise ShipError(f'{seat.name}: {reason}')
+            try:
+                record = seat.record()
+                _, hold = idle.reading(seat)
+                if hold is not None:
+                    return wait(hold.dimension, hold.reason)
+                if pending_delivery.active(seat):
+                    return wait('delivery', 'a delivery to the seat is not confirmed')
+                if not idle.at_rest(Door(seat).screen()):
+                    return wait(idle.BOX.dimension, idle.BOX.reason)
+                if (request_queue.launch_binding(seat) != origin or seat.record() != record
+                        or proved_record is not None and record != proved_record):
+                    return wait('identity', 'launch or record changed during the idle proof')
+            except (OSError, TmuxError):
+                return wait('idle-unknown', 'the record, delivery or composer could not be read')
+            proved_record = record
+            return True
+
+        try:
+            return self.select(seat, pool, ready=ready)
+        except lifecycle.Busy:
+            wait('lifecycle-busy', 'another lifecycle transition is in progress')
+            return None
+
+    def select(self, seat: Seat, pool: str, *, ready=None) -> str | None:
         """An explicit move to one of a seat's declared choices, by failover's path and refusals.
 
         The operator may choose a destination while the current pool still has room. Selection
@@ -2778,16 +2833,15 @@ class Service:
         handoff on the chosen pool and starts there after the report and a proved idle break.
         """
         declaration = getattr(seat, 'declaration', seat.spec)
-        if (pool not in declaration.pools
-                or not (declaration.pool_choices or getattr(seat, 'withdrawn_pool', None) is not None)):
-            return f"{seat.name}: {pool} is not one of its declared choices ({', '.join(seat.spec.pools)}); nothing moved"
+        if pool not in declaration.pools:
+            return f"{seat.name}: {pool} is not one of its declared choices ({', '.join(declaration.pools)}); nothing moved"
         if pool == seat.pool.name:
             return f"{seat.name} is already on {pool}"
         if reason := recovery.held(seat):
             return f"{seat.name} not moved: {reason}"
         if not seat.is_up:
             return f"{seat.name} not moved: it is down; qd up {seat.name} first"
-        if reason := self.not_idle_at_wall(seat):
+        if ready is None and (reason := self.not_idle_at_wall(seat)):
             if self._record_identity_hold(reason) and self.resumes_on(seat, pool):
                 from .harness import resume_target
                 try:
@@ -2803,13 +2857,15 @@ class Service:
                         return self._stage_unproved_select(seat, error, pool)
                     binding = move_hold.generation(seat)
                     from . import relaunch_intent
-                    with relaunch_intent.section(self, seat, 'select', resume=False):
+                    with relaunch_intent.section(self, seat, 'select', resume=False, selected_pool=pool):
                         return self._fresh_unproved_move(seat, error, pool, came_from, kind='select',
                                                         binding=binding)
             return f"{seat.name} not moved: {reason}; ask again when its turn has ended"
         refused, unknown = self.select_destination(seat, pool)
         if refused:
             return f"{seat.name} not moved: {refused}"
+        if ready is not None and not ready():
+            return None
         came_from = seat.pool.name
         binding = move_hold.generation(seat)
         from . import relaunch_intent
@@ -2822,13 +2878,17 @@ class Service:
             except resume_target.Unproved as error:
                 if not quota.current_walled(seat, self.ledger):
                     return self._stage_unproved_select(seat, error, pool)
-        with relaunch_intent.section(self, seat, 'select', resume=lambda: self.resumes_on(seat, pool)):
+        with relaunch_intent.section(self, seat, 'select', resume=lambda: self.resumes_on(seat, pool),
+                                     selected_pool=pool):
             try:
-                proof = seat.failover_to(pool)
+                proof = seat.failover_to(pool) if ready is None else seat.failover_to(pool, ready=ready)
             except resume_target.Unproved as error:
                 if seat.session.human:
                     raise
-                return self._fresh_unproved_move(seat, error, pool, came_from, kind='select', binding=binding)
+                return self._fresh_unproved_move(seat, error, pool, came_from, kind='select', binding=binding,
+                                                 ready=ready)
+        if proof is None:
+            return None
         self.report_pool_move(seat, f"moved to pool {pool} from {came_from} by qd set")
         self.log("select", seat=seat.name, pool=pool, came_from=came_from, usage_unknown=unknown, proof=proof)
         note = f"; {pool} usage unknown; moved on the explicit act" if unknown else ""

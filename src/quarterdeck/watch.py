@@ -378,13 +378,21 @@ def status_reading(ship: Ship, tmux: Tmux, *, store=None, collected=None) -> dic
     selected = seats(ship, tmux, False)
     programs, program_error = program_use.collect(ship, selected)
     outcomes = check_outcome.collect(ship.runtime)
-    data = {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in selected],
+    seat_rows = [reading(seat, store) for seat in selected]
+    active = [row for row in seat_rows if row.activity.state != 'off']
+    active_pools = {row.pool for row in active}
+    unused_alternates = {pool for row in active
+                         if (paying := ship.pools.get(row.pool)) is not None and paying.paid_by_key
+                         for pool in ship.seats[row.name].pools} - active_pools
+    usage = [row for row in headline_readings(ship) if row['pool'] not in unused_alternates or row.get('complete')]
+    data = {"service": service_state(ship.runtime), "seats": seat_rows,
             "programs": programs, "programs_error": program_error,
             "check_outcomes": outcomes[0], "check_outcome_errors": outcomes[1],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
             "requests": requests, "facts": (collected if collected is not None else
                 facts(ship, tmux, store=store, post_held=post_held, check_reading=outcomes)),
-            "usage": headline_readings(ship), "extra_usage": extra_usage.readings(ship), **providers.identities(ship)}
+            "usage": usage, "extra_usage": extra_usage.readings(ship),
+            **providers.identities(ship)}
     if keyed := [pool for pool in getattr(ship, 'pools', {}).values() if getattr(pool, 'paid_by_key', False)]:
         inside = _caller_jailed(ship)
         data['key_pools'] = [keyfile.status_line(pool, jailed_caller=inside) for pool in keyed]
@@ -486,7 +494,7 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
                     requests=request_queue.pending(seat.ship.runtime, seat.name),
                     receipt_skips=dict(total=0, counts=[], examples=[], omitted=0),
                     receipt_error=str(seat.error), record_absent=str(seat.error),
-                    record_limits=None, screen=None, answered=[], act=None, usage=headline_readings(seat.ship),
+                    record_limits=None, screen=None, answered=[], act=None, usage=[],
                     **providers.identities(seat.ship))
     record = seat.record()
     state, error = None, None
@@ -512,7 +520,8 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
             "screen": screen, "answered": list((launched.answered or []) if (launched := seat.launched()) else []),
             "act": acts.last(seat),
             "launch_notice": launched.notice if launched else None,
-            "usage": headline_readings(seat.ship), **providers.identities(seat.ship)}
+            "usage": headline_readings(seat.ship, pools={r.pool}),
+            **providers.identities(seat.ship)}
 
 
 def render_full(data: dict) -> list[str]:
@@ -677,12 +686,13 @@ def held_scope(reason: str, pool: str) -> str:
     return head
 
 
-def headline_readings(ship: Ship) -> list[dict]:
-    """Every supported subscription headline, from the cache only."""
+def headline_readings(ship: Ship, *, pools: set[str] | None = None) -> list[dict]:
+    """Supported subscription headlines from the cache, optionally for active pools only."""
     from . import harness as harnesses
     from .ledger_reading import window_reading
 
-    readers = {p.name: harnesses.native_for(p.provider) for p in ship.pools.values() if p.kind == "subscription"}
+    readers = {p.name: harnesses.native_for(p.provider) for p in ship.pools.values()
+               if p.kind == "subscription" and (pools is None or p.name in pools)}
     selected = {name: reader for name, reader in readers.items() if reader.reads_usage and reader.headline_windows()}
     if not selected:
         return []

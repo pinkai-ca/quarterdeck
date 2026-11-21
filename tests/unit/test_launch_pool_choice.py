@@ -163,7 +163,8 @@ def test_qd_set_on_an_up_seat_still_asks_the_service(migrated, monkeypatch):
     asked = []
     monkeypatch.setattr(cli.service, 'request', lambda runtime, kind, **data: asked.append((kind, data)) or 'asked')
     assert cli.select(r.ship, r.worker, ['pool=second']) == 'asked'
-    assert asked == [('select', {'seat': 'worker', 'pool': 'second'})]
+    from quarterdeck.request_queue import launch_binding
+    assert asked == [('select', {'seat': 'worker', 'pool': 'second', 'origin': launch_binding(r.worker)})]
     assert not (r.worker.trusted / EXPLICIT).exists()
 
 

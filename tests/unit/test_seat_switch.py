@@ -11,7 +11,9 @@ import json
 
 import pytest
 
-from quarterdeck import cli, post, service as servicemod, watch
+from quarterdeck import cli, post, request_queue, service as servicemod, watch
+from quarterdeck.harness import resume_target
+from quarterdeck.harness.types import Screen
 from quarterdeck.ship import load
 from .test_cross_program_failover import running, usage  # noqa: F401  (the fixture and its helper)
 
@@ -70,7 +72,9 @@ def test_qd_set_selects_a_declared_choice_through_the_service_without_writing_th
     monkeypatch.setattr(cli.Tmux, "for_ship", lambda ship: running.seat.tmux)
     monkeypatch.setattr(servicemod, "request", lambda runtime, kind, **data: asked.append((kind, data)) or "synthetic answer")
     code, out, err = run(capsys, "--ship", str(ship.folder), "set", "worker", "pool=first")
-    assert code == 0 and asked == [("select", {"seat": "worker", "pool": "first"})] and "synthetic answer" in out
+    assert code == 0 and "synthetic answer" in out
+    assert asked == [("select", {"seat": "worker", "pool": "first",
+                                "origin": request_queue.launch_binding(running.seat)})]
     assert ship.file.read_text() == before, "a selection is runtime state; the declaration is unchanged"
     for refused in (["pool=undeclared"], ["pool=first", "persona=Other"]):
         code, out, err = run(capsys, "--ship", str(ship.folder), "set", "worker", *refused)
@@ -110,7 +114,7 @@ def test_the_same_program_moves_by_restart_with_resume(running):
     assert r.seat.pool.name == "third" and r.seat.launched().resume is not None and "--resume" in r.launches[-1]
 
 
-def test_a_selection_is_refused_where_failover_would_not_move(running):
+def test_a_selection_refuses_an_invalid_destination_and_waits_for_an_open_turn(running):
     r = running
     r.svc.account()
     launched = r.seat.launched()
@@ -120,8 +124,33 @@ def test_a_selection_is_refused_where_failover_would_not_move(running):
     assert "not moved: second is walled" in select(r, "second")
     usage(r.svc, "second", 0.0)
     r.source.begin("synthetic open turn", "synthetic-source", "high")  # a turn the record has not closed
-    assert "not moved: a turn is open" in select(r, "second")
+    assert select(r, "second") is None
+    assert r.svc.request_wait == ("turn-open", "move to pool second: a turn is open")
     assert r.seat.launched() == launched and not r.launches and r.seat.pool.name == "first"
+
+
+def test_a_lost_resume_proof_rechecks_the_composer_before_an_immediate_fresh_move(running, monkeypatch):
+    r = running
+    r.svc.failover()
+    assert r.seat.pool.name == 'second'
+    usage(r.svc, 'second', 1.0)
+    before = r.seat.launched()
+    require = r.seat._require_resume
+    calls = 0
+
+    def require_resume(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise resume_target.Unproved(r.seat.name, launch=before)
+        return require(*args, **kwargs)
+
+    monkeypatch.setattr(r.seat, '_require_resume', require_resume)
+    monkeypatch.setattr(r.seat.harness, 'screen',
+                        lambda raw: Screen(raw, 'new draft' if calls == 2 else '', working=False))
+    assert select(r, 'third') is None
+    assert r.svc.request_wait == ('box', 'move to pool third: the box is not proved empty and idle')
+    assert r.seat.launched() == before and len(r.launches) == 1
 
 
 def test_failover_stays_on_the_current_pool_while_it_has_room(running):

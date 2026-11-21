@@ -40,7 +40,7 @@ def test_each_session_omits_an_unused_pool_wall_and_keeps_the_json_facts(drydock
         assert facts['usage'][0]['reading']['used'] == .75
 
 
-def test_last_known_and_recovery_reach_status_watch_and_ledger_without_query(drydock, tmux):
+def test_last_known_and_recovery_reach_fleet_status_and_ledger_without_query(drydock, tmux):
     with (drydock/'ship.toml').open('a') as stream:
         stream.write('\n[pools.google]\nprovider = "antigravity"\n')
     declared = ship.load(drydock)
@@ -57,9 +57,10 @@ def test_last_known_and_recovery_reach_status_watch_and_ledger_without_query(dry
     for args in commands:
         result = subprocess.run([qd, '--ship', str(drydock), *args], env=env,
                                 capture_output=True, text=True, check=True)
-        if args == ('status', '--line'):
+        if args in (('status', '--line'), ('watch', 'worker-1')):
             assert 'google' not in result.stdout and 'reset' not in result.stdout and 'usage' not in result.stdout
-            assert len(result.stdout.rstrip('\n')) <= 160
+            if args == ('status', '--line'):
+                assert len(result.stdout.rstrip('\n')) <= 160
         else:
             assert 'google Gemini 4 Argon / 7d 75%' in result.stdout and 'LAST KNOWN' in result.stdout
             assert '75% used' in result.stdout and 'synthetic provider timeout' in result.stdout
@@ -73,7 +74,7 @@ def test_last_known_and_recovery_reach_status_watch_and_ledger_without_query(dry
         result = subprocess.run([qd, '--ship', str(drydock), *args], env=env,
                                 capture_output=True, text=True, check=True)
         assert 'LAST KNOWN' not in result.stdout and 'synthetic provider timeout' not in result.stdout
-        if args == ('status', '--line'):
+        if args in (('status', '--line'), ('watch', 'worker-1')):
             assert 'google' not in result.stdout and 'reset' not in result.stdout
         else:
             assert 'google Gemini 4 Argon / 7d 50%' in result.stdout

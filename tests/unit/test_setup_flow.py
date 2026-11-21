@@ -340,10 +340,10 @@ def test_cli_flags_bind_setup_answers():
 
 def test_existing_operation_delegates_to_qd_set_path(monkeypatch):
     calls = []
-    monkeypatch.setattr(cli, "set_seat", lambda *args: calls.append(args) or ["same path"])
+    monkeypatch.setattr(cli, "set_seat", lambda *args, **kwargs: calls.append((args, kwargs)) or ["same path"])
     marker = object()
-    assert setup.Operations().change_seat(marker, "desk", ["model=example"]) == ["same path"]
-    assert calls == [(marker, "desk", ["model=example"])]
+    assert setup.Operations().change_seat(marker, "desk", ["pool=example"]) == ["same path"]
+    assert calls == [((marker, "desk", ["pool=example"]), {"declaration_edit": True})]
 
 
 def test_doctor_discovery_uses_registered_adapters_and_fake_path_only(tmp_path, monkeypatch):
