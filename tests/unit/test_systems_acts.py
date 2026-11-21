@@ -320,6 +320,38 @@ def test_the_service_itself_tells_the_desk_once_per_seat_and_screen(ship):
     assert live["sent"] == [] and not acts.path(seat).exists()
 
 
+_BODY = "Q7wM2xC9zT4lP8rV3nH6Q7wM2xC9zT4lP8r"  # synthetic; each shape is put together here so none stands whole in the file
+KEY_SHAPES = [*(start + _BODY for start in ("sk-", "sk-" + "ant-", "sk-" + "or-", "xai-", "gh" + "p_", "gh" + "o_",
+                                            "gh" + "s_", "gh" + "u_", "github" + "_pat_", "gl" + "pat-", "AI" + "za")),
+              "AK" + "IA" + "Q7WM2XC9ZT4LP8RV", "ey" + "Jabcdefgh12.abcdefgh12.abcdefgh12"]
+
+
+@pytest.mark.parametrize("shape", KEY_SHAPES)
+def test_a_key_drawn_on_a_screen_is_masked_in_the_acts_record(ship, shape):
+    svc, seat, live = ship
+    live["screen"] = DIALOG.replace("Synthetic question from the program?", f"Synthetic note {shape}")
+    live["after"] = lambda kind, value: live.update(screen="• Working (1s • esc to interrupt)\n› \n\n  test low · /work\n")
+    svc.answer(dict(kind="press", seat="worker", choice="Continue", caller="sentry"))
+    assert "[masked]" in acts_of(seat)[0]["screen"]
+    assert shape not in acts.path(seat).read_text() and _BODY[:8] not in acts.path(seat).read_text().replace("Q7WM", "")
+
+
+@pytest.mark.parametrize("shape", KEY_SHAPES)
+def test_a_key_drawn_on_a_refused_screen_is_masked_in_the_desks_post(ship, shape):
+    svc, seat, live = ship
+    live["screen"] = DIALOG.replace("Synthetic question from the program?",
+                                    f"Do you trust the authors of this project? {shape}")
+    svc.answer(dict(kind="press", seat="worker", choice="Continue", caller="sentry"))
+    [notice] = to_desk(svc)
+    assert "Do you trust the authors of this project? [masked]" in notice.body and shape not in notice.body
+
+
+def test_the_screens_cut_cannot_leave_the_end_of_a_key():
+    key = "sk-" + _BODY
+    shown = acts.bounded(key + "y" * (acts.SCREEN_CHARS - 10))
+    assert "[masked]" in shown and key[-10:] not in shown
+
+
 def test_a_refusal_for_authority_tells_nobody(ship):
     svc, seat, live = ship
     live["screen"] = DIALOG.replace("Synthetic question from the program?", "Do you trust the authors of this project?")

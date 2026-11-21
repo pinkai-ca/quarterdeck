@@ -10,6 +10,7 @@ above it out of the ship's state.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -20,6 +21,7 @@ import tomllib
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import keyfile
 
@@ -442,11 +444,48 @@ def _session(name: str, table: dict, ship_name: str) -> Session:
     return Session(name, title, human)
 
 
-def _from_text(text: str, folder: Path) -> Ship:
+_TOML_PLACE = re.compile(r"\(at line (\d+), column (\d+)\)\Z")  # the parser's own suffix; its lineno is 3.14 only
+
+
+def toml_table(text: str) -> tuple[dict | None, str | None]:
+    """The table, or None and where the parser stopped. Its message can quote the file, a pasted key with it, so only
+    the line and column leave here; a caller raises outside this handler, so no exception chain carries the message."""
     try:
-        data = tomllib.loads(text)
+        return tomllib.loads(text), None
     except tomllib.TOMLDecodeError as error:
-        raise ShipError(f"{folder / 'ship.toml'}: {error}") from None
+        found = _TOML_PLACE.search(str(error))
+        return None, f"line {found[1]}, column {found[2]}" if found else "the end of the file"
+
+
+def endpoint_fits(value) -> bool:
+    """An http or https URL with a host and nothing that can carry a credential: no user part, query or fragment."""
+    if not isinstance(value, str) or not re.fullmatch(r"https?://\S+", value) or "?" in value or "#" in value:
+        return False
+    try:
+        parts = urlsplit(value)
+        return bool(parts.hostname) and "@" not in parts.netloc and (parts.port is None or parts.port >= 0)
+    except ValueError:  # a port that is no number: its message would quote the value
+        return False
+
+
+def loopback_endpoint(url: str) -> bool:
+    """Whether the URL's host is this machine's own loopback, by name or by address."""
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
+
+
+def _from_text(text: str, folder: Path) -> Ship:
+    data, place = toml_table(text)
+    if data is None:
+        raise ShipError(f"{folder / 'ship.toml'}: not valid TOML at {place}")
     head = data.get("ship", {})
     from .copy_state import code_mode
     try:
@@ -766,8 +805,12 @@ def _validate(ship: Ship) -> None:
             raise ShipError(f"pool {pool.name}: declare config_dir (or home) or api_key, not both")
         if pool.endpoint and pool.config_dir:
             raise ShipError(f"pool {pool.name}: an endpoint pool names no config_dir; a key beside the endpoint is api_key")
-        if pool.endpoint and not re.match(r"^https?://\S+$", pool.endpoint):
-            raise ShipError(f"pool {pool.name}: endpoint must be an http or https URL such as http://127.0.0.1:8000/v1, not {pool.endpoint!r}")
+        if pool.endpoint and not endpoint_fits(pool.endpoint):  # never quoted: a key pasted there would be printed
+            raise ShipError(f"pool {pool.name}: endpoint must be an http or https URL such as http://127.0.0.1:8000/v1, "
+                            "with no credentials, query or fragment; a key is named by api_key")
+        if pool.endpoint and pool.api_key and pool.endpoint.startswith("http://") and not loopback_endpoint(pool.endpoint):
+            raise ShipError(f"pool {pool.name}: a key travels only over https, or over http to this machine's loopback; "
+                            "give the endpoint an https address")
         if pool.context is not None and (isinstance(pool.context, bool) or not isinstance(pool.context, int) or pool.context <= 0):
             raise ShipError(f"pool {pool.name}: context must be a count of tokens, not {pool.context!r}")
         if pool.output is not None:

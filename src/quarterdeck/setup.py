@@ -406,14 +406,8 @@ def program_list(value: str, available: dict) -> list[str]:
 
 
 def safe_endpoint(value: str) -> str:
-    from urllib.parse import urlsplit
-    try:
-        parsed = urlsplit(value)
-        valid = parsed.scheme in ("http", "https") and parsed.hostname and not (
-            parsed.username or parsed.password or parsed.query or parsed.fragment)
-    except ValueError:
-        valid = False
-    if not valid:
+    from .ship import endpoint_fits
+    if not endpoint_fits(value):
         raise ShipError("endpoint must be an http(s) URL without credentials, query or fragment; use key_env for a key's variable NAME")
     return value.rstrip("/")
 

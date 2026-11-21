@@ -55,7 +55,7 @@ def models(url: str, timeout: float = TIMEOUT, *, api_key: str | None = None,
     request = urllib.request.Request(f"{url.rstrip('/')}/models", headers=headers)
     try:
         # urllib carries the auth header across a redirect, so a call with a key follows none.
-        opening = (urllib.request.build_opener(_NoRedirect()).open if api_key and allow_redirects else
+        opening = (key_proof.keyed_opener(request.full_url).open if api_key and allow_redirects else
                    urllib.request.urlopen if allow_redirects else
                    urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open)
         with opening(request, timeout=timeout) as response:

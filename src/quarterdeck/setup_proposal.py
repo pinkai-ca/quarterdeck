@@ -1,16 +1,14 @@
 """Read-only setup discovery and the single renderer for a proposed ship."""
 from __future__ import annotations
 
-import ipaddress
 import re
 import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from . import harness, keyfile, providers, standing
-from .ship import Ship, ShipError
+from .ship import Ship, ShipError, loopback_endpoint
 from .setup_answers import MISSING, ROLES, put
 
 ROLE_LABELS = {"desk": "Desk", "captain": "Captain", "engineering": "Engineer"}
@@ -464,13 +462,7 @@ def workspace_default() -> str | None:
 
 def local_endpoint(url: str) -> bool:
     """Only the person's loopback server is eligible for pre-accept informational discovery."""
-    host = urlsplit(url).hostname
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host or "").is_loopback
-    except ValueError:
-        return False
+    return loopback_endpoint(url)
 
 
 def summary(ship: Ship, display_control, *, existing: Ship | None = None, office: Ship | None = None) -> dict:

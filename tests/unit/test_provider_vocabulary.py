@@ -20,7 +20,7 @@ provider="{provider}"
     if key:
         text += 'api_key="keys:synthetic-key"\n'
     if endpoint:
-        text += 'endpoint="http://synthetic.invalid/v1"\n'
+        text += 'endpoint="https://synthetic.invalid/v1"\n'
     text += f'[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="{program}"\npool="paid"\n'
     (tmp_path/"ship.toml").write_text(text)
     return load(tmp_path)

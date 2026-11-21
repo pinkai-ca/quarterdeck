@@ -116,7 +116,7 @@ From any other folder, run setup's Desk access line, which names the office's fu
 
 ### On an API key
 
-Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one line each, such as `anthropic = "<your key>"`. Keep it private to you (`chmod 600`). A pool in the ship's file names the key, never holds it: `api_key = "keys:anthropic"`. List a key after a subscription and an agent falls back to it when the subscription is spent, and returns when the subscription has room. A `budget` limits what the key may spend.
+Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one line each, such as `anthropic = "<your key>"`. Keep it private to you (`chmod 600`). A pool in the ship's file names the key, never holds it: `api_key = "keys:anthropic"`. List a key after a subscription and an agent falls back to it when the subscription is spent, and returns when the subscription has room. A `budget` limits what the key may spend. A key beside an `endpoint` travels only over https, or over http to your own machine, and an endpoint's address holds no credentials, query or fragment.
 
 Proved live so far, with a real key:
 

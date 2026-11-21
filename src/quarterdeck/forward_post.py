@@ -4,7 +4,6 @@ from dataclasses import replace
 from functools import lru_cache
 import json
 from pathlib import Path
-import tomllib
 
 from . import ship as shipmod
 from .ship import ShipError
@@ -12,7 +11,9 @@ from .ship import ShipError
 
 @lru_cache(maxsize=64)
 def _declaration(folder, stamp):
-    data = tomllib.loads((Path(folder) / 'ship.toml').read_text())
+    data, place = shipmod.toml_table((Path(folder) / 'ship.toml').read_text())
+    if data is None:  # a ValueError as the parser's was; never its message, which can quote the file
+        raise ValueError(f'ship.toml is not valid TOML at {place}')
     return shipmod._forward(data.get('forward', {}))
 
 

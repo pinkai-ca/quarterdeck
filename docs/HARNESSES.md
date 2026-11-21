@@ -31,7 +31,7 @@ An unproven version of a harness still runs, on the newest facts Quarterdeck kno
 A harness runs on a pool, one way of paying:
 
 - **A subscription** you are signed in to, used only inside the harness of the company that sells the subscription.
-- **An API key.** Claude Code, Codex and Grok Build each take their own company's key; Antigravity takes none. Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one line each, such as `anthropic = "<your key>"`, and a pool names it: `api_key = "keys:anthropic"`. [What has been proved on a key](#what-has-been-proved-on-an-api-key) is short.
+- **An API key.** Claude Code, Codex and Grok Build each take their own company's key; Antigravity takes none. Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one line each, such as `anthropic = "<your key>"`, and a pool names it: `api_key = "keys:anthropic"`. A key beside an `endpoint` travels only over https, or over http to the machine's own loopback, and an endpoint's address holds no credentials, query or fragment. [What has been proved on a key](#what-has-been-proved-on-an-api-key) is short.
 - **An endpoint**: a model served at an OpenAI-compatible URL, local or remote, such as a local model, or OpenRouter with an API key. The open harnesses, OpenCode and pi, take compatible endpoints, with an optional key from the same file.
 
 ## In the ship's file

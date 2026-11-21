@@ -236,7 +236,9 @@ def authority(ship: Ship, caller: str | None, seat=None, *, action: str = "acts 
 
 
 def bounded(text: str) -> str:
-    lines = text.rstrip("\n").split("\n")[-SCREEN_LINES:]
+    """The screen as it may be stored or posted: masked first, so that a cut cannot leave part of a key unmatched."""
+    from .pending import SECRET_SHAPES
+    lines = SECRET_SHAPES.sub("[masked]", text).rstrip("\n").split("\n")[-SCREEN_LINES:]
     shown = "\n".join(lines)
     return shown[-SCREEN_CHARS:]
 

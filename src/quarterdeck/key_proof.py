@@ -48,6 +48,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def keyed_opener(url: str) -> urllib.request.OpenerDirector:
+    """Follows no redirect. Over plain http a proxy would read the key's header, so that call goes direct; over https
+    a proxy sees only CONNECT and is kept."""
+    handlers: list = [_NoRedirect()]
+    if urllib.parse.urlsplit(url).scheme != 'https':
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers)
+
+
 def address(pool) -> tuple[Address | None, bool]:
     """Where this pool's key is proven, and whether a good answer proves it: an endpoint's listing may be public."""
     if pool.endpoint:
@@ -61,7 +70,7 @@ def address(pool) -> tuple[Address | None, bool]:
 def status(found: Address, key: str, timeout: float = TIMEOUT) -> int | None:
     """The answer's status, or None where no answer came. The body stays unread."""
     headers = {'User-Agent': 'quarterdeck', found.header: f'Bearer {key}' if found.bearer else key, **dict(found.extra)}
-    opener = urllib.request.build_opener(_NoRedirect())
+    opener = keyed_opener(found.url)
     outcome = None
     try:
         with opener.open(urllib.request.Request(found.url, headers=headers), timeout=timeout) as answer:
