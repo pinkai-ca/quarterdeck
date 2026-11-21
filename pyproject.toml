@@ -23,6 +23,9 @@ qd-fakeharness = "quarterdeck.fakeharness:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"quarterdeck.harness" = ["pi_responses.ts"]
+
 # The one resource declaration: individual source files, preserving their directories.
 [tool.setuptools.data-files]
 "share/quarterdeck/standing-orders" = ["standing-orders/laws.md"]

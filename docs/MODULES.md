@@ -80,6 +80,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `muse_screen.py` | Muse's measured styled composer and activity; unmeasured input forms stay unsupported |
 | `muse_usage.py` | Muse's native allowance decoded without a provider request |
 | `opencode_record.py` | the OpenCode database read session by session: the latest root session is the seat's, and a task's child sessions are accounted on their own |
+| `pi_responses.ts` | Pi's packaged launch hook that caps OpenAI Responses requests for the selected endpoint pool |
 | `resume_target.py` | launch-only conversation identity from an already joined record, including bounded identity reads of oversized records |
 | `simulator.py` | the fake program the drill runs |
 | `sqlite_snapshot.py` | a SQLite record read from a snapshot of its bytes and its log, shared by the Antigravity and OpenCode readers |

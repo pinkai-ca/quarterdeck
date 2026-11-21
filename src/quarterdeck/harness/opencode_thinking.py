@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import asdict
 from types import SimpleNamespace
+from .. import endpoint
 from ..ship import ShipError
 
 from .thinking import declaration, digest, json_file, sources, unchanged
@@ -36,7 +37,16 @@ def request_options(config, pool, model):
 
 
 def prepare(config, pool, model, human):
-    selected = config['provider'][pool.name]['models'][model]
+    provider = config['provider'][pool.name]
+    selected = provider['models'][model]
+    if (provider.get('npm') == '@ai-sdk/openai-compatible'
+            and endpoint.openai_responses(pool.endpoint)
+            and endpoint.openai_responses(provider.get('options', {}).get('baseURL'))):
+        # The installed OpenAI SDK's default language model uses Responses, whose
+        # max_output_tokens also bounds reasoning tokens on current OpenAI models.
+        provider['npm'] = '@ai-sdk/openai'
+        # A pool named "openai" can otherwise select a catalog model for its title request.
+        config.setdefault('small_model', f'{pool.name}/{model}')
     if pool.output is not None:
         if competing(request_options(config, pool.name, model), CAP_KEYS):
             raise ShipError('opencode: output declaration conflicts with native request-budget options; keep one output allowance in the pool')

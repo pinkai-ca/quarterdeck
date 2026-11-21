@@ -22,10 +22,16 @@ from .ship import Pool, ShipError
 from .pricing import save_price, saved_price
 
 KEY_VARIABLE = "QD_ENDPOINT_KEY"  # the variable a keyed endpoint's program reads; the key itself is never written
+OPENAI_RESPONSES_BASE = "https://api.openai.com/v1"
 DEFAULT_CONTEXT = 32768
 DEFAULT_OUTPUT = 8192
 TIMEOUT = 5.0
 CHOICE_FILE = "model.json"  # written in the seat home when it is built, read at launch
+
+
+def openai_responses(url: str | None) -> bool:
+    """Select the native API only for OpenAI's own endpoint."""
+    return isinstance(url, str) and url.removesuffix("/") == OPENAI_RESPONSES_BASE
 
 
 @dataclass(frozen=True)

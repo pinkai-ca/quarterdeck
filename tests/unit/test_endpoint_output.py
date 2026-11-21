@@ -1,6 +1,7 @@
 """A declared output allowance reaches endpoint clients without changing the default."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -84,3 +85,71 @@ def test_declared_output_wins_over_a_different_native_model_limit(tmp_path, monk
     else:
         model = json.loads((home / 'agent/models.json').read_text())['providers']['local']['models'][0]
         assert model['maxTokens'] == 16384
+
+
+@pytest.mark.parametrize('name', ['opencode', 'pi'])
+@pytest.mark.parametrize('address,native', [
+    ('https://api.openai.com/v1', True),
+    ('https://api.openai.com/v1/', True),
+    ('http://127.0.0.1:8000/v1', False),
+    ('https://openrouter.ai/api/v1', False),
+    ('https://api.anthropic.com/v1', False),
+    ('https://api.openai.com.example.invalid/v1', False),
+    ('https://example.invalid/api.openai.com/v1', False),
+    ('https://api.openai.com/other/v1', False),
+    ('https://api.openai.com:5443/v1', False),
+])
+def test_endpoint_transport_follows_the_exact_url(tmp_path, monkeypatch, name, address, native):
+    monkeypatch.setattr(endpoint, 'models', lambda *a, **k: [endpoint.Served('decoy'), endpoint.Served('selected')])
+    monkeypatch.setattr(endpoint, '_secret', lambda pool: 'synthetic-key')
+    pool = Pool('custom', 'openai', endpoint=address, api_key='keys:unused')
+    home = tmp_path / 'runtime/seats/synthetic/home'
+    harness = {'opencode': OpenCodeHarness, 'pi': PiHarness}[name]()
+    seat = SeatSpec('synthetic', 'Synthetic', 'worker', name, (pool.name,), model='selected')
+    harness.build_home(home, seat, pool, None)
+    assert endpoint.Choice.read(home).model == 'selected'
+    if name == 'opencode':
+        config = json.loads((home / 'config/opencode/opencode.json').read_text())
+        provider = config['provider'][pool.name]
+        assert provider['npm'] == ('@ai-sdk/openai' if native else '@ai-sdk/openai-compatible')
+        assert provider['options'] == {'baseURL': address, 'apiKey': '{env:QD_ENDPOINT_KEY}'}
+        assert provider['models']['selected']['limit']['output'] == endpoint.DEFAULT_OUTPUT
+        assert config.get('small_model') == ('custom/selected' if native else None)
+    else:
+        config = json.loads((home / 'agent/models.json').read_text())
+        provider = config['providers'][pool.name]
+        assert provider['api'] == ('openai-responses' if native else 'openai-completions')
+        assert (provider['baseUrl'], provider['apiKey']) == (address, 'QD_ENDPOINT_KEY')
+        assert provider['models'][0]['maxTokens'] == endpoint.DEFAULT_OUTPUT
+        launch = harness.launch(seat, pool, home, tmp_path / 'brief.md', None, None)
+        assert '--no-extensions' in launch.argv
+        assert ('--extension' in launch.argv) is native
+        if native:
+            hook = launch.argv[launch.argv.index('--extension') + 1]
+            assert hook.endswith('/pi_responses.ts') and Path(hook).is_file()
+            assert launch.env['QD_PI_RESPONSES_PROVIDER'] == pool.name
+            assert launch.env['QD_PI_RESPONSES_BASE_URL'] == endpoint.OPENAI_RESPONSES_BASE
+
+
+@pytest.mark.parametrize('name', ['opencode', 'pi'])
+def test_layer_with_different_address_keeps_compatible_transport(tmp_path, monkeypatch, name):
+    monkeypatch.setattr(endpoint, 'models', lambda *a, **k: [endpoint.Served('selected')])
+    pool = Pool('custom', 'openai', endpoint=endpoint.OPENAI_RESPONSES_BASE)
+    home = tmp_path / 'runtime/seats/synthetic/home'
+    seat = SeatSpec('synthetic', 'Synthetic', 'worker', name, (pool.name,))
+    override = 'https://example.invalid/v1'
+    if name == 'opencode':
+        filename, group, transport = 'opencode.json', 'provider', 'npm'
+        layer = {'options': {'baseURL': override}}
+        path = home / 'config/opencode' / filename
+        compatible = '@ai-sdk/openai-compatible'
+        harness = OpenCodeHarness()
+    else:
+        filename, group, transport = 'models.json', 'providers', 'api'
+        layer = {'baseUrl': override}
+        path = home / 'agent' / filename
+        compatible = 'openai-completions'
+        harness = PiHarness()
+    (tmp_path / filename).write_text(json.dumps({group: {pool.name: layer}}))
+    harness.build_home(home, seat, pool, tmp_path)
+    assert json.loads(path.read_text())[group][pool.name][transport] == compatible

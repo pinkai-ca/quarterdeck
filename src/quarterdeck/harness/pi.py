@@ -398,7 +398,8 @@ class PiHarness(EndpointHarness):
         from .check_evidence import json_tools, pi_tools
         return json_tools(record, pi_tools)
 
-    human_tool_policy = "The enumerated core tools have no question tool; launch disables extensions. Custom tools are not classified."
+    human_tool_policy = ("The enumerated core tools have no question tool. Extension discovery is off, "
+                         "and the OpenAI output hook adds no tools. Custom tools are not classified.")
 
     efforts = EffortCapability("levels", THINKING_LEVELS, ("0.74.2",), complete=True)
     defaults = DefaultMetadata(model_default=False, effort=SuggestedValue(None, "program-default"))
@@ -481,8 +482,12 @@ class PiHarness(EndpointHarness):
             provider["models"] = []
             matching[0].update(merged(model, matching[0]))
         models = merged(models, layered)
+        provider = models["providers"][pool.name]
+        if (provider.get("api") == "openai-completions" and endpoint.openai_responses(pool.endpoint)
+                and endpoint.openai_responses(provider.get("baseUrl"))):
+            provider["api"] = "openai-responses"
         price = Price.parse(pool.price) if pool.price is not None else None
-        selected = [m for m in models["providers"][pool.name]["models"] if m["id"] == choice.model]
+        selected = [m for m in provider["models"] if m["id"] == choice.model]
         if len(selected) != 1:
             raise ShipError(f"pool {pool.name}: generated model does not identify one price target")
         reject_default_overrides(seat, selected[0], scope=f"selected model in template models.json.providers.{pool.name}",
@@ -528,9 +533,12 @@ class PiHarness(EndpointHarness):
             if retired(record):
                 raise ShipError(f"{seat.name}: conversation is retired; use qd fresh {seat.name}")
             argv += ["--session", str(record)]
+        env = {self.home_variable: str(home / "agent"), "PI_SKIP_VERSION_CHECK": "1", **endpoint.key(pool)}
+        if endpoint.openai_responses(pool.endpoint):
+            argv += ["--extension", str(Path(__file__).with_name("pi_responses.ts"))]
+            env.update(QD_PI_RESPONSES_PROVIDER=pool.name, QD_PI_RESPONSES_BASE_URL=endpoint.OPENAI_RESPONSES_BASE)
         if first:
             argv.append(first)
-        env = {self.home_variable: str(home / "agent"), "PI_SKIP_VERSION_CHECK": "1", **endpoint.key(pool)}
         from .pi_thinking import launch_evidence
         return Launch(tuple(argv), env, choice.price, launch_evidence(home, seat, pool, choice))
 
