@@ -1,19 +1,18 @@
 """Explicit lifecycle commands wait for a concurrent seat transition to finish."""
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, lifecycle, request_queue, seat as seatmod, ship as shipmod
+from quarterdeck import cli, idle, lifecycle, request_queue, seat as seatmod, ship as shipmod
 from quarterdeck.service import Service
 from .test_launch_lifecycle import process_identity, windows
 from .waiting import start_with_conversation, wait_for
 
 
-@pytest.mark.parametrize('operation', ['restart', 'fresh', 'select'])
+@pytest.mark.parametrize('operation', ['restart', 'fresh'])
 def test_service_lifecycle_requests_refuse_busy_claim_without_waiting(drydock, tmux, monkeypatch, operation):
     ship = shipmod.load(drydock)
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
@@ -26,15 +25,7 @@ def test_service_lifecycle_requests_refuse_busy_claim_without_waiting(drydock, t
     runner.log = lambda *args, **kwargs: None
     # Synthetic admission isolates ordinary lifecycle contention from idle-policy tests.
     monkeypatch.setattr('quarterdeck.service.idle.reading', lambda *args, **kwargs: (None, None))
-    if operation == 'select':
-        seat.spec = replace(seat.spec, pools=[seat.pool.name, 'other'],
-                            pool_choices={seat.pool.name: {}, 'other': {}})
-        runner.not_idle = lambda candidate: None
-        runner.known_open = lambda candidate, pool: True
-        kind, data = 'select', dict(pool='other')
-    else:
-        kind, data = 'relaunch', dict(resume=operation == 'restart')
-    path = request_queue.enqueue(ship.runtime, kind, dict(seat=seat.name, **data),
+    path = request_queue.enqueue(ship.runtime, 'relaunch', dict(seat=seat.name, resume=operation == 'restart'),
                                  name='request-busy-0-zz')
     later = request_queue.enqueue(ship.runtime, 'unknown', {}, name='request-healthy-0-zz')
 
@@ -53,6 +44,51 @@ def test_service_lifecycle_requests_refuse_busy_claim_without_waiting(drydock, t
         assert later.with_suffix('.done').read_text() == "unknown request 'unknown'\n"
         assert not path.exists() and not path.with_suffix('.claimed').exists()
         assert seat.launched() == prior and seat.pane().pid == prior.pid
+
+
+def test_service_select_stays_queued_on_a_busy_claim_then_applies(drydock, tmux, monkeypatch, key_file):
+    key_file.write(paid='sk-synthetic-busy-select-test')
+    file = drydock / 'ship.toml'
+    current = shipmod.load(drydock).seat('worker-1').pools[0]
+    text = file.read_text() + '\n[pools.paid]\nprovider="synthetic"\napi_key="keys:paid"\n'
+    file.write_text(shipmod.edit(text, 'seats.worker-1', 'pool', [current, 'paid']))
+    ship = shipmod.load(drydock)
+    seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
+    start_with_conversation(seat)
+    wait_for(lambda: idle.reading(seat)[0] is not None and idle.reading(seat)[1] is None)
+    prior, record = seat.launched(), seat.record()
+    runner = Service(ship, tmux)
+    try:
+        path = request_queue.enqueue(ship.runtime, 'select', dict(seat=seat.name, pool='paid'),
+                                     name='request-busy-0-zz')
+        later = request_queue.enqueue(ship.runtime, 'unknown', {}, name='request-healthy-0-zz')
+
+        def no_wait(seconds):
+            pytest.fail('service request waited on a lifecycle claim')
+
+        with lifecycle.claim(ship.runtime, seat.name), monkeypatch.context() as immediate:
+            immediate.setattr(lifecycle, 'time', SimpleNamespace(monotonic=time.monotonic, sleep=no_wait))
+            started = time.monotonic()
+            runner.requests()
+            assert time.monotonic() - started < 0.5
+            assert later.with_suffix('.done').read_text() == "unknown request 'unknown'\n"
+            assert path.exists() and not path.with_suffix('.done').exists()
+            assert not path.with_suffix('.claimed').exists()
+            [row] = request_queue.pending(ship.runtime, seat.name)
+            assert row['dimension'] == 'lifecycle-busy' and row['claimed'] is False
+            assert row['reason'] == 'move to pool paid: another lifecycle transition is in progress'
+            assert seat.launched() == prior and seat.pane().pid == prior.pid
+
+        runner.requests()
+        answer = path.with_suffix('.done').read_text()
+        assert answer.startswith(f'{seat.name} moved to paid from {current}')
+        assert not path.exists() and not path.with_suffix('.claimed').exists()
+        assert request_queue.pending(ship.runtime, seat.name) == []
+        moved = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
+        assert moved.launched().pool == 'paid' and moved.launched().pool_selected == 'paid'
+        assert moved.launched().resume == seat.harness.session_id(record) and moved.record() == record
+    finally:
+        runner.ledger.close()
 
 
 @pytest.mark.parametrize('whole_ship', [False, True], ids=['one-seat', 'whole-ship'])
