@@ -12,7 +12,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `check_capacity.py` | a nightly check's one-pass reservation of an existing shared test slot, held through its cleanup |
 | `compaction_alert.py` | an idle seat that is ready for a fresh start by hand: one report to the systems seats for each such reading, and a named alarm while no systems seat is up |
 | `cost_evidence.py` | a turn's cost evidence, kept beside the Ledger's turns |
-| `credential.py` | the one link a seat shares with its pool, reseeded and relinked on the tick, never from a jailed seat, a seat on an endpoint pool, or a launch naming a pool not declared for the seat. Metadata-only review holds and their audited release |
+| `credential.py` | the one link a seat shares with its pool, reseeded and relinked on the tick, never from a jailed seat, a seat on an endpoint pool, or a launch naming a pool not declared for the seat. Directory locking for subscription refreshes across ships. Metadata-only review holds and their audited release |
 | `daily_live.py` | the daily live test: a minimal check of each program the day's readings do not show was used, and one report to the desk |
 | `doctor.py` | `qd doctor`, the installation checked and handed to a seat to fix |
 | `endpoint.py` | endpoint pools: what a server serves, the model a seat takes from it, the key beside it |

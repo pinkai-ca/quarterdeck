@@ -15,10 +15,11 @@ from __future__ import annotations
 import os
 import secrets
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
-from . import copy_state, credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, shutdown, watch
+from . import copy_state, credential, endpoint, fleet, harness as harnesses, install, post, providers, sandbox, servicectl, shutdown, watch
 from . import key_proof, keyfile
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, program_version, program_where
@@ -66,6 +67,7 @@ def checks(ship: Ship) -> list[Check]:
             found.append(Check(f"provider spelling {pool.name}", True,
                                f'in [pools.{pool.name}] change provider = "{pool.declared_provider}" to provider = "{pool.provider}"; '
                                "the old spelling remains readable for compatibility"))
+    found.extend(shared_subscription_checks(ship))
     if any(ship.jailed(seat.for_pool(pool), ship.pools[pool])
            for seat in ship.seats.values() for pool in seat.pools):
         version = program_version((sandbox.PROGRAM, "--version"))
@@ -86,6 +88,45 @@ def checks(ship: Ship) -> list[Check]:
     low = watch.disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())])
     found.append(Check("disk", not low, "room on every filesystem the ship writes to" if not low
                        else "nearly full: " + ", ".join(f"{mount} {pct}%" for mount, pct in low)))
+    return found
+
+
+def _subscription_identity(pool: Pool):
+    if pool.kind != "subscription" or pool.config_dir is None:
+        return None
+    try:
+        adapter = harnesses.native_for(pool.provider)
+        if not adapter.credential_file:
+            return None
+        info = pool.config_dir.stat()
+    except (OSError, ShipError, ValueError):
+        return None
+    if stat.S_ISDIR(info.st_mode):
+        return (info.st_dev, info.st_ino), adapter.credential_file, adapter.name
+    return None
+
+
+def shared_subscription_checks(ship: Ship) -> list[Check]:
+    """Names-only advisory. A peer's credential and runtime are never opened."""
+    local = [(pool.name, identity) for pool in ship.pools.values()
+             if (identity := _subscription_identity(pool)) is not None]
+    found = []
+    for peer, pool in fleet.subscription_homes(ship):
+        match = _subscription_identity(pool)
+        if match is None:
+            continue
+        for name, identity in local:
+            if identity[0] != match[0]:
+                continue
+            if identity[1] != match[1]:
+                detail = "same subscription directory with separate credential files"
+            elif identity[2] != match[2]:
+                detail = "incompatible credential formats collide at the same filename"
+            else:
+                detail = "shared subscription credential; current qd installations coordinate refresh writes"
+            found.append(Check(f"subscription overlap {name}", True, f"{peer}/{pool.name}: {detail}. "
+                               "Discovery covers known fleet declarations only. Native sign-ins and older qd "
+                               "versions can still race, and programs may keep credentials they already opened."))
     return found
 
 

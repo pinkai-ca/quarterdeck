@@ -544,7 +544,6 @@ class Seat:
     def _failover_to(self, pool: str) -> str:
         from .recovery import require_clear
         require_clear(self)
-        from . import credential
 
         selected = self.declaration.for_pool(pool)
         observation = self._observe_selection(selected, self.ship.pool(pool))
@@ -554,7 +553,8 @@ class Seat:
         from . import relaunch_intent
         relaunch_intent.record_destination(self, resume, pool=pool, harness=selected.harness, target=target)
         self.record()
-        credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)
+        if self.launched() is None:
+            self._reseed_for_launch()
         stopped = self._relaunch_down()
         self.move_to(pool)
         self.spec = selected
@@ -1106,7 +1106,8 @@ class Seat:
             if not isinstance(held.get("pid"), int) or process_alive(held["pid"], held.get("start")):
                 raise ShipError(f"{self.name}: the program its last launch ran is still ending (pid {held.get('pid')}); "
                                 "up waits for it, so nothing it writes meets the new launch")
-            self._finish_retirement(self.launched())
+            if not self._finish_retirement(self.launched()):
+                raise ShipError(self.relaunch_refused())
         previous = self.launched()
         left = self._lifecycle_pane(previous)
         if left is not None and not left.dead:
@@ -1136,9 +1137,7 @@ class Seat:
         if left is not None and left.dead:
             self._retire_window(previous)  # the last launch's failed pane goes only with matching identity
         if self.launched() is not None:
-            from . import credential  # the credential module reads seats, so it is imported here, not above
-
-            credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)  # a refresh left in this home reseeds the pool it came from, before any move
+            self._reseed_for_launch()
         prior = {item.path for item in record_owner.records(self)}
         from .harness.base import inside_home
         prior.update(path for path in self.harness.records(self.home)  # never through a link out of its home
@@ -1666,23 +1665,44 @@ class Seat:
             return (f"{self.name} down · {closed} · "
                     + jail_end.words(self.name, jail_end.held(self.trusted)).removeprefix(f"{self.name}: ")
                     + ("; relaunch refused" if relaunch else ""))
-        self._finish_retirement(launched)
+        if not self._finish_retirement(launched):
+            closed = f"pane {pane.id} closed" if pane is not None else "no pane"
+            proof = f"{self.name} down · {closed} · process ended; credential renewal for {launched.pool} pending"
+            if relaunch:
+                raise ShipError(proof)
+            return proof
         if pane is None:
             return f"{self.name} was not up" + (f" · pane {launched.pane} is gone" if launched else "")
         return f"{self.name} down · pane {pane.id} closed · process ended" + waited
 
-    def _finish_retirement(self, launched: Launched | None) -> None:
+    def _reseed_for_launch(self) -> None:
+        """An old credential must settle against its own pool before a build can reuse the home."""
+        from . import credential
+
+        lines = credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT, include_usage=False)
+        if credential.deferred(lines):
+            raise ShipError(f"{self.name}: credential renewal for {self.pool.name} pending; retry after it settles")
+
+    def _finish_retirement(self, launched: Launched | None, *, background: bool = False) -> bool:
         if self.launched() != launched or ((held := self.retiring()) is not None and held["pid"] is None):
             raise ShipError(f"{self.name}: retirement does not prove this launch; launch and retirement record retained")
         if launched is not None:
             from .pending_lifecycle import link_launch_record
             link_launch_record(self, launched)  # include a last write before the program ended
-            from . import credential  # the credential module reads seats, so it is imported here, not above
+            from . import credential
 
-            credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)  # the program has ended: a refresh it left reseeds the pool its launch names, while it is named
+            wait = credential.RESEED_WAIT if background else credential.DOWN_WAIT
+            lines = credential.reseed(self.ship, [self], wait=wait, include_usage=False)
+            if credential.deferred(lines):
+                if not self.spec.temporary:
+                    binding = dict(self._retirement_binding(launched), credential_pool=launched.pool)
+                    durable.replace_file(self.trusted / RETIRING, json.dumps(binding) + "\n")
+                    return False
+                credential.hold_home(self.ship, self, reseed_skipped=True)
         (self.trusted / RETIRING).unlink(missing_ok=True)
         if launched is not None:
             (self.trusted / trusted_files.LAUNCH).unlink(missing_ok=True)
+        return True
 
     def relaunch_refused(self) -> str | None:
         """Plain words for the status line while the seat is down because its relaunch met a program still ending."""
@@ -1691,6 +1711,8 @@ class Seat:
             return jail_end.words(self.name, sandbox)  # the same count the refused launch gives
         held = self.retiring()
         if held is not None:
+            if "credential_pool" in held:
+                return f"{self.name}: its process ended; credential renewal for {held['credential_pool']} pending"
             return f"{self.name}: its program is still ending; " + (
                 "its relaunch was refused" if (self.trusted / REFUSED_RELAUNCH).exists() else "it is not retired yet")
         if (self.trusted / REFUSED_RELAUNCH).exists():
@@ -1716,8 +1738,13 @@ class Seat:
             return None
         except (OSError, ShipError, ValueError):
             return unknown
-        if (not isinstance(data, dict) or type(data.get("pid")) is not int or data["pid"] <= 0
-                or not isinstance(data.get("start"), str) or not data["start"]):
+        if not isinstance(data, dict) or type(data.get("pid")) is not int or data["pid"] <= 0:
+            return unknown
+        pending_pool = data.get("credential_pool")
+        if pending_pool is not None and (not isinstance(pending_pool, str) or not pending_pool):
+            return unknown
+        start = data.get("start")
+        if not (isinstance(start, str) and start or pending_pool is not None and "start" in data and start is None):
             return unknown
         try:
             launched = self.launched()
@@ -1728,10 +1755,16 @@ class Seat:
         if data.keys() == {"pid", "start"}:  # the older marker has only the process identity
             return data if launched is None or (data["pid"], data["start"]) == (launched.pid, launched.start) else unknown
         if launched is not None:
-            return data if data == self._retirement_binding(launched) else unknown
-        # An older removal order could leave this marker after completing and removing its launch.
+            binding = self._retirement_binding(launched)
+            if pending_pool is not None:
+                binding["credential_pool"] = launched.pool
+            return data if data == binding else unknown
+        # An older removal order could leave the marker after completing and removing its launch.
         identity = data.get("launch")
-        if (data.keys() != {"seat", "pid", "start", "launch"} or data["seat"] != self.name
+        fields = {"seat", "pid", "start", "launch"}
+        if pending_pool is not None:
+            fields.add("credential_pool")
+        if (data.keys() != fields or data["seat"] != self.name
                 or not isinstance(identity, dict) or identity.keys() != {"pane", "at"}
                 or not isinstance(identity["pane"], str) or not re.fullmatch(r"%[0-9]+", identity["pane"])
                 or not isinstance(identity["at"], str)):
@@ -1761,8 +1794,9 @@ class Seat:
             if lifted is False:
                 return None  # still held: the status line names it
             if lifted is True:
-                self._finish_retirement(self.launched())
-                return f"{self.name} retired · its old sandbox has ended · credential reseeded, launch removed"
+                if self._finish_retirement(self.launched(), background=True):
+                    return f"{self.name} retired · its old sandbox has ended · credential reseeded, launch removed"
+                return None
             if held is None:
                 return None
             with jail_end.stopping(self.trusted):
@@ -1770,8 +1804,9 @@ class Seat:
                     jail_end.hold(self.trusted, self.name, left)
                     marker.unlink()
                     return jail_end.words(self.name, jail_end.held(self.trusted))
-            self._finish_retirement(self.launched())
-            return f"{self.name} retired · process {held['pid']} ended · credential reseeded, launch removed"
+            if self._finish_retirement(self.launched(), background=True):
+                return f"{self.name} retired · process {held['pid']} ended · credential reseeded, launch removed"
+            return None
 
     def restart(self) -> str:
         """Relaunch with resume: the conversation continues in a new process."""
@@ -1821,12 +1856,13 @@ class Seat:
         """A new conversation on a pool the caller already chose. The caller holds the lifecycle claim."""
         from .recovery import require_clear
         require_clear(self)
-        from . import credential, relaunch_intent
+        from . import relaunch_intent
         selected = self.declaration.for_pool(pool)
         observation = self._observe_selection(selected, self.ship.pool(pool))
         relaunch_intent.record_destination(self, False, pool=pool, harness=selected.harness)
         self.record()
-        credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)
+        if self.launched() is None:
+            self._reseed_for_launch()
         stopped = self._relaunch_down()
         self.move_to(pool)
         self.spec = selected
@@ -1994,16 +2030,12 @@ def _teardown(cleanup: ExitStack, treated: Ship, seat: Seat, tmux: Tmux, orders:
         # A launch still standing means down did not prove its program ended: the home stays, the status
         # line names the seat, and qd down <seat> finishes it (law: nothing-waits-silently).
         running = launched is not None and launched.start and process_alive(launched.pid, launched.start)
-        if retired and not running and not (seat.trusted / trusted_files.LAUNCH).exists():
+        if retired and not running:
             from . import credential
 
-            lines = credential.reseed(treated, [seat], wait=credential.DOWN_WAIT)  # its one pool: a refresh left in the home
-            skipped = any(line.startswith(credential.SKIPPED) for line in lines)
-            if credential.hold_home(treated, seat, reseed_skipped=skipped):
-                return  # the home is kept and named until the service or a person can review it
-            shutil.rmtree(seat.folder)
-            if seat.trusted.is_dir():
-                shutil.rmtree(seat.trusted)  # its trusted files go with it
+            with seat._lifecycle(wait=True):
+                if not os.path.lexists(seat.trusted / trusted_files.LAUNCH):
+                    credential.retire_home(treated, seat)
 
     held: list[int] = []
     previous: dict = {}
@@ -2216,7 +2248,7 @@ def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
         if pool not in ship.pools:
             raise ShipError(f"{name}: its pool {pool!r} is not declared: declare it again, then qd down {name}")
         title = "qd-" + name
-        spec = SeatSpec(name, title, "worker", harness_name, (pool,), cwd=ship.workspace)
+        spec = SeatSpec(name, title, "worker", harness_name, (pool,), cwd=ship.workspace, temporary=True)
         session = shipmod.Session(title, title, human=record["human"])
         treated = replace(ship, sessions={**ship.sessions, title: session}, seats={**ship.seats, name: spec})
         seat = Seat(treated, spec, tmux)
@@ -2246,6 +2278,8 @@ def down_leftover(ship: Ship, tmux: Tmux, name: str) -> str:
             return f"{name} down: " + (downed[0] if downed else "taken down") + " · its session ended, its home removed"
         if credential.held_for_review(ship, name):
             return f"{name}: its session ended; its home is held for credential review"
+        if _held_for_renewal(ship, name):
+            return f"{name}: its session ended; its home is held for credential renewal for {pool}"
         return (f"{name}: " + (downed[0] if downed else "not taken down")
                 + f" · its home is kept until its program has ended; qd down {name} again")
 

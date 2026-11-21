@@ -189,9 +189,15 @@ def _write(path, data: bytes, *, mode: int, times, law_record: bool) -> None:
         os.close(folder)
 
 
-def _plain_write(path: Path, data: bytes, *, mode: int, times) -> None:
+def write_bytes_at(directory: int, name: str, data: bytes, *, mode: int, times, before_replace) -> None:
+    """Atomically install into an already-open directory, checking the caller's binding before rename."""
+    _plain_write(Path(name), data, mode=mode, times=times, directory=directory, before_replace=before_replace)
+
+
+def _plain_write(path: Path, data: bytes, *, mode: int, times, directory=None, before_replace=None) -> None:
     temporary = path.with_name(f'.{path.name}.{secrets.token_hex(4)}.tmp')
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(temporary, flags, mode, dir_fd=directory)
     try:
         try:
             view = memoryview(data)
@@ -203,9 +209,14 @@ def _plain_write(path: Path, data: bytes, *, mode: int, times) -> None:
                 os.utime(descriptor, ns=times)
         finally:
             os.close(descriptor)
-        os.replace(temporary, path)
+        if before_replace is not None:
+            before_replace()
+        os.replace(temporary, path, src_dir_fd=directory, dst_dir_fd=directory)
     except BaseException:
-        temporary.unlink(missing_ok=True)
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
         raise
 
 

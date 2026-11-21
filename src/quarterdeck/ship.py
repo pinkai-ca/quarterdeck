@@ -621,8 +621,16 @@ def _group(name: str, table: dict) -> Group:
     return Group(name, tuple(members), lead)
 
 
+def pool_config_dir(table: dict, folder: Path | None) -> Path | None:
+    """Anchor a declared native home while keeping aliases available for revalidation."""
+    spelling = table.get("config_dir", table.get("home"))
+    if not spelling:
+        return None
+    path = Path(spelling).expanduser()
+    return folder / path if folder is not None else path  # setup can inspect a pool before the declaration exists
+
+
 def _pool(name: str, table: dict, folder: Path | None = None) -> Pool:
-    config_dir = table.get("config_dir", table.get("home"))
     endpoint = table.get("endpoint")
     price = table.get("price")
     if price is not None:
@@ -641,7 +649,7 @@ def _pool(name: str, table: dict, folder: Path | None = None) -> Pool:
     return Pool(
         name=name,
         provider=table["provider"],
-        config_dir=Path(config_dir).expanduser() if config_dir else None,
+        config_dir=pool_config_dir(table, folder),
         api_key=table.get("api_key"),
         budget=table.get("budget"),
         endpoint=str(endpoint).rstrip("/") if endpoint else None,

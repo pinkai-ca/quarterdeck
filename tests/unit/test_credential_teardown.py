@@ -5,6 +5,7 @@ and a check's temporary seat each end with the pool holding the newer credential
 built over a detached credential newer than its pool's.
 """
 
+import fcntl
 import io
 import json
 import os
@@ -155,6 +156,32 @@ def test_a_temporary_home_whose_seat_would_not_go_down_keeps_its_refresh_until_q
     proof = seatmod.down_leftover(ship.ship, ship.tmux, "check-claude-0001")
     assert "home removed" in proof and not seat.folder.exists()
     assert token(ship.source) == "newer", "removing the home reseeded the pool first"
+
+
+@pytest.mark.parametrize("start", [None, "1"])
+def test_deferred_down_preserves_old_pool_until_a_resumed_services_pass(ship, monkeypatch, start):
+    seat = Seat(ship.ship, ship.ship.seat("worker"), ship.tmux)
+    seat.home.mkdir(parents=True)
+    link = refreshed(seat.home)
+    launch = Launched("%1", 101, post.now().isoformat(), "claude-primary", None, ["claude"], "synthetic",
+                      "claude", start=start)
+    launch.write(seat.trusted / "launch.json")
+    monkeypatch.setattr(credentialmod, "DOWN_WAIT", 0)
+    directory = os.open(ship.source.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        result = seat.down()
+        assert "process ended; credential renewal for claude-primary pending" in result
+        assert seat.launched() == launch and seat.retiring()["credential_pool"] == launch.pool
+        assert token(link) == "newer" and token(ship.source) == "older"
+        assert "credential renewal for claude-primary pending" in seat.relaunch_refused()
+        with pytest.raises(ShipError, match="credential renewal for claude-primary pending"):
+            seat.up(resume=False)
+    finally:
+        os.close(directory)
+    Service(ship.ship, ship.tmux).credentials()
+    assert seat.launched() is None and seat.retiring() is None
+    assert link.is_symlink() and token(ship.source) == "newer"
 
 
 def test_a_home_is_not_built_over_a_detached_credential_newer_than_its_pool(ship):

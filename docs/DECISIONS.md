@@ -368,6 +368,21 @@ project folder (law `one-folder`). A key pool shares no file: the key reaches
 the program by an environment variable. The status line warns ahead of a
 grant's expiry.
 
+Quarterdeck processes take their ship's own reseed lock before taking an
+exclusive lock on the existing subscription directory. Different names and
+symlinks for the same directory share that lock, including across separate
+installations. Each pass bounds its wait, judges credential freshness after
+acquiring the lock, and checks the directory binding before installing and
+reconciling. If a renewal has to wait, a down seat keeps the source pool in
+its retirement record and a temporary home keeps its renewal hold. The
+owning service retries when it next runs.
+
+`qd doctor` reports directory overlaps in known fleet declarations, including
+incompatible formats that use the same filename. Separately installed ships
+outside the fleet are absent from that advisory. Native programs, manual
+sign-ins and older Quarterdeck versions can still race refreshes. A program
+may keep using credentials it already has open or cached.
+
 [src/quarterdeck/credential.py](../src/quarterdeck/credential.py) reseeds the
 pool and relinks the seats, and `credential`, in
 [src/quarterdeck/harness/home.py](../src/quarterdeck/harness/home.py), brings a

@@ -2293,8 +2293,8 @@ class Service:
                     lines = credential.reseed(self.ship, seats)
                     for line in lines:
                         self.log("credential", proof=line, by="watch")
-                    skipped = any(line.startswith(credential.SKIPPED) for line in lines)
-                    if not skipped:  # the lock was held: nothing is marked handled, the next tick tries again
+                    skipped = credential.deferred(lines)
+                    if not skipped:  # deferred work stays eligible for the next tick
                         marks = credential.detached_marks(names)  # what is left detached after the reseed: retained ones
                 if not skipped:
                     handled = marks

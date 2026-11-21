@@ -19,9 +19,10 @@ The service's pass is not fast enough alone: a renewal retires the token every o
 holds, and they fail until the pool's file has it. So a dedicated watch in the service looks at
 each linked seat's credential name twice a second, and a name that stopped being a link reseeds
 at once. Every reseed with something to judge, the watch's, the pass's and a seat's own at down,
-holds one lock file in runtime/locks, which every jail hides; the pass and the watch wait for it
-at most two seconds and skip the round, a seat going down at most thirty. A temporary seat whose reseed is skipped
-keeps its home while it holds a detached credential, until the pass settles it (``hold_home``, ``settle_held``).
+takes the ship's lock in runtime/locks, then an exclusive flock on the existing subscription directory.
+Ships that resolve the same directory share that second lock. A reseed has one bounded acquisition budget
+for both locks. The directory descriptor pins the target of the atomic install even if the path is replaced.
+A retired seat whose reseed is deferred keeps its source binding for a later pass.
 Without an adapter freshness reader, detached credentials are kept in place for human review.
 """
 
@@ -94,7 +95,7 @@ def _jailed(ship: Ship, seat: Seat) -> bool:
     return spec is not None and ship.jailed(spec, seat.pool)
 
 
-def participants(ship: Ship, seats: list[Seat]) -> list[Participant]:
+def participants(ship: Ship, seats: list[Seat], *, include_usage: bool = True) -> list[Participant]:
     result = []
     for seat in seats:
         if source_refusal(ship, seat) is not None:
@@ -102,7 +103,7 @@ def participants(ship: Ship, seats: list[Seat]) -> list[Participant]:
         launched = seat.launched()
         pool = launched.pool if launched is not None else seat.pool.name
         result.append(Participant(seat.name, seat.home, pool))
-    for pool in ship.pools.values():
+    for pool in ship.pools.values() if include_usage else ():
         if pool.kind == "subscription" and getattr(harnesses.native_for(pool.provider), "private_usage_home", False):
             home = usage_home(ship, pool)
             if not home.is_symlink() and not home.parent.is_symlink():
@@ -111,7 +112,7 @@ def participants(ship: Ship, seats: list[Seat]) -> list[Participant]:
 
 
 def pool_file(pool: Pool) -> Path | None:
-    if pool.kind == "endpoint":
+    if pool.kind != "subscription":
         return None
     name = harnesses.native_for(pool.provider).credential_file
     return pool.config_dir / name if pool.config_dir and name else None
@@ -148,34 +149,95 @@ def freshness(pool: Pool, path: Path) -> tuple[float, float] | None:
 RESEED_WAIT = 2.0  # seconds the service's pass and watch wait for the reseed lock before they skip the round
 DOWN_WAIT = 30.0  # a seat going down waits longer, still bounded: its refresh is in hand
 SKIPPED = "credential reseed skipped: another reseed held the lock"
+COPY_REFRESHED = "refreshed while its copy was brought up; its refresh kept for the next pass"
 
 
 class Busy(Exception):
-    """The reseed lock stayed held for the whole bounded wait."""
+    """A reseed lock stayed held for the whole bounded wait."""
+
+
+class Changed(Exception):
+    """The directory or a judged credential changed during this reseed."""
+
+
+class CandidateChanged(Changed):
+    """Only this home needs a retry. Other candidates can still reconcile."""
+
+
+def _lock(descriptor: int, deadline: float) -> None:
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Busy() from None
+            time.sleep(min(0.05, remaining))
 
 
 @contextmanager
 def _reseeding(ship: Ship, wait: float):
-    """One reseed at a time across the service's pass, its watch and any ``qd`` process: a lock file in the
-    runtime's ``locks`` folder, which every jail hides, so no jailed seat can take it. The wait is bounded."""
+    """Keep local review and home reconciliation in one process, before taking any pool lock."""
     from .sandbox import LOCKS
 
+    deadline = time.monotonic() + wait
     folder = ship.runtime / LOCKS
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     descriptor = os.open(folder / "credential-reseed.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
-        deadline = time.monotonic() + wait
-        while True:
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise Busy() from None
-                time.sleep(0.05)
-        yield
+        _lock(descriptor, deadline)
+        yield deadline
     finally:
         os.close(descriptor)
+
+
+@dataclass(frozen=True)
+class PoolHome:
+    descriptor: int
+    identity: os.stat_result
+
+    def check(self, path: Path) -> None:
+        try:
+            same = os.path.samestat(self.identity, path.stat())
+        except OSError:
+            same = False
+        if not same:
+            raise Changed("subscription home changed") from None
+
+    def file(self, name: str) -> Path:
+        # The native freshness readers take a Path. Read relative to the pinned directory on Linux.
+        return Path("/proc/self/fd") / str(self.descriptor) / name
+
+
+@contextmanager
+def _pool_home(path: Path, deadline: float):
+    """Acquire a lock on the directory itself. Never create a lock file or a missing subscription home."""
+    try:
+        canonical = path.resolve(strict=True)
+        descriptor = os.open(canonical, seat_files.DIRECTORY)
+    except (OSError, RuntimeError):
+        raise Changed("subscription home unavailable") from None
+    try:
+        home = PoolHome(descriptor, os.fstat(descriptor))
+        try:
+            _lock(descriptor, deadline)
+        except OSError:
+            raise Changed("subscription home could not be locked") from None
+        home.check(path)
+        yield home
+    finally:
+        os.close(descriptor)
+
+
+def _deferred(pool: str, reason: str) -> str:
+    return f"credential reseed skipped for {pool}: {reason}; the next round retries"
+
+
+def deferred(lines: list[str] | None) -> bool:
+    """Whether a round left work for retry, including the legacy ship-lock proof."""
+    return any(line.startswith("credential reseed skipped") or line.endswith(COPY_REFRESHED)
+               or " copy not brought up to " in line for line in (lines or ()))
 
 
 def linked_names(ship: Ship, seats: list[Seat]) -> list[Path]:
@@ -206,24 +268,27 @@ def detached_marks(names: list[Path]) -> frozenset[tuple[str, int, int, int]]:
     return frozenset(found)
 
 
-def reseed(ship: Ship, seats: list[Seat], *, wait: float = RESEED_WAIT) -> list[str]:
-    """Reseed each pool from the newest seat that refreshed, then relink the detached seats; the proof lines.
+def reseed(ship: Ship, seats: list[Seat], *, wait: float = RESEED_WAIT, include_usage: bool = True) -> list[str]:
+    """Install from the newest live candidate, then reconcile local homes. The preflight reads metadata only."""
+    def discover():
+        return participants(ship, seats, include_usage=include_usage)
 
-    With the lock held past ``wait``, nothing is done and the one line says so; the next pass or tick retries.
-    """
-    if not _due(ship, seats):
-        return []  # every link still a link and every copy as the pool's: nothing to install and no lock taken
+    if not _due(ship, seats, include_usage=include_usage):
+        return []
     try:
-        with _reseeding(ship, wait):
-            return _reseed(ship, seats)  # judged again under the lock: another reseed may have installed it meanwhile
+        with _reseeding(ship, wait) as deadline:
+            proofs = []
+            for seat, source, adapter in _jailed_reviews(ship, seats):
+                if _review_due(ship, seat.name, seat.pool.name, seat.home, source, adapter):
+                    _hold_record(ship, seat.name, seat.pool.name, adapter=adapter)
+                    proofs.append(f"{seat.name}: home held for credential review")
+            return proofs + _reseed_of(ship, discover, deadline)
     except Busy:
         return [f"{SKIPPED} for {wait:g} s; the next round retries"]
 
 
-def _due(ship: Ship, seats: list[Seat]) -> bool:
-    """Whether a reseed has anything to judge, by metadata alone: a linked name that is no longer a link, or a
-    held copy whose size or modification time differs from the pool's file (a copy is made with the pool's times)."""
-    return (_due_of(ship, participants(ship, seats))
+def _due(ship: Ship, seats: list[Seat], *, include_usage: bool = True) -> bool:
+    return (_due_of(ship, participants(ship, seats, include_usage=include_usage))
             or any(_review_due(ship, seat.name, seat.pool.name, seat.home, source, adapter)
                    for seat, source, adapter in _jailed_reviews(ship, seats)))
 
@@ -322,62 +387,122 @@ def _due_of(ship: Ship, found: list[Participant]) -> bool:
     return False
 
 
-def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:
+def _reseed_of(ship: Ship, discover, deadline: float) -> list[str]:
     proofs = []
-    for seat, source, adapter in _jailed_reviews(ship, seats):
-        if _review_due(ship, seat.name, seat.pool.name, seat.home, source, adapter):
-            _hold_record(ship, seat.name, seat.pool.name, adapter=adapter)
-            proofs.append(f"{seat.name}: home held for credential review")
-    return proofs + _reseed_of(ship, participants(ship, seats))
-
-
-def _reseed_of(ship: Ship, found: list[Participant]) -> list[str]:
-    detached: dict[str, list[tuple[Path, Participant]]] = {}
-    proofs = []
-    for seat in found:
-        pool_name = seat.pool
-        pool = ship.pools[pool_name]
+    by_pool: dict[str, list[Participant]] = {}
+    for participant in discover():
+        by_pool.setdefault(participant.pool, []).append(participant)
+    directories: dict[tuple[int, int], list[Pool]] = {}
+    for name, found in by_pool.items():
+        pool = ship.pools[name]
         source = pool_file(pool)
-        if source is None:
+        if source is None or not _due_of(ship, found):
             continue
         adapter = harnesses.native_for(pool.provider)
         if _without_reader(adapter):
-            if _review_due(ship, seat.name, seat.pool, seat.home, source, adapter):
-                _hold_record(ship, seat.name, seat.pool, adapter=adapter)
-                proofs.append(f"{seat.name}: home held for credential review")
-            continue  # there is no reader to judge a detached file, so never relink it
-        link = seat.home / source.name
-        if link.exists() and not link.is_symlink():
-            detached.setdefault(pool_name, []).append((link, seat))
-    for pool_name, candidates in detached.items():
-        source = pool_file(ship.pools[pool_name])
-        pool = ship.pools[pool_name]
-        current = freshness(pool, source) if source.exists() else None
-        live = [(freshness(pool, link), link, seat) for link, seat in candidates if freshness(pool, link) is not None]
-        newer = [c for c in live if current is None or c[0] > current]
-        if newer:
-            _, winner, from_seat = max(newer, key=lambda c: c[0])
-            parked = _park(source, ship.runtime / "credentials" / f"{pool_name}-{source.name}.stale")
-            _install(winner, source)
-            proofs.append(f"{pool_name} reseeded from {from_seat.name}'s refresh · the replaced file kept as "
-                          f"{parked.relative_to(ship.folder) if parked else 'nothing'}")
-        if not source.exists():
-            continue  # a pool with no credential yet and only stubs to offer: nothing to link to
-        copies = getattr(harnesses.native_for(pool.provider), "credential_copy", False)
-        current = freshness(pool, source)
-        for link, seat in candidates:
-            held = freshness(pool, link)
-            if seat.usage_reader and held is None:
-                proofs.append(f"{seat.name} credential unreadable; detached file retained for a human")
-                continue
-            if copies:
-                if held is not None and current is not None and held >= current:
-                    continue  # as fresh as the pool's, the winner's own among them; a newer one waits for the next pass
-                proofs.append(_bring_up(source, link, seat.name, pool_name))
-                continue
-            seat_files.symlink(link, source)  # renamed over the name: a link the jail planted is replaced, never followed
-            proofs.append(f"{seat.name} relinked to {pool_name}")
+            for seat in found:
+                if _review_due(ship, seat.name, name, seat.home, source, adapter):
+                    _hold_record(ship, seat.name, name, adapter=adapter)
+                    proofs.append(f"{seat.name}: home held for credential review")
+            continue
+        try:
+            info = pool.config_dir.stat()
+        except OSError:
+            proofs.append(_deferred(name, "subscription home unavailable"))
+            continue
+        directories.setdefault((info.st_dev, info.st_ino), []).append(pool)
+    for pools in directories.values():
+        try:
+            with _pool_home(pools[0].config_dir, deadline) as home:
+                for pool in pools:
+                    try:
+                        found = [seat for seat in discover() if seat.pool == pool.name]
+                        _reseed_pool(ship, pool, home, found, proofs)
+                    except Changed as reason:
+                        proofs.append(_deferred(pool.name, str(reason)))
+        except Busy:
+            proofs.extend(_deferred(pool.name, "another reseed held the subscription home lock") for pool in pools)
+        except Changed as reason:
+            proofs.extend(_deferred(pool.name, str(reason)) for pool in pools)
     return proofs
+
+
+def _file_state(path: Path, *, follow: bool = False):
+    try:
+        info = path.stat() if follow else path.lstat()
+    except FileNotFoundError:
+        return None
+    return (*_identity(info), info.st_mtime_ns, info.st_size, info.st_mode)
+
+
+def _source_state(path: Path):
+    return _file_state(path), _file_state(path, follow=True)
+
+
+def _reseed_pool(ship: Ship, pool: Pool, home: PoolHome, found: list[Participant], proofs: list[str]) -> None:
+    target = pool_file(pool)
+    source = home.file(target.name)
+    adapter = harnesses.native_for(pool.provider)
+    home.check(target.parent)
+    state = _source_state(source)
+    current = freshness(pool, source) if state[1] is not None else None
+    candidates = []
+    for seat in found:
+        path = seat.home / source.name
+        judged = _file_state(path)
+        if judged is not None and stat.S_ISREG(judged[-1]):
+            candidates.append((freshness(pool, path), path, seat, judged))
+
+    def check():
+        home.check(target.parent)
+        if _source_state(source) != state:
+            raise Changed("pool credential changed")
+
+    newer = [row for row in candidates if row[0] is not None and (current is None or row[0] > current)]
+    if newer:
+        _, winner, participant, judged = max(newer, key=lambda row: row[0])
+
+        def check_install():
+            check()
+            if _file_state(winner) != judged:
+                raise Changed("refresh candidate changed")
+
+        check_install()
+        data = seat_files.read_with_times(winner)
+        if data is None:
+            raise Changed("refresh candidate changed")
+        content, times = data
+        stale = ship.runtime / "credentials" / f"{quote(pool.name, safe='')}-{source.name}.stale"
+        with _park(source, stale) as parked:
+            # law: one-folder (the temporary and rename are both relative to this open directory)
+            seat_files.write_bytes_at(home.descriptor, source.name, content, mode=0o600, times=times,
+                                      before_replace=check_install)
+        home.check(target.parent)
+        state = _source_state(source)
+        current = freshness(pool, source)
+        proofs.append(f"{pool.name} reseeded from {participant.name}'s refresh · the replaced file kept as "
+                      f"{parked.relative_to(ship.folder) if parked else 'nothing'}")
+    check()
+    if state[1] is None:
+        return  # no pool credential yet and only stubs to offer
+    copies = getattr(adapter, "credential_copy", False)
+    for held, path, seat, judged in candidates:
+        if seat.usage_reader and held is None:
+            proofs.append(f"{seat.name} credential unreadable; detached file retained for a human")
+        elif copies and held is not None and current is not None and held >= current:
+            continue  # as fresh as the pool's; a newer one waits for the next pass
+        elif held is not None and (current is None or held > current):
+            raise Changed("pool credential no longer matches the judged refresh")
+        else:
+            try:
+                if copies:
+                    proof = _bring_up(source, path, seat.name, pool.name, judged=judged, check=check)
+                else:
+                    _reconcile(source, target, path, judged, seat.name, check, copy=False)
+                    proof = f"{seat.name} relinked to {pool.name}"
+            except CandidateChanged as reason:
+                proof = _deferred(pool.name, str(reason))
+            proofs.append(proof)
 
 
 # A retired temporary seat's home is removed after its reseed. If the reseed skipped a detached credential, the
@@ -485,30 +610,85 @@ def held_words(ship: Ship) -> list[str]:
     return words  # law: nothing-waits-silently
 
 
+def _remove_home(ship: Ship, seat: Participant) -> None:
+    for folder in (seat.home.parent, trusted_files.folder(ship.runtime, seat.name)):
+        if folder.is_dir():
+            shutil.rmtree(folder)
+
+
+def _settle_home(ship: Ship, seat: Participant, deadline: float, lines: list[str], *, held: bool) -> bool:
+    pool = ship.pools[seat.pool]
+    source = pool_file(pool)
+    if source is None or _without_reader(harnesses.native_for(pool.provider)):
+        if held:
+            return False  # an earlier hold cannot be retired once its subscription or reader is gone
+        _remove_home(ship, seat)
+        return True
+    candidate = _file_state(seat.home / source.name)
+    if candidate is None or not stat.S_ISREG(candidate[-1]):
+        _remove_home(ship, seat)
+        return True  # there is no detached plain file to reconcile
+    with _pool_home(source.parent, deadline) as home:
+        proofs = []
+        _reseed_pool(ship, pool, home, [seat], proofs)
+        lines.extend(proofs)
+        if deferred(proofs) or (held and _due_of(ship, [seat])):
+            return False
+        home.check(source.parent)
+        _remove_home(ship, seat)
+        return True
+
+
+def retire_home(ship: Ship, seat: Seat) -> None:
+    """Temporary teardown owns the seat before claiming its one pool or recording a renewal hold."""
+    record = _hold_path(ship, seat.name)
+    if record.exists() or hold_home(ship, seat):
+        return
+    own = next(iter(participants(ship, [seat], include_usage=False)), None)
+    if own is None:
+        _remove_home(ship, Participant(seat.name, seat.home, seat.pool.name))
+        return
+    source = pool_file(ship.pools[own.pool])
+    candidate = _file_state(seat.home / source.name) if source is not None else None
+    if candidate is None or not stat.S_ISREG(candidate[-1]):
+        _remove_home(ship, own)
+        return
+    try:
+        with _reseeding(ship, DOWN_WAIT) as deadline:
+            if _settle_home(ship, own, deadline, [], held=False):
+                return
+    except (Busy, Changed):
+        pass
+    _hold_record(ship, own.name, own.pool)
+
+
 def settle_held(ship: Ship, *, wait: float = RESEED_WAIT) -> list[str]:
-    """Settle held renewals; unreadable records remain visible."""
+    """Finish held renewals while owning their temporary seat, ship lock and one pool lock."""
+    from . import lifecycle, pending
+
     lines = []
     for record, hold in _held(ship):
         if hold is None or hold.review or hold.keep is not None:
-            continue  # review waits for a choice; a completed keep identifies the names already reviewed
+            continue
         name, pool = hold.name, hold.pool
-        seat_folder = ship.runtime / "seats" / name
-        found = [Participant(name, seat_folder / "home", pool)]
-        if _due_of(ship, found):
-            try:
-                with _reseeding(ship, wait):
-                    lines += _reseed_of(ship, found)
-            except Busy:
-                lines.append(f"{SKIPPED} for {wait:g} s; {name}'s held renewal waits for the next round")
-                continue
-            if held_for_review(ship, name) or _due_of(ship, found):
-                continue  # still detached (a copy not brought up): kept, still named, tried again next pass
-        if seat_folder.exists():
-            shutil.rmtree(seat_folder)
-        if trusted_files.folder(ship.runtime, name).is_dir():
-            shutil.rmtree(trusted_files.folder(ship.runtime, name))
-        record.unlink()
-        lines.append(f"{name}'s home removed once its held renewal was judged for {pool}")
+        found = Participant(name, ship.runtime / "seats" / name / "home", pool)
+        try:
+            with pending.transient_lock(ship.runtime, name) as unowned:
+                if not unowned:
+                    continue
+                with lifecycle.claim(ship.runtime, name), _reseeding(ship, wait) as deadline:
+                    if _held_record(ship, record) != hold:
+                        continue
+                    if not _settle_home(ship, found, deadline, lines, held=True):
+                        continue
+                    record.unlink()
+                    lines.append(f"{name}'s home removed once its held renewal was judged for {pool}")
+        except lifecycle.Busy:
+            continue
+        except Busy:
+            lines.append(_deferred(pool, f"{name}'s held renewal could not acquire its lock"))
+        except Changed as reason:
+            lines.append(_deferred(pool, str(reason)))
     return lines
 
 
@@ -892,48 +1072,54 @@ def _move_home(runtime: Path, source: Path, target: Path, snapshot: dict, *, tem
                     pass  # leave any entry that appeared here untouched
 
 
-def _bring_up(source: Path, path: Path, name: str, pool_name: str) -> str:
-    """The pool's credential brought up into the seat's copy (see _bring_up_copy). A link its jail planted on the way
-    is refused (seat_files.LinkRefused) and named, the copy retained, as an unwritable copy is: never raised."""
+def _bring_up(source: Path, path: Path, name: str, pool_name: str, *, judged=None, check=lambda: None) -> str:
+    """Bring up a private credential copy and report any retry."""
     try:
-        return _bring_up_copy(source, path, name, pool_name)
-    except seat_files.LinkRefused as error:
-        try:
-            seat_files.unlink(path.with_name(f"{path.name}.qd-copy"))
-        except (OSError, seat_files.LinkRefused):
-            pass  # through the same link: nothing of ours can be there to remove
-        return f"{name} copy not brought up to {pool_name}: {error}; retained"
+        if judged is None:
+            judged = _file_state(path)
+        if judged is None or not stat.S_ISREG(judged[-1]):
+            raise CandidateChanged("copy no longer a plain file")
+        _reconcile(source, source, path, judged, name, check, copy=True)
+    except (CandidateChanged, seat_files.LinkRefused) as error:
+        reason = str(error)
+        if reason.endswith(COPY_REFRESHED):
+            return reason
+        return f"{name} copy not brought up to {pool_name}: {reason}; retained"
+    return f"{name} copy brought up to {pool_name}"
 
 
-def _bring_up_copy(source: Path, path: Path, name: str, pool_name: str) -> str:
-    """Bring one home's older copy up to the pool's, while its program may be running and refreshing.
-
-    The pool's copy is swapped with the home's file in one exchange, so the program never finds the place empty. What
-    came out is then the file that was judged older, or a refresh the program wrote since: that one is swapped straight
-    back and kept, and the next pass puts it in the pool's place. Nothing is overwritten unseen.
-    """
-    try:
-        judged = path.lstat()
-    except OSError:
-        return f"{name} copy unreadable; retained for the next pass"
-    if not stat.S_ISREG(judged.st_mode):
-        return f"{name} copy is not a plain file; retained for the next pass"
+def _reconcile(source: Path, target: Path, path: Path, judged: tuple, name: str, check, *, copy: bool) -> None:
+    """Exchange with the judged file. If a native write or rebinding intervened, put that file back."""
     tmp = path.with_name(f"{path.name}.qd-copy")
     seat_files.unlink(tmp)
-    seat_files.copy(source, tmp, mode=0o600)  # made in the home without following a link, the pool's times kept
+    exchanged = False
+    refreshed = f"{name} {COPY_REFRESHED}" if copy else f"{name} refreshed while relinking"
     try:
+        if copy:
+            seat_files.copy(source, tmp, mode=0o600)
+        else:
+            seat_files.symlink(tmp, target)
+        check()
+        if _file_state(path) != judged:
+            raise CandidateChanged(refreshed)
         _exchange(tmp, path)
-    except OSError as error:
-        seat_files.unlink(tmp)
-        return f"{name} copy not brought up to {pool_name}: {os.strerror(error.errno)}; retained"
-    out = tmp.lstat()
-    if (out.st_ino, out.st_dev, out.st_mtime_ns, out.st_size) != (judged.st_ino, judged.st_dev, judged.st_mtime_ns,
-                                                                  judged.st_size):
-        _exchange(tmp, path)  # the program wrote since it was judged: its file goes straight back
-        seat_files.unlink(tmp)
-        return f"{name} refreshed while its copy was brought up; its refresh kept for the next pass"
-    seat_files.unlink(tmp)
-    return f"{name} copy brought up to {pool_name}"
+        exchanged = True
+        try:
+            check()
+            out = _file_state(tmp)
+            # The exchange itself can update ctime.
+            if out is None or out[:2] != judged[:2] or out[3:] != judged[3:]:
+                raise CandidateChanged(refreshed)
+        except (Changed, OSError):
+            _exchange(tmp, path)
+            exchanged = False
+            raise
+        exchanged = False  # the old credential was verified and can now be removed
+    except (OSError, seat_files.LinkRefused) as error:
+        raise CandidateChanged(f"{name}'s credential could not be reconciled ({type(error).__name__})") from None
+    finally:
+        if not exchanged:
+            seat_files.unlink(tmp)
 
 
 RENAME_EXCHANGE = 2
@@ -958,24 +1144,20 @@ def _exchange(first: Path, second: Path) -> None:
             os.close(located[0])
 
 
-def _park(source: Path, parked: Path) -> Path | None:
-    """One copy of the pool's replaced file, kept under the runtime for a look back; each replaces the last."""
+@contextmanager
+def _park(source: Path, parked: Path):
+    """Keep one stale copy in this runtime, publishing it only after a successful install."""
     if not source.exists():
-        return None
+        yield None
+        return
     parked.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, parked)
-    return parked
-
-
-def _install(winner: Path, source: Path) -> None:
-    """The refreshed file put in the pool's place in one step, so no seat finds the place empty: the one
-    write outside the project folder, and the law names it."""
-    # The winner is read without following a link: a home is its jail's to write, and a link there is no refresh.
-    read = seat_files.read_with_times(winner)
-    if read is None:
-        raise OSError(errno.ELOOP, f'{winner} is not a plain file; the pool keeps its own')
-    data, times = read
-    seat_files.write_bytes(source, data, mode=0o600, times=times)  # law: one-folder (a temporary renamed in place)
+    temporary = parked.with_name(f".{parked.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        seat_files.copy(source, temporary, mode=0o600)
+        yield parked
+        temporary.replace(parked)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def grant_expiry(pool: Pool) -> datetime | None:

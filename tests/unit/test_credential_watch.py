@@ -164,18 +164,17 @@ def test_a_reseed_waits_for_the_one_lock_and_skips_the_round_past_its_bound(crew
     assert done and read_token(source) == RENEWED, "released within the bound, the waiting reseed installs"
 
 
-def test_the_watch_retries_a_skipped_round_on_its_next_tick(crew):
+@pytest.mark.parametrize("lock", ["ship", "pool"])
+def test_the_watch_retries_a_skipped_round_on_its_next_tick(crew, lock):
     service, source = crew
     service.credentials()
-    lock = service.ship.runtime / sandbox.LOCKS / "credential-reseed.lock"
-    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
-    fcntl.flock(held, fcntl.LOCK_EX)
+    held = held_lock(service, subscription=source.parent if lock == "pool" else None)
+    skipped = credential.SKIPPED if lock == "ship" else "skipped for fake: another reseed held the subscription home lock"
     stop, thread = watching(service)
     try:
         renew_by_replacement(service.ship.runtime / "seats" / "desk" / "home" / source.name, fake(RENEWED, 8 * 3600))
         deadline = time.monotonic() + 10
-        while credential.SKIPPED not in (service.log_path.read_text() if service.log_path.exists() else ""):
+        while skipped not in (service.log_path.read_text() if service.log_path.exists() else ""):
             assert time.monotonic() < deadline
             time.sleep(0.05)
         os.close(held)
@@ -215,15 +214,19 @@ RETIRED = "check-claude-ab12"  # a temporary check seat's form; never declared, 
 SENTINEL = "fake-sentinel-token-5c1e"
 
 
-def held_lock(service):
-    lock = service.ship.runtime / sandbox.LOCKS / "credential-reseed.lock"
-    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+def held_lock(service, *, subscription=None):
+    if subscription is not None:
+        held = os.open(subscription, os.O_RDONLY | os.O_DIRECTORY)
+    else:
+        lock = service.ship.runtime / sandbox.LOCKS / "credential-reseed.lock"
+        lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX)  # another reseed holding the lock past the seat's wait
     return held
 
 
-def retire_temporary_seat(service, source, *, renewed: bool, monkeypatch, sandbox: bool | None = None, plant=None):
+def retire_temporary_seat(service, source, *, renewed: bool, monkeypatch,
+                          sandbox: bool | None = None, plant=None, subscription_lock=False):
     """A temporary seat on the pool taken down by its own teardown while another reseed holds the lock.
 
     ``sandbox=True`` makes it a jailed seat; ``plant`` is (name, text), a file its jail left in its home."""
@@ -245,7 +248,7 @@ def retire_temporary_seat(service, source, *, renewed: bool, monkeypatch, sandbo
     if plant is not None:
         (seat.home / plant[0]).write_text(plant[1])
     monkeypatch.setattr(credential, "DOWN_WAIT", 0.2)
-    held = held_lock(service)
+    held = held_lock(service, subscription=source.parent if subscription_lock else None)
     try:
         with ExitStack() as cleanup:
             seatmod._teardown(cleanup, treated, seat, service.tmux, [], "synthetic check", lambda: None,
@@ -255,11 +258,13 @@ def retire_temporary_seat(service, source, *, renewed: bool, monkeypatch, sandbo
     return seat
 
 
+@pytest.mark.parametrize("subscription_lock", [False, True])
 def test_a_skipped_reseed_keeps_a_renewal_in_a_retired_seats_home_names_it_and_a_later_pass_settles_it(
-        crew, monkeypatch):
+        crew, monkeypatch, subscription_lock):
     from quarterdeck import seat as seatmod
     service, source = crew
-    seat = retire_temporary_seat(service, source, renewed=True, monkeypatch=monkeypatch)
+    seat = retire_temporary_seat(service, source, renewed=True, monkeypatch=monkeypatch,
+                                 subscription_lock=subscription_lock)
     assert read_token(seat.home / source.name) == RENEWED, "the home and its renewal are kept"
     assert read_token(source) == "fake-old", "the skipped reseed installed nothing"
     record = service.ship.runtime / credential.HELD / f"{RETIRED}.json"

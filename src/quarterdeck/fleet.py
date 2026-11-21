@@ -45,3 +45,32 @@ def peers(ship: shipmod.Ship) -> dict[str, shipmod.Ship]:
         except (ShipError, OSError):
             continue  # an unavailable destination remains waiting, never guessed
     return found
+
+
+def subscription_homes(ship: shipmod.Ship):
+    """Inspect fleet declarations alone, without validating peers' programs, seats or homes."""
+    for file in declaration_files(ship):
+        folder = file.parent
+        if folder == ship.folder:
+            continue
+        try:
+            data, _ = shipmod.toml_table(file.read_text())
+        except (OSError, UnicodeError):
+            continue
+        if data is None:
+            continue
+        head = data.get("ship", {})
+        if folder.name == "office" and (not isinstance(head, dict) or head.get("kind") != "office"):
+            continue
+        pools = data.get("pools", {})
+        if not isinstance(pools, dict):
+            continue
+        for name, table in pools.items():
+            if not isinstance(table, dict) or not name.isprintable() or "api_key" in table or "endpoint" in table:
+                continue
+            try:
+                home = shipmod.pool_config_dir(table, folder)
+                if home is not None:
+                    yield folder.name, shipmod.Pool(name, table["provider"], config_dir=home)
+            except (ShipError, KeyError, TypeError, ValueError, RuntimeError):
+                continue
