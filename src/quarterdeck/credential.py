@@ -161,7 +161,11 @@ class Changed(Exception):
 
 
 class CandidateChanged(Changed):
-    """Only this home needs a retry. Other candidates can still reconcile."""
+    """Only this home could not reconcile. Other candidates can still reconcile."""
+
+
+class CandidateRetained(CandidateChanged):
+    """A local cleanup refusal leaves the candidate's files for inspection."""
 
 
 def _lock(descriptor: int, deadline: float) -> None:
@@ -237,7 +241,7 @@ def _deferred(pool: str, reason: str) -> str:
 def deferred(lines: list[str] | None) -> bool:
     """Whether a round left work for retry, including the legacy ship-lock proof."""
     return any(line.startswith("credential reseed skipped") or line.endswith(COPY_REFRESHED)
-               or " copy not brought up to " in line for line in (lines or ()))
+               for line in (lines or ()))
 
 
 def linked_names(ship: Ship, seats: list[Seat]) -> list[Path]:
@@ -500,6 +504,8 @@ def _reseed_pool(ship: Ship, pool: Pool, home: PoolHome, found: list[Participant
                 else:
                     _reconcile(source, target, path, judged, seat.name, check, copy=False)
                     proof = f"{seat.name} relinked to {pool.name}"
+            except CandidateRetained as reason:
+                proof = f"{seat.name} credential not relinked to {pool.name}: {reason}; retained"
             except CandidateChanged as reason:
                 proof = _deferred(pool.name, str(reason))
             proofs.append(proof)
@@ -632,7 +638,8 @@ def _settle_home(ship: Ship, seat: Participant, deadline: float, lines: list[str
         proofs = []
         _reseed_pool(ship, pool, home, [seat], proofs)
         lines.extend(proofs)
-        if deferred(proofs) or (held and _due_of(ship, [seat])):
+        # A local refusal can settle the watch while the temporary home's files still need to stay.
+        if deferred(proofs) or any(line.endswith("; retained") for line in proofs) or (held and _due_of(ship, [seat])):
             return False
         home.check(source.parent)
         _remove_home(ship, seat)
@@ -1073,7 +1080,7 @@ def _move_home(runtime: Path, source: Path, target: Path, snapshot: dict, *, tem
 
 
 def _bring_up(source: Path, path: Path, name: str, pool_name: str, *, judged=None, check=lambda: None) -> str:
-    """Bring up a private credential copy and report any retry."""
+    """Bring up a private credential copy and report a retained or intervening refresh."""
     try:
         if judged is None:
             judged = _file_state(path)
@@ -1088,11 +1095,19 @@ def _bring_up(source: Path, path: Path, name: str, pool_name: str, *, judged=Non
     return f"{name} copy brought up to {pool_name}"
 
 
+def _clear_reconcile_scratch(path: Path) -> None:
+    try:
+        seat_files.unlink(path)
+    except OSError as error:
+        raise CandidateRetained(f"reconciliation scratch could not be removed ({type(error).__name__})") from None
+
+
 def _reconcile(source: Path, target: Path, path: Path, judged: tuple, name: str, check, *, copy: bool) -> None:
     """Exchange with the judged file. If a native write or rebinding intervened, put that file back."""
     tmp = path.with_name(f"{path.name}.qd-copy")
-    seat_files.unlink(tmp)
+    _clear_reconcile_scratch(tmp)
     exchanged = False
+    changed = False
     refreshed = f"{name} {COPY_REFRESHED}" if copy else f"{name} refreshed while relinking"
     try:
         if copy:
@@ -1115,11 +1130,20 @@ def _reconcile(source: Path, target: Path, path: Path, judged: tuple, name: str,
             exchanged = False
             raise
         exchanged = False  # the old credential was verified and can now be removed
+    except Changed:
+        changed = True
+        raise
     except (OSError, seat_files.LinkRefused) as error:
+        if exchanged:
+            raise Changed(f"{name}'s credential exchange could not be rolled back ({type(error).__name__})") from None
         raise CandidateChanged(f"{name}'s credential could not be reconciled ({type(error).__name__})") from None
     finally:
         if not exchanged:
-            seat_files.unlink(tmp)
+            try:
+                _clear_reconcile_scratch(tmp)
+            except CandidateRetained:
+                if not changed:  # keep the retry for the intervening refresh or binding change
+                    raise
 
 
 RENAME_EXCHANGE = 2

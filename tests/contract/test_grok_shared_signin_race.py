@@ -133,25 +133,38 @@ def test_with_copies_no_seat_writes_the_pool_and_the_service_installs_the_live_r
     assert credential.reseed(ship, seats) == [], "settled: a later pass changes nothing"
 
 
-def test_a_refresh_that_lands_while_a_copy_is_brought_up_is_kept_and_installed_next(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cleanup_refused", [False, True])
+def test_a_refresh_that_lands_while_a_copy_is_brought_up_is_kept_and_installed_next(
+        tmp_path, monkeypatch, cleanup_refused):
     ship, pool, source, seats = two_seat_ship(tmp_path, copy=True)
     (seats[0].home / "auth.json").write_text(grant("synthetic-old", "2039-01-01T00:00:00Z"))  # older than the pool's
     copy = seats[0].home / "auth.json"
+    scratch = copy.with_name("auth.json.qd-copy")
     real = credential.seat_files.copy  # the copy into the home, made without following a link
+    unlink = credential.seat_files.unlink
 
     def copy_while_the_program_refreshes(src, dst, **kwargs):
         real(src, dst, **kwargs)
-        if Path(dst).name == "auth.json.qd-copy":
+        if dst == scratch:
             fresh = copy.with_name("auth.json.program")
             fresh.write_text(grant("synthetic-fresh", "2041-01-01T00:00:00Z"))
             os.replace(fresh, copy)  # the program's own refresh, after the copy was judged older
-    monkeypatch.setattr(credential.seat_files, "copy", copy_while_the_program_refreshes)
-    assert credential.reseed(ship, seats[:1]) == ["worker-a refreshed while its copy was brought up; "
-                                                  "its refresh kept for the next pass"]
-    assert token(copy) == "synthetic-fresh" and not copy.with_name("auth.json.qd-copy").exists()
+
+    def refuse_cleanup(path, **kwargs):
+        if path == scratch and scratch.is_file():
+            raise PermissionError()
+        return unlink(path, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(credential.seat_files, "copy", copy_while_the_program_refreshes)
+        if cleanup_refused:
+            patch.setattr(credential.seat_files, "unlink", refuse_cleanup)
+        lines = credential.reseed(ship, seats[:1])
+    assert lines == ["worker-a refreshed while its copy was brought up; its refresh kept for the next pass"]
+    assert credential.deferred(lines)
+    assert token(copy) == "synthetic-fresh" and scratch.exists() == cleanup_refused
     assert token(source) == "synthetic-0"
 
-    monkeypatch.setattr(credential.seat_files, "copy", real)
     proofs = credential.reseed(ship, seats)
     assert proofs[0].startswith("synthetic-plan reseeded from worker-a's refresh")
     assert proofs[1:] == ["worker-b copy brought up to synthetic-plan"]

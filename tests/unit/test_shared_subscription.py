@@ -224,6 +224,43 @@ def test_busy_pool_leaves_its_candidate_and_does_not_block_a_free_pool(tmp_path)
     assert candidate.is_symlink() and _rank(shared / candidate.name) == 2
 
 
+@pytest.mark.parametrize("provider", ["openai", "xai"])
+@pytest.mark.parametrize("unlink_at", ["before staging", "after exchange"])
+def test_unremovable_scratch_is_retained_and_the_next_pool_renews(tmp_path, monkeypatch, provider, unlink_at):
+    blocked, free = tmp_path / "blocked", tmp_path / "free"
+    blocked.mkdir()
+    free.mkdir()
+    ship, first, candidate = _crew(tmp_path / "ship", blocked, "blocked", provider, 2)
+    second_ship, second, other = _crew(ship.folder, free, "free", "openai", 4, name="second")
+    ship.pools.update(second_ship.pools)
+    _write(blocked / candidate.name, provider, 3)
+    scratch = candidate.with_name(f"{candidate.name}.qd-copy")
+    if unlink_at == "before staging":
+        scratch.mkdir()
+    else:
+        unlink = seat_files.unlink
+
+        def refuse_old_file(path, **kwargs):
+            if path == scratch and scratch.is_file():
+                raise PermissionError()
+            return unlink(path, **kwargs)
+
+        monkeypatch.setattr(seat_files, "unlink", refuse_old_file)
+
+    lines = credential.reseed(ship, [first, second], wait=0)
+
+    assert not credential.deferred(lines)
+    assert lines[0].startswith(first.name) and "scratch could not be removed" in lines[0]
+    assert lines[0].endswith("; retained")
+    if unlink_at == "before staging":
+        assert scratch.is_dir() and not candidate.is_symlink() and _rank(candidate) == 2
+    else:
+        assert _rank(scratch) == 2 and _rank(candidate) == 3
+        assert candidate.is_symlink() == (provider == "openai")
+    assert _rank(blocked / candidate.name) == 3
+    assert other.is_symlink() and _rank(free / other.name) == 4
+
+
 def test_missing_subscription_home_defers_without_creating_it(tmp_path):
     pool = tmp_path / "absent"
     ship, seat, candidate = _crew(tmp_path / "ship", pool, "only", "openai", 2)

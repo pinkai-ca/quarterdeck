@@ -15,10 +15,12 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from quarterdeck import credential, harness as harnesses, sandbox, ship as shipmod
+from quarterdeck.seat import Seat
 from quarterdeck.service import Service
 from quarterdeck.tmux import Tmux
 from tests.conftest import ROOT
@@ -165,29 +167,38 @@ def test_a_reseed_waits_for_the_one_lock_and_skips_the_round_past_its_bound(crew
 
 
 @pytest.mark.parametrize("lock", ["ship", "pool"])
-def test_the_watch_retries_a_skipped_round_on_its_next_tick(crew, lock):
+def test_a_busy_lock_defers_launch_and_the_watch_retries_on_its_next_tick(crew, lock, monkeypatch):
     service, source = crew
     service.credentials()
+    seat = next(seat for seat in service.credential_watch[0] if seat.name == "desk")
+    renew_by_replacement(seat.home / source.name, fake(RENEWED, 8 * 3600))
     held = held_lock(service, subscription=source.parent if lock == "pool" else None)
     skipped = credential.SKIPPED if lock == "ship" else "skipped for fake: another reseed held the subscription home lock"
-    stop, thread = watching(service)
+    reseed = credential.reseed
+
+    def try_reseed(*args, **kwargs):
+        kwargs.setdefault("wait", 0)
+        return reseed(*args, **kwargs)
+
+    def ticks():
+        yield False
+        assert skipped in service.log_path.read_text()
+        assert read_token(source) == "fake-old"
+        fcntl.flock(held, fcntl.LOCK_UN)
+        yield False
+        assert read_token(source) == RENEWED
+        yield True
+
+    monkeypatch.setattr(credential, "reseed", try_reseed)
+    monkeypatch.setattr(credential, "DOWN_WAIT", 0)
+    clock = ticks()
     try:
-        renew_by_replacement(service.ship.runtime / "seats" / "desk" / "home" / source.name, fake(RENEWED, 8 * 3600))
-        deadline = time.monotonic() + 10
-        while skipped not in (service.log_path.read_text() if service.log_path.exists() else ""):
-            assert time.monotonic() < deadline
-            time.sleep(0.05)
-        os.close(held)
-        held = None
-        deadline = time.monotonic() + 2 * credential.RESEED_WAIT + 2
-        while read_token(source) != RENEWED:
-            assert time.monotonic() < deadline
-            time.sleep(0.05)
+        with pytest.raises(shipmod.ShipError, match="credential renewal for fake pending"):
+            seat._reseed_for_launch()
+        service.watch_credentials(SimpleNamespace(wait=lambda _: next(clock)))
+        seat._reseed_for_launch()
     finally:
-        if held is not None:
-            os.close(held)
-        stop.set()
-        thread.join(timeout=5)
+        os.close(held)
 
 
 def test_a_copy_as_the_pools_is_not_due_and_takes_no_lock(crew, monkeypatch):
@@ -392,6 +403,43 @@ def usage_reader(crew):
     (reader / grok_source.name).write_text(grok_grant(GROK_READER, 1800))  # older than the pool's: due, never installed
     assert any(p.usage_reader and p.pool == "grok" for p in credential.participants(service.ship, []))
     return service, source, grok_source
+
+
+def test_a_retained_copy_is_handled_once_by_the_watch_and_does_not_defer_launch(usage_reader, monkeypatch):
+    service, _, grok_source = usage_reader
+    seats = list(service.resolved_seats())
+    names = credential.linked_names(service.ship, seats)
+    marker = next(name for name in names if name.parent.parent.name == "desk")
+    marker.unlink()
+    marker.mkdir()  # an unchanged detached name stays visible to the watch through every tick
+    spec = shipmod.SeatSpec("copy-worker", "crew", "worker", "grok", ("grok",))
+    seat = Seat(service.ship, spec, service.tmux)
+    seat.home.mkdir(parents=True)
+    copy = seat.home / grok_source.name
+    scratch = copy.with_name(f"{copy.name}.qd-copy")
+    older = grok_grant("synthetic-older-copy", 900)
+    copy.write_text(older)
+    service.credential_watch = ([*seats, seat], names)
+    write_copy = credential.seat_files.copy
+    attempts = []
+
+    def refuse_copy(src, dst, **kwargs):
+        if dst == scratch:
+            attempts.append(dst)
+            raise PermissionError()
+        return write_copy(src, dst, **kwargs)
+
+    monkeypatch.setattr(credential.seat_files, "copy", refuse_copy)
+    ticks = iter([False, False, False, True])
+    service.watch_credentials(SimpleNamespace(wait=lambda _: next(ticks)))
+
+    events = [json.loads(line) for line in service.log_path.read_text().splitlines()]
+    proofs = [line["proof"] for line in events if line.get("by") == "watch" and line["proof"].startswith(seat.name)]
+    assert len(attempts) == 1 and len(proofs) == 1
+    assert "copy not brought up to grok" in proofs[0] and proofs[0].endswith("; retained")
+    assert marker.is_dir() and copy.read_text() == older
+    seat._reseed_for_launch()
+    assert len(attempts) == 2 and copy.read_text() == older
 
 
 def test_a_jailed_temporary_seat_beside_a_due_usage_reader_has_no_home_kept_and_gives_no_pool_a_sign_in(

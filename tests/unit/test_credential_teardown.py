@@ -137,6 +137,26 @@ def test_a_checks_temporary_seat_with_the_service_down_leaves_the_pool_holding_t
     assert token(ship.source) == "newer", "the pool holds the refresh"
 
 
+def test_a_temporary_home_is_kept_until_its_reconciliation_scratch_can_be_removed(ship):
+    spec = SeatSpec("check-claude-0002", "qd-check-claude-0002", "worker", "claude", ("claude-primary",),
+                    model="synthetic-model", cwd=ship.ship.workspace)
+    with temporary_seat(ship.ship, ship.tmux, spec, [], "qd check") as seat:
+        seat.up(resume=False)
+        candidate = refreshed(seat.home)
+        scratch = candidate.with_name(f"{candidate.name}.qd-copy")
+        scratch.mkdir()
+
+    record = ship.ship.runtime / credentialmod.HELD / f"{seat.name}.json"
+    assert record.is_file() and scratch.is_dir() and candidate.is_file()
+    assert token(candidate) == token(ship.source) == "newer"
+    service = Service(ship.ship, ship.tmux)
+    service.credentials()
+    assert record.is_file() and scratch.is_dir()
+    scratch.rmdir()
+    service.credentials()
+    assert not seat.folder.exists() and not record.exists()
+
+
 def test_a_temporary_home_whose_seat_would_not_go_down_keeps_its_refresh_until_qd_down_hands_it_to_the_pool(ship, monkeypatch):
     spec = SeatSpec("check-claude-0001", "qd-check-claude-0001", "worker", "claude", ("claude-primary",),
                     model="synthetic-model", cwd=ship.ship.workspace)
