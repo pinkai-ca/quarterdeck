@@ -106,6 +106,22 @@ def test_a_fresh_request_after_its_handoff_never_applies_mid_turn(desk):
         'turn-open', 'own fresh start after its handoff waits for the turn in progress')
 
 
+@pytest.mark.parametrize('kind, action', [('restart', 'restart'), ('fresh', 'fresh start')])
+def test_classified_person_input_names_the_own_request_waiting_for_a_turn(desk, kind, action):
+    desk.state = state(open_=True, input_at=-40)
+    path = desk.ask(seconds=0, resume=kind == 'restart')
+    desk.tick(1)
+    [row] = request_queue.pending(desk.runtime)
+    assert (row['kind'], row['dimension'], row['reason']) == (
+        kind, 'turn-open', f'own {action} waits for the turn in progress')
+    assert desk.applied == [] and path.exists() and desk.answer(path) is None
+
+    desk.state = state(open_=False, input_at=-40, turns=[turn(-40, 2)])
+    desk.tick(3)
+    assert desk.applied == [kind] and not path.exists()
+    assert request_queue.pending(desk.runtime) == []
+
+
 @pytest.mark.parametrize('obstacle, dimension', [
     (lambda desk: setattr(desk, 'screen', Screen(text='', box='half a line', working=False)), 'box'),
     (lambda desk: setattr(desk, 'screen', None), 'box'),

@@ -1690,7 +1690,8 @@ class Service:
             if person is not None and person['at'] is not None:
                 if datetime.fromisoformat(person['at']) > asked:
                     return f"refused: {seat.name} superseded by the person's later input; no deferred restart"
-                self.request_wait = self.handoff_quiet(seat, state, hold)
+                action = 'own restart' if data['resume'] else 'own fresh start'
+                self.request_wait = self.handoff_quiet(seat, state, hold, action=action)
                 if self.request_wait is not None:
                     return None
                 return self.relaunch(seat, bool(data['resume']), reading=proved, released=released)
@@ -1790,12 +1791,13 @@ class Service:
             return None  # a turn, a queued input, an unconfirmed delivery or the box: the next quiet moment
         return self.relaunch(seat, False, reading=reading, released=released)  # its own hold, if any, also waits
 
-    def handoff_quiet(self, seat: Seat, state, hold) -> tuple[str, str] | None:
-        """Why this is not yet a quiet moment for a fresh start that carries every delivery, or None."""
+    def handoff_quiet(self, seat: Seat, state, hold, *,
+                      action: str = 'own fresh start after its handoff') -> tuple[str, str] | None:
+        """Why this is not yet a quiet moment for the relaunch, or None."""
         if state is None:
             return (hold.dimension, hold.reason) if hold is not None else ('record', 'turn state unknown')
         if state.turn_open is not False:
-            return ('turn-open', 'own fresh start after its handoff waits for the turn in progress')
+            return ('turn-open', f'{action} waits for the turn in progress')
         ending = state.completed_turns[-1] if state.completed_turns else None
         # A turn the program gave its own notice may hold no input: the proof is no input after the last proved end.
         if (state.last_input_at is None or ending is None or not ending.timed or ending.ended is None
