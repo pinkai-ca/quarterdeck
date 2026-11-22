@@ -30,7 +30,7 @@ from pathlib import Path
 from . import trusted_files
 from . import harness as harnesses
 from . import service_status, service_timing, service_wait
-from . import shutdown, lifecycle
+from . import shutdown, lifecycle, resting_failover
 from .harness import held_reading, reader_stamp
 from . import pending as pending_delivery, delivery_record
 from . import accounting_health, credential, durable, idle, install, machine, move_hold, post, post_dir, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
@@ -312,6 +312,7 @@ class Service:
         records, held = json_record.cache_size()
         self.timings().cache_reading(records, held)
 
+    @resting_failover.reading_pass()
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice. Every stretch of the loop is stamped
         # under its own name: the drain and the status work between duties too, so neither reads as the duty before.
@@ -336,7 +337,7 @@ class Service:
     # those rows may touch: usage refresh writes its cache, pacing and receipt tables. No record accounting reads
     # them. A duty's rows are counted apart only when every table it wrote, triggers included, is one of these.
     NON_ACCOUNTING_DUTIES = frozenset(('refresh_usage',))
-    NON_ACCOUNTING_TABLES = frozenset(('pools', 'usage_samples', 'usage_reads', 'usage_commit'))
+    NON_ACCOUNTING_TABLES = frozenset(('pools', 'usage_samples', 'usage_reads', 'usage_commit', 'usage_expired_access'))
 
     @contextmanager
     def non_accounting(self, name):
@@ -681,6 +682,8 @@ class Service:
         """
         try:
             yield
+        except resting_failover.Held:
+            Service.seat_hold(self, step, seat, None)  # the resting hold has its own status
         except Exception as error:
             Service.seat_hold(self, step, seat, error)
         else:
@@ -1330,6 +1333,7 @@ class Service:
                     self.log('error', step='stale-request-claims', request=path.name, error=repr(error))
         return True  # failed individual settlements retain claims; healthy requests may still run
 
+    @resting_failover.reading_pass()
     def requests(self) -> None:
         """Each request answered alone, in arrival order: none keeps a later one waiting.
 
@@ -1643,6 +1647,7 @@ class Service:
         except (OSError, ShipError) as error:
             self.log('error', step='tell-held', seat=seat, error=repr(error))
 
+    @resting_failover.reading_pass()
     def relaunch_request(self, data):
         """The person's later input retires an own restart; framework work waits for the next quiet break.
 
@@ -1661,6 +1666,7 @@ class Service:
         own = self.request_own = request_queue.proved_own(data['seat'], data, origin)  # the name the seat was found by
         if data.get('origin') is not None and data['origin'] != origin:
             return f'refused: {seat.name} launch changed; request retired without applying'
+        resting_failover.require_clear(seat)
         released = self.released_at(seat, data, origin)
         if not seat.session.human:
             return self.relaunch(seat, bool(data['resume']), released=released,
@@ -1812,6 +1818,7 @@ class Service:
             return ('box', 'the box is not proved empty and idle')
         return None
 
+    @resting_failover.reading_pass()
     def relaunch(self, seat: Seat, resume: bool, *, reading=None, released=None, caller=None) -> str | None:
         from . import fresh_handoff
         from .harness import resume_target
@@ -1827,6 +1834,7 @@ class Service:
         """Explicit recovery alone may interrupt a proven question-only wait. ``released`` is when the seat
         itself released what it has running, by its own proved request: it lifts a hold of the tool state alone,
         at the end of the turn it was given in."""
+        resting_failover.require_clear(seat)
         if reason := recovery.held(seat):
             if self is not None:
                 self.request_wait = ('recovery', reason)
@@ -2135,6 +2143,7 @@ class Service:
             return str(error)
         return None
 
+    @resting_failover.reading_pass()
     def compactions(self) -> None:
         from . import compaction, compaction_alert
         selected = {spec.name for spec in self.ship.seats.values()
@@ -2177,6 +2186,7 @@ class Service:
         from . import fresh_handoff
         return fresh_handoff.request(seat, reason=reason, caller=caller, expected_launch=expected_launch, service=self)
 
+    @resting_failover.reading_pass()
     def fresh_handoffs(self) -> None:
         from . import fresh_handoff
         if not fresh_handoff.folder(self.runtime).is_dir():
@@ -2185,6 +2195,7 @@ class Service:
             with Service.seat_guard(self, 'fresh_handoffs', seat):
                 fresh_handoff.tick(self, seat)
 
+    @resting_failover.reading_pass()
     def fresh_after_order(self) -> None:
         """Read each closing-turn decision once; start fresh outside that read-only view."""
         for seat in self.resolved_seats():
@@ -2203,6 +2214,7 @@ class Service:
         from . import hand_door
         if (getattr(seat, 'withdrawn_pool', None) is not None
                 or seat.session.human or seat.spec.fresh != "after-order" or not seat.is_up
+                or resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR
                 or fresh_handoff.active(seat.ship.runtime, seat.name)
                 or hand_door.blocks_fresh(seat, self.store, getattr(self, 'attempts', None)) or recovery.held(seat)):
             return False
@@ -2648,11 +2660,23 @@ class Service:
             return f"{seat.name} moved to {pool} from {came_from}\n{result.proof}"
         return None
 
+    @resting_failover.reading_pass()
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""
+        from . import relaunch_intent
+
+        runtime = getattr(self, 'runtime', None)
         for seat in self.resolved_seats():
             if getattr(seat, 'withdrawn_pool', None) is not None:
                 continue  # the running launch can receive post while its move is held
+            held = resting_failover.hold_state(seat)
+            attempt = resting_failover.current_attempt(seat)
+            if held is not resting_failover.Hold.CLEAR:
+                if (attempt is not None and attempt.phase == 'launched' and seat.is_up
+                        and (started := seat.launched()) is not None and started.at == attempt.destination):
+                    resting_failover.observe_screen(seat, attempt, Door(seat).screen(), started)
+                # The authentication pass resolves first use from the record before routing resumes.
+                continue
             if getattr(seat.pool, 'paid_by_key', False) and seat.is_up:
                 try:
                     with self.ledger.record_pass() as book:
@@ -2691,16 +2715,21 @@ class Service:
             target = next((p for p in ordered if self.known_open(seat, p)), None)
             if target is None:
                 move_hold.publish_wall(seat, binding, came_from)
-                continue  # every pool is walled or unread: a fact the status line shows, not a move
-            from . import relaunch_intent
+                if (unproved is None and binding is not None and runtime is not None
+                        and (attempt is None or not attempt.matches(seat.launched()))
+                        and resting_failover.eligible_source(seat)
+                        and resting_failover.snapshot(runtime).problem is None):
+                    self._try_resting_failover(seat, ordered, binding, came_from)
+                continue
             from .harness import resume_target
             if unproved is not None:
                 if not self.resumes_on(seat, target):
                     category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
                     move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
                     continue
-                with relaunch_intent.section(self, seat, 'failover', resume=False):
-                    self._fresh_unproved_move(seat, unproved, target, came_from, kind='failover', binding=binding)
+                with contextlib.suppress(resting_failover.Held):
+                    with relaunch_intent.section(self, seat, 'failover', resume=False):
+                        self._fresh_unproved_move(seat, unproved, target, came_from, kind='failover', binding=binding)
                 continue
             try:
                 with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
@@ -2711,6 +2740,8 @@ class Service:
                             raise
                         self._fresh_unproved_move(seat, error, target, came_from, kind='failover', binding=binding)
                         proof = None
+            except resting_failover.Held:
+                continue
             except resume_target.Unproved as error:
                 move_hold.publish_wall(seat, binding, came_from, 'resume-unproved', target=target)
                 self.log("failover", seat=seat.name, pool=target, skipped=str(error))
@@ -2726,6 +2757,94 @@ class Service:
             notice = f"moved to pool {target} from {came_from} at its wall"
             self.report_pool_move(seat, notice)
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
+
+    def _try_resting_failover(self, seat, ordered, binding, came_from):
+        from . import relaunch_intent, unit_hold
+        from .harness import resume_target
+
+        def first_candidate():
+            now = post.now()
+            return next((choice for name in ordered
+                         if (choice := resting_failover.candidate(self, seat, name, now)) is not None), None)
+
+        choice = first_candidate()
+        if choice is None:
+            return
+        attempt = None
+
+        def reserve(target):
+            nonlocal attempt
+            if target is None or relaunch_intent.held(seat):
+                return False
+            if reason := resting_failover.unit_reason(self.ship):
+                category = 'resting-unit-unknown' if reason == unit_hold.UNKNOWN else 'resting-unit'
+                move_hold.publish_wall(seat, binding, came_from, category, target=choice.pool)
+                return False
+            launch = seat.launched()
+            if (launch is None or launch.pool != came_from or launch.harness != seat.spec.harness
+                    or not seat.is_up or move_hold.generation(seat) != binding
+                    or not quota.current_walled(seat, self.ledger) or self._wall_idle_hold(seat) is not None):
+                return False
+            try:
+                if any(proof.data['phase'] != 'queued' or not proof.same_launch(seat)
+                       for proof in pending_delivery.active(seat)):
+                    return False
+            except (OSError, pending_delivery.RecordError):
+                return False
+            screen = Door(seat).screen()
+            # At a crew wall the ordinary delivery carriage may take the queued work.
+            if (screen is None or not idle.at_rest(replace(screen, queued=0))
+                    or seat.record() != target.record or move_hold.generation(seat) != binding):
+                return False
+            current = quota.candidate_pools(seat)
+            if (current != ordered or any(quota.cached_open(self.ship, self.ledger, name, seat) for name in current)
+                    or first_candidate() != choice
+                    or move_hold.generation(seat) != binding):
+                return False
+            attempt = resting_failover.claim(seat, choice, launch.at)
+            return attempt is not None
+
+        launch_error = None
+        try:
+            with seat._lifecycle(automatic=True, resting_clear=True), relaunch_intent.section(self, seat, relaunch_intent.RESTING, resume=True):
+                try:
+                    proof = seat._failover_to(choice.pool, reserve=reserve)
+                    if proof is None:
+                        return
+                    launch = seat.launched()
+                    if launch is None or launch.pool != choice.pool or not seat.is_up:
+                        raise ShipError('the resting subscription did not start')
+                except (OSError, ShipError, TmuxError, sqlite3.DatabaseError) as error:
+                    launch_error = error
+                    if attempt is not None:
+                        launch = seat.launched()
+                        destination = launch.at if launch is not None and launch.pool == choice.pool else None
+                        if not resting_failover.outcome(self.ship.runtime, attempt, 'failed', destination):
+                            raise ShipError('the resting subscription failure could not be recorded') from error
+                else:
+                    if not resting_failover.outcome(self.ship.runtime, attempt, 'launched', launch.at):
+                        raise ShipError('the resting subscription launch outcome could not be recorded')
+        except (OSError, ShipError, TmuxError, sqlite3.DatabaseError) as error:
+            launch_error = error
+        if isinstance(launch_error, resting_failover.Held):
+            return
+        if isinstance(launch_error, lifecycle.Busy):
+            move_hold.publish_wall(seat, binding, came_from, 'lifecycle-busy', target=choice.pool)
+            return
+        if isinstance(launch_error, resume_target.Unproved):
+            move_hold.publish_wall(seat, binding, came_from, 'resume-unproved', target=choice.pool)
+            return
+        if launch_error is not None:
+            move_hold.publish_wall(seat, binding, came_from, 'outcome-unknown', target=choice.pool)
+            self.log(relaunch_intent.RESTING, seat=seat.name, pool=choice.pool, outcome='held')
+            return
+        started = replace(attempt, phase='launched', destination=launch.at)
+        if resting_failover.observe_screen(seat, started, Door(seat).screen(), launch):
+            self.log(relaunch_intent.RESTING, seat=seat.name, pool=choice.pool, outcome='login')
+            return
+        notice = f"moved to resting pool {choice.pool} from {came_from} at its wall; destination usage unverified"
+        self.report_pool_move(seat, notice)
+        self.log(relaunch_intent.RESTING, seat=seat.name, pool=choice.pool, came_from=came_from, proof=proof)
 
     def _back_from_key(self, seat: Seat) -> None:
         """A seat on a key that is not spent goes back, when idle, to the first subscription before it in its list that
@@ -2745,6 +2864,8 @@ class Service:
         try:
             with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
                 proof = seat.failover_to(target)
+        except resting_failover.Held:
+            return
         except resume_target.Unproved as error:
             self.log("failover", seat=seat.name, pool=target, skipped=str(error))  # it stays on its key, which still works
             return

@@ -12,6 +12,7 @@ from quarterdeck.seat import Seat
 from quarterdeck.ship import ShipError
 from tests.unit.refusal_ship import OTHER, REFUSED, World
 from tests.unit.thread_reading import index_rows, thread_text
+from .resting_attempts import UNSETTLED, save_attempt, settle
 
 
 @pytest.fixture
@@ -412,3 +413,22 @@ def test_an_inbox_render_pass_reads_each_journal_once_and_the_ship_at_most_once(
     assert len(ships) <= 1, 'the ship read at most once in the pass'
     text = (world.svc.runtime / 'post' / 'inbox' / 'worker.md').read_text()
     assert refusal.UNTOLD in text and refused.body not in text, 'the stub is the same as without the pass context'
+
+
+@pytest.mark.parametrize('phase', UNSETTLED)
+def test_refusal_notifies_but_waits_for_an_intentless_resting_move(world, phase):
+    world.launch('worker')
+    seat = world.seat('worker')
+    refused = world.order('worker', 'Invented work the provider refused.')
+    world.turn('worker', refused, error=REFUSED)
+    _, attempt = save_attempt(seat, phase)
+    for _ in range(2):
+        world.svc.refusals()
+        assert not world.fresh
+        [event] = refusal.load(world.svc.runtime, seat.name)
+        assert event['stage'] == 'claimed'
+        assert refused.id in refusal.excluded(world.svc.runtime, seat.name)
+        assert [message.re for message in notices(world, 'tester')] == [refused.id]
+    settle(seat, attempt)
+    world.svc.refusals()
+    assert len(world.fresh) == 1 and len(notices(world, 'tester')) == 1

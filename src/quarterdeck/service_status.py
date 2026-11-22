@@ -33,7 +33,7 @@ def inputs(ship):
     the periodic refresh (the ship's status_refresh, 30 s by default); every alert the line carries is
     either in a file kept here or as slow as a screen.
     """
-    from . import operational_notices
+    from . import operational_notices, resting_failover
 
     runtime = ship.runtime
     paths = [ship.file]
@@ -44,6 +44,7 @@ def inputs(ship):
         'hwa', 'pool-usage', 'proven/check-outcomes', 'server-recovery.json',
         'retirement-status.json', 'pool-forecast-alerts.json', 'seat-holds.json', 'pr-screen/screening', 'post/relaunch',
         'locks/service-stop.json',
+        resting_failover.FILE,
         operational_notices.DIRECTORY,
     )]
     from . import trusted_files

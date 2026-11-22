@@ -15,6 +15,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from . import resting_failover
 from . import (__version__, check, copy_state, daily_live, doctor, drill, harness as harnesses, install, ledger, post, relaunch_intent, sandbox, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .output import Reading
@@ -361,8 +362,6 @@ def cmd_up(args: argparse.Namespace) -> list[str] | str:
     ship = load_ship(args)
     if args.seat:
         ship.seat(args.seat)
-        from . import write_bound
-        write_bound.lift(ship.runtime, args.seat, f'qd up by {caller_of(ship)}')  # the person's word for this seat
     elif getattr(args, 'pool', None):
         raise ShipError('--pool names one launch: give the seat, as in qd up <seat> --pool <choice>')
     proofs, reload_required = install.prepare_up(ship)
@@ -371,14 +370,51 @@ def cmd_up(args: argparse.Namespace) -> list[str] | str:
     if delegated is not None:
         return proofs + delegated
     if args.seat:
-        proof = seat_of(ship, args.seat, launching=True).up(resume=not args.fresh, pool=getattr(args, 'pool', None))
-        return proofs + [proof, service.start(ship)]
+        seat = seat_of(ship, args.seat, launching=True)
+        return proofs + _up_by_name(seat, resume=not args.fresh, pool=getattr(args, 'pool', None))
     tmux = Tmux.for_ship(ship)
     ups = seatmod.bring_up(ship, tmux)
     from . import server_recovery
     if cleared := server_recovery.clear_by_person(ship.runtime):  # a person brought the whole ship up
         ups.append(cleared)
     return proofs + ups + [service.start(ship)] + ([where(tmux)] if tmux.ship else [])
+
+
+@resting_failover.reading_pass()
+def _up_by_name(seat: seatmod.Seat, *, resume: bool, pool: str | None) -> list[str]:
+    from . import compaction, write_bound
+
+    runtime = seat.ship.runtime
+    with lifecycle.claim(runtime, seat.name, wait=lifecycle.explicit_wait()):
+        snapshot = resting_failover.snapshot(runtime)
+        if snapshot.problem == 'busy' and resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
+            raise resting_failover.Held(f'{seat.name}: {resting_failover.reason(seat, resting_failover.Hold.UNKNOWN)}')
+        previous = seat.launched()
+        attempt = snapshot.rows.get(seat.name)
+        intent = relaunch_intent.pending_resting(runtime, seat.name)
+        pane = seat.pane()
+        live = pane is not None and not pane.dead
+        if live:
+            already_up = f'{seat.name} already up in {pane.id}'
+            if attempt is not None:
+                if not attempt.matches(previous):
+                    attempt = None
+                elif attempt.phase == 'launched':
+                    return [already_up]
+        resting_failover.refuse_release(seat, previous, attempt)
+        if live and pool is not None and attempt is not None and attempt.phase != 'releasing':
+            raise ShipError(f'{seat.name} is up in {pane.id}; qd restart {seat.name} relaunches it')
+        with resting_failover.releasing(seat, previous, attempt, live=live, caller=caller_of(seat.ship)):
+            write_bound.lift(runtime, seat.name, f'qd up by {caller_of(seat.ship)}')
+            compaction.disarm(seat, adopt_successor=True)
+            if live and ((attempt is not None and attempt.phase == 'releasing')
+                         or (pool is None and resting_failover.hold_state(seat) is resting_failover.Hold.HELD)):
+                proof = already_up
+            else:
+                proof = seat._up_with_pool_choice(resume, pool=pool, fresh_after_order=True)
+        if seat.is_up and intent:
+            relaunch_intent.clear(runtime, seat.name, 'qd up')
+    return [proof, service.start(seat.ship)]
 
 
 def where(tmux: Tmux) -> str:
@@ -511,9 +547,12 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None, re
                         'running; nothing asked')
     word = dict(release=True) if release else {}
     from . import write_bound
+    # Working seats must be able to queue while the claim is held. The transition checks again under its claim.
+    resting_failover.require_clear(seat)
     write_bound.lift(ship.runtime, seat.name, f"qd {'restart' if resume else 'fresh'} by {caller_of(ship)}")
     if not resume:
-        relaunch_intent.clear(ship.runtime, seat.name, f'qd fresh by {caller_of(ship)}')  # the person's own relaunch
+        relaunch_intent.clear(ship.runtime, seat.name, f'qd fresh by {caller_of(ship)}', keep_resting=True)
+
     def ask_service():
         origin = request_queue.launch_binding(seat)
         try:

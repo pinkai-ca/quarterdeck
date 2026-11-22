@@ -25,6 +25,7 @@ from .door import Door, Reading
 from .harness.capabilities import selection_label
 from .harness import reading_scope
 from .harness.base import record_fingerprint
+from . import resting_failover
 from .seat import SEAT_HOLDS, Seat, SelectionChanging, UnresolvedSeat, launch_pool_refusal, leftover_seats, seats
 from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
@@ -371,6 +372,7 @@ def service_state(runtime: Path, *, now=None) -> str:
 @post.reading_pass()
 @reading_scope.reading_pass()
 @record_owner.reader_pass()
+@resting_failover.reading_pass()
 def status_reading(ship: Ship, tmux: Tmux, *, store=None, collected=None) -> dict:
     from .harness import claude_extra_usage as extra_usage
     store, post_held = _post_listing(ship, post.Store(ship.runtime) if store is None else store)
@@ -389,7 +391,10 @@ def status_reading(ship: Ship, tmux: Tmux, *, store=None, collected=None) -> dic
             "programs": programs, "programs_error": program_error,
             "check_outcomes": outcomes[0], "check_outcome_errors": outcomes[1],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
-            "requests": requests, "facts": (collected if collected is not None else
+            "requests": requests,
+            "resting_provisional": resting_failover.provisional_status(
+                ship, (seat for seat in selected if not isinstance(seat, UnresolvedSeat))),
+            "facts": (collected if collected is not None else
                 facts(ship, tmux, store=store, post_held=post_held, check_reading=outcomes)),
             "usage": usage, "extra_usage": extra_usage.readings(ship),
             **providers.identities(ship)}
@@ -443,6 +448,7 @@ def render_table(data: dict) -> list[str]:
             rows.append(f"  {r.compaction}")
         if r.wake:
             rows.append(f"  {r.wake}")
+    rows += data.get('resting_provisional', [])
     rows += data.get('key_pools', [])
     # Each program's last use and its check outcome: detail, before the open orders.
     for program in data.get('programs', []):
@@ -1146,6 +1152,7 @@ def _replay(reading: Collection) -> dict:
     return lists
 
 
+@resting_failover.reading_pass()
 def _post_fields(ship, store, attempts, post_held, records, latest, waiting, reading: Collection) -> dict:
     """Every Facts field read from the post alone, beside the seats' replayed appends."""
     from . import cascade_runtime, group_post, relaunch_intent, structure_outcome, fleet_post
@@ -1153,6 +1160,7 @@ def _post_fields(ship, store, attempts, post_held, records, latest, waiting, rea
     oldest = min(waiting, key=lambda message: message.at, default=None)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     state = service_state(ship.runtime)
+    resolved = {seat.name: seat for seat in reading.selected if not isinstance(seat, UnresolvedSeat)}
     return dict(
         service=state,
         accounting=accounting_reading(ship.runtime, state),  # said by the service's state, read with it
@@ -1164,8 +1172,7 @@ def _post_fields(ship, store, attempts, post_held, records, latest, waiting, rea
         unsettled=_unsettled(store, latest),
         queued=len(queued),
         oldest_queued=int(max(((now - a.when).total_seconds() for a in queued), default=0) // 60),
-        relaunches=relaunch_intent.status(ship, {seat.name: seat for seat in reading.selected
-                                                 if not isinstance(seat, UnresolvedSeat)}),
+        relaunches=relaunch_intent.status(ship, resolved) + resting_failover.status(ship, resolved),
         post_held=list(post_held),
         group_held=group_post.holds(ship.runtime),
         drop_held=post.drop_alarms(ship.runtime),

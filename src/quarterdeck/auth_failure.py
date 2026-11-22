@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import json
 import stat
 
-from . import credential, durable, post_dir, turn_failure
+from . import credential, durable, post_dir, resting_failover, turn_failure
 from .harness.types import AUTHENTICATION
 from .ship import ShipError
 
@@ -239,6 +239,7 @@ def _attempt(seat):
     return dict(data, attempts=attempts)
 
 
+@resting_failover.reading_pass()
 def run(service):
     """Service only. Human seats are named by readings/alarms and never mutated here."""
     for seat in service.resolved_seats():
@@ -246,10 +247,19 @@ def run(service):
             continue
         step = 'the resume journal'
         try:
-            attempt = _attempt(seat)
+            hold = resting_failover.hold_state(seat)
+            move = resting_failover.current_attempt(seat)
+            provisional = move is not None and move.phase == 'launched' and move.matches(seat.launched())
+            if hold is not resting_failover.Hold.CLEAR and not provisional:
+                continue
             step = "the seat's record"
             record = seat.record()
             state = seat.harness.state(record) if record is not None else None
+            if provisional:
+                resting_failover.observe_record(seat, move, state)
+                if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
+                    continue
+            attempt = _attempt(seat)
             failure = getattr(state, 'failure', None)
             if failure is None or failure.kind != AUTHENTICATION:
                 # Only a genuine later completed success ends an attempted episode.

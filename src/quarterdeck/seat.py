@@ -31,6 +31,7 @@ from pathlib import Path
 
 from . import providers, durable, harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
 from . import carriage as carriagemod
+from . import resting_failover
 from . import key_launch, keyfile
 from .harness.base import Harness, Join, Launch, _version_in_runtime
 from .harness.capabilities import validate_selection
@@ -564,7 +565,7 @@ class Seat:
 
     def failover_to(self, pool: str, *, ready=None) -> str | None:
         """Preserve the source before selecting another program or paying pool."""
-        with self._lifecycle(automatic=ready is not None):
+        with self._lifecycle(automatic=ready is not None, resting_clear=True):
             if ready is not None:
                 if not ready():
                     return None
@@ -572,7 +573,7 @@ class Seat:
                 compaction.disarm(self, adopt_successor=True)
             return self._failover_to(pool)
 
-    def _failover_to(self, pool: str) -> str:
+    def _failover_to(self, pool: str, *, reserve=None) -> str | None:
         from .recovery import require_clear
         require_clear(self)
 
@@ -581,6 +582,11 @@ class Seat:
         same_program = selected.harness == self.spec.harness
         resume = same_program and self.resumable()
         target = self._require_resume(selected) if resume else None
+        if reserve is not None:
+            if not reserve(target):
+                return None
+            from . import compaction
+            compaction.disarm(self, adopt_successor=True)
         from . import relaunch_intent
         relaunch_intent.record_destination(self, resume, pool=pool, harness=selected.harness, target=target)
         self.record()
@@ -952,7 +958,7 @@ class Seat:
     # -- the one relaunch path -----------------------------------------------------------
 
     @contextmanager
-    def _lifecycle(self, *, automatic: bool = False, wait: bool = False) -> Iterator[None]:
+    def _lifecycle(self, *, automatic: bool = False, wait: bool = False, resting_clear: bool = False) -> Iterator[None]:
         """One caller owns the whole seat transition, including compound relaunches.
 
         The inode is outside removable seat homes. An ended check can retire it
@@ -962,6 +968,8 @@ class Seat:
 
         seconds = 0 if automatic else lifecycle.WAIT_SECONDS if wait else lifecycle.explicit_wait()
         with lifecycle.claim(self.ship.runtime, self.name, wait=seconds):
+            if resting_clear:
+                resting_failover.require_clear(self)
             if not automatic:
                 from . import compaction
                 compaction.disarm(self, adopt_successor=True)
@@ -970,7 +978,7 @@ class Seat:
     def up(self, resume: bool = True, *, pool: str | None = None) -> str:
         """Bring the seat up. A seat with declared choices, being down, launches on ``launch_choice``, or on
         ``pool`` for this one launch; a move to another program starts it fresh, as failover does."""
-        with self._lifecycle():
+        with self._lifecycle(resting_clear=True):
             return self._up_with_pool_choice(resume, pool=pool, fresh_after_order=True)
 
     def _up_with_pool_choice(self, resume: bool, *, pool: str | None = None, fresh_after_order: bool = False,
@@ -1853,7 +1861,7 @@ class Seat:
 
     def restart(self) -> str:
         """Relaunch with resume: the conversation continues in a new process."""
-        with self._lifecycle():
+        with self._lifecycle(resting_clear=True):
             self._accept_pool()
             from .recovery import require_clear
             require_clear(self)
@@ -1871,9 +1879,10 @@ class Seat:
                        " · fresh: a record of a launch that screened a pull request is still in its home"
                        if screened else ""))
 
+    @resting_failover.reading_pass()
     def fresh(self, *, explicit: bool = False) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
-        with self._lifecycle():
+        with self._lifecycle(resting_clear=True):
             if explicit and self.withdrawn_pool is not None:
                 pool, _ = self.launch_choice()
                 proof = self._fresh_on_pool(pool)
@@ -1885,6 +1894,7 @@ class Seat:
 
     def _fresh(self) -> str:
         """Start fresh under the caller's lifecycle claim."""
+        resting_failover.require_clear(self)
         self._accept_pool()
         from .recovery import require_clear
         require_clear(self)
@@ -1897,6 +1907,7 @@ class Seat:
 
     def _fresh_on_pool(self, pool: str) -> str:
         """A new conversation on a pool the caller already chose. The caller holds the lifecycle claim."""
+        resting_failover.require_clear(self)
         from .recovery import require_clear
         require_clear(self)
         from . import relaunch_intent
@@ -2344,22 +2355,31 @@ def seats(ship: Ship, tmux: Tmux, strict: bool = True, *, launching: bool = Fals
     return [read_seat(ship, spec, tmux) for spec in ship.seats.values()]
 
 
+@resting_failover.reading_pass()
 def bring_up(ship: Ship, tmux: Tmux) -> list[str]:
-    """Every seat marked up, resuming what has a record; the rest are left as declared."""
+    """Bring up unheld seats marked up, resuming what has a record."""
     proofs = [shipmod.fence(ship)]
     if not ship.is_repository:
         proofs.append(f"{ship.folder.name} is not its own repository: its declaration travels with the folder above")
     from . import write_bound
     for seat in seats(ship, tmux, launching=True):
-        if seat.spec.up and not seat.is_up and (held := write_bound.reason(ship.runtime, seat.name)):
-            proofs.append(f"{seat.name} left down: {held}")  # only a word for this seat lifts it
-        elif seat.spec.up and not seat.is_up:
-            try:
-                proofs.append(seat.up(resume=True))
-            except shipmod.KeyRefused as refused:
-                proofs.append(str(refused))  # that seat alone stays down; the rest of the ship comes up
-        elif seat.is_up:
+        if seat.is_up:
             proofs.append(f"{seat.name} already up in {seat.pane().id}")
+        elif seat.spec.up:
+            try:
+                with seat._lifecycle():
+                    pane = seat.pane()
+                    if pane is not None and not pane.dead:
+                        proof = f"{seat.name} already up in {pane.id}"
+                    elif (state := resting_failover.hold_state(seat)) is not resting_failover.Hold.CLEAR:
+                        proof = f"{seat.name} left down: {resting_failover.reason(seat, state)}"
+                    elif held := write_bound.reason(ship.runtime, seat.name):
+                        proof = f"{seat.name} left down: {held}"  # only a word for this seat lifts it
+                    else:
+                        proof = seat._up_with_pool_choice(True, fresh_after_order=True)
+            except shipmod.KeyRefused as refused:
+                proof = str(refused)  # that seat alone stays down; the rest of the ship comes up
+            proofs.append(proof)
     return proofs
 
 

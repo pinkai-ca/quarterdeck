@@ -51,7 +51,9 @@ from .ship import ShipError
 GRACE = 30.0
 LIMIT = 4096  # an intent is a few hundred bytes; a larger file is not one
 RELAUNCHING, RELEASED, FINISHING, FAILED = 'relaunching', 'released', 'finishing', 'failed'
-KINDS = frozenset({'after-order', 'relaunch', 'refusal', 'failover', 'select', 'compaction', 'server-recovery', 'fresh-handoff'})
+RESTING = 'resting-failover'
+KINDS = frozenset({'after-order', 'relaunch', 'refusal', 'failover', 'select', 'compaction',
+                   'server-recovery', 'fresh-handoff', RESTING})
 ROUTING = frozenset({'after-order', 'relaunch', 'refusal', 'fresh-handoff'})
 _active = ContextVar('relaunch_intent', default=None)
 _selection = ContextVar('relaunch_pool_selection', default=None)
@@ -177,7 +179,7 @@ def _entries(runtime, declared):
     return found
 
 
-def clear(runtime, seat: str, who: str) -> bool:
+def clear(runtime, seat: str, who: str, *, keep_resting: bool = False) -> bool:
     """A later word that the seat stays as it is: its intent goes, logged as cleared by ``who``. A link is left."""
     target = path(runtime, seat)
     try:
@@ -191,6 +193,8 @@ def clear(runtime, seat: str, who: str) -> bool:
             kind = json.loads(post_dir.read_bytes(target, limit=LIMIT)).get('kind')
         except (OSError, ShipError, ValueError, AttributeError):
             kind = None
+        if keep_resting and kind == RESTING:
+            return False
         try:
             post_dir.remove(target)
         except FileNotFoundError:
@@ -200,7 +204,7 @@ def clear(runtime, seat: str, who: str) -> bool:
 
 
 def clear_all(ship, who: str, *, keep_server_choices: bool = False) -> list[str]:
-    """Clear for a word about the whole ship, retaining unfinished choices at a server recovery stop."""
+    """Clear for a word about the whole ship, retaining unfinished choices and resting holds at a server stop."""
     return [name for name in sorted(ship.seats) if not (keep_server_choices and pending_server_choice(ship, name))
             and clear(ship.runtime, name, who)]
 
@@ -258,7 +262,7 @@ def _destination_required(spec, intent) -> bool:
 
 
 def pending_server_choice(ship, name: str) -> bool:
-    """A new server pass must leave an interrupted pool choice to its intent's recovery."""
+    """Defer interrupted server choices and resting moves to their per-seat intents."""
     target = path(ship.runtime, name)
     try:
         if post_dir.mode(target) is None:
@@ -266,12 +270,32 @@ def pending_server_choice(ship, name: str) -> bool:
         intent = read(ship.runtime, target.name, ship.seats)
     except (OSError, ShipError, TypeError):
         return True  # an unreadable intent cannot prove a new choice is safe
-    return intent['kind'] == 'server-recovery' and (
-        'destination' in intent or _destination_required(ship.seats[name], intent))
+    return intent['kind'] == RESTING or (intent['kind'] == 'server-recovery' and (
+        'destination' in intent or _destination_required(ship.seats[name], intent)))
+
+
+def pending_resting(runtime, name: str) -> bool:
+    target = path(runtime, name)
+    try:
+        return post_dir.mode(target) is not None and read(runtime, target.name, {name})['kind'] == RESTING
+    except (OSError, ShipError):
+        return False  # status reports unreadable intents separately
 
 
 def _intent_lock(runtime, seat):
     return ship_locks.held(ship_locks.path(runtime, 'relaunch', f'{seat}.lock'), f'{seat}: relaunch intent')
+
+
+def _hold_resting(runtime, intent):
+    seat = intent['seat']
+    target = path(runtime, seat)
+    with _intent_lock(runtime, seat):
+        if post_dir.mode(target) is None:
+            return  # a person's later word cleared it
+        current = read(runtime, target.name, {seat})
+        if (current['kind'] == RESTING and current['phase'] != FAILED
+                and current['owner'] == intent['owner'] and current['at'] == intent['at']):
+            _write(runtime, {**current, 'phase': FAILED})
 
 
 def record_destination(seat, resume: bool, *, pool: str | None = None, harness: str | None = None,
@@ -313,7 +337,8 @@ def explicit_pool(seat, pool: str) -> str | None:
 
 @contextmanager
 def section(service, seat, kind: str, *, resume, selected_pool=None):
-    with selecting_pool(seat, selected_pool), _section(service, seat, kind, resume=resume):
+    from . import resting_failover
+    with resting_failover.reading_pass(), selecting_pool(seat, selected_pool), _section(service, seat, kind, resume=resume):
         yield
 
 
@@ -321,32 +346,37 @@ def section(service, seat, kind: str, *, resume, selected_pool=None):
 def _section(service, seat, kind: str, *, resume):
     """One relaunch of ``seat``: intent and log line before the down, log line after the up, a stop held between.
 
-    Outside a running service (a person's qd, a check, a test) it does nothing and reads nothing. ``resume`` is
-    the initial resume mode: a bool, or a callable read only when the intent is written. A seat that selects a
+    Outside a running service the hold check still applies, without a service intent. ``resume`` is the
+    initial resume mode: a bool, or a callable read only when the intent is written. A seat that selects a
     destination records its effective mode and destination before retirement. ``service`` logs the lines; without
     one they go to the service's log directly.
     """
-    if shutdown._controller is None:
+    from . import resting_failover
+    controller = _controller(seat.ship.runtime) if shutdown._controller is not None else None
+    if controller is None:
+        if kind != RESTING:
+            resting_failover.require_clear(seat)
         yield
         return
     runtime = seat.ship.runtime
-    controller = _controller(runtime)
-    if controller is None:
-        yield
-        return
     log = service.log if service is not None else (lambda event, **data: _log(runtime, event, **data))
     if controller.requested and not (controller.delivering or controller.relaunching):
         raise SystemExit(0)  # a stop already asked: nothing new is started
     previous = controller.relaunching
     controller.relaunching = True  # from here the handler holds a stop until the section ends
     try:
-        launched = seat.launched()
-        intent = dict(version=1, seat=seat.name, kind=kind, resume=bool(resume() if callable(resume) else resume),
-                      at=_now(), phase=RELAUNCHING, owner=controller.owner,
-                      before=launched.at if launched is not None else None)
-        if _needs_destination(getattr(seat, 'spec', None), kind):
-            intent['needs_destination'] = True  # even if its choices change before recovery
-        _write(runtime, intent)
+        with _intent_lock(runtime, seat.name):
+            if kind != RESTING:
+                resting_failover.require_clear(seat)
+            elif pending_resting(runtime, seat.name):
+                raise resting_failover.Held(f'{seat.name}: {resting_failover.reason(seat, resting_failover.Hold.HELD)}')
+            launched = seat.launched()
+            intent = dict(version=1, seat=seat.name, kind=kind, resume=bool(resume() if callable(resume) else resume),
+                          at=_now(), phase=RELAUNCHING, owner=controller.owner,
+                          before=launched.at if launched is not None else None)
+            if _needs_destination(getattr(seat, 'spec', None), kind):
+                intent['needs_destination'] = True  # even if its choices change before recovery
+            _write(runtime, intent)
         log('relaunch', seat=seat.name, kind=kind, phase='begin')
         outcome = 'failed'
         active = _active.set((seat, intent))
@@ -355,10 +385,13 @@ def _section(service, seat, kind: str, *, resume):
             outcome = 'done'
         except BaseException as error:
             outcome = f'failed: {type(error).__name__}'
+            if kind == RESTING:
+                _hold_resting(runtime, intent)
             raise
         finally:
             _active.reset(active)
-            _remove(runtime, seat.name)
+            if kind != RESTING or outcome == 'done':
+                _remove(runtime, seat.name)
             log('relaunch', seat=seat.name, kind=kind, phase=outcome)
     finally:
         controller.relaunching = previous
@@ -397,9 +430,9 @@ def release(runtime, owner) -> list[str]:
             _write(runtime, data)
         except (OSError, ShipError, ValueError):
             continue
+        next_step = f'it needs a human (qd up {seat})' if data.get('kind') == RESTING else 'the next service finishes its up'
         _log(runtime, 'relaunch-released', seat=seat, kind=data.get('kind'), pid=owner.get('pid'),
-             detail=f'the stop waited {GRACE:g}s for the relaunch and killed the service; the next service '
-                    'finishes its up')
+             detail=f'the stop waited {GRACE:g}s for the relaunch and killed the service; {next_step}')
         released.append(seat)
     return released
 
@@ -421,7 +454,13 @@ def _had_up(seat, data) -> bool:
 
 def finish(service) -> None:
     """Each intent a gone service left: finished once through Seat._up, cleared, or held for a person; all logged."""
-    from . import lifecycle
+    from . import resting_failover
+    with resting_failover.reading_pass():
+        _finish(service)
+
+
+def _finish(service) -> None:
+    from . import lifecycle, resting_failover
 
     runtime = service.ship.runtime
     refused = getattr(service, 'relaunch_refused', None)
@@ -447,6 +486,9 @@ def finish(service) -> None:
                     continue  # changed under the claim: the next pass reads it again
                 if current != data:
                     continue
+                if data['kind'] == RESTING:
+                    _hold_resting(runtime, data)
+                    continue  # a saved launch does not prove its outcome was recorded
                 if data['kind'] == 'fresh-handoff':
                     _remove(runtime, seat.name)
                     service.log('relaunch-intent', seat=seat.name, kind=data['kind'], outcome='cleared',
@@ -459,6 +501,8 @@ def finish(service) -> None:
                     continue
                 if data['phase'] in (FINISHING, FAILED) or held(seat) is not None:
                     continue  # tried once already, or held: a person decides, and the status line says so
+                if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
+                    continue
                 destination = data.get('destination')
                 if destination is None and _destination_required(getattr(seat, 'spec', None), data):
                     reason = 'its destination pool was not recorded'
@@ -516,6 +560,21 @@ def status(ship, seats=None) -> list[str]:
         seat = data['seat']
         if data['phase'] == RELAUNCHING and not _gone(data['owner']):
             continue  # a relaunch in progress
+        if data['kind'] == RESTING:
+            from . import resting_failover
+            member = seats.get(seat) if seats else None
+            who = 'a human'
+            try:
+                if (member is not None and (attempt := resting_failover.current_attempt(member)) is not None
+                        and attempt.matches(member.launched())):
+                    if attempt.phase == 'launched':
+                        continue  # the attempt supplies the more precise status
+                    if attempt.needs_desk:
+                        who = 'the desk'
+            except (OSError, ShipError):
+                pass
+            lines.append(f'{seat}: resting move outcome unknown, needs {who} (qd up {seat})')
+            continue
         reason = None
         if seats and seat in seats:
             reason = held(seats[seat])

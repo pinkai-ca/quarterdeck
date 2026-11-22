@@ -18,6 +18,8 @@ SELECTED = {
     'lifecycle-busy': 'another lifecycle transition is in progress',
     'resume-unproved': 'its conversation could not be identified',
     'outcome-unknown': 'move outcome unknown',
+    'resting-unit': 'configured user unit is running or its timer is due within five minutes',
+    'resting-unit-unknown': 'configured user unit state unreadable; needs a human',
 }
 
 

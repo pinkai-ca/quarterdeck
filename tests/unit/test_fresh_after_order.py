@@ -12,6 +12,7 @@ from quarterdeck.harness.base import Screen, State
 from quarterdeck.seat import Launched, Seat
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship
 from .test_opencode_record import AT, MS, database, session, user, assistant, part
+from .resting_attempts import UNSETTLED, save_attempt, settle
 
 
 def at(ms):
@@ -315,3 +316,17 @@ def test_a_hand_whose_question_another_answered_first_does_not_start_fresh(worke
     w = worker
     asked(w, first_answer_by="operator")
     held(w)
+
+
+@pytest.mark.parametrize('phase', UNSETTLED)
+def test_ready_after_order_waits_for_an_intentless_resting_move(worker, phase):
+    w = worker
+    w.record.begin()
+    w.record.finish()
+    assert w.svc._fresh_after_order_ready(w.seat)
+    _, attempt = save_attempt(w.seat, phase)
+    assert not w.svc._fresh_after_order_ready(w.seat)
+    w.svc.fresh_after_order()
+    assert not w.fresh
+    settle(w.seat, attempt)
+    released_once(w)

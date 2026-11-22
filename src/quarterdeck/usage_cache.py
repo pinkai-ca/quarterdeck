@@ -5,7 +5,7 @@ Weekly accepted numeric readings also feed the bounded forecast history;
 rejected numeric values are not stored.
 """
 
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -13,6 +13,7 @@ import math
 import sqlite3
 
 from .harness.limits import Usage, Window
+from .harness.claude_sign_in import ExpiredAccess
 
 from .quota import ACCESS_LOGIN_NEEDED, ACCESS_TOKEN_MISSING, ACCESS_WAITING_FOR_RENEWAL, reset_text
 
@@ -138,6 +139,10 @@ class UsageCache:
             return
         from .usage_forecast import SCHEMA
         db.execute(SCHEMA)
+        db.execute("""CREATE TABLE IF NOT EXISTS usage_expired_access (
+                   pool TEXT PRIMARY KEY, account TEXT NOT NULL, generation TEXT NOT NULL,
+                   started TEXT NOT NULL, attempted TEXT NOT NULL, readings TEXT NOT NULL,
+                   prior_errors TEXT NOT NULL)""")
         columns = {r[1] for r in db.execute("PRAGMA table_info(pools)")}
         for name in ("attempted_at", "error"):
             if name not in columns:
@@ -156,6 +161,7 @@ class UsageCache:
 
     def record(self, pool: str, usage: Usage, attempted_at: datetime) -> str | None:
         previous = {r.window: r for r in self.rows(pool)}
+        self._retain_expiry(pool, list(previous.values()), usage, attempted_at)
         grouped: dict[str, list[Window]] = {}
         for window in usage.windows:
             grouped.setdefault(window.name, []).append(window)
@@ -210,6 +216,64 @@ class UsageCache:
         if not grouped and not errors:
             errors.append("usage windows unavailable")
         return "; ".join(dict.fromkeys(errors)) or None
+
+    def _retain_expiry(self, pool, rows, usage, at):
+        if (not isinstance(usage, ExpiredAccess) or usage.identity is None or usage.windows
+                or usage.error != ACCESS_WAITING_FOR_RENEWAL or usage.called is not False
+                or usage.retry_after is not None or usage.diagnostics):
+            self.db.execute("DELETE FROM usage_expired_access WHERE pool=?", (pool,))
+            return
+        prior = self.expired_access(pool, usage.identity, rows, at)
+        if prior is None:
+            last = self._latest(pool)
+            expected = "; ".join(f"{row.window}: {row.error}" for row in rows if row.error) or None
+            # Only a complete prior attempt, or errors attributable to individual windows,
+            # can establish the baseline. Global errors and diagnostics have unknown scope.
+            previous_at = parse(last[0]) if last is not None else None
+            if (last is not None and (last[1] != expected or previous_at is None or previous_at > at)
+                    or rows and last is None):
+                self.db.execute("DELETE FROM usage_expired_access WHERE pool=?", (pool,))
+                return
+            bad = [row.window for row in rows if (not row.current(at)
+                   or parse(row.attempted_at) != previous_at or parse(row.read_at) > previous_at)]
+            prior = at, bad
+        started, bad = prior
+        # This write and the error overwrite are in the same usage transaction.
+        self.db.execute("INSERT OR REPLACE INTO usage_expired_access VALUES (?,?,?,?,?,?,?)",
+                        (pool, *usage.identity, started.isoformat(), at.isoformat(),
+                         self._measurements(rows), json.dumps(bad)))
+
+    def _latest(self, pool):
+        return self.db.execute("SELECT at,error FROM usage_reads WHERE pool=?", (pool,)).fetchone()
+
+    @staticmethod
+    def _measurements(rows):
+        data = [values[:9] + values[11:] for values in map(astuple, rows)]
+        return hashlib.sha256(json.dumps(data, separators=(",", ":")).encode()).hexdigest()
+
+    def expired_access(self, pool, identity, rows, now):
+        """Recover pre-expiry evidence only while the exact failed read and its measurements stand."""
+        saved = self.db.execute("SELECT started,attempted,readings,prior_errors FROM usage_expired_access "
+                                "WHERE pool=? AND account=? AND generation=?", (pool, *identity)).fetchone()
+        if saved is None:
+            return None
+        started, attempted = map(parse, saved[:2])
+        error = f"{MISSING}: {ACCESS_WAITING_FOR_RENEWAL}"
+        verdict = "; ".join([ACCESS_WAITING_FOR_RENEWAL, *(f"{row.window}: {error}" for row in rows)])
+        last = self._latest(pool)
+        if (started is None or attempted is None or not started <= attempted <= now
+                or last is None or parse(last[0]) != attempted or last[1] != verdict
+                or any(parse(row.attempted_at) != attempted or row.error != error for row in rows)
+                or saved[2] != self._measurements(rows)):
+            return None
+        try:
+            bad = json.loads(saved[3])
+        except (TypeError, ValueError):
+            return None
+        names = {row.window for row in rows}
+        if not isinstance(bad, list) or any(type(name) is not str or name not in names for name in bad):
+            return None
+        return started, bad
 
 
     def reconcile(self, pool, previous, grouped, accepted, usage, attempted_at) -> set[str]:

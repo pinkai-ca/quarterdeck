@@ -8,23 +8,29 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+from multiprocessing import get_context
 import os
+import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from quarterdeck import credential, jail_end, lifecycle, post, relaunch_intent, shutdown, trusted_files
+from quarterdeck import cli, credential, jail_end, lifecycle, post, relaunch_intent, resting_failover, shutdown, trusted_files, watch
 from quarterdeck import seat as seatmod, server_recovery as recovery, ship as shipmod
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape
+from quarterdeck.headlines import WIDTH, columns
 from quarterdeck.service import Service
 from quarterdeck.tmux import Pane
+from .resting_attempts import UNSETTLED, save_attempt
 
 
 def dead_pid() -> int:
@@ -328,7 +334,8 @@ def choice_world(tmp_path, monkeypatch):
                             {name: shipmod.Pool(name, 'openai' if cross_program and name == 'first' else 'anthropic')
                              for name in pools}, {'crew': shipmod.Session('crew', 'Synthetic')}, {spec.name: spec})
         panes = {}
-        tmux = SimpleNamespace(socket=str(tmp_path / 'absent-server'), pane=panes.get)
+        tmux = SimpleNamespace(socket=str(tmp_path / 'absent-server'), pane=panes.get,
+                               kill_window=lambda ident, **_: panes.pop(ident), capture=lambda *_args, **_kw: '')
         seat = seatmod.Seat(ship, spec, tmux)
         seat.move_to(saved)
         launched = seatmod.Launched('%1', dead_pid(), (post.now() - timedelta(minutes=1)).isoformat(), saved, None,
@@ -355,7 +362,7 @@ def choice_world(tmp_path, monkeypatch):
                 with lifecycle.claim(ship.runtime, seat.name):
                     pytest.fail('the launch escaped its original lifecycle claim')
             starts.append((seat.pool.name, seat.harness.name, argv))
-            pane = Pane('%2', 'crew', seat.name, 124, 80, 24, False, False, None)
+            pane = Pane(f'%{len(starts) + 1}', 'crew', seat.name, 123 + len(starts), 80, 24, False, False, None)
             panes[pane.id] = pane
             return pane
 
@@ -372,11 +379,194 @@ def choice_world(tmp_path, monkeypatch):
         for adapter in (CodexHarness, ClaudeHarness):
             monkeypatch.setattr(adapter, 'version', lambda self: 'synthetic')
         return SimpleNamespace(ship=ship, seat=seat, svc=svc, starts=starts, reseeds=reseeds, old=launched,
-                               record=record, saved=saved)
+                               record=record, saved=saved, panes=panes)
 
     yield make
     for svc in services:
         svc.ledger.close()
+
+
+def stub_up_cli(w, monkeypatch):
+    monkeypatch.delenv('QD_SEAT', raising=False)  # a person's word, whichever seat runs the tests
+    w.svc.tmux.ship = None
+    monkeypatch.setattr(cli, 'load_ship', lambda _: w.ship)
+    monkeypatch.setattr(cli.Tmux, 'for_ship', lambda _: w.svc.tmux)
+    monkeypatch.setattr(cli.install, 'prepare_up', lambda _: ([], False))
+    monkeypatch.setattr(cli.install, 'delegate_up', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.service, 'start', lambda _: 'synthetic service already running')
+
+
+def write_resting_intent(w):
+    runtime = w.ship.runtime
+    relaunch_intent._write(runtime, dict(
+        version=1, seat=w.seat.name, kind=relaunch_intent.RESTING, resume=True, at=post.now().isoformat(),
+        phase=relaunch_intent.FAILED, owner={'pid': 1, 'start': 'synthetic-relaunch-owner'}, before=w.old.at,
+        destination={'pool': w.saved, 'harness': 'claude'}))
+    return relaunch_intent.path(runtime, w.seat.name)
+
+
+@pytest.mark.parametrize('phase', ['intent', *UNSETTLED])
+def test_whole_ship_up_leaves_resting_holds_for_named_up(choice_world, monkeypatch, phase):
+    w = choice_world('no-choice')
+    runtime = w.ship.runtime
+    name = w.seat.name
+    w.ship.seats['neighbor'] = shipmod.replace(w.seat.spec, name='neighbor')
+    neighbor = w.svc.seat('neighbor')
+    if phase == 'intent':
+        held_file = write_resting_intent(w)
+    else:
+        choice = resting_failover.Candidate(w.saved, ('synthetic-account', 'synthetic-generation'))
+        attempt = resting_failover.claim(w.seat, choice, w.old.at)
+        if phase != 'reserved':
+            assert resting_failover.outcome(runtime, attempt, phase, w.old.at)
+        assert resting_failover.hold_state(w.seat) is resting_failover.Hold.HELD
+        held_file = runtime / resting_failover.FILE
+    saved = held_file.read_bytes()
+    needs_desk = phase in resting_failover.DESK_RELEASES
+    proof = f'{name} left down: resting move held{"; needs the desk" if needs_desk else ""} (qd up {name})'
+    hold_reader = resting_failover.hold_state
+    claimed_reads = []
+
+    def read_while_claimed(*args):
+        held = hold_reader(*args)
+        if held is resting_failover.Hold.HELD:
+            with pytest.raises(lifecycle.Busy), lifecycle.claim(runtime, name):
+                pytest.fail('the hold was checked outside the lifecycle claim')
+            claimed_reads.append(held)
+        return held
+
+    with monkeypatch.context() as check:
+        check.setattr(resting_failover, 'hold_state', read_while_claimed)
+        assert proof in seatmod.bring_up(w.ship, w.svc.tmux)
+    assert claimed_reads == [resting_failover.Hold.HELD]
+    assert neighbor.is_up and not w.seat.is_up and len(w.starts) == 1
+    assert w.seat.launched() == w.old and held_file.read_bytes() == saved
+    line = watch.facts(w.ship, w.svc.tmux, walls=[], login=[]).line()
+    assert f'qd up {name}' in line and columns(line) <= WIDTH
+
+    stub_up_cli(w, monkeypatch)
+    bare = SimpleNamespace(seat=None, fresh=False)
+    assert proof in cli.cmd_up(bare)
+    assert w.seat.launched() == w.old and held_file.read_bytes() == saved and len(w.starts) == 1
+    assert any(f'{name} up in' in row for row in cli.cmd_up(SimpleNamespace(seat=name, fresh=False)))
+    assert w.seat.is_up and neighbor.is_up and len(w.starts) == 2
+    launch = w.seat.launched()
+    assert launch.pool == w.saved and launch.at != w.old.at
+    if phase == 'intent':
+        assert not held_file.exists()
+    else:
+        settled = resting_failover.attempt_for(w.seat)
+        assert (settled.phase, settled.destination) == ('released' if needs_desk else 'launched', launch.at)
+        assert resting_failover.spent(runtime, choice)
+    unproved = phase in ('reserved', 'launched', 'releasing')
+    assert resting_failover.hold_state(w.seat) is (
+        resting_failover.Hold.HELD if unproved else resting_failover.Hold.CLEAR)
+    assert any(f'{name} already up in' in row for row in cli.cmd_up(bare))
+    assert w.seat.launched() == launch and len(w.starts) == 2
+
+
+@pytest.mark.parametrize(('initial', 'matching'), [
+    ('reserved', 'new-launch'), ('reserved', 'neither-launch'), ('ready', 'old-launch'), ('released', 'old-launch'),
+])
+def test_named_up_settles_only_an_unsettled_attempt_matching_either_launch(choice_world, monkeypatch, initial, matching):
+    w = choice_world('earlier')
+    runtime = w.ship.runtime
+    pool = 'first' if matching == 'neither-launch' else w.saved
+    choice = resting_failover.Candidate(pool, ('synthetic-other-account', 'synthetic-other-generation'))
+    old_source = w.old.at if matching == 'old-launch' else 'synthetic earlier launch'
+    attempt = resting_failover.claim(w.seat, choice, old_source)
+    if initial != 'reserved':
+        assert resting_failover.outcome(runtime, attempt, initial, w.old.at)
+    if matching == 'new-launch':
+        replace_launch = shipmod.replace(w.old, pool='first')
+        replace_launch.write(w.seat.trusted / trusted_files.LAUNCH)
+        assert not attempt.matches(w.seat.launched())
+    original = resting_failover.attempt_for(w.seat)
+    assert resting_failover.hold_state(w.seat) is resting_failover.Hold.CLEAR
+    stub_up_cli(w, monkeypatch)
+    cli.cmd_up(SimpleNamespace(seat=w.seat.name, fresh=False, pool=w.saved))
+    launch = w.seat.launched()
+    assert launch.pool == w.saved and w.seat.is_up and len(w.starts) == 1
+    if matching == 'new-launch':
+        assert original.matches(launch)
+        assert resting_failover.attempt_for(w.seat) == shipmod.replace(original, phase='launched', destination=launch.at)
+        assert resting_failover.hold_state(w.seat) is resting_failover.Hold.HELD
+    elif initial == 'reserved':
+        assert resting_failover.attempt_for(w.seat) == shipmod.replace(original, phase='released', destination=launch.at)
+        assert resting_failover.hold_state(w.seat) is resting_failover.Hold.CLEAR
+    else:
+        assert resting_failover.attempt_for(w.seat) == original
+        assert resting_failover.hold_state(w.seat) is resting_failover.Hold.CLEAR
+    assert resting_failover.spent(runtime, choice)
+
+
+def test_direct_seat_up_and_refused_named_up_leave_the_resting_hold(choice_world, monkeypatch):
+    w = choice_world('no-choice')
+    path = write_resting_intent(w)
+    saved = path.read_bytes()
+    choice = resting_failover.Candidate(w.saved, ('synthetic-account', 'synthetic-generation'))
+    attempt = resting_failover.claim(w.seat, choice, w.old.at)
+    stub_up_cli(w, monkeypatch)
+    with monkeypatch.context() as refused:
+        refused.setattr(seatmod.Seat, '_open_window', Mock(side_effect=shipmod.ShipError('synthetic launch refused')))
+        with pytest.raises(shipmod.ShipError, match='synthetic launch refused'):
+            cli.cmd_up(SimpleNamespace(seat=w.seat.name, fresh=False))
+        assert not w.seat.is_up and not w.starts
+        assert path.read_bytes() == saved and resting_failover.attempt_for(w.seat) == attempt
+    with pytest.raises(resting_failover.Held, match=f'qd up {w.seat.name}'):
+        w.seat.up()
+    assert not w.seat.is_up and not w.starts
+    assert path.read_bytes() == saved and resting_failover.attempt_for(w.seat) == attempt
+
+
+@pytest.mark.parametrize('boundary', ['before-scan', 'after-scan'])
+def test_corrupt_resting_attempt_db_defers_only_the_intent_seat_until_qd_up(choice_world, monkeypatch, boundary):
+    w = choice_world('no-choice')
+    w.ship.seats['neighbor'] = shipmod.replace(w.seat.spec, name='neighbor')
+    neighbor = w.svc.seat('neighbor')
+    neighbor.move_to(w.saved)
+    shipmod.replace(w.old, pane='%9').write(neighbor.trusted / trusted_files.LAUNCH)
+    record = ClaudeShape(neighbor.home, w.ship.workspace, 'synthetic-neighbor-resume', 'synthetic-model')
+    record.begin('Synthetic neighbor input', 'synthetic-model', 'high')
+    record.end('Synthetic neighbor output')
+    (neighbor.trusted / trusted_files.RECORD).write_text(str(record.path) + '\n')
+    runtime = w.ship.runtime
+    path = relaunch_intent.path(runtime, w.seat.name)
+    data = dict(version=1, seat=w.seat.name, kind=relaunch_intent.RESTING, resume=True,
+                at=(post.now() - timedelta(minutes=2)).isoformat(), phase=relaunch_intent.RELAUNCHING,
+                owner={'pid': 1, 'start': 'synthetic-relaunch-owner'}, before=None,
+                destination={'pool': w.saved, 'harness': 'claude'})
+    (runtime / resting_failover.FILE).write_bytes(b'synthetic broken SQLite database')
+
+    def write_intent():
+        relaunch_intent._write(runtime, data)
+
+    if boundary == 'before-scan':
+        write_intent()
+    else:
+        monkeypatch.setattr(shipmod, 'fence', lambda _: write_intent())
+    monkeypatch.setattr(relaunch_intent, '_gone', lambda *_: True)
+    expected = resting_failover.Hold.HELD if boundary == 'before-scan' else resting_failover.Hold.CLEAR
+    assert resting_failover.hold_state(w.seat) is expected
+    assert resting_failover.hold_state(neighbor) is resting_failover.Hold.CLEAR
+    assert recovery.pass_once(w.svc) == 'recovered'
+    assert neighbor.is_up and not w.seat.is_up
+    assert w.seat.launched() == w.old and len(w.starts) == 1
+    assert relaunch_intent.clear_all(w.ship, 'synthetic server stop', keep_server_choices=True) == []
+    assert json.loads(path.read_text()) == data
+    relaunch_intent.finish(w.svc)
+    assert json.loads(path.read_text())['phase'] == relaunch_intent.FAILED
+    assert recovery.pass_once(w.svc) is None and len(w.starts) == 1
+    line = watch.facts(w.ship, w.svc.tmux, walls=[], login=[]).line()
+    assert 'qd up builder' in line and resting_failover.FILE in line
+
+    stub_up_cli(w, monkeypatch)
+    cli.cmd_up(SimpleNamespace(seat=w.seat.name, fresh=False, pool=None))
+    assert w.seat.is_up and neighbor.is_up and not path.exists()
+    assert w.seat.launched().resume == 'synthetic-resume-target'
+    assert len(w.starts) == 2
+    relaunch_intent.finish(w.svc)
+    assert recovery.pass_once(w.svc) is None and len(w.starts) == 2
 
 
 @pytest.mark.parametrize('method', ['manual', 'server'])
@@ -490,3 +680,346 @@ def test_interrupted_server_recovery_does_not_choose_again(choice_world, monkeyp
         assert not path.exists()
     assert recovery.pass_once(w.svc) is None
     assert [a['outcome'] for a in recovery.read(w.ship.runtime)['attempts']] == ['started']
+
+
+@pytest.mark.parametrize('phase', UNSETTLED)
+def test_server_recovery_waits_for_an_intentless_resting_move(choice_world, phase):
+    w = choice_world('no-choice')
+    _, attempt = save_attempt(w.seat, phase)
+    assert recovery.pass_once(w.svc) is None
+    assert not w.seat.is_up and not w.starts and w.seat.launched() == w.old
+    assert resting_failover.attempt_for(w.seat) == attempt
+    assert recovery.read(w.ship.runtime)['attempts'] == []
+
+
+def test_server_recovery_reads_busy_attempts_once_and_recovers_an_unaffected_seat(choice_world, monkeypatch, tmp_path):
+    w = choice_world('no-choice')
+    runtime = w.ship.runtime
+    ship = w.ship
+    second = ship.pools[w.saved]
+    ship.pools[w.saved] = shipmod.replace(second, config_dir=tmp_path / 'synthetic-subscription')
+    ship.pools['unaffected'] = shipmod.replace(second, name='unaffected')
+    spec = shipmod.replace(w.seat.spec, name='neighbor', pools=('unaffected',))
+    ship.seats[spec.name] = spec
+    neighbor = w.svc.seat(spec.name)
+    shipmod.replace(w.old, pane='%9', pool='unaffected').write(neighbor.trusted / trusted_files.LAUNCH)
+    record = ClaudeShape(neighbor.home, ship.workspace, 'synthetic-unaffected', 'synthetic-model')
+    record.begin('Synthetic neighbor input', 'synthetic-model', 'high')
+    record.end('Synthetic neighbor output')
+    (neighbor.trusted / trusted_files.RECORD).write_text(str(record.path) + '\n')
+    save_attempt(w.seat, 'reserved')
+    reads = Mock(wraps=resting_failover.attempts)
+    monkeypatch.setattr(resting_failover, 'attempts', reads)
+    db = sqlite3.connect(runtime / resting_failover.FILE)
+    try:
+        db.execute('BEGIN EXCLUSIVE')
+        with resting_failover.reading_pass(), shutdown.Stop(runtime).installed():
+            assert recovery.pass_once(w.svc) == 'recovered'
+            assert resting_failover.hold_state(w.svc.seat(w.seat.name)) is resting_failover.Hold.UNKNOWN
+            assert resting_failover.hold_state(neighbor) is resting_failover.Hold.CLEAR
+            assert resting_failover.status(ship, {}) == [f'{resting_failover.FILE} busy; waiting']
+        reads.assert_called_once_with(runtime)
+    finally:
+        db.close()
+    assert len(w.starts) == 1 and neighbor.is_up and not w.seat.is_up
+    assert w.seat.launched() == w.old and recovery.read(runtime)['attempts'][0]['seats'] == ['neighbor']
+
+
+@pytest.mark.parametrize(('begin', 'phase'), [
+    ('BEGIN EXCLUSIVE', 'reserved'), ('BEGIN IMMEDIATE', 'reserved'), ('BEGIN IMMEDIATE', 'releasing'),
+])
+def test_named_up_waits_for_sqlite_before_launch_then_settles_on_retry(choice_world, monkeypatch, begin, phase):
+    w = choice_world('no-choice')
+    runtime = w.ship.runtime
+    choice, attempt = save_attempt(w.seat, phase)
+    intent = write_resting_intent(w)
+    saved = intent.read_bytes()
+    stub_up_cli(w, monkeypatch)
+    args = SimpleNamespace(seat=w.seat.name, fresh=False)
+    db = sqlite3.connect(runtime / resting_failover.FILE)
+    try:
+        db.execute(begin)
+        if begin == 'BEGIN IMMEDIATE':
+            assert resting_failover.attempt_for(w.seat) == attempt  # SELECT succeeds; the release could not
+        reads = Mock(wraps=resting_failover.attempts)
+        monkeypatch.setattr(resting_failover, 'attempts', reads)
+        with pytest.raises(resting_failover.Held, match=f'busy.*qd up {w.seat.name}'):
+            cli.cmd_up(args)
+        reads.assert_called_once_with(runtime)
+        assert not w.starts and not w.seat.is_up and w.seat.launched() == w.old and intent.read_bytes() == saved
+    finally:
+        db.close()
+    assert any(f'{w.seat.name} up in' in proof for proof in cli.cmd_up(args))
+    assert w.seat.is_up and len(w.starts) == 1 and not intent.exists()
+    settled = resting_failover.attempt_for(w.seat)
+    assert (settled.phase, settled.destination) == ('launched', w.seat.launched().at)
+    assert resting_failover.spent(runtime, choice)
+
+
+def test_whole_ship_up_reads_busy_attempts_once_then_launches(choice_world, monkeypatch, tmp_path):
+    w = choice_world('no-choice')
+    runtime = w.ship.runtime
+    pool = w.ship.pool(w.saved)
+    w.ship.pools[w.saved] = shipmod.replace(pool, config_dir=tmp_path / 'synthetic-subscription')
+    w.ship.pools['unaffected'] = shipmod.replace(pool, name='unaffected')
+    spec = shipmod.replace(w.seat.spec, name='neighbor', pools=('unaffected',))
+    w.ship.seats[spec.name] = spec
+    neighbor = w.svc.seat(spec.name)
+    _, attempt = save_attempt(w.seat, 'ready')
+    reads = Mock(wraps=resting_failover.attempts)
+    monkeypatch.setattr(resting_failover, 'attempts', reads)
+    db = sqlite3.connect(runtime / resting_failover.FILE)
+    try:
+        db.execute('BEGIN EXCLUSIVE')
+        proofs = seatmod.bring_up(w.ship, w.svc.tmux)
+        assert any(f'{w.seat.name} left down:' in proof and 'busy' in proof and f'qd up {w.seat.name}' in proof
+                   for proof in proofs)
+        reads.assert_called_once_with(runtime)
+        assert not w.seat.is_up and neighbor.is_up and len(w.starts) == 1 and w.seat.launched() == w.old
+    finally:
+        db.close()
+
+    reads.reset_mock()
+    proofs = seatmod.bring_up(w.ship, w.svc.tmux)
+    assert any(f'{w.seat.name} up in' in proof for proof in proofs)
+    reads.assert_called_once_with(runtime)
+    assert w.seat.is_up and neighbor.is_up and len(w.starts) == 2
+    assert resting_failover.attempt_for(w.seat) == attempt
+
+
+
+def test_busy_attempts_hold_a_down_seat_set_to_another_declared_program(choice_world, tmp_path):
+    w = choice_world('next')
+    ship, seat = w.ship, w.seat
+    second = ship.pool('second')
+    ship.pools['second'] = shipmod.replace(second, config_dir=tmp_path / 'synthetic-subscription')
+    choice = resting_failover.Candidate('second', ('synthetic subscription', 'previous expiry'))
+    attempt = resting_failover.claim(seat, choice, 'earlier Claude launch')
+    (seat.trusted / trusted_files.LAUNCH).unlink()
+    assert seat.pool.name == 'first' and seat.spec.harness == 'codex' and not seat.is_up
+    assert not resting_failover.eligible_source(seat)
+    db = sqlite3.connect(ship.runtime / resting_failover.FILE)
+    try:
+        db.execute('BEGIN EXCLUSIVE')
+        with resting_failover.reading_pass():
+            assert resting_failover.hold_state(seat) is resting_failover.Hold.UNKNOWN
+            proofs = seatmod.bring_up(ship, w.svc.tmux)
+            assert any(f'{seat.name} left down:' in proof and 'busy' in proof for proof in proofs)
+            assert not w.starts and seat.launched() is None
+            removed = ship.pools.pop('second')
+            try:
+                assert resting_failover.hold_state(seat) is resting_failover.Hold.CLEAR
+            finally:
+                ship.pools['second'] = removed
+    finally:
+        db.close()
+    assert resting_failover.hold_state(seat) is resting_failover.Hold.HELD
+    assert resting_failover.attempt_for(seat) == attempt
+
+
+def test_named_up_leaves_sqlite_readable_and_writable_during_launch(choice_world, monkeypatch):
+    w = choice_world('no-choice')
+    runtime = w.ship.runtime
+    name = w.seat.name
+    _, attempt = save_attempt(w.seat, 'failed')
+    neighbor = shipmod.replace(w.seat.spec, name='neighbor')
+    w.ship.seats[neighbor.name] = neighbor
+    member = w.svc.seat(neighbor.name)
+    other = resting_failover.claim(member, resting_failover.Candidate(w.saved, ('neighbor account', 'generation')),
+                                   'neighbor source')
+    stub_up_cli(w, monkeypatch)
+    original = seatmod.Seat._open_window
+
+    def open_window(seat, *args):
+        rows = resting_failover.attempts(runtime)
+        assert rows[name] == shipmod.replace(attempt, phase='releasing', origin='failed')
+        assert rows[neighbor.name] == other
+        assert resting_failover.outcome(runtime, other, 'launched', 'neighbor destination')
+        return original(seat, *args)
+
+    monkeypatch.setattr(seatmod.Seat, '_open_window', open_window)
+    cli.cmd_up(SimpleNamespace(seat=name, fresh=False))
+    rows = resting_failover.attempts(runtime)
+    assert (rows[name].phase, rows[name].destination) == ('released', w.seat.launched().at)
+    assert rows[neighbor.name] == shipmod.replace(other, phase='launched', destination='neighbor destination')
+    assert len(w.starts) == 1
+
+
+def test_busy_finish_leaves_live_release_for_retry(choice_world, monkeypatch):
+    w = choice_world('no-choice')
+    runtime = w.ship.runtime
+    name = w.seat.name
+    _, attempt = save_attempt(w.seat, 'failed')
+    stub_up_cli(w, monkeypatch)
+    args = SimpleNamespace(seat=name, fresh=False)
+    original = seatmod.Seat._open_window
+    db = sqlite3.connect(runtime / resting_failover.FILE)
+
+    def open_window(seat, *args):
+        db.execute('BEGIN IMMEDIATE')
+        return original(seat, *args)
+
+    try:
+        with monkeypatch.context() as launch:
+            launch.setattr(seatmod.Seat, '_open_window', open_window)
+            with pytest.raises(resting_failover.Held, match=f'busy.*qd up {name}'):
+                cli.cmd_up(args)
+        assert w.seat.is_up and len(w.starts) == 1
+        assert resting_failover.attempt_for(w.seat) == shipmod.replace(attempt, phase='releasing', origin='failed')
+    finally:
+        db.close()
+    launch = w.seat.launched()
+    assert cli.cmd_up(args)[0] == f'{name} already up in {launch.pane}'
+    assert w.seat.launched() == launch and len(w.starts) == 1
+    assert resting_failover.attempt_for(w.seat).phase == 'released'
+
+
+def test_named_up_finishes_a_killed_release_without_launching_twice(choice_world, monkeypatch):
+    w = choice_world('no-choice')
+    runtime = w.ship.runtime
+    name = w.seat.name
+    choice, attempt = save_attempt(w.seat, 'failed')
+    intent = write_resting_intent(w)
+    stub_up_cli(w, monkeypatch)
+    args = SimpleNamespace(seat=name, fresh=False)
+    outcome = resting_failover.outcome
+
+    def pause_before_finish(runtime, attempt, phase, destination):
+        if phase == 'released':
+            launch = w.seat.launched()
+            assert w.seat.is_up and launch.at == destination and len(w.starts) == 1
+            send.send(w.panes[launch.pane])
+            signal.pause()
+        return outcome(runtime, attempt, phase, destination)
+
+    def named_up():
+        recv.close()
+        resting_failover.outcome = pause_before_finish
+        cli.cmd_up(args)
+
+    fork = get_context('fork')
+    recv, send = fork.Pipe(duplex=False)
+    child = fork.Process(target=named_up)
+    child.start()
+    send.close()
+    try:
+        assert recv.poll(10), 'child did not reach the witnessed second write'
+        pane = recv.recv()
+        w.panes[pane.id] = pane  # the synthetic tmux view sees the pane that outlives the launching process
+        launch = w.seat.launched()
+        assert resting_failover.attempt_for(w.seat) == shipmod.replace(attempt, phase='releasing', origin='failed')
+        assert w.seat.is_up and resting_failover.hold_state(w.seat) is resting_failover.Hold.HELD
+    finally:
+        child.kill()
+        child.join()
+        recv.close()
+    assert child.exitcode == -signal.SIGKILL
+    assert intent.exists() and resting_failover.hold_state(w.seat) is resting_failover.Hold.HELD
+    assert cli.cmd_up(SimpleNamespace(seat=name, pool=w.saved, fresh=True))[0] == f'{name} already up in {pane.id}'
+    assert not w.starts and w.seat.launched() == launch and not intent.exists()
+    assert resting_failover.attempt_for(w.seat) == shipmod.replace(attempt, phase='released', destination=launch.at)
+    assert resting_failover.spent(runtime, choice)
+
+
+@pytest.mark.parametrize(('result', 'expected_phase'), [
+    ('exception', 'failed'), ('returned down', 'failed'), ('retirement unknown', 'releasing'),
+])
+def test_named_up_restores_the_prior_attempt_only_when_failure_is_confirmed(
+        choice_world, monkeypatch, result, expected_phase):
+    w = choice_world('no-choice')
+    _, attempt = save_attempt(w.seat, 'failed')
+    stub_up_cli(w, monkeypatch)
+
+    def launch(seat, *_args, **_kwargs):
+        assert not seat.is_up and resting_failover.attempt_for(seat).phase == 'releasing'
+        if result == 'exception':
+            raise shipmod.ShipError('synthetic launch failure')
+        return 'synthetic launch returned'
+
+    monkeypatch.setattr(seatmod.Seat, '_up_with_pool_choice', launch)
+    if result == 'retirement unknown':
+        monkeypatch.setattr(seatmod.Seat, 'relaunch_refused', lambda self: 'synthetic retirement unconfirmed')
+    with pytest.raises(shipmod.ShipError, match='synthetic launch failure|left the seat down|could not be confirmed'):
+        cli.cmd_up(SimpleNamespace(seat=w.seat.name, fresh=False))
+    assert not w.seat.is_up and not w.starts
+    origin = 'failed' if expected_phase == 'releasing' else None
+    assert resting_failover.attempt_for(w.seat) == shipmod.replace(attempt, phase=expected_phase, origin=origin)
+
+
+def test_named_up_refuses_when_first_write_finds_the_attempt_changed(choice_world, monkeypatch):
+    w = choice_world('no-choice')
+    _, attempt = save_attempt(w.seat, 'reserved')
+    stub_up_cli(w, monkeypatch)
+    original = resting_failover.outcome
+
+    def concurrent_outcome(runtime, expected, phase, destination):
+        assert expected == attempt and phase == 'releasing'
+        assert original(runtime, attempt, 'ready', w.old.at)
+        return original(runtime, expected, phase, destination)
+
+    monkeypatch.setattr(resting_failover, 'outcome', concurrent_outcome)
+    with pytest.raises(resting_failover.Held, match=f'attempt changed; retry qd up {w.seat.name}'):
+        cli.cmd_up(SimpleNamespace(seat=w.seat.name, fresh=False))
+    assert not w.starts and w.seat.launched() == w.old and not w.seat.is_up
+    assert resting_failover.attempt_for(w.seat) == shipmod.replace(attempt, phase='ready', destination=w.old.at)
+
+
+def test_live_provisional_up_is_read_only_until_down_then_up(choice_world, monkeypatch):
+    w = choice_world('earlier')
+    name = w.seat.name
+    pane = Pane(w.old.pane, 'crew', name, w.old.pid, 80, 24, False, False, None)
+    w.panes[pane.id] = pane
+    _, attempt = save_attempt(w.seat, 'launched')
+    intent = write_resting_intent(w)
+    saved = intent.read_bytes()
+    stub_up_cli(w, monkeypatch)
+    facts = watch.facts(w.ship, w.svc.tmux, walls=[], login=[])
+    expected = f'{name}: on resting subscription {attempt.pool}, not yet proved by a first turn'
+    assert not facts.relaunches and f'qd up {name}' not in facts.line()
+    detailed = watch.status_reading(w.ship, w.svc.tmux, collected=facts)
+    assert detailed['resting_provisional'] == [expected] and expected in watch.render_table(detailed)
+    assert resting_failover.hold_state(w.seat) is resting_failover.Hold.HELD
+
+    from quarterdeck import compaction, write_bound
+    writes = Mock(side_effect=AssertionError('a live provisional up must be read-only'))
+    with monkeypatch.context() as read_only:
+        read_only.setattr(resting_failover, 'outcome', writes)
+        read_only.setattr(compaction, 'disarm', writes)
+        read_only.setattr(write_bound, 'lift', writes)
+        read_only.setattr(cli.service, 'start', writes)
+        for fresh, pool in [(False, None), (True, None), (False, 'first'), (True, 'first')]:
+            assert cli.cmd_up(SimpleNamespace(seat=name, fresh=fresh, pool=pool)) == [f'{name} already up in {pane.id}']
+    writes.assert_not_called()
+    assert not w.starts and w.seat.launched() == w.old and intent.read_bytes() == saved
+    assert resting_failover.attempt_for(w.seat) == attempt
+
+    cli.cmd_down(SimpleNamespace(seat=name))
+    assert not w.seat.is_up and not intent.exists()
+    line = watch.facts(w.ship, w.svc.tmux, walls=[], login=[]).line()
+    assert 'program ended before sign-in was proved' in line and f'qd up {name}' in line
+    cli.cmd_up(SimpleNamespace(seat=name, fresh=True, pool=attempt.pool))
+    assert w.seat.is_up and len(w.starts) == 1
+    provisional = resting_failover.attempt_for(w.seat)
+    assert (provisional.phase, provisional.destination) == ('launched', w.seat.launched().at)
+    assert resting_failover.hold_state(w.seat) is resting_failover.Hold.HELD
+
+
+@pytest.mark.parametrize('phase', UNSETTLED)
+@pytest.mark.parametrize('recorded', [False, True])
+def test_finishing_an_older_intent_waits_for_an_intentless_resting_move(choice_world, monkeypatch, phase, recorded):
+    w = choice_world('no-choice')
+    runtime = w.ship.runtime
+    _, attempt = save_attempt(w.seat, phase)
+    data = dict(version=1, seat=w.seat.name, kind='relaunch', resume=True, at=post.now().isoformat(),
+                phase=relaunch_intent.RELEASED, owner={'pid': 1, 'start': 'synthetic-relaunch-owner'}, before=w.old.at)
+    if recorded:
+        data['destination'] = {'pool': w.saved, 'harness': w.seat.spec.harness}
+    relaunch_intent._write(runtime, data)
+    monkeypatch.setattr(relaunch_intent, '_gone', lambda _: True)
+    relaunch_intent.finish(w.svc)
+    path = relaunch_intent.path(runtime, w.seat.name)
+    assert json.loads(path.read_text()) == data
+    assert not w.seat.is_up and not w.starts and w.seat.launched() == w.old
+    assert resting_failover.outcome(runtime, attempt, 'released', attempt.destination)
+    relaunch_intent.finish(w.svc)
+    assert w.seat.is_up and len(w.starts) == 1 and not path.exists()

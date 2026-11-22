@@ -16,7 +16,7 @@ from pathlib import Path
 import secrets
 
 from . import trusted_files
-from . import durable, post, record_owner
+from . import durable, post, record_owner, resting_failover
 from .ship import ShipError
 
 VERSION = 1
@@ -583,6 +583,8 @@ def obstruction(seat, data, record, reading):
     from .door import Door
     if seat.session.human:
         return 'human-owned session; manual fresh only'
+    if (hold := resting_failover.hold_state(seat)) is not resting_failover.Hold.CLEAR:
+        return resting_failover.reason(seat, hold)
     if not seat.spec.up or not live_identity(seat):
         return 'current live launch identity not proved; automatic fresh held'
     if not data.get('ready'):
@@ -648,6 +650,7 @@ def lifecycle_pending(runtime, name):
     return False
 
 
+@resting_failover.reading_pass()
 def tick(seat):
     runtime = seat.ship.runtime
     if not seat.spec.fresh_after_compactions:
@@ -656,6 +659,8 @@ def tick(seat):
                 disarm_locked(seat, 'compaction automation disabled', disabled=True, keep_manual=True)
         return
 
+    if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
+        return
     retry_available = True
 
     def proved_observation(data, observation):
@@ -695,6 +700,8 @@ def tick(seat):
                 or not data.get('ready')):
             return
         with seat._lifecycle(automatic=True):
+            if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
+                return
             with post.admission(runtime, seat.name):
                 data = load(runtime, seat.name)
                 record, reading, launched = proved_observation(data, current(seat))

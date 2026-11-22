@@ -566,12 +566,21 @@ def read_usage(service, pool, reader) -> Usage | None:
         return None  # not a new attempt: callers must not record or slide its floor
     if (getattr(reader, "sign_in_metadata", None) is not None and pool.kind == "subscription"
             and pool.config_dir is not None and reader.credential_file):
-        sign_in = claude_sign_in.observe(reader, pool.config_dir / reader.credential_file)
+        source = pool.config_dir / reader.credential_file
+        try:
+            canonical = claude_sign_in.location(pool)
+        except (OSError, RuntimeError):
+            canonical = None
+        sign_in = claude_sign_in.observe(reader, canonical or source)
         if sign_in is not None:
             now = datetime.now(timezone.utc)
             if sign_in.access_expired(now):
                 if sign_in.can_renew(now):
                     reason = ACCESS_WAITING_FOR_RENEWAL
+                    if canonical is not None:
+                        identity = claude_sign_in.renewable_identity(reader, canonical, sign_in, now)
+                        if identity is not None:
+                            return claude_sign_in.ExpiredAccess((), now, reason, called=False, identity=identity)
                 elif sign_in.has_access:
                     reason = ACCESS_LOGIN_NEEDED
                 else:

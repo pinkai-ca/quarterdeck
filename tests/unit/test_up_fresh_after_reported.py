@@ -1,6 +1,5 @@
 """An explicit up does not resume completed after-order work; synthetic post only."""
 
-from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -18,7 +17,6 @@ def down_seat(tmp_path, monkeypatch):
     ship = Ship(tmp_path / 'ship', 'synthetic', 'issuer', tmp_path, {'local': pool},
                 {'crew': Session('crew', 'Synthetic crew')}, {'builder': spec})
     seat = Seat(ship, spec, SimpleNamespace())
-    monkeypatch.setattr(seat, '_lifecycle', lambda: nullcontext())
     monkeypatch.setattr(seat, 'launched', lambda: None)
     started = []
     def start(resume=True, *, target=None):

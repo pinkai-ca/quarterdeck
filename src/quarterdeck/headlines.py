@@ -79,6 +79,19 @@ def _human_holds(facts):
     return named._replace(details=details, short_details=short), other_holds
 
 
+def _relaunch_holds(items):
+    resting, other = [], []
+    for item in items:
+        reason, separator, seat = item.rpartition(' (qd up ')
+        if separator and ': resting ' in reason and seat.endswith(')'):
+            # The short form keeps who may press it: a recorded failure is the desk's to release.
+            who = 'the desk: ' if reason.endswith('needs the desk') else ''
+            resting.append(note(item, f'{who}qd up {seat[:-1]}'))
+        else:
+            other.append(item)
+    return resting, other
+
+
 def sections(facts, *, detailed=False) -> Headline:
     """Presentation only. Categories keep their full items and a shorter count."""
     past, near = [], []
@@ -96,9 +109,11 @@ def sections(facts, *, detailed=False) -> Headline:
         seat_holds = facts.seat_holds
     else:
         humans, seat_holds = _human_holds(facts)
+    resting, other_relaunches = _relaunch_holds(facts.relaunches)
     immediate = (
         humans,
         _named(seat_holds, 'seats held', singular='seat held'),
+        *resting,
         _named(facts.sign_in_failures, 'sign-in failures', singular='sign-in failure'),
         _named(facts.usage_errors, 'usage evidence needs human'),
         _named(facts.login, 'login needed', lambda row: f'{row[0]} login needed by {row[1]}'),
@@ -123,7 +138,7 @@ def sections(facts, *, detailed=False) -> Headline:
         _named(write_stops, 'at write bound'),
         _named(write_other, 'write-bound alerts', singular='write-bound alert'),
         _named(facts.leftover_seats, 'seats left over', singular='seat left over'),
-        _named(facts.relaunches, 'relaunch holds', singular='relaunch hold'),
+        _named(other_relaunches, 'relaunch holds', singular='relaunch hold'),
         _named(facts.output_limits, 'at output limit'),
         _named((facts.startup_delivery,) if facts.startup_delivery else (), 'startup holds', singular='startup hold'),
         _named(facts.ledger_recovery, 'ledger recovery alerts', singular='ledger recovery alert'),

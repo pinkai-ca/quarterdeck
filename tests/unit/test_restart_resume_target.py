@@ -17,6 +17,7 @@ from quarterdeck.harness.synthetic_record import CodexShape
 from quarterdeck.harness.types import Screen
 
 from .test_cross_program_failover import running, usage  # noqa: F401
+from .resting_attempts import UNSETTLED, save_attempt, settle
 
 
 def cross_read_bound(path, reader, monkeypatch):
@@ -763,3 +764,23 @@ def test_handoff_stop_preserves_proved_completion_or_holds_unknown(running, monk
         assert not r.launches and state['phase'] == 'failed'
         assert 'could not confirm the outcome' in report.body
         assert 'could not confirm the outcome' in r.svc.seat_holds[(s.name, 'fresh_handoffs')]
+
+
+@pytest.mark.parametrize('phase', UNSETTLED)
+def test_ready_fresh_handoff_waits_for_an_intentless_resting_move(running, monkeypatch, phase):
+    r = running
+    seat = r.seat
+    usage(r.svc, 'first', 0.2)
+    monkeypatch.setattr(seat.harness, 'screen', lambda _: Screen('', '', working=False))
+    before = seat.launched()
+    assert r.svc.request_fresh_handoff(seat, reason='synthetic handoff', expected_launch=before).disposition == 'staged'
+    [order] = handoff_orders(r)
+    handoff = report_handoff(r, order)
+    r.source.end('Made-up final response')
+    _, attempt = save_attempt(seat, phase)
+    r.svc.fresh_handoffs()
+    assert not r.launches and seat.launched() == before
+    assert fresh_handoff.active(r.svc.runtime, seat.name)['phase'] == 'waiting'
+    settle(seat, attempt)
+    r.svc.fresh_handoffs()
+    assert len(r.launches) == 1 and handoff.body in r.launches[0][-1]

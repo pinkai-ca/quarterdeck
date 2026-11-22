@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from quarterdeck import cli, harness, post, watch
+from quarterdeck import cli, harness, headlines, post, watch
 from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.ledger import Ledger
 from quarterdeck.ship import load
@@ -117,3 +117,32 @@ def test_alert_overflow_counts_held_seats_and_keeps_allowance_facts(tmp_path, mo
     assert 'walls' not in line and 'usage' not in line
     assert len(line) <= 160 and line.endswith(' · qd status')
     assert len(many.usage) == 10 * len(rows) and many.walls == ['long wall reason' * 20]
+
+
+def test_a_short_resting_hold_keeps_the_desk_when_only_the_desk_may_release_it():
+    pool = 'synthetic-' * 30
+    facts = watch.Facts('down', 0, 0, 0, relaunches=[
+        f'worker: resting subscription {pool}: the program rejected the sign-in; needs the desk (qd up worker)',
+        f'scout: resting move outcome unknown {pool}, needs the desk (qd up scout)',
+        f'builder: resting subscription {pool}: the program ended before sign-in was proved; '
+        'needs a human (qd up builder)',
+    ])
+    document = headlines.recover_document(headlines.cache_document(facts))
+    for compact in (False, True):
+        line = headlines.render(document, compact=compact)
+        assert 'the desk: qd up worker' in line and 'the desk: qd up scout' in line
+        assert 'qd up builder' in line and 'the desk: qd up builder' not in line
+        assert headlines.columns(line) <= headlines.WIDTH
+
+
+def test_relaunch_commands_survive_when_the_resting_hold_details_do_not_fit():
+    pool = 'synthetic-' * 30
+    facts = watch.Facts('down', 0, 0, 0, relaunches=[
+        f'worker: resting subscription {pool}: launch failed; needs a human (qd up worker)',
+        'builder: resting move outcome unknown, needs a human (qd up builder)',
+    ])
+    document = headlines.recover_document(headlines.cache_document(facts))
+    for compact in (False, True):
+        line = headlines.render(document, compact=compact)
+        assert 'qd up worker' in line and 'qd up builder' in line
+        assert headlines.columns(line) <= headlines.WIDTH

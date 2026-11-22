@@ -17,7 +17,7 @@ from pathlib import Path
 import socket
 import stat
 
-from . import durable, relaunch_intent, trusted_files
+from . import durable, relaunch_intent, resting_failover, trusted_files
 from .ship import Ship, ShipError
 
 FORMAT = 1
@@ -128,6 +128,7 @@ def window(data: dict, moment: datetime) -> tuple[int, bool]:
     return count, backwards
 
 
+@resting_failover.reading_pass()
 def pass_once(service) -> str | None:
     """One service pass: recover the ship if, and only if, its server is proved gone. Returns what it did."""
     ship, tmux, runtime = service.ship, service.tmux, service.ship.runtime
@@ -170,7 +171,8 @@ def pass_once(service) -> str | None:
     for seat, proved in launches:
         try:
             with seat._lifecycle(automatic=True):
-                if relaunch_intent.pending_server_choice(ship, seat.name):
+                if (relaunch_intent.pending_server_choice(ship, seat.name)
+                        or resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR):
                     choosing.append(seat.name)
                 else:
                     eligible.append((seat, proved))
@@ -209,7 +211,8 @@ def pass_once(service) -> str | None:
                     if seat.launched() != proved:
                         downed.append(seat.name)
                         continue
-                    if relaunch_intent.pending_server_choice(ship, seat.name):
+                    if (relaunch_intent.pending_server_choice(ship, seat.name)
+                            or resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR):
                         choosing.append(seat.name)
                         continue
                     seat.defer_opening = True  # observe startup on a later service pass

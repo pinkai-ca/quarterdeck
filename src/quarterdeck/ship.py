@@ -238,6 +238,7 @@ class Ship:
     # resolved at load when relative. The jail's work check walks a seat's declared cwd from this one.
     declared_workspace: Path | None = field(default=None, compare=False)
     program_pins: dict[str, ProgramPin] = field(default_factory=dict)
+    resting_subscription_hold_unit: str | None = None  # [ship], optional user service or timer
 
     @property
     def file(self) -> Path:
@@ -520,7 +521,16 @@ def _from_text(text: str, folder: Path) -> Ship:
         push_reminder=_push_reminder(head.get("push_reminder")),
         pr_screen=_pr_screen(data.get("pr_screen")),
         program_pins=_program_pins(data.get("programs", {}), folder),
+        resting_subscription_hold_unit=_resting_subscription_hold_unit(head.get("resting_subscription_hold_unit")),
     )
+
+
+def _resting_subscription_hold_unit(value):
+    from .unit_hold import valid_unit
+
+    if value is not None and not valid_unit(value):
+        raise ShipError('ship.resting_subscription_hold_unit must name a systemd user .service or .timer unit')
+    return value
 
 
 def _program_pins(programs: object, folder: Path) -> dict[str, ProgramPin]:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import json
 import re
 
-from . import alarms, compaction, idle, lifecycle, pending, post, post_dir, recovery, relaunch_intent
+from . import alarms, compaction, idle, lifecycle, pending, post, post_dir, recovery, relaunch_intent, resting_failover
 from .harness import resume_target
 from .ship import ShipError
 
@@ -106,6 +106,7 @@ def _unavailable(seat, launched, pane):
     return pid_dead(launched.pid) is True
 
 
+@resting_failover.reading_pass()
 def request(seat, *, reason, caller=None, expected_launch=None, service=None, restart=False,
             pool=None, enclosed=False, immediate=None, ready=None):
     """Stage once per live launch, or start immediately when this program cannot take a turn.
@@ -127,6 +128,7 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
     store = service.store if service is not None else post.Store(runtime)
     try:
         with seat._lifecycle(automatic=True):
+            resting_failover.require_clear(seat)
             launched = seat.launched()
             launch = compaction.key_for(launched)
             if (restart or expected_launch is not None) and compaction.key_for(expected_launch) != launch:
@@ -300,6 +302,7 @@ def _ready(service, seat, data, order, launched):
     return False, result
 
 
+@resting_failover.reading_pass()
 def tick(service, seat):
     runtime, name = seat.ship.runtime, seat.name
     data = None if seat.session.human else load(runtime, name)
@@ -313,6 +316,8 @@ def tick(service, seat):
         if data['phase'] == 'failed' and 'problem' in data and data['failed_launch'] == compaction.launch_key(seat):
             raise ShipError(data['problem'])  # keep the hold until another launch establishes a new outcome
         return
+    if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
+        return
     observed, readiness, destination = data, None, None
     pool = observed.get('pool')
     if observed['phase'] == 'waiting' and pool is not None:
@@ -323,6 +328,8 @@ def tick(service, seat):
             # This can refresh usage with a provider call. Reprove readiness before using its result.
             destination = service.select_destination(seat, pool)
     with seat._lifecycle(automatic=True):
+        if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
+            return
         data = active(runtime, name)
         if data is None:
             return

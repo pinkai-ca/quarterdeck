@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import trusted_files
-from . import durable, input_receipt, post
+from . import durable, input_receipt, post, resting_failover
 from .ship import ShipError
 from .turn_failure import REFUSAL, current, describe
 
@@ -217,6 +217,7 @@ def _publish(store: post.Store, message: post.Message) -> None:
     store.write(message)
 
 
+@resting_failover.reading_pass()
 def run(service: Service) -> None:
     """Each seat's step on its own: a seat's refusal failure (its journal, a notice, its files) is logged once
     while it stands, and never stops the next seat."""
@@ -251,10 +252,12 @@ def step(service: Service, seat: Seat) -> None:
             service.log('refusal', seat=seat.name, stage='launched', successor=launch['at'])
         elif launch is None:
             _tell(service, seat, event)
+            if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
+                return
             event['stage'], event['reason'] = 'held', 'the automatic fresh start was interrupted; qd up'
             save(runtime, seat.name, events)
             from . import relaunch_intent  # the hold keeps the seat down until a person acts
-            relaunch_intent.clear(runtime, seat.name, 'its refusal hold')
+            relaunch_intent.clear(runtime, seat.name, 'its refusal hold', keep_resting=True)
         else:
             relaunch(service, seat, events, event)
         return
@@ -361,11 +364,13 @@ def relaunch(service: Service, seat: Seat, events: list[dict], event: dict) -> N
         from . import relaunch_intent
         with relaunch_intent.section(service, seat, 'refusal', resume=False):
             proof = seat.fresh()  # law: context-is-cache -- every open message but the refused one, in full
+    except resting_failover.Held:
+        return  # leave the notified refusal claimed until the resting hold clears
     except ShipError as error:
         # Held, never retried: the quarantine and the notice stand, and a person or the systems seat starts it fresh.
         event['stage'], event['reason'] = 'held', f'the automatic fresh start failed: {error}'
         save(service.runtime, seat.name, events)
-        relaunch_intent.clear(service.runtime, seat.name, 'its refusal hold')
+        relaunch_intent.clear(service.runtime, seat.name, 'its refusal hold', keep_resting=True)
         service.log('error', step='refusals', seat=seat.name, error=str(error), stage='held')
         return
     event['stage'], event['successor'] = 'launched', (launch_key(seat) or {}).get('at')

@@ -154,6 +154,8 @@ The modules that the framework table does not list, the module of each part amon
 | `lifecycle.py` | the seat-transition claim that lifecycle acts and ordinary delivery share: an explicit act waits a bounded time for it, a delivery never waits |
 | `model_mismatch.py` | differences between a seat's recorded model and the ship file, and one fixed notice to the systems seats for each |
 | `move_hold.py` | expiring idle observations and the service's decision stage at a wall, kept for display only |
+| `resting_failover.py` | exceptional automatic subscription moves, proven usage eligibility and durable per-generation launch claims |
+| `unit_hold.py` | read-only systemd user unit and timer evidence for the ship's optional resting subscription hold |
 | `order_attribution.py` | the order a turn is charged to, from reply threads and timestamped evidence, never from prose |
 | `pane_obstruction.py` | one small marker that names why the door held a paste, such as a pane too short |
 | `pending_lifecycle.py` | journal retirement by the journal's writer, and the last exact join of a retiring launch |
@@ -226,7 +228,7 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | `claude_held_box.py` | Claude's exact-edge word wraps in the Door's held composer comparison |
 | `claude_limits.py` | Claude's native allowance fields, model families and safe shape diagnostics |
 | `claude_extra_usage.py` | timestamped refusal metadata, status and doctor wording, and durable private Desk notices |
-| `claude_sign_in.py` | Claude access and renewal evidence for login alerts and usage preflight |
+| `claude_sign_in.py` | Claude access and renewal evidence for login alerts, usage preflight and resting subscription identity |
 | `claude_statusline.py` | Claude Code's default footer, run as a standalone standard-library script |
 | `claude_record.py` | guarded streaming Claude JSON lines, bounded retained native evidence and raw prefix proof |
 | `claude_watch.py` | recorded watch output that a tool consumed, for attribution only, never a receipt |

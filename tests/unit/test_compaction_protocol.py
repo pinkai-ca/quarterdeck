@@ -17,6 +17,7 @@ from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship, ShipError
 from tests.compaction_shapes import AT, Native
+from .resting_attempts import UNSETTLED, save_attempt, settle
 
 
 @pytest.fixture(params=['claude', 'codex'])
@@ -994,3 +995,21 @@ def test_compacted_twice_record_unknown_and_screen_showing_work_stays_held_with_
     shown[0] = 'rest-nothing-running.txt'  # the work ends; the same readiness goes at the next gate
     compaction.tick(w.seat)
     assert w.calls == ['down', 'fresh'] and hand in w.carried[-1]
+
+
+@pytest.mark.parametrize('phase', UNSETTLED)
+def test_ready_compaction_waits_for_an_intentless_resting_move(world, phase):
+    w = world
+    ready(w)
+    w.source[0].result()
+    w.source[0].finish()
+    data = compaction.load(w.svc.runtime, w.seat.name)
+    record, reading, _ = compaction.current(w.seat)
+    assert compaction.obstruction(w.seat, data, record, reading) is None
+    _, attempt = save_attempt(w.seat, phase)
+    assert 'qd up worker' in compaction.obstruction(w.seat, data, record, reading)
+    compaction.tick(w.seat)
+    assert not w.calls and compaction.load(w.svc.runtime, w.seat.name)['ready'] == data['ready']
+    settle(w.seat, attempt)
+    compaction.tick(w.seat)
+    assert w.calls == ['down', 'fresh']
