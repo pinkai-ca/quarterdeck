@@ -19,6 +19,7 @@ from tests.conftest import FIXTURES
 RULE = '─' * 100
 MODE = '  ⏵⏵ bypass permissions on'
 FEEDBACK_DRAFT = '  ⏵⏵ bypass permissions on (shift+tab to cycle) · 1 feedback draft'
+SHELL_AND_FEEDBACK_DRAFT = '  ⏵⏵ bypass permissions on · 1 shell · 1 feedback draft'
 
 
 def fixture(version, name):
@@ -50,6 +51,12 @@ def test_one_feedback_draft_with_the_cycling_hint_leaves_the_composer_at_rest():
     screen = drawn(FEEDBACK_DRAFT)
     assert screen.box == '' and screen.working is False
     assert ClaudeHarness().background(screen, '2.1.317') == ()
+
+
+def test_one_feedback_draft_with_one_shell_reports_the_shell():
+    screen = drawn(SHELL_AND_FEEDBACK_DRAFT)
+    assert screen.box == '' and screen.working is False
+    assert ClaudeHarness().background(screen, '2.1.317') == (('shell', 1),)
 
 
 def test_a_panel_below_the_line_is_not_a_measured_rest():
@@ -101,6 +108,14 @@ def test_a_hint_beside_the_line_on_2_1_317_is_neither_work_nor_rest(name):
     ('2.1.317', MODE + ' · 1 feedback draft'),
     ('2.1.317', MODE + ' · 1 shell, 1 monitor, 1 feedback draft'),
     ('2.1.317', FEEDBACK_DRAFT + ' · ← for agents'),
+    ('2.1.317', MODE + ' · 2 shells · 1 feedback draft'),
+    ('2.1.317', MODE + ' · 1 shell, 1 monitor · 1 feedback draft'),
+    ('2.1.317', MODE + ' · 1 shell · 2 feedback drafts'),
+    ('2.1.317', MODE + ' · 1 shell, 1 feedback draft'),
+    ('2.1.317', SHELL_AND_FEEDBACK_DRAFT[1:]),
+    ('2.1.322', SHELL_AND_FEEDBACK_DRAFT),
+    ('2.1.325', SHELL_AND_FEEDBACK_DRAFT),
+    (None, SHELL_AND_FEEDBACK_DRAFT),
     # hints the program draws beside or in place of the line
     ('2.1.317', MODE + ' (shift+tab to cycle) · ← for agents'),
     ('2.1.317', MODE + ' (shift+tab to cycle) · esc to interrupt'),

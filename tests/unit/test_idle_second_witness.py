@@ -31,6 +31,7 @@ MODE = '  ⏵⏵ bypass permissions on'
 NOTHING = MODE + ' (shift+tab to cycle)'
 ONE_SHELL = MODE + ' · 1 shell'
 FEEDBACK_DRAFT = NOTHING + ' · 1 feedback draft'
+SHELL_AND_FEEDBACK_DRAFT = ONE_SHELL + ' · 1 feedback draft'
 UNKNOWN = idle.Hold('tools-unknown', 'tool state unknown')
 
 
@@ -416,9 +417,15 @@ def test_every_live_path_applies_on_the_record_and_the_screen(case, monkeypatch,
     assert move_hold.reading(built.seat) is None
 
 
-def test_waiting_pool_move_proceeds_when_the_measured_feedback_draft_is_drawn(case, monkeypatch):
-    unmeasured = FEEDBACK_DRAFT.replace('1 feedback draft', '2 feedback drafts')
-    built = case(unread(), text(unmeasured), human=True)
+@pytest.mark.parametrize(('bottom', 'tools', 'alone', 'hold'), [
+    pytest.param(FEEDBACK_DRAFT, (OLDER_CALL, WATCH_CALL), False, None, id='cycling-hint'),
+    pytest.param(SHELL_AND_FEEDBACK_DRAFT, (OLDER_CALL, WATCH_CALL), True, None, id='own-lone-watch'),
+    pytest.param(SHELL_AND_FEEDBACK_DRAFT, (OLDER_CALL,), True, 'tools-pending', id='other-shell'),
+    pytest.param(SHELL_AND_FEEDBACK_DRAFT, (OLDER_CALL, WATCH_CALL), False, 'tools-pending', id='watch-not-alone'),
+])
+def test_waiting_pool_move_with_a_measured_feedback_draft(case, monkeypatch, bottom, tools, alone, hold):
+    unmeasured = bottom.replace('1 feedback draft', '2 feedback drafts')
+    built = case(unread(active_tools=tools), text(unmeasured), human=True, alone=alone)
     svc = built.service(monkeypatch)
     seat = built.seat
     seat.declaration = SimpleNamespace(pools=seat.spec.pools, for_pool=lambda pool: pool)
@@ -431,6 +438,8 @@ def test_waiting_pool_move_proceeds_when_the_measured_feedback_draft_is_drawn(ca
     def move(pool, *, ready):
         assert ready(), 'the idle proof still holds at the move'
         built.moved.append(pool)
+        seat.pool = SimpleNamespace(name=pool)
+        built.launch.pid += 1
         return 'synthetic move proof'
 
     seat.failover_to = move
@@ -439,10 +448,19 @@ def test_waiting_pool_move_proceeds_when_the_measured_feedback_draft_is_drawn(ca
     assert svc.request_metadata['select_wait'] and svc.request_wait[0] == 'tools-unknown'
     assert built.moved == []
 
-    built.shown = text(FEEDBACK_DRAFT)
+    built.shown = text(bottom)
     reading = idle.reading(seat)
+    if hold is not None:
+        assert reading.hold.dimension == hold and reading.witness == idle.RECORD_AND_SCREEN
+        for _ in range(2):
+            assert svc.select_request(seat, 'pool-oak', request) is None
+            assert svc.request_metadata['select_wait'] and svc.request_wait[0] == hold
+        assert built.moved == []
+        return
+
     assert reading.hold is None and reading.witness == idle.RECORD_AND_SCREEN
     assert 'moved to pool-oak from pool-willow' in svc.select_request(seat, 'pool-oak', request)
+    assert 'its launch changed or ended' in svc.select_request(seat, 'pool-oak', request)
     assert built.moved == ['pool-oak']
 
 
