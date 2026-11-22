@@ -22,6 +22,7 @@ def test_check_child_can_open_a_session_on_the_creators_server(tmp_path, monkeyp
     command.write_text(f'''#!{sys.executable}
 import os, sys
 sys.path.insert(0, {str(source)!r})
+from pathlib import Path
 from quarterdeck.ship import load
 from quarterdeck.tmux import Tmux
 assert 'TMUX' not in os.environ and 'TMUX_PANE' not in os.environ
@@ -29,6 +30,9 @@ server = Tmux.for_ship(load(os.environ['QD_SHIP']))
 assert server._owned is None
 assert server.sessions() == []
 session = server.new_session('synthetic-check')
+pane = server.new_window('synthetic-check', 'stand-in', Path(os.environ['QD_SHIP']), ['cat'])
+geometry = server.run('display-message', '-p', '-t', pane.id, '#{{session_attached}} #{{pane_height}}')
+assert geometry.strip() == '0 50', geometry
 server.kill_session_id(session)
 print('synthetic observer completed once')
 ''')
@@ -131,13 +135,23 @@ def test_bootstrap_uses_creator_identity_and_restores_environment(monkeypatch, i
     def kill_session_id(value):
         assert value is identity
         events.append('retired')
-    server = SimpleNamespace(new_session=new_session, kill_session_id=kill_session_id)
+
+    def size(*args):
+        assert 'TMUX' not in os.environ and 'TMUX_PANE' not in os.environ
+        events.append(args)
+        return '117x24\n'
+
+    server = SimpleNamespace(new_session=new_session, kill_session_id=kill_session_id, run=size)
     if failure:
         with pytest.raises(TmuxError, match='synthetic startup failure'):
             daily_live.start_private(server)
     else:
         daily_live.start_private(server)
-    assert events == (['started'] if failure else ['started', 'retired'])
+    assert events == (['started'] if failure else [
+        'started', 'retired',
+        ('show-options', '-gv', 'default-size'),
+        ('set-option', '-g', 'default-size', '117x50'),
+    ])
     for key in ('TMUX', 'TMUX_PANE'):
         assert os.environ.get(key) == ('synthetic-origin' if inherited else None)
 

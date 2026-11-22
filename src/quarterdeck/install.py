@@ -177,6 +177,11 @@ def git(repo: Path, *args: str) -> bytes:
     return done.stdout
 
 
+def _extract_commit(repo: Path, commit: str, folder: Path) -> None:
+    with tarfile.open(fileobj=io.BytesIO(git(repo, 'archive', '--format=tar', commit))) as archive:
+        archive.extractall(folder, filter='data')
+
+
 def previous_install(runtime: Path) -> dict | None:
     return installed(runtime)
 
@@ -593,6 +598,46 @@ def _proof(ship: Ship, fact: dict) -> tuple[str, list[str]]:
     return version, warnings
 
 
+def stage_disposable_copy(origin: Ship, disposable: Ship) -> Path:
+    """Install the origin's proved commit in an empty runtime without touching its live copy."""
+    from tempfile import TemporaryDirectory
+
+    selected = copy_state.select(origin.folder, mode=origin.code, mode_known=True)
+    if selected.qd is None:
+        raise ShipError(selected.warning or 'the originating ship has no installed copy')
+    if 'package_digest' not in selected.fact:
+        raise ShipError('the originating copy has no recorded package digest; use qd sync to prove it')
+    commit = selected.fact['commit']
+    repo = source_repo(origin)
+    runtime = disposable.runtime
+    runtime.mkdir(mode=0o700, exist_ok=True)
+    live = runtime / 'venv'
+    with TemporaryDirectory(prefix='archive-', dir=runtime) as staging_name:
+        staging = Path(staging_name)
+        try:
+            _extract_commit(repo, commit, staging)
+        except tarfile.TarError:
+            raise ShipError(f'could not unpack the disposable archive for {commit[:7]}') from None
+        environment = {name: value for name, value in os.environ.items()
+                       if not name.startswith(('PYTHON', 'PIP_'))}
+        environment.update(TMPDIR=str(runtime), PIP_CONFIG_FILE=os.devnull, PIP_NO_CACHE_DIR='1',
+                           PIP_DISABLE_PIP_VERSION_CHECK='1')
+        _run([sys.executable, '-I', '-m', 'venv', '--system-site-packages', '--without-pip', str(live)],
+             'making disposable ship environment', timeout=60, cwd=runtime, env=environment)
+        _run([str(live / 'bin/python'), '-I', '-m', 'pip', 'install', '--quiet', '--no-index', '--no-deps',
+              '--no-build-isolation', str(staging)], 'installing disposable ship commit',
+             timeout=60, cwd=runtime, env=environment)
+    fact = dict(commit=commit, ref=commit, at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                have_laws=selected.fact['have_laws'])
+    _proof(disposable, fact)
+    if fact['package_digest'] != selected.fact['package_digest']:
+        raise ShipError(f'disposable package does not match the recorded proof for {commit[:7]}')
+    if reason := copy_state.usable(live, fact):
+        raise ShipError(f'disposable copy is unusable: {reason}')
+    _save(runtime, dict(format=copy_state.FORMAT, current=fact))
+    return live / 'bin' / 'qd'
+
+
 def _snapshot_operation(ship: Ship, data: dict, kind: str, target: dict) -> dict:
     for role in ('venv.swap', BACKUP):
         if os.path.lexists(ship.runtime / role):
@@ -719,8 +764,7 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
             if not back:
                 staging = ship.runtime / 'upgrade' / pending['token']
                 staging.mkdir(parents=True)
-                with tarfile.open(fileobj=io.BytesIO(git(repo, 'archive', '--format=tar', commit))) as archive:
-                    archive.extractall(staging, filter='data')
+                _extract_commit(repo, commit, staging)
                 cause = 'resource declaration invalid'
                 resource_files = resources.plan(staging)
             proofs += _stop_and_snapshot(ship, data)

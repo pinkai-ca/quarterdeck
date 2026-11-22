@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import daily_live
-from quarterdeck.ship import load
+from quarterdeck import daily_live, install
+from quarterdeck.ship import ShipError, load
 
 
 @pytest.mark.parametrize('workspace_kind', ['project', 'ship', 'relative'])
@@ -79,7 +79,8 @@ cwd = "../project"
         # Workspace preparation precedes even opening the private server.
         check_copy(parent / origin.folder.name)
         return SimpleNamespace(socket='/synthetic/private/socket', close=lambda: True,
-                               new_session=lambda name: 'bootstrap', kill_session_id=lambda identity: None)
+                               new_session=lambda name: 'bootstrap', kill_session_id=lambda identity: None,
+                               run=lambda *args: '80x24\n')
 
     def run(argv, **kwargs):
         assert argv[-3:] == ['check', 'fake', '--minimal']
@@ -97,3 +98,35 @@ cwd = "../project"
     assert origin.file.read_text() == declaration
     assert sorted(origin.folder.iterdir()) == [origin.file]
     assert list(project.iterdir()) == []
+
+
+def test_default_disk_root_is_external_and_explicit_scratch_is_respected(tmp_path, monkeypatch):
+    monkeypatch.setattr(daily_live, 'memory_root', lambda: None)
+    monkeypatch.setattr(daily_live, 'SYSTEM_TMP', tmp_path / 'system-tmp')
+    explicit = tmp_path / 'explicit'
+    assert daily_live.ship_root(None) == daily_live.SYSTEM_TMP
+    assert daily_live.ship_root(explicit) == explicit
+
+
+def test_install_preparation_failure_removes_the_partial_throwaway(tmp_path, monkeypatch):
+    folder = tmp_path / 'origin'
+    folder.mkdir()
+    (folder / 'ship.toml').write_text('[ship]\nname = "origin"\n')
+    origin = load(folder)
+
+    def fail(original, copied):
+        assert original is origin
+        staging = copied.runtime / 'venv'
+        staging.mkdir(parents=True)
+        (staging / 'partial').touch()
+        raise ShipError('synthetic copy proof failure')
+
+    monkeypatch.setattr(install, 'stage_disposable_copy', fail)
+    monkeypatch.setattr(daily_live, 'open_private', lambda _: pytest.fail('started before copy was proved'))
+    result = daily_live.invoke(origin, 'fake', tmp_path / 'scratch', '/unused/checkout-qd')
+
+    assert result.exit_code is None
+    assert result.output == 'check did not finish: synthetic copy proof failure'
+    assert result.retained is None and result.socket is None
+    assert not Path(result.place).exists()
+    assert not origin.runtime.exists()

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
-from . import check_capacity, durable, harness as harnesses, post, program_use, ship as shipmod
+from . import check_capacity, durable, harness as harnesses, install, post, program_use, ship as shipmod
 from .ship import Ship, ShipError
 from .tmux import Tmux, TmuxError
 
@@ -228,13 +228,12 @@ def memory_root() -> Path | None:
     return None
 
 
-def ship_root(scratch: Path) -> Path:
-    """Throwaway ships live in memory when they can, and in this command's scratch otherwise."""
+def ship_root(scratch: Path | None) -> Path:
+    """Use memory when available, else explicit scratch or the system temporary directory."""
     found = memory_root()
     if found is not None:
         return found
-    scratch.mkdir(parents=True, exist_ok=True)
-    return scratch
+    return scratch if scratch is not None else SYSTEM_TMP
 
 
 def _bounded(text: str) -> str:
@@ -290,7 +289,8 @@ def open_private(ship_parent: Path) -> Tmux:
 
 def _child_env(folder: Path, socket: str) -> dict[str, str]:
     env = os.environ.copy()
-    for key in ("QD_SEAT", "TMUX", "TMUX_PANE", "TMUX_TMPDIR", "QD_DEFAULT_SHIP"):
+    for key in ("QD_SEAT", "TMUX", "TMUX_PANE", "TMUX_TMPDIR", "QD_DEFAULT_SHIP",
+                "QD_COPY_START", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE"):
         env.pop(key, None)
     env["QD_SHIP"] = str(folder)
     env["QD_TMUX_SOCKET"] = socket
@@ -298,7 +298,7 @@ def _child_env(folder: Path, socket: str) -> dict[str, str]:
 
 
 def start_private(tmux: Tmux) -> None:
-    """Only the creator starts the server; a check child is an observer.
+    """Start and size the private server before handing it to the check child.
 
     The creator API keeps exit-empty off. Retire the bootstrap session by its
     identity, leaving the empty server available until this creator closes it.
@@ -307,6 +307,8 @@ def start_private(tmux: Tmux) -> None:
     try:
         bootstrap = tmux.new_session('qd-daily-live-bootstrap')
         tmux.kill_session_id(bootstrap)
+        width = tmux.run('show-options', '-gv', 'default-size').strip().split('x', 1)[0]
+        tmux.run('set-option', '-g', 'default-size', f'{width}x50')
     finally:
         for key, value in previous.items():
             if value is not None:
@@ -361,20 +363,22 @@ def _stage_program_pin(origin: Ship, copied: Ship, program: str) -> None:
         raise shipmod.ProgramPinError(f"{program} pin {pin.path}: could not stage the executable: {error}") from None
 
 
-def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
+def invoke(origin: Ship, program: str, root: Path, qd: str | None = None) -> CheckRun:
     """``qd check PROGRAM --minimal`` with every copied seat's workspace inside the throwaway.
 
     The workspace sits beside the copied ship, outside its folder and away from the originating project.
     Remove both with the throwaway and its server afterward.
     """
     parent = root / f"qd-daily-live-{secrets.token_hex(8)}"
-    parent.mkdir(mode=0o700, parents=True, exist_ok=False)
+    owned = None
     tmux = None
     code: int | None = None
     output = ""
     socket = None
     retained = None
     try:
+        parent.mkdir(mode=0o700, parents=True, exist_ok=False)
+        owned = parent
         folder = parent / origin.folder.name
         shutil.copytree(origin.folder, folder, symlinks=True,
                         ignore=shutil.ignore_patterns("runtime", ".git", "__pycache__"))
@@ -386,6 +390,10 @@ def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
             declaration = shipmod.edit(declaration, f'seats.{name}', 'cwd', str(workspace))
         durable.replace_file(folder / 'ship.toml', declaration)
         _stage_program_pin(origin, copied, program)
+        if origin.code == "checkout":
+            qd = qd or installed_qd(origin)
+        else:
+            qd = str(install.stage_disposable_copy(origin, copied))
         tmux = open_private(parent)
         start_private(tmux)
         socket = tmux.socket
@@ -396,12 +404,12 @@ def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
         )
         code = completed.returncode
         output = _bounded(completed.stdout + completed.stderr)
-    except (OSError, TmuxError, shipmod.ProgramPinError) as error:
+    except (OSError, TmuxError, ShipError) as error:
         code = None
         output = _bounded(f"check did not finish: {error}")
     finally:
         try:
-            retained = _release(tmux, parent)
+            retained = _release(tmux, owned)
         except OSError as error:
             retained = f"throwaway retained at {parent}: {error}"
     return CheckRun(program, code, output, place=str(parent), socket=socket, retained=retained)
@@ -486,9 +494,8 @@ def run(ship: Ship, *, now: datetime | None = None, readings=None, history_error
                 if reason:
                     results[choice.program] = CheckRun(choice.program, None, '', not_tested=reason)
                     continue
-                root = ship_root(scratch or (ship.runtime / 'daily-live'))
-                binary = qd or installed_qd(ship)
-                results[choice.program] = check(ship, choice.program, root, binary)
+                root = ship_root(scratch)
+                results[choice.program] = check(ship, choice.program, root, qd)
         except Exception as error:  # a stand-in or a copy that raises still has to be reported
             results[choice.program] = CheckRun(choice.program, None, _bounded(f"check did not finish: {error}"))
     shipmod.fence(ship)
@@ -507,7 +514,7 @@ def run(ship: Ship, *, now: datetime | None = None, readings=None, history_error
 def installed_qd(ship: Ship) -> str:
     """The ship's installed command when it has one, otherwise the command now running."""
     candidate = ship.runtime / "venv" / "bin" / "qd"
-    if os.access(candidate, os.X_OK):
+    if ship.code != "checkout" and os.access(candidate, os.X_OK):
         return str(candidate)
     invoked = Path(sys.argv[0])
     if invoked.is_file():
