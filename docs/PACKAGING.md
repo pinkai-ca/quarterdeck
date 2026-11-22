@@ -16,6 +16,7 @@ For maintainers and packagers: what travels with the code, and how `qd sync` tre
 
 ## Installing as a package
 
+- The package requires Python 3.12 or later. The tested environment is listed in the [Quick start](../README.md#quick-start).
 - The same list serves an ordinary install from a wheel or a source distribution.
 - An installed package leaves out the repository's tests, the test runner, the design documentation, and development ships such as `ships/default`. The package holds only the templates on the list.
 - A fresh install is accepted on two checks: `qd laws` run on the installed copy, and the drill, which is the all-hands exercise on stand-in programs.

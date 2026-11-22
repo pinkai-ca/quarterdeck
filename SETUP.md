@@ -6,6 +6,8 @@ A ship is one crew, with its orders and its record. You are commissioning one fo
 
 ## 1. Install
 
+Install with Python 3.12 or later, tmux 3.x and Git. The tested environment is listed in the [Quick start](README.md#quick-start).
+
 ```sh
 git clone https://github.com/pinkai-ca/quarterdeck.git
 cd quarterdeck

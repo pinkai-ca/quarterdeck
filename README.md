@@ -24,7 +24,9 @@ Quarterdeck is a command, `qd`, and one small service for each ship, on your mac
 
 ## Quick start
 
-You need Linux, with Python 3.12 or later, tmux 3.x and git; Quarterdeck itself uses Python's standard library only. macOS is not supported yet. Git needs your name and e-mail, set with `git config --global user.name` and `user.email`: setup commits what it writes. You also need at least one of the supported harnesses listed at the top, installed and with something to run on: a subscription you are signed in to, an API key, or a local model. Any of those harnesses will do, though Antigravity needs a second beside it, since setup gives it one seat only: a crew can sit on one harness or on several, so use what you already have and like.
+Quarterdeck was tested on Ubuntu 26.04.1 LTS with Linux 7.0.0-44-generic (x86_64), Python 3.14.4, tmux 3.6 and Git 2.53.0.
+
+To install, you need Python 3.12 or later, tmux 3.x and Git. Quarterdeck itself uses Python's standard library only. Set your name and e-mail with `git config --global user.name` and `user.email` so setup can commit what it writes. You also need at least one of the supported harnesses listed at the top, installed and with something to run on: a subscription you are signed in to, an API key, or a local model. Any of those harnesses will do, though Antigravity needs a second beside it, since setup gives it one seat only: a crew can sit on one harness or on several, so use what you already have and like.
 
 The agents run without approval prompts: Claude Code with its permission prompts bypassed, Codex with full access. An agent on a local model or other endpoint runs in a sandbox unless the ship's file says otherwise: for such an agent you need bubblewrap installed, and the model answering at its address.
 

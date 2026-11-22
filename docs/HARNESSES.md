@@ -17,7 +17,7 @@ A harness is the terminal coding program an agent runs in. Quarterdeck runs each
 
 ## On your own machine
 
-With a ship ([Quick start](../README.md#quick-start)):
+The [Quick start](../README.md#quick-start) lists the tested environment and shows how to set up a ship. Once your ship is set up, you can check the harnesses installed on your machine.
 
 ```sh
 qd doctor        # each installed harness's version, and whether your ship has proven that version

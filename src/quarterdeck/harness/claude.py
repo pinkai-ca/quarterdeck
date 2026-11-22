@@ -1333,8 +1333,8 @@ class ClaudeHarness(Harness):
     program = "claude"
     sign_in_command = ("claude", "auth", "login")
     sign_in_home_variable = "CLAUDE_CONFIG_DIR"
-    sign_in_note = ("Current docs place file-backed credentials in CLAUDE_CONFIG_DIR; macOS may use Keychain instead. "
-                    "File-backed pool readiness is still decided by doctor, not this hint.")
+    sign_in_note = ("Current Claude Code docs place file-backed credentials in CLAUDE_CONFIG_DIR. "
+                    "Use qd doctor to check whether the declared pool is ready.")
     sign_in_sources = ("https://code.claude.com/docs/en/cli-reference",
                        "https://code.claude.com/docs/en/authentication")
     home_variable = "CLAUDE_CONFIG_DIR"
