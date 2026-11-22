@@ -41,7 +41,7 @@ from . import ledger
 from .ledger import Ledger
 from .provenance import UNKNOWN
 from .post import Attempts, Store
-from .seat import SEAT_HOLDS, Seat, SelectionError, UnresolvedSeat, launch_pool_refusal, seats
+from .seat import SEAT_HOLDS, Seat, SelectionChanging, SelectionError, UnresolvedSeat, launch_pool_refusal, seats
 from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
     acquire_lock, alive, heartbeat_path, locked, read_heartbeat, remove_heartbeat, request, stale,
     start, stop, write_heartbeat,
@@ -661,6 +661,8 @@ class Service:
         self.log("ship", reloaded="declaration changed since this pass loaded it")
 
     def hold_selection(self, error: SelectionError) -> None:
+        if isinstance(error, SelectionChanging):
+            return  # a moving launch is read again on the next service pass
         from . import alarms
         reason = str(error)
         if self.told.get(error.seat) != reason:
@@ -712,10 +714,12 @@ class Service:
             return
         self.seat_holds_written = dict(holds)
 
-    def resolved_seats(self) -> list[Seat]:
+    def resolved_seats(self, *, retry_changing: str | None = None) -> list[Seat]:
         found = []
         for seat in seats(self.ship, self.tmux, False):
             if isinstance(seat, UnresolvedSeat):
+                if seat.name == retry_changing and isinstance(seat.error, SelectionChanging):
+                    raise seat.error  # keep this request queued for the next reading
                 self.hold_selection(seat.error)
             else:
                 from . import alarms
@@ -1396,7 +1400,8 @@ class Service:
                         raise
                     except SelectionError as error:
                         self.hold_selection(error)
-                        request_queue.hold(path, meta, 'selection', 'seat selection unknown or held')
+                        reason = str(error) if isinstance(error, SelectionChanging) else 'seat selection unknown or held'
+                        request_queue.hold(path, meta, 'selection', reason)
                         if 'control_confirmation' not in meta:
                             self.clear_request_claim(claim)
                         continue  # this request stays held; later healthy-seat requests still run
@@ -1584,7 +1589,8 @@ class Service:
             return self.relaunch_request(data)
         if kind == "select":  # the seats failover acts on: a seat whose selection is unknown is held, not guessed
             self.refresh_ship()
-            seat = next((s for s in self.resolved_seats() if s.name == data["seat"]), None)
+            name = data['seat']
+            seat = next((s for s in self.resolved_seats(retry_changing=name) if s.name == name), None)
             if seat is None:
                 return f"{data['seat']} not moved: its pool selection is unknown or held; inspect with qd status"
             return self.select_request(seat, str(data["pool"]), data)

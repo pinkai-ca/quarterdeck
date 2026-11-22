@@ -10,13 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, pending, post, quota, record_owner, seat as seatmod, service, ship as shipmod, watch
+from quarterdeck import alarms, cli, pending, post, quota, record_owner, seat as seatmod, service, ship as shipmod, watch
 from quarterdeck.harness import codex
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.synthetic_record import CodexShape
 from quarterdeck.harness.types import Screen
-from quarterdeck.seat import Launched, Seat
+from quarterdeck.seat import Launched, Seat, SelectionChanging, SelectionError
 from quarterdeck.service import Service
 from quarterdeck.tmux import Pane
 from .test_pool_choices import declaration
@@ -166,6 +166,102 @@ def test_invalid_selection_is_also_isolated_without_fallback(migrated, monkeypat
     assert rows['worker'].activity.state == 'unknown' and expected in rows['worker'].activity.detail
     assert rows['worker'].pool == rows['worker'].harness == 'unknown'
     assert rows['healthy'].activity.state == 'idle' and rows['healthy'].pool == 'first'
+
+
+@pytest.mark.parametrize('relaunched', [False, True], ids=['down-on-destination', 'up-on-destination'])
+def test_service_resolves_selection_read_across_a_pool_move(migrated, monkeypatch, relaunched):
+    r = migrated
+    old = r.worker.launched()
+    launch = r.worker.trusted / 'launch.json'
+    r.worker.move_to('first')
+    read_selection = Seat._selection_name
+    reads = 0
+
+    def move_before_reading_pool(seat):
+        nonlocal reads
+        if seat.name == 'worker':
+            reads += 1
+            if reads == 1:
+                # The reader already saw the source launch. Publish the move in lifecycle order.
+                launch.unlink()
+                r.live.pop(old.pane)
+                r.worker.move_to('second')
+                if relaunched:
+                    r.live['%3'] = Pane('%3', 'crew', 'worker', 303, 80, 24, False, False, None)
+                    Launched('%3', 303, post.now().isoformat(), 'second', None,
+                             ['claude'], 'synthetic', 'claude').write(launch)
+        return read_selection(seat)
+
+    svc = Service(r.ship, r.tmux)
+    try:
+        monkeypatch.setattr(Seat, '_selection_name', move_before_reading_pool)
+        resolved = {seat.name: seat for seat in svc.resolved_seats()}
+        assert reads == 2
+        assert (resolved['worker'].harness.name, resolved['worker'].pool.name) == ('claude', 'second')
+        assert resolved['worker'].is_up is relaunched
+        assert 'worker' not in svc.told
+        assert not alarms.path(r.ship.runtime, 'worker', 'selection').exists()
+    finally:
+        svc.ledger.close()
+
+
+@pytest.mark.parametrize('requesting', [False, True], ids=['service-scan', 'select-request'])
+def test_service_retries_later_if_two_moves_cross_the_selection_read(migrated, monkeypatch, requesting):
+    r = migrated
+    launch = r.worker.trusted / 'launch.json'
+    r.worker.move_to('first')
+    read_selection = Seat._selection_name
+    moves = iter([('second', 'claude', '%3', 303), ('first', 'codex', '%4', 404)])
+    reads = 0
+
+    def move_before_reading_pool(seat):
+        nonlocal reads
+        if seat.name == 'worker':
+            reads += 1
+            if move := next(moves, None):
+                pool, program, pane, pid = move
+                r.live.pop(r.worker.launched().pane)
+                launch.unlink()
+                r.worker.move_to(pool)
+                r.live[pane] = Pane(pane, 'crew', 'worker', pid, 80, 24, False, False, None)
+                Launched(pane, pid, post.now().isoformat(), pool, None,
+                         [program], 'synthetic', program).write(launch)
+        return read_selection(seat)
+
+    svc = Service(r.ship, r.tmux)
+    try:
+        monkeypatch.setattr(Seat, '_selection_name', move_before_reading_pool)
+        if requesting:
+            with pytest.raises(SelectionChanging, match='launch changed during the pool read'):
+                svc.answer({'kind': 'select', 'seat': 'worker', 'pool': 'second'})
+        else:
+            assert {seat.name for seat in svc.resolved_seats()} == {'healthy'}
+        assert reads == 2
+        assert 'worker' not in svc.told
+        assert not alarms.path(r.ship.runtime, 'worker', 'selection').exists()
+        resolved = {seat.name: seat for seat in svc.resolved_seats()}
+        assert reads == 3
+        assert (resolved['worker'].harness.name, resolved['worker'].pool.name) == ('codex', 'first')
+    finally:
+        svc.ledger.close()
+
+
+def test_service_holds_and_alarms_a_lasting_launch_selection_disagreement(migrated):
+    r = migrated
+    r.worker.move_to('second')  # the launch is still on first
+    reason = ('worker: selection unknown: saved launch and selected program disagree; '
+              'restore its pool declaration/selection')
+    svc = Service(r.ship, r.tmux)
+    try:
+        with pytest.raises(SelectionError) as refused:
+            svc.seat('worker')
+        assert type(refused.value) is SelectionError
+        assert refused.value.seat == 'worker' and str(refused.value) == reason
+        assert {seat.name for seat in svc.resolved_seats()} == {'healthy'}
+        assert svc.told['worker'] == reason
+        assert alarms.load(r.ship.runtime, 'worker', 'selection')['key'] == reason
+    finally:
+        svc.ledger.close()
 
 
 def test_selection_write_failure_cannot_destroy_the_only_current_launch(migrated, monkeypatch):

@@ -25,7 +25,7 @@ from .door import Door, Reading
 from .harness.capabilities import selection_label
 from .harness import reading_scope
 from .harness.base import record_fingerprint
-from .seat import SEAT_HOLDS, Seat, UnresolvedSeat, launch_pool_refusal, leftover_seats, seats
+from .seat import SEAT_HOLDS, Seat, SelectionChanging, UnresolvedSeat, launch_pool_refusal, leftover_seats, seats
 from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
 from .tmux import Tmux, TmuxError
@@ -1028,7 +1028,8 @@ def _run_step(step: str, seat, ctx: dict, store, attempts, latest) -> _Step:
                         ops.append(('pending', f"{name}: {message.short} {held}", 'append'))  # law: nothing-waits-silently
         elif step == 'unresolved':
             if isinstance(seat, UnresolvedSeat):
-                ops.append(('needs_human', name, 'append'))
+                if not isinstance(seat.error, SelectionChanging):
+                    ops.append(('needs_human', name, 'append'))
                 ops.append(('unknown', str(seat.error).partition(';')[0], 'append'))
                 return _Step(ops, stop=True)
         elif step == 'ending':

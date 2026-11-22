@@ -343,6 +343,10 @@ class SelectionError(ShipError):
         super().__init__(reason)
 
 
+class SelectionChanging(SelectionError):
+    """The launch changed while the selection was being read."""
+
+
 @dataclass(frozen=True)
 class UnresolvedSeat:
     ship: Ship
@@ -365,9 +369,6 @@ class Seat:
         self.ship, self.spec, self.tmux = ship, spec, tmux
         self._declaration = replace(spec, human_session=self.session.human)
         self.defer_opening = False  # service-owned seats advance the opening on later passes
-        # A launch of a seat with no launch on file reads a saved choice the ship file no longer declares as
-        # absent, so the declared order chooses (``launch_choice``); every other reader still refuses it.
-        self._launching = launching and not trusted_files.path(ship.runtime, spec.name, trusted_files.LAUNCH).exists()
         self.folder = ship.runtime / "seats" / spec.name  # its own: its jail may write all of it
         self.trusted = trusted_files.folder(ship.runtime, spec.name)  # what the service writes and trusts: no jail sees it
         if self.folder.is_dir():  # a seat that exists has both; reading a ship that has none makes nothing
@@ -379,32 +380,46 @@ class Seat:
         self._prepared_observation: tuple[str | None, str | None] | None = None
         self._check_opening: str | None = None  # only temporary_seat's task-only check lifetime sets this
         try:
-            try:
-                launched = self.launched() if spec.pool_choices or tmux is not None else None
-            except LaunchUnreadable:
-                if spec.pool_choices:
-                    raise
-                launched = None  # a plain selection can still be read; launch readers report the error
-            if (launched is not None and launched.pool not in spec.pools
-                    and (tmux is None or self._launch_is_live(launched))):
-                saved = self._selection_name()
-                if saved is not None and saved != launched.pool:
-                    raise ShipError(f"{self.name}: saved launch and selected pool disagree; restore its pool declaration/selection")
-                reader = record_owner.launch_reader(launched)
-                if reader is None:
-                    raise ShipError(f"{self.name}: the saved launch on {launched.pool!r} has no known program")
-                self._withdrawn_launch = launched
-                self.spec = replace(self._declaration, harness=reader, model=None, effort=None,
-                                    model_mode=None, effort_mode=None, settings={})
-            else:
-                self.spec = self._declaration.for_pool(self.pool.name)
+            self.spec = self._read_selection(launching)
             self.harness = self._adapter_for(self.spec)
-            if spec.pool_choices and launched is not None and self._withdrawn_launch is None:
-                if launched.pool != self.pool.name or record_owner.launch_reader(launched) != self.spec.harness:
-                    raise ShipError(f"{self.name}: saved launch and selected program disagree; restore its pool declaration/selection")
+        except SelectionError:
+            raise
         except (ShipError, OSError, ValueError, TypeError) as error:
             reason = str(error).removeprefix(f'{spec.name}: ')
             raise SelectionError(spec.name, f"{spec.name}: selection unknown: {reason}") from error
+
+    def _read_selection(self, launching: bool) -> SeatSpec:
+        # A move removes the old launch before saving the new selection. A disagreement only holds if the
+        # same launch was seen on both sides of the pool read. If the launch changed, try one fresh pair.
+        for _ in range(2):
+            try:
+                launched = self.launched() if self.spec.pool_choices or self.tmux is not None else None
+            except LaunchUnreadable:
+                if self.spec.pool_choices:
+                    raise
+                launched = None  # a plain selection can still be read; launch readers report the error
+            self._launching = launching and launched is None  # only a down seat may replace an undeclared choice
+            saved = self._selection_name()
+            if (launched is not None and launched.pool not in self.spec.pools
+                    and (self.tmux is None or self._launch_is_live(launched))):
+                if saved is None or saved == launched.pool:
+                    reader = record_owner.launch_reader(launched)
+                    if reader is None:
+                        raise ShipError(f"{self.name}: the saved launch on {launched.pool!r} has no known program")
+                    self._withdrawn_launch = launched
+                    return replace(self._declaration, harness=reader, model=None, effort=None,
+                                   model_mode=None, effort_mode=None, settings={})
+                disagreement = 'saved launch and selected pool disagree'
+            else:
+                pool = self._selected_pool(saved, launched)
+                spec = self._declaration.for_pool(pool.name)
+                if not (spec.pool_choices and launched is not None
+                        and (launched.pool != pool.name or record_owner.launch_reader(launched) != spec.harness)):
+                    return spec
+                disagreement = 'saved launch and selected program disagree'
+            if self.launched() == launched:
+                raise ShipError(f"{self.name}: {disagreement}; restore its pool declaration/selection")
+        raise SelectionChanging(self.name, f'{self.name}: selection unknown: launch changed during the pool read')
 
     @property
     def name(self) -> str:
@@ -445,13 +460,16 @@ class Seat:
             # If the ship removed the pool itself, only its name remains. There is no credential or destination.
             return self.ship.pools.get(old) or Pool(old, 'unknown')
         name = self._selection_name()
+        launched = self.launched() if self.spec.pool_choices and name is None else None
+        return self._selected_pool(name, launched)
+
+    def _selected_pool(self, name: str | None, launched: Launched | None) -> Pool:
         if self.spec.pool_choices:
             if name is not None and name not in self.spec.pools and self._launching:
                 return self.ship.pool(self.spec.pools[0])  # the ship file dropped it: the declared order chooses
             if name is not None and name not in self.spec.pools:
                 raise ShipError(f"{self.name}: saved pool {name!r} has no declared choice; restore its declaration")
             if name is None:
-                launched = self.launched()
                 if launched is not None:
                     name = launched.pool
                     if name not in self.spec.pools:
