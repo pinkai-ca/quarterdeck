@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import door, idle, inbox_watch, move_hold, person_quiet, quota, recovery, watch
+from quarterdeck import door, idle, inbox_watch, move_hold, person_quiet, quota, recovery, request_queue, service, watch
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.types import ActiveTool, State, Tokens, Turn
 from quarterdeck.service import Service
@@ -30,6 +30,7 @@ RULE = '─' * 100
 MODE = '  ⏵⏵ bypass permissions on'
 NOTHING = MODE + ' (shift+tab to cycle)'
 ONE_SHELL = MODE + ' · 1 shell'
+FEEDBACK_DRAFT = NOTHING + ' · 1 feedback draft'
 UNKNOWN = idle.Hold('tools-unknown', 'tool state unknown')
 
 
@@ -413,6 +414,36 @@ def test_every_live_path_applies_on_the_record_and_the_screen(case, monkeypatch,
         assert answer == f'{proof}\nat rest by its record and its screen', 'the proof line names both witnesses'
         assert built.moved == ['restart' if path == 'relaunch' else 'fresh']
     assert move_hold.reading(built.seat) is None
+
+
+def test_waiting_pool_move_proceeds_when_the_measured_feedback_draft_is_drawn(case, monkeypatch):
+    unmeasured = FEEDBACK_DRAFT.replace('1 feedback draft', '2 feedback drafts')
+    built = case(unread(), text(unmeasured), human=True)
+    svc = built.service(monkeypatch)
+    seat = built.seat
+    seat.declaration = SimpleNamespace(pools=seat.spec.pools, for_pool=lambda pool: pool)
+    seat._accept_pool = lambda declaration, pool: None
+    seat.retiring = lambda: None
+    svc.ship = SimpleNamespace(pool=lambda pool: pool)
+    svc.request_metadata = {}
+    monkeypatch.setattr(service, 'Door', door.Door)
+
+    def move(pool, *, ready):
+        assert ready(), 'the idle proof still holds at the move'
+        built.moved.append(pool)
+        return 'synthetic move proof'
+
+    seat.failover_to = move
+    request = {'origin': request_queue.launch_binding(seat)}
+    assert svc.select_request(seat, 'pool-oak', request) is None
+    assert svc.request_metadata['select_wait'] and svc.request_wait[0] == 'tools-unknown'
+    assert built.moved == []
+
+    built.shown = text(FEEDBACK_DRAFT)
+    reading = idle.reading(seat)
+    assert reading.hold is None and reading.witness == idle.RECORD_AND_SCREEN
+    assert 'moved to pool-oak from pool-willow' in svc.select_request(seat, 'pool-oak', request)
+    assert built.moved == ['pool-oak']
 
 
 @pytest.mark.parametrize('path', ['failover', 'select', 'relaunch'])

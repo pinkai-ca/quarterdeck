@@ -1,6 +1,6 @@
 """Claude Code's bottom line and working sign, as the idle proof's second witness reads them.
 
-Every form was measured on the ship's own seats on 15 November 2026, through `qd --json watch`: 2.1.317 on the
+The original forms were measured on the ship's own seats on 15 November 2026, through `qd --json watch`: 2.1.317 on the
 crew's and the office's seats, 2.1.325 on the desk's, where a helper agent was started in the background to see its
 panel appear below the line and go when it ended; the same was then captured for 2.1.317 on a throwaway seat by a
 builder, where no seat of the ship had ever run one. The screens here are synthetic copies of those shapes: the
@@ -18,6 +18,7 @@ from tests.conftest import FIXTURES
 
 RULE = '─' * 100
 MODE = '  ⏵⏵ bypass permissions on'
+FEEDBACK_DRAFT = '  ⏵⏵ bypass permissions on (shift+tab to cycle) · 1 feedback draft'
 
 
 def fixture(version, name):
@@ -43,6 +44,12 @@ def test_each_measured_bottom_line_names_what_runs_in_the_background(version, na
     screen = fixture(version, name)
     assert screen.box == '' and screen.working is False, 'the composer at rest'
     assert ClaudeHarness().background(screen, version) == names
+
+
+def test_one_feedback_draft_with_the_cycling_hint_leaves_the_composer_at_rest():
+    screen = drawn(FEEDBACK_DRAFT)
+    assert screen.box == '' and screen.working is False
+    assert ClaudeHarness().background(screen, '2.1.317') == ()
 
 
 def test_a_panel_below_the_line_is_not_a_measured_rest():
@@ -84,6 +91,16 @@ def test_a_hint_beside_the_line_on_2_1_317_is_neither_work_nor_rest(name):
     ('2.1.317', MODE + ' · 1 shell, 1 agent'),
     ('2.1.317', MODE + ' · 1 agent'),
     ('2.1.317', MODE + ' · 1 shell, 1 monitor, 1 agent'),
+    # only the measured feedback draft footer, with its original spacing
+    ('2.1.325', FEEDBACK_DRAFT),
+    ('2.1.325', FEEDBACK_DRAFT + ' · ⧉ cedar'),
+    ('2.1.322', FEEDBACK_DRAFT),
+    ('2.1.317', FEEDBACK_DRAFT[1:]),
+    ('2.1.317', FEEDBACK_DRAFT.replace(' · ', '  · ')),
+    ('2.1.317', FEEDBACK_DRAFT.replace('1 feedback draft', '2 feedback drafts')),
+    ('2.1.317', MODE + ' · 1 feedback draft'),
+    ('2.1.317', MODE + ' · 1 shell, 1 monitor, 1 feedback draft'),
+    ('2.1.317', FEEDBACK_DRAFT + ' · ← for agents'),
     # hints the program draws beside or in place of the line
     ('2.1.317', MODE + ' (shift+tab to cycle) · ← for agents'),
     ('2.1.317', MODE + ' (shift+tab to cycle) · esc to interrupt'),
