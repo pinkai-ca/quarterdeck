@@ -559,6 +559,13 @@ def read_usage(service, pool, reader) -> Usage | None:
     service.ledger.prepare_usage()  # settle prior intended pacing before another provider attempt
     if not strict_ready(service, pool, reader):
         return None  # not a new attempt: callers must not record or slide its floor
+    read_metadata = getattr(reader, "sign_in_metadata", None)
+    if read_metadata is not None and pool.kind == "subscription" and pool.config_dir is not None and reader.credential_file:
+        metadata = read_metadata(pool.config_dir / reader.credential_file)
+        if metadata is not None:
+            now = datetime.now(timezone.utc)
+            if metadata[0] <= now.timestamp():
+                return Usage((), now, "access expired, waiting for renewal", called=False)
     if not getattr(reader, "private_usage_home", False):
         return reader.usage(pool)
     from . import credential

@@ -15,7 +15,7 @@ import urllib.request
 
 import pytest
 
-from quarterdeck import quota, service as servicemod
+from quarterdeck import quota, service as servicemod, watch
 from quarterdeck.harness import claude
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.service import Service
@@ -134,6 +134,7 @@ def ship_service(tmp_path, monkeypatch):
 
     monkeypatch.setattr(quota, "time", SimpleNamespace(monotonic=lambda: clock.mono))
     monkeypatch.setattr(quota, "datetime", ClockDatetime)
+    monkeypatch.setattr(claude, "datetime", ClockDatetime)
     monkeypatch.setattr(servicemod.post, "now", lambda: clock.wall)
     svc = Service(ship, SimpleNamespace())
     yield ship, svc, clock
@@ -149,6 +150,74 @@ def usage_log(svc) -> list[dict]:
 def advance(clock, seconds):
     clock.mono += seconds
     clock.wall += timedelta(seconds=seconds)
+
+
+def write_access_deadline(pool, expires_at):
+    (pool.config_dir / ".credentials.json").write_text(json.dumps({
+        "claudeAiOauth": {"accessToken": TOKEN, "expiresAt": expires_at},
+    }))
+
+
+@pytest.mark.parametrize("deadline", ["elapsed", "valid", "unreadable", "absent"])
+def test_subscription_usage_checks_the_access_deadline(ship_service, monkeypatch, deadline):
+    ship, svc, clock = ship_service
+    pool = ship.pools["claude-primary"]
+    endpoint = Endpoint(monkeypatch)
+    if deadline != "absent":
+        deadlines = {"elapsed": clock.wall.timestamp(), "valid": (clock.wall + timedelta(days=1)).timestamp() * 1000,
+                     "unreadable": "synthetic unreadable deadline"}
+        write_access_deadline(pool, deadlines[deadline])
+
+    usage = quota.read_usage(svc, pool, ClaudeHarness())
+    if deadline == "elapsed":
+        assert usage.windows == () and usage.error == "access expired, waiting for renewal"
+        assert not usage.called and usage.retry_after is None and endpoint.calls == 0
+    else:
+        assert usage.called and usage.error is None and usage.windows and endpoint.calls == 1
+
+
+def test_expiry_keeps_last_good_figures_in_status_until_the_next_due_read(ship_service, monkeypatch):
+    ship, svc, clock = ship_service
+    ship.pools.pop("claude-secondary")
+    pool = ship.pools["claude-primary"]
+    first = {"utilization": 42, "resets_at": GOOD["seven_day"]["resets_at"]}
+    endpoint = Endpoint(monkeypatch, ok({"five_hour": first}), ok({"five_hour": {**first, "utilization": 59}}))
+    write_access_deadline(pool, clock.wall.timestamp() + 100)
+    quota.refresh_declared(svc)
+    assert endpoint.calls == 1
+    original = svc.ledger.pool_windows(pool.name)
+    assert original
+
+    advance(clock, ClaudeHarness.usage_interval)
+    quota.refresh_declared(svc)
+    assert endpoint.calls == 1 and svc.ledger.pool_windows(pool.name) == original
+    log = usage_log(svc)[-1]
+    assert log["no_call"] and log["error"] == "access expired, waiting for renewal" and "backoff" not in log
+
+    def status():
+        return "\n".join(watch.render_table(watch.status_reading(ship, None, collected=SimpleNamespace())))
+
+    stale = status()
+    assert "42% used" in stale and "LAST KNOWN" in stale and "access expired, waiting for renewal" in stale
+    write_access_deadline(pool, (clock.wall + timedelta(days=1)).timestamp())
+    quota.refresh_declared(svc)
+    assert endpoint.calls == 1
+    advance(clock, ClaudeHarness.usage_interval)
+    quota.refresh_declared(svc)
+    assert endpoint.calls == 2
+    recovered = status()
+    assert "59% used" in recovered and "access expired" not in recovered and "LAST KNOWN" not in recovered
+
+
+def test_an_expired_destination_is_unreadable_to_failover(ship_service, monkeypatch):
+    ship, svc, clock = ship_service
+    pool = ship.pools["claude-secondary"]
+    endpoint = Endpoint(monkeypatch)
+    write_access_deadline(pool, clock.wall.timestamp() - 3600)
+    seat = SimpleNamespace(name="worker", spec=SeatSpec("worker", "crew", "worker", "claude", tuple(ship.pools)))
+    assert not svc.known_open(seat, pool.name) and endpoint.calls == 0
+    assert not svc.ledger.walled(pool.name, ship)
+    assert "its usage could not be read: access expired, waiting for renewal" in svc.log_path.read_text()
 
 
 def test_a_live_seats_pool_is_read_every_five_minutes_and_held_by_retry_after(ship_service, monkeypatch):
