@@ -15,7 +15,7 @@ from tests.authentication_shapes import START, write_record
 
 
 @pytest.mark.parametrize('mode', [
-    'valid-newer', 'renewable', 'refresh-key-only', 'expired-grant', 'missing-refresh', 'no-renewal-deadline',
+    'valid-newer', 'renewable', 'null-refresh', 'expired-grant', 'missing-refresh', 'no-renewal-deadline',
     'invalid-expiry', 'invalid-renewal-deadline', 'invalid-file', 'absent-file', 'human', 'human-renewable',
 ])
 def test_recorded_authentication_is_visible_and_only_eligible_crew_resumes(tmp_path, monkeypatch, mode):
@@ -25,7 +25,7 @@ def test_recorded_authentication_is_visible_and_only_eligible_crew_resumes(tmp_p
     old_access = mode not in ('valid-newer', 'human')
     oauth = {'expiresAt': int((now + timedelta(hours=-1 if old_access else 1)).timestamp() * 1000)}
     if mode != 'missing-refresh':
-        oauth['refreshToken'] = None if mode == 'refresh-key-only' else 'made-up nonempty marker'
+        oauth['refreshToken'] = None if mode == 'null-refresh' else 'made-up nonempty marker'
     if mode not in ('no-renewal-deadline', 'human-renewable'):
         expiry = now + timedelta(days=-1 if mode == 'expired-grant' else 7)
         oauth['refreshTokenExpiresAt'] = int(expiry.timestamp() * 1000)
@@ -49,11 +49,11 @@ def test_recorded_authentication_is_visible_and_only_eligible_crew_resumes(tmp_p
     activity = watch.activity(seat)
     assert activity.state == AUTHENTICATION
     assert activity.state != 'idle'
-    if mode in ('expired-grant', 'missing-refresh'):
+    if mode in ('expired-grant', 'missing-refresh', 'null-refresh'):
         assert 'login needed' in activity.detail
     elif mode in ('invalid-expiry', 'invalid-renewal-deadline', 'invalid-file', 'absent-file'):
         assert 'pool sign-in validity unknown' in activity.detail
-    elif mode in ('renewable', 'refresh-key-only', 'no-renewal-deadline'):
+    elif mode in ('renewable', 'no-renewal-deadline'):
         assert auth_failure.RENEWABLE in activity.detail
         assert auth_failure.waiting(auth_failure.status(seat))
     elif mode.startswith('human'):
@@ -66,13 +66,13 @@ def test_recorded_authentication_is_visible_and_only_eligible_crew_resumes(tmp_p
     service.log = Mock()
     service.needs_human = Mock()
     service.authentications()
-    if mode in ('valid-newer', 'renewable', 'refresh-key-only', 'no-renewal-deadline'):
+    if mode in ('valid-newer', 'renewable', 'no-renewal-deadline'):
         seat.restart.assert_called_once_with()
         service.authentications()  # same failed episode cannot relaunch again
         seat.restart.assert_called_once_with()
         proof = service.log.call_args.kwargs['proof']
         assert 'relaunch with resume (1/3)' in proof
-        if mode in ('renewable', 'refresh-key-only', 'no-renewal-deadline'):
+        if mode in ('renewable', 'no-renewal-deadline'):
             assert auth_failure.RENEWABLE in proof
     else:
         seat.restart.assert_not_called()

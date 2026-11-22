@@ -2,8 +2,8 @@
 then attention, and every hold names its check. The failed turn's own input stays in the conversation.
 
 Records are the measured Claude Code API-error envelope (tests/authentication_shapes.py) read by the real reader;
-the post is a real store. The pool's sign-in, the seat's launch and the service's relaunch are stood in, so no
-program starts and no credential is read. Text, paths and identities are invented.
+the post is a real store. The seat's launch and the service's relaunch are stood in, and sign-in facts are
+mocked or read from a synthetic file. No program starts. Text, paths and identities are invented.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import pytest
 
 from quarterdeck import auth_failure, post, turn_failure
 from quarterdeck.harness import claude
+from quarterdeck.ship import Pool
 from tests.authentication_shapes import error_row
 
 SEAT = 'synthetic-worker'
@@ -43,22 +44,28 @@ def answered(text, at):
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch):
+def world(tmp_path, monkeypatch, request):
     now = datetime.now(timezone.utc)
     runtime = tmp_path / 'runtime'
     (runtime / 'post').mkdir(parents=True)
-    grant = tmp_path / 'synthetic-grant'
-    grant.write_text('synthetic local metadata stand-in')
-    pool = SimpleNamespace(name='synthetic-pool')
+    oauth = getattr(request, 'param', None)
+    pool = Pool('synthetic-pool', 'anthropic', config_dir=tmp_path)
+    validity = SimpleNamespace(state='valid')
+    if oauth is None:
+        grant = tmp_path / 'synthetic-grant'
+        grant.write_text('synthetic local metadata stand-in')
+        monkeypatch.setattr(auth_failure.credential, 'pool_file', Mock(return_value=grant))
+        monkeypatch.setattr(auth_failure.credential, 'sign_in_status', lambda *_: validity.state)
+    else:
+        grant = tmp_path / '.credentials.json'
+        end = int((now + timedelta(days=20)).timestamp() * 1000)
+        grant.write_text(json.dumps({'claudeAiOauth': dict(oauth, refreshTokenExpiresAt=end)}))
     launched = SimpleNamespace(pool=pool.name, at=(now - timedelta(hours=1)).isoformat())
     record = tmp_path / 'synthetic-record.jsonl'
     rows = []
     seat = SimpleNamespace(name=SEAT, ship=SimpleNamespace(runtime=runtime, pools={pool.name: pool}),
                            session=SimpleNamespace(human=False), launched=Mock(return_value=launched), is_up=True,
                            record=Mock(return_value=record), harness=SimpleNamespace(state=claude.state, name='claude'))
-    monkeypatch.setattr(auth_failure.credential, 'pool_file', Mock(return_value=grant))
-    validity = SimpleNamespace(state='valid')
-    monkeypatch.setattr(auth_failure.credential, 'sign_in_status', lambda *_: validity.state)
     store, attempts = post.Store(runtime), post.Attempts(runtime)
     service = SimpleNamespace(resolved_seats=lambda: [seat], relaunch=Mock(return_value='synthetic resumed proof'),
                               log=Mock(), needs_human=Mock(), store=store, attempts=attempts, request_wait=None)
@@ -170,6 +177,22 @@ def test_without_a_valid_sign_in_a_first_failure_still_holds_the_door(world, mon
     assert turn_failure.obstruction(world.seat, world.store) == auth_failure.AUTHENTICATION
     assert not auth_failure.first_failure(world.seat)
     assert not auth_failure.status(world.seat).endswith(auth_failure.DELIVERING)
+
+
+@pytest.mark.parametrize('world', [
+    {'accessToken': '', 'refreshToken': '', 'expiresAt': 0},
+], indirect=True)
+def test_a_cleared_subscription_holds_the_door_and_routes_to_attention(world):
+    world.order('Synthetic open order.')
+    world.write(failed('Synthetic task.', world.at(0)))
+
+    assert auth_failure.pool_observation(world.seat)[0] == 'expired'
+    assert turn_failure.obstruction(world.seat, world.store) == auth_failure.AUTHENTICATION
+    assert auth_failure.status(world.seat).endswith('login needed; pool sign-in expired')
+    auth_failure.run(world.service)
+    world.service.needs_human.assert_called_once_with(world.seat)
+    world.service.relaunch.assert_not_called()
+    assert not auth_failure._path(world.seat).exists()
 
 
 def test_a_later_answered_turn_ends_the_episode_and_a_new_failure_is_a_first_again(world):

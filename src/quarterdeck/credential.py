@@ -7,7 +7,7 @@ strands the pool and every sibling. So on every tick the service looks at each s
 credential path: one that is no longer a link has refreshed. Of the detached files on one
 pool, the newest live one is put in the pool's place, one copy of the replaced file kept
 under the runtime, and every detached seat relinked; a logged-out stub installs nothing.
-Expiry times are read as metadata; token values are never read.
+Readings retain only metadata, never token values.
 
 A program that writes its refresh through the link instead would put it straight into
 the pool's own file, the account holder's sign-in, where two seats refreshing at once race. Its
@@ -47,6 +47,7 @@ from types import SimpleNamespace
 from urllib.parse import quote
 
 from . import durable, harness as harnesses, seat_files, trusted_files
+from .harness import claude_sign_in
 from .harness.home import credential_aliases, credential_review_adapter
 from .seat import Seat
 from .ship import Pool, Ship, ShipError, valid_name
@@ -1191,6 +1192,7 @@ def grant_expiry(pool: Pool) -> datetime | None:
 
 
 RENEWAL_FAILED = "now (its renewal failed)"
+ACCESS_EXPIRED = "now (its access expired and cannot renew)"
 
 
 def _shown(when: datetime) -> str:
@@ -1219,20 +1221,21 @@ def renewal_status(pool: Pool, source: Path, now: datetime) -> str:
 def sign_in_status(pool: Pool, source: Path, now: datetime) -> str:
     """Whether recorded failure recovery has access, can renew it, or needs better evidence."""
     adapter = harnesses.native_for(pool.provider)
-    if read := getattr(adapter, 'sign_in_metadata', None):
-        metadata = read(source)
-        if metadata is None:
+    if getattr(adapter, 'sign_in_metadata', None) is not None:
+        sign_in = claude_sign_in.observe(adapter, source)
+        if sign_in is None:
             return 'unknown'
-        expiry, has_refresh, end = metadata
-        if not has_refresh:
-            return 'expired' if expiry <= now.timestamp() else 'unknown'
-        renewal = 'expired' if end is not None and end <= now else 'renewable'
-    else:
-        fresh = freshness(pool, source)
-        if fresh is None or type(fresh[0]) not in (int, float) or not math.isfinite(fresh[0]):
+        if sign_in.access_expired(now):
+            return 'renewable' if sign_in.can_renew(now) else 'expired'
+        if not sign_in.refresh_usable:
             return 'unknown'
-        expiry = fresh[0]
-        renewal = renewal_status(pool, source, now)
+        return 'valid' if sign_in.can_renew(now) else 'expired'
+
+    fresh = freshness(pool, source)
+    if fresh is None or type(fresh[0]) not in (int, float) or not math.isfinite(fresh[0]):
+        return 'unknown'
+    expiry = fresh[0]
+    renewal = renewal_status(pool, source, now)
     if renewal == 'expired' or expiry <= now.timestamp():
         return renewal
     return 'valid'
@@ -1241,10 +1244,11 @@ def sign_in_status(pool: Pool, source: Path, now: datetime) -> str:
 def login_needed(ship: Ship, now: datetime | None = None) -> list[tuple[str, str]]:
     """Pools that only a login cures, with the local time it is needed by.
 
-    The adapter declares its grant's kind. A fixed grant counts within two days of its end. A
-    self-renewing grant counts only when its renewal has visibly failed, or when the grant that renews
-    it is readable and within two days of its end; its own short access expiry never counts. An
-    unknown kind never counts: doctor shows it as unknown.
+    The adapter declares its grant's kind. A fixed grant counts within two days of its end.
+    A known sign-in without usable renewal counts when its access expires.
+    A self-renewing grant counts only when its renewal has visibly failed, or when
+    the grant that renews it is readable and within two days of its end.
+    An unknown kind never counts: doctor shows it as unknown.
     """
     now = now or datetime.now(timezone.utc)
     found = []
@@ -1253,6 +1257,11 @@ def login_needed(ship: Ship, now: datetime | None = None) -> list[tuple[str, str
         if source is None:
             continue
         adapter = harnesses.native_for(pool.provider)
+        sign_in = claude_sign_in.observe(adapter, source)
+        if sign_in is not None and not sign_in.refresh_usable:
+            if sign_in.access_expired(now):
+                found.append((pool.name, ACCESS_EXPIRED))
+            continue
         expiry, failed = _renewal_evidence(adapter, source)
         if failed:
             found.append((pool.name, RENEWAL_FAILED))

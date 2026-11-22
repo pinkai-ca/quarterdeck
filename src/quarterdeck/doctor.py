@@ -17,11 +17,13 @@ import secrets
 import shutil
 import stat
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import copy_state, credential, endpoint, fleet, harness as harnesses, install, post, providers, sandbox, servicectl, shutdown, watch
 from . import key_proof, keyfile
 from .drill import Check, wait_for
+from .harness import claude_sign_in
 from .harness.base import _version_in_runtime, program_version, program_where
 from .harness.capabilities import validate_selection
 from .seat import program_path, temporary_seat
@@ -317,7 +319,8 @@ def pool_check(pool: Pool) -> Check:
         except ShipError as error:
             return Check(f"pool {pool.name}", False, f"{error}; start the server, or point the pool at one that answers")
     try:
-        harnesses.native_for(pool.provider).preflight()
+        adapter = harnesses.native_for(pool.provider)
+        adapter.preflight()
     except ShipError as error:
         return Check(f"pool {pool.name}", False, str(error))
     file = credential.pool_file(pool)
@@ -325,6 +328,10 @@ def pool_check(pool: Pool) -> Check:
         return Check(f"pool {pool.name}", True, "the program holds its own sign-in")
     if not file.exists():
         return Check(f"pool {pool.name}", False, f"no credential at {file}; sign in to the program there")
+    sign_in = claude_sign_in.observe(adapter, file)
+    now = datetime.now(timezone.utc)
+    if sign_in is not None and sign_in.access_expired(now) and not sign_in.can_renew(now):
+        return Check(f"pool {pool.name}", False, f"login needed at {file.parent} (its access expired and cannot renew)")
     return Check(f"pool {pool.name}", True, f"signed in at {file.parent}{credential.grant_detail(pool)}")
 
 

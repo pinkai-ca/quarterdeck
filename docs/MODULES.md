@@ -226,6 +226,7 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | `claude_held_box.py` | Claude's exact-edge word wraps in the Door's held composer comparison |
 | `claude_limits.py` | Claude's native allowance fields, model families and safe shape diagnostics |
 | `claude_extra_usage.py` | timestamped refusal metadata, status and doctor wording, and durable private Desk notices |
+| `claude_sign_in.py` | Claude access and renewal evidence for login alerts and usage preflight |
 | `claude_statusline.py` | Claude Code's default footer, run as a standalone standard-library script |
 | `claude_record.py` | guarded streaming Claude JSON lines, bounded retained native evidence and raw prefix proof |
 | `claude_watch.py` | recorded watch output that a tool consumed, for attribution only, never a receipt |

@@ -10,12 +10,13 @@ import email.message
 import io
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 import urllib.error
 import urllib.request
 
 import pytest
 
-from quarterdeck import quota, service as servicemod, watch
+from quarterdeck import credential, doctor, quota, service as servicemod, watch
 from quarterdeck.harness import claude
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.service import Service
@@ -135,6 +136,8 @@ def ship_service(tmp_path, monkeypatch):
     monkeypatch.setattr(quota, "time", SimpleNamespace(monotonic=lambda: clock.mono))
     monkeypatch.setattr(quota, "datetime", ClockDatetime)
     monkeypatch.setattr(claude, "datetime", ClockDatetime)
+    monkeypatch.setattr(credential, "datetime", ClockDatetime)
+    monkeypatch.setattr(doctor, "datetime", ClockDatetime)
     monkeypatch.setattr(servicemod.post, "now", lambda: clock.wall)
     svc = Service(ship, SimpleNamespace())
     yield ship, svc, clock
@@ -154,7 +157,7 @@ def advance(clock, seconds):
 
 def write_access_deadline(pool, expires_at):
     (pool.config_dir / ".credentials.json").write_text(json.dumps({
-        "claudeAiOauth": {"accessToken": TOKEN, "expiresAt": expires_at},
+        "claudeAiOauth": {"accessToken": TOKEN, "refreshToken": "fake", "expiresAt": expires_at},
     }))
 
 
@@ -174,6 +177,152 @@ def test_subscription_usage_checks_the_access_deadline(ship_service, monkeypatch
         assert not usage.called and usage.retry_after is None and endpoint.calls == 0
     else:
         assert usage.called and usage.error is None and usage.windows and endpoint.calls == 1
+
+
+@pytest.mark.parametrize("oauth, state, alert, error, calls", [
+    pytest.param({"accessToken": "", "refreshToken": "", "refreshTokenExpiresAt": 4102444800000},
+                 "expired", True, "no access token in the credential file", 0, id="cleared-with-grant"),
+    pytest.param({"accessToken": "", "refreshToken": ""},
+                 "expired", True, "no access token in the credential file", 0, id="cleared-without-grant"),
+    pytest.param({"accessToken": TOKEN, "refreshToken": ""},
+                 "expired", True, "access expired, login needed", 0, id="expired-empty-refresh"),
+    pytest.param({"accessToken": TOKEN},
+                 "expired", True, "access expired, login needed", 0, id="expired-missing-refresh"),
+    pytest.param({"accessToken": TOKEN, "refreshToken": "fake", "refreshTokenExpiresAt": 4102444800000},
+                 "renewable", False, "access expired, waiting for renewal", 0, id="expired-renewable-with-grant"),
+    pytest.param({"accessToken": TOKEN, "refreshToken": "fake"},
+                 "renewable", False, "access expired, waiting for renewal", 0, id="expired-renewable-without-grant"),
+    pytest.param({"accessToken": TOKEN, "refreshToken": "", "expiresAt": 4102444800000,
+                  "refreshTokenExpiresAt": 1},
+                 "unknown", False, None, 1, id="unexpired-empty-refresh"),
+    pytest.param({"accessToken": TOKEN, "expiresAt": 4102444800000},
+                 "unknown", False, None, 1, id="unexpired-missing-refresh"),
+    pytest.param({"accessToken": TOKEN, "refreshToken": "fake", "expiresAt": 4102444800000},
+                 "valid", False, None, 1, id="valid"),
+    pytest.param({"accessToken": TOKEN, "refreshToken": None, "expiresAt": 1},
+                 "expired", True, "access expired, login needed", 0, id="expired-null-refresh"),
+    pytest.param({"refreshToken": [], "expiresAt": 1},
+                 "expired", True, "no access token in the credential file", 0, id="expired-falsey-refresh"),
+    pytest.param({"accessToken": TOKEN, "refreshToken": "", "expiresAt": False},
+                 "unknown", False, None, 1, id="malformed-access-deadline"),
+    pytest.param({"accessToken": TOKEN, "refreshToken": "", "refreshTokenExpiresAt": "unreadable"},
+                 "unknown", False, None, 1, id="malformed-grant-deadline"),
+])
+def test_subscription_sign_in_across_readers(ship_service, monkeypatch, oauth, state, alert, error, calls):
+    ship, svc, clock = ship_service
+    pool = ship.pools["claude-primary"]
+    source = credential.pool_file(pool)
+    source.write_text(json.dumps({"claudeAiOauth": {"expiresAt": 0, **oauth}}))
+    monkeypatch.setattr(ClaudeHarness, "preflight", Mock())
+    endpoint = Endpoint(monkeypatch)
+
+    assert credential.sign_in_status(pool, source, clock.wall) == state
+    expected_alert = [(pool.name, "now (its access expired and cannot renew)")] if alert else []
+    assert credential.login_needed(ship, clock.wall) == expected_alert
+    reading = watch.status_reading(ship, None)
+    assert reading["facts"].login == expected_alert
+    message = f"{pool.name} login needed by now (its access expired and cannot renew)"
+    assert (message in reading["facts"].line()) is alert
+    assert any(message in row for row in watch.render_table(reading)) is alert
+    check = doctor.pool_check(pool)
+    assert check.passed is not alert
+    if alert:
+        assert check.detail == f"login needed at {source.parent} (its access expired and cannot renew)"
+    else:
+        assert check.detail.startswith(f"signed in at {source.parent}")
+    assert endpoint.calls == 0
+
+    usage = quota.read_usage(svc, pool, ClaudeHarness())
+    assert usage.error == error and usage.called is bool(calls)
+    assert bool(usage.windows) is bool(calls) and usage.retry_after is None
+    assert endpoint.calls == calls
+
+
+@pytest.mark.parametrize("grant_seconds, access, state, reason", [
+    pytest.param(-1, {"accessToken": TOKEN}, "expired", "access expired, login needed", id="ended"),
+    pytest.param(-1, {}, "expired", "no access token in the credential file", id="ended-without-access"),
+    pytest.param(0, {"accessToken": TOKEN}, "expired", "access expired, login needed", id="ends-now"),
+    pytest.param(1, {"accessToken": TOKEN}, "renewable", "access expired, waiting for renewal", id="ends-later"),
+])
+def test_subscription_renewal_at_grant_deadline(ship_service, monkeypatch, grant_seconds, access, state, reason):
+    ship, svc, clock = ship_service
+    clock.wall = clock.wall.replace(microsecond=0)
+    grant_end = clock.wall + timedelta(seconds=grant_seconds)
+    pool = ship.pools["claude-primary"]
+    source = credential.pool_file(pool)
+    source.write_text(json.dumps({"claudeAiOauth": {
+        **access, "expiresAt": 0, "refreshToken": "fake",
+        "refreshTokenExpiresAt": int(grant_end.timestamp() * 1000),
+    }}))
+    monkeypatch.setattr(ClaudeHarness, "preflight", Mock())
+    endpoint = Endpoint(monkeypatch)
+
+    assert credential.sign_in_status(pool, source, clock.wall) == state
+    shown = grant_end.astimezone().strftime("%m-%d %H:%M")
+    expected_alert = [(pool.name, shown)]
+    assert credential.login_needed(ship, clock.wall) == expected_alert
+    reading = watch.status_reading(ship, None)
+    assert reading["facts"].login == expected_alert
+    assert f"{pool.name} login needed by {shown}" in reading["facts"].line()
+
+    check = doctor.pool_check(pool)
+    if state == "expired":
+        assert not check.passed
+        assert check.detail == f"login needed at {source.parent} (its access expired and cannot renew)"
+    else:
+        assert check.passed
+        assert check.detail == f"signed in at {source.parent}; its grant expires {shown}"
+
+    usage = quota.read_usage(svc, pool, ClaudeHarness())
+    assert usage.error == reason and not usage.called
+    assert not usage.windows and usage.retry_after is None and endpoint.calls == 0
+
+
+def test_periodic_usage_reports_a_cleared_sign_in_without_retrying_the_credential(ship_service, monkeypatch):
+    ship, svc, clock = ship_service
+    ship.pools.pop("claude-secondary")
+    pool = ship.pools["claude-primary"]
+    source = pool.config_dir / ".credentials.json"
+    source.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "", "refreshToken": "", "expiresAt": 0,
+        "refreshTokenExpiresAt": int((clock.wall + timedelta(days=20)).timestamp() * 1000),
+    }}))
+    endpoint = Endpoint(monkeypatch)
+    ordinary_usage = Mock(side_effect=AssertionError("expired access must never reach the ordinary reader"))
+    monkeypatch.setattr(ClaudeHarness, "usage", staticmethod(ordinary_usage))
+
+    quota.refresh_declared(svc)
+
+    ordinary_usage.assert_not_called()
+    assert endpoint.calls == 0
+    assert not svc.ledger.pool_windows(pool.name)
+    log = usage_log(svc)[-1]
+    assert log["no_call"] and log["error"] == "no access token in the credential file"
+    assert "backoff" not in log
+
+
+def test_usage_classifies_expired_access_from_one_file_generation(ship_service, monkeypatch):
+    ship, svc, clock = ship_service
+    pool = ship.pools["claude-primary"]
+    source = credential.pool_file(pool)
+    source.write_text(json.dumps({"claudeAiOauth": {"accessToken": "", "expiresAt": 0}}))
+    endpoint = Endpoint(monkeypatch)
+    read_metadata = ClaudeHarness.sign_in_metadata
+
+    def renew_after_observing_deadline(self, path):
+        observed = read_metadata(self, path)
+        write_access_deadline(pool, clock.wall.timestamp() + 100)
+        return observed
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ClaudeHarness, "sign_in_metadata", renew_after_observing_deadline)
+        usage = quota.read_usage(svc, pool, ClaudeHarness())
+    assert usage.error == "no access token in the credential file" and not usage.called
+    assert endpoint.calls == 0
+
+    usage = quota.read_usage(svc, pool, ClaudeHarness())
+    assert usage.error is None and usage.called
+    assert endpoint.calls == 1
 
 
 def test_expiry_keeps_last_good_figures_in_status_until_the_next_due_read(ship_service, monkeypatch):
