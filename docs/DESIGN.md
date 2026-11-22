@@ -12,7 +12,7 @@ Six parts operate the ship; standing orders describe its guarantees and crew rul
 
 | Part | Responsibility | Entry points |
 | --- | --- | --- |
-| [Ship](design/ship-file.md) | Declares sessions, seats, workspaces, programs and paying pools; owns one service and runtime. | up, down, attach, status |
+| [Ship](design/ship-file.md) | Declares sessions, seats, workspaces, programs and paying pools; owns one service and runtime. | up, down, ls, attach, status |
 | [Harness](design/harnesses.md) | Adapts one program's launch, private home, records, screen, controls, sign-in and usage. | Called by the other parts; controls/check expose its capabilities. |
 | [Seat](design/seats.md) | One program in one pane with launch/process/record identity, controls and lifecycle. | up/down/restart/fresh/stop for a seat; set |
 | [Post](design/post.md) | Immutable orders, reports, questions, answers and acknowledgments with rendered inboxes and delivery evidence. | post, thread, inbox |

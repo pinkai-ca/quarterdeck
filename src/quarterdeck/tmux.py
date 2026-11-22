@@ -6,6 +6,7 @@ programs rewrite titles themselves (law: identity).
 
 from __future__ import annotations
 
+import errno
 import itertools
 import os
 import secrets
@@ -13,7 +14,9 @@ import shlex
 import stat
 import subprocess
 import time
+from collections.abc import Set
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from .tmux_socket import Namespace, OwnedSocket, OwnershipError, ShutdownPending, OWNER, locked, private_endpoint
 
@@ -46,6 +49,10 @@ class TmuxError(Exception):
     pass
 
 
+class TmuxNoServer(TmuxError):
+    """A session listing confirmed that no server is listening."""
+
+
 class TmuxFormatError(TmuxError):
     """A line tmux printed for one of qd's formats that is not in that format; the line is in the message."""
 
@@ -63,6 +70,12 @@ class TmuxUnanswered(PrivateTmuxError):
 class SessionIdentity:
     id: str
     token: str
+
+
+@dataclass(frozen=True)
+class SessionDetails:
+    created_at: datetime
+    attached: bool
 
 
 @dataclass(frozen=True)
@@ -296,7 +309,7 @@ class Tmux:
         return shlex.join(self.attach_argv(session))
 
     @classmethod
-    def for_ship(cls, ship) -> "Tmux":
+    def for_ship(cls, ship, *, strict: bool = False) -> "Tmux":
         """The server a ship runs on, chosen explicitly and never through TMUX.
 
         - Its own: the socket under its runtime, whenever that holds the ship's sessions or no other
@@ -307,7 +320,15 @@ class Tmux:
           tests and the drill), or for the server that holds this ship's sessions while its own holds none,
           which is what a seat launched before the move is told. Anything else is refused by name: qd never
           runs one ship on another's server.
+
+        Strict readings carry probe failures back to the caller instead of treating them as an empty server.
         """
+        def holds(candidate: Tmux) -> bool:
+            if strict:
+                titles = {session.title for session in ship.sessions.values()}
+                return bool(candidate.session_details(titles, owner=str(ship.folder)))
+            return bool(ship_sessions(candidate, ship))
+
         own = ship_socket(ship)
         _check_socket_path(own, create=False)
         server = cls(str(own), ship=True, name=getattr(ship, 'name', None))
@@ -317,15 +338,15 @@ class Tmux:
                 return cls(named)
             if Path(named).is_absolute() and _user_socket(Path(named)):
                 old = cls(named, legacy=True)
-                if ship_sessions(old, ship) and not (own.exists() and ship_sessions(server, ship)):
+                if holds(old) and not (own.exists() and holds(server)):
                     return old
             raise TmuxError(f"QD_TMUX_SOCKET names {named}, which is not this ship's server {own}, not a private "
                             "test server and not a server holding this ship's sessions; qd will not run this ship "
                             "there. Unset QD_TMUX_SOCKET, or run qd for this ship outside another ship's seat")
-        if own.exists() and ship_sessions(server, ship):
+        if own.exists() and holds(server):
             return server  # moved: the default server is not read again on every call
         for old in cls.defaults(own):
-            if ship_sessions(old, ship):
+            if holds(old):
                 return old
         return server
 
@@ -412,7 +433,14 @@ class Tmux:
             raise TmuxUnanswered(f"tmux {args[0]}: private server did not answer within {bound:g} s "
                                  "(stopped or hung); retained") from None
         if done.returncode:
-            raise TmuxError(f"tmux {args[0]}: {done.stderr.strip() or done.returncode}")
+            detail = done.stderr.strip()
+            error = f"tmux {args[0]}: {detail or done.returncode}"
+            if args[0] == "list-sessions" and done.returncode == 1 and self.socket and detail in (
+                    "no server running", f"no server running on {self.socket}",
+                    f"error connecting to {self.socket} ({os.strerror(errno.ENOENT)})",
+                    f"error connecting to {self.socket} ({os.strerror(errno.ECONNREFUSED)})"):
+                raise TmuxNoServer(error)
+            raise TmuxError(error)
         return done.stdout
 
     def _answers(self, env) -> bool:
@@ -455,6 +483,31 @@ class Tmux:
         if not self.running():
             return []
         return self.run("list-sessions", "-F", "#{session_name}").splitlines()
+
+    def session_details(self, titles: Set[str], *, owner: str | None = None) -> dict[str, SessionDetails] | None:
+        """Read exact titles and their tmux metadata, or None when the server is absent.
+
+        On a shared server, ownership also requires the session's declared QD_SHIP.
+        """
+        try:
+            lines = self.run("list-sessions", "-F", "#{session_created}\t#{session_attached}\t#{session_name}")
+        except TmuxNoServer:
+            return None
+        found = {}
+        for line in lines.splitlines():
+            fields = line.split("\t", 2)
+            if len(fields) != 3 or not fields[2]:
+                raise TmuxFormatError(f"tmux printed a session line not in qd's session format: {line!r}")
+            created, attached, title = fields
+            if title not in titles or (owner is not None and self.session_environment(title, "QD_SHIP", strict=True) != owner):
+                continue
+            try:
+                if not (created.isascii() and created.isdigit() and attached.isascii() and attached.isdigit()):
+                    raise ValueError
+                found[title] = SessionDetails(datetime.fromtimestamp(int(created), timezone.utc), int(attached) > 0)
+            except (ValueError, OverflowError, OSError):
+                raise TmuxFormatError(f"tmux printed a session line not in qd's session format: {line!r}") from None
+        return found
 
     def has_session(self, name: str) -> bool:
         return name in self.sessions()
@@ -809,13 +862,15 @@ class Tmux:
         """Join only terminal-marked soft wraps; preserve application newlines."""
         return self.run("capture-pane", "-p", "-J", *(['-e'] if styles else []), "-t", pane_id, "-S", str(-history))
 
-    def session_environment(self, session: str, name: str) -> str | None:
+    def session_environment(self, session: str, name: str, *, strict: bool = False) -> str | None:
         """A variable set on the session with ``new_session``; None when unset."""
         try:
             out = self.run("show-environment", "-t", _session(session), name)
-        except TmuxError:
+        except TmuxError as error:
+            if strict and str(error) != f"tmux show-environment: unknown variable: {name}":
+                raise
             return None
-        return out.strip().partition("=")[2] or None
+        return out.rstrip("\n").partition("=")[2] or None
 
     # -- typing ------------------------------------------------------------------------
 

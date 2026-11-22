@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -203,6 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sources", action="store_true", help="say which file each part came from")
     p = verb("attach", cmd_attach, "open the ship in this terminal: a session on the ship's own tmux server")
     p.add_argument("session", nargs="?", help="a session's name or title (default: the person's own session)")
+    p = verb("ls", cmd_ls, "list running tmux sessions of the selected ship, counting declared seats")
+    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print the result as JSON")
     p = verb("status", cmd_status, "every seat on one screen, then the open orders")
     p.add_argument("--line", action="store_true", help="published operational alerts; stale or unavailable readings are marked")
     p = verb("watch", cmd_watch, "read a seat: activity from its record, the door from its screen")
@@ -432,6 +435,36 @@ def cmd_attach(args: argparse.Namespace) -> None:
         env.pop("TMUX_PANE", None)
     sys.stdout.flush()
     os.execvpe(argv[0], argv, env)
+
+
+def cmd_ls(args: argparse.Namespace) -> Reading:
+    ship = load_ship(args)
+    names = {}
+    for session in ship.sessions.values():
+        names.setdefault(session.title, session.name)  # attach also takes the first declaration of an exact title
+    try:
+        tmux = Tmux.for_ship(ship, strict=True)
+        details = tmux.session_details(names.keys(), owner=str(ship.folder) if tmux.legacy else None)
+    except (OSError, UnicodeError) as error:
+        raise TmuxError(f"cannot read tmux sessions for {ship.name}: {error}") from None
+    counts = Counter(ship.session_of(seat).title for seat in ship.seats.values())
+    sessions = []
+    for title, name in names.items():
+        if (detail := (details or {}).get(title)) is not None:
+            sessions.append(dict(name=name, title=title, seat_count=counts[title],
+                                 created_at=detail.created_at, attached=detail.attached))
+    return Reading(dict(ship=ship.name, server_running=details is not None, seat_count_basis="declared",
+                        sessions=sessions), render_sessions)
+
+
+def render_sessions(data: dict) -> list[str]:
+    if not data["server_running"]:
+        return [f"{data['ship']}: no tmux server is running"]
+    if not data["sessions"]:
+        return [f"{data['ship']}: no declared sessions are running"]
+    return [f"{row['name']} ({row['title']}) · {row['seat_count']} declared "
+            f"{'seat' if row['seat_count'] == 1 else 'seats'} · created {row['created_at'].isoformat()} · "
+            f"{'attached' if row['attached'] else 'detached'}" for row in data["sessions"]]
 
 
 def cmd_restart(args: argparse.Namespace) -> str:
