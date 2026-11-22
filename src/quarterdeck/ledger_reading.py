@@ -9,7 +9,7 @@ from pathlib import Path
 from .ledger import Budget, Ledger, PLUS_NOTE, UNATTRIBUTED, figure
 from .provenance import UNKNOWN
 from .ship import Ship
-from .usage_cache import Reading, parse
+from .usage_cache import Reading, parse, skipped_access_read
 from . import keyfile, providers
 
 
@@ -26,7 +26,7 @@ class ToolRow:
 def window_reading(row: Reading, now: datetime) -> dict:
     at = parse(row.read_at)
     return {"pool": row.pool, "reading": row, "complete": row.complete, "current": row.current(now),
-            "reason": row.reason(now), "observed_at": now,
+            "reason": row.display_reason(now), "observed_at": now,
             "age_seconds": max(0, (now - at).total_seconds()) if at else None}
 
 
@@ -225,5 +225,9 @@ def render_pools(data: dict) -> list[str]:
     lines += data.get("key_spends", [])
     if data["usage_absent_reason"]:
         lines.append(data["usage_absent_reason"])
-    return lines + [f"{a['pool']} latest usage read: {a['error']}" for a in data["usage_attempts"] if a["error"]] + [
-        "wall: " + w for w in data["observed_walls"]]
+    for attempt in data["usage_attempts"]:
+        if skipped := skipped_access_read(attempt["error"]):
+            lines.append(f"{attempt['pool']} latest usage attempt · {skipped}")
+        elif attempt["error"]:
+            lines.append(f"{attempt['pool']} latest usage read: {attempt['error']}")
+    return lines + ["wall: " + wall for wall in data["observed_walls"]]

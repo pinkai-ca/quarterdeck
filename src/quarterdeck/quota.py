@@ -16,6 +16,10 @@ from .harness.limits import Wall, Usage
 from .provenance import UNKNOWN
 
 
+ACCESS_WAITING_FOR_RENEWAL = "access expired, waiting for renewal"
+ACCESS_LOGIN_NEEDED = "access expired, login needed"
+ACCESS_TOKEN_MISSING = "no access token in the credential file"
+
 
 def candidate_pools(seat) -> tuple[str, ...]:
     """Later declared choices, then earlier choices, excluding the current pool and any whose key is missing or
@@ -567,11 +571,11 @@ def read_usage(service, pool, reader) -> Usage | None:
             now = datetime.now(timezone.utc)
             if sign_in.access_expired(now):
                 if sign_in.can_renew(now):
-                    reason = "access expired, waiting for renewal"
+                    reason = ACCESS_WAITING_FOR_RENEWAL
                 elif sign_in.has_access:
-                    reason = "access expired, login needed"
+                    reason = ACCESS_LOGIN_NEEDED
                 else:
-                    reason = "no access token in the credential file"
+                    reason = ACCESS_TOKEN_MISSING
                 return Usage((), now, reason, called=False)
     if not getattr(reader, "private_usage_home", False):
         return reader.usage(pool)

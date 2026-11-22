@@ -29,7 +29,7 @@ from .seat import SEAT_HOLDS, Seat, SelectionChanging, UnresolvedSeat, launch_po
 from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
 from .tmux import Tmux, TmuxError
-from .usage_cache import MISSING
+from .usage_cache import MISSING, parse, skipped_access_read
 
 STALL_SECONDS = 600
 DISK_WARN = 0.90
@@ -696,7 +696,8 @@ def headline_readings(ship: Ship, *, pools: set[str] | None = None) -> list[dict
     selected = {name: reader for name, reader in readers.items() if reader.reads_usage and reader.headline_windows()}
     if not selected:
         return []
-    found = {}
+    found, skipped = {}, {}
+    now = post.now()
     missing = {(pool, group, window): {"pool": pool, "group": group, "window": window,
                                       "reading": None, "reason": "usage unknown", "attempted_at": None, "error": None}
                for pool in sorted(selected) for group, window in selected[pool].headline_windows()}
@@ -704,23 +705,40 @@ def headline_readings(ship: Ship, *, pools: set[str] | None = None) -> list[dict
     if book is not None:
         with book:
             try:
+                pool_rows = {pool: [] for pool in selected}
                 for row in book.usage.rows():
-                    if row.pool in selected and selected[row.pool].is_headline(row.group, row.window):
-                        found[(row.pool, row.group, row.window)] = window_reading(row, post.now())
+                    if row.pool in selected:
+                        pool_rows[row.pool].append(row)
+                        if selected[row.pool].is_headline(row.group, row.window):
+                            found[(row.pool, row.group, row.window)] = window_reading(row, now)
                 for pool, at, error in book.db.execute("SELECT pool,at,error FROM usage_reads"):
                     for key, item in missing.items():
                         if key[0] == pool:
                             item.update(attempted_at=at, error=error,
                                         reason=f"usage unknown: {error}" if error else "headline window missing from usage read")
-                for key in missing:
-                    fallback = reported_without(book.usage.rows(key[0]), key, selected[key[0]].headline_fallback)
+                for key, item in missing.items():
+                    pool = key[0]
+                    reader = selected[pool]
+                    rows = pool_rows[pool]
+                    fallback_window = reader.headline_fallback
+                    if fallback_window is not None and (reason := skipped_access_read(item["error"])):
+                        attempted_at = parse(item["attempted_at"])
+                        retained = [row for row in rows if row.complete and parse(row.attempted_at) == attempted_at
+                                    and skipped_access_read(row.error) == reason
+                                    and ((row.group, row.window) == fallback_window
+                                         or reader.is_headline(row.group, row.window))]
+                        retained.sort(key=lambda row: ((row.group, row.window) != fallback_window, row.group is not None))
+                        skipped[pool] = [{**window_reading(row, now), "window": row.window} for row in retained] or [
+                            {**item, "window": None, "reason": f"usage unknown · {reason}"}]
+                        continue
+                    fallback = reported_without(rows, key, fallback_window)
                     if fallback is not None:
-                        found[key] = {**window_reading(fallback, post.now()), "window": fallback.window,
+                        found[key] = {**window_reading(fallback, now), "window": fallback.window,
                                       "note": f"provider reports no {key[2]} window"}
             except sqlite3.OperationalError:
                 return [{"pool": None, "reading": None, "reason": SCHEMA_BEHIND}]
-    return [found.get(key, item) for key, item in missing.items()] + [
-        item for key, item in found.items() if key not in missing]
+    return [row for key, item in missing.items() for row in skipped.get(key[0], [found.get(key, item)])] + [
+        item for key, item in found.items() if key not in missing and key[0] not in skipped]
 
 
 def reported_without(rows, key: tuple, fallback: tuple | None):
@@ -745,8 +763,8 @@ def render_headlines(rows: list[dict]) -> list[str]:
         if row["reading"]:
             lines.append(row["reading"].describe(row["observed_at"]) + (f" · {row['note']}" if row.get("note") else ""))
         elif row["pool"]:
-            group = f"{row['group']} / " if row.get("group") else ""
-            lines.append(f"{row['pool']} {group}{row.get('window', '')} {row['reason']}")
+            window = " / ".join(part for part in (row.get("group"), row.get("window")) if part)
+            lines.append(" ".join(part for part in (row["pool"], window, row["reason"]) if part))
         else:
             lines.append(row["reason"])
     return lines

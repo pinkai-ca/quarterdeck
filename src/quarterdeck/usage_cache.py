@@ -14,10 +14,21 @@ import sqlite3
 
 from .harness.limits import Usage, Window
 
-from .quota import reset_text
+from .quota import ACCESS_LOGIN_NEEDED, ACCESS_TOKEN_MISSING, ACCESS_WAITING_FOR_RENEWAL, reset_text
 
 MAX_AGE = 3600  # the service's availability freshness bound
 MISSING = "window missing from latest usage read"
+READ_SKIPPED = "usage read skipped: "
+RESET_PASSED = "retained reset has passed"
+
+
+def skipped_access_read(error: str | None) -> str | None:
+    """Recognize the three expired-access outcomes in retained rows and pool attempts."""
+    # A pool attempt starts with the outcome, followed by any per-window diagnostics.
+    reason = (error or "").partition("; ")[0].removeprefix(f"{MISSING}: ")
+    if reason in (ACCESS_WAITING_FOR_RENEWAL, ACCESS_LOGIN_NEEDED, ACCESS_TOKEN_MISSING):
+        return READ_SKIPPED + reason
+    return None
 
 
 def aware(value: object) -> bool:
@@ -83,13 +94,20 @@ class Reading:
         if not self.complete:
             return "no complete real reading available"
         if parse(self.resets_at) <= now:
-            return "retained reset has passed"
+            return RESET_PASSED
         if (now - parse(self.read_at)).total_seconds() >= MAX_AGE:
             return "reading is older than one hour"
         return None
 
     def current(self, now: datetime) -> bool:
         return self.reason(now) is None
+
+    def display_reason(self, now: datetime) -> str | None:
+        if skipped := skipped_access_read(self.error):
+            if self.complete and parse(self.resets_at) <= now:
+                return f"{RESET_PASSED} · {skipped}"
+            return skipped
+        return self.reason(now)
 
     @property
     def label(self) -> str:
@@ -99,13 +117,15 @@ class Reading:
     def describe(self, now: datetime | None = None, *, inspect_command: str | None = "qd ledger") -> str:
         now = now or datetime.now(timezone.utc)
         label = self.label
-        reason = self.reason(now)
+        reason = self.display_reason(now)
         next_step = f"; inspect with {inspect_command}" if reason and inspect_command else ""
         if not self.complete:
             return f"{label} usage unknown · {reason}{next_step}"
         age = max(0, int((now - parse(self.read_at)).total_seconds() // 60))
-        value = f"{self.used:.0%} used" + (f" ({self.bucket_name})" if self.bucket_name else "")
         reading = f"read {self.read_at} ({age}m ago)"
+        if skipped_access_read(self.error) and parse(self.resets_at) <= now:
+            return f"{label} usage unknown · {reason} · {reset_text(self.resets_at)} · last {reading}{next_step}"
+        value = f"{self.used:.0%} used" + (f" ({self.bucket_name})" if self.bucket_name else "")
         stale = f" · LAST KNOWN · {reason}" if reason else ""
         warning = " · provider warns it is near its limit" if self.warning else ""
         return f"{label} {value}{warning}{stale} · {reset_text(self.resets_at)} · {reading}{next_step}"
