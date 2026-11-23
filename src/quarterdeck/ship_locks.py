@@ -56,8 +56,8 @@ def for_seat_file(seat_folder: Path, name: str) -> Path:
     return path(runtime, "seat-files", f"{seat_folder.name}--{name}.lock")
 
 
-def prepare(target: Path) -> None:
-    """Make the lock's folders, private, refusing a link or anything that is not a folder on the way."""
+def prepare(target: Path, *, create: bool = True) -> None:
+    """Check the lock's folders, creating them privately when requested."""
     root = target.parent
     chain = []
     while root.name != FOLDER:
@@ -65,12 +65,14 @@ def prepare(target: Path) -> None:
             raise ShipError(f"{target}: a ship lock lies outside runtime/{FOLDER}; refused")
         chain.append(root)
         root = root.parent
-    root.parent.mkdir(parents=True, exist_ok=True)  # the runtime itself, as any of its stores makes it
+    if create:
+        root.parent.mkdir(parents=True, exist_ok=True)  # the runtime itself, as any of its stores makes it
     for folder_path in (root, *reversed(chain)):
-        try:
-            folder_path.mkdir(mode=0o700)
-        except FileExistsError:
-            pass
+        if create:
+            try:
+                folder_path.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
         info = folder_path.lstat()
         if stat.S_ISLNK(info.st_mode):
             from .post_dir import _link_held
@@ -80,17 +82,22 @@ def prepare(target: Path) -> None:
 
 
 @contextmanager
-def held(lock: Path, what: str, *, wait: float = WAIT, shared: bool = False) -> Iterator[int]:
+def held(lock: Path, what: str, *, wait: float = WAIT, shared: bool = False,
+         create: bool = True) -> Iterator[int]:
     """Hold ``lock`` (exclusive unless ``shared``), waiting at most ``wait`` seconds; else raise ``Busy``.
 
     The file is opened without following a link, must be a regular file, and must still be the same file
-    once it is held; each refusal names the lock and keeps the file for inspection.
+    once it is held; each refusal names the lock and keeps the file for inspection. With
+    ``create=False``, a missing lock raises FileNotFoundError without creating it or its folders.
     """
     lock = Path(lock)
-    prepare(lock)
+    prepare(lock, create=create)
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     try:
-        descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+        descriptor = os.open(lock, flags | (os.O_CREAT if create else 0), 0o600)
     except OSError as error:
+        if not create and isinstance(error, FileNotFoundError):
+            raise
         if error.errno == errno.ELOOP:
             from .post_dir import _link_held
             _link_held(lock)
@@ -116,4 +123,16 @@ def held(lock: Path, what: str, *, wait: float = WAIT, shared: bool = False) -> 
         yield descriptor
     finally:
         os.close(descriptor)
+
+
+def retire_empty(lock: Path, what: str) -> None:
+    """Retire an unused coordination file while holding its exact inode, without waiting."""
+    try:
+        with held(lock, what, wait=0, create=False) as descriptor:
+            info = os.fstat(descriptor)
+            if info.st_size or info.st_nlink != 1 or info.st_uid != os.geteuid():
+                raise ShipError(f'{lock.name}: lock is not an empty owned file')
+            lock.unlink()
+    except FileNotFoundError:
+        pass
 

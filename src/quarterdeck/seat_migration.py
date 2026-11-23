@@ -143,7 +143,7 @@ def migrate(ship, spec, tmux) -> dict[str, str]:
     name = spec.name
     if done(runtime, name):
         return {}
-    lock = ship_locks.path(runtime, 'seat-files', f'{name}--move.lock')
+    lock = ship_locks.for_seat_file(trusted_files.folder(runtime, name), 'move')
     with ship_locks.held(lock, f'{name}: seat files move'):
         if done(runtime, name):
             return {}

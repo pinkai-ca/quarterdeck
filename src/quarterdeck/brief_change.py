@@ -69,6 +69,19 @@ def mark(runtime: Path, name: str, text: str) -> None:
     durable.replace_file(path, text)
 
 
+def forget(runtime: Path, name: str) -> None:
+    """Remove the last-told brief of a retired seat."""
+    path = _path(runtime, name)
+    try:
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            os.unlink(path.name, dir_fd=directory)
+        finally:
+            os.close(directory)
+    except FileNotFoundError:
+        pass
+
+
 def seed(runtime: Path, name: str, text: str) -> None:
     """A seat with no brief on record holds the one it was last published: from here, what changes is carried."""
     if told(runtime, name) is None:

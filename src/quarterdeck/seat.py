@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager, ExitStack, nullcontext
+from contextvars import ContextVar
 from typing import Iterator
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -1988,6 +1989,19 @@ class Seat:
         return (stopped + f"\n{self.name}: relaunched on {target}, not on its walled {came_from} ({why})\n" + proof)
 
 
+_CHECK_CLEANUP_NOTICES: ContextVar[list[str] | None] = ContextVar('check_cleanup_notices', default=None)
+
+
+@contextmanager
+def collect_check_cleanup_notices(notices: list[str]) -> Iterator[None]:
+    """Collect notices from this check's throwaway seats, even if startup aborts before yielding one."""
+    token = _CHECK_CLEANUP_NOTICES.set(notices)
+    try:
+        yield
+    finally:
+        _CHECK_CLEANUP_NOTICES.reset(token)
+
+
 @contextmanager
 def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Message], purpose: str,
                    *, installed_version: str | None = None, human: bool = False, check_inbox: bool = False,
@@ -2020,6 +2034,9 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
         if check_inbox and not os.path.lexists(seat.trusted / trusted_files.LAUNCH) and not tmux.has_session(session.title):
             _retire_check_storage(ship.runtime, seat.name, remove_task=task_created)
             storage_retired = True
+            # A home held only for credential settlement can outlive a completed retirement.
+            if not os.path.lexists(seat.folder) or _held_for_renewal(ship, seat.name):
+                _retire_check_seat_files(seat)
 
     with pending.transient_lock(ship.runtime, seat.name,
                                 retire=(lambda: storage_retired) if check_inbox else None) as owned:
@@ -2038,8 +2055,8 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
         # The seat, its inbox registration and its scratch retire in that order.
         # The transient lock remains held throughout.
         with ExitStack() as storage, ExitStack() as lifetime, ExitStack() as cleanup:
-            storage.callback(retire_storage)
             seat.folder.mkdir(parents=True, exist_ok=False)
+            storage.callback(retire_storage)
             _teardown(cleanup, treated, seat, tmux, orders, purpose,
                       lambda: tmux.kill_session_id(session_id) if session_id is not None else None)
             trusted_files.make(ship.runtime, seat.name)
@@ -2174,6 +2191,29 @@ def _retire_check_storage(runtime: Path, name: str, *, remove_task: bool, empty_
     with lifecycle.claim(runtime, name, retire=True):
         if remove_task:
             _remove_check_task(runtime, name, empty_only=empty_only)
+
+
+def _retire_check_seat_files(seat: Seat) -> None:
+    from . import brief_change, ship_locks
+
+    notices = _CHECK_CLEANUP_NOTICES.get()
+    try:
+        brief_change.forget(seat.ship.runtime, seat.name)
+    except OSError as error:
+        if notices is not None:
+            notices.append(f'{seat.name}: brief-told marker retained ({error})')
+
+    # Use exact names. A file with the same seat-name prefix may belong to another seat.
+    for name in ('move', trusted_files.READERS, trusted_files.LAUNCHES):
+        lock = ship_locks.for_seat_file(seat.trusted, name)
+        try:
+            ship_locks.retire_empty(lock, seat.name)
+        except ship_locks.Busy:
+            if notices is not None:
+                notices.append(f'{lock.name}: held seat-file lock retained')
+        except (ShipError, OSError) as error:
+            if notices is not None:
+                notices.append(f'{lock.name}: seat-file lock retained ({error})')
 
 
 def down_check_scratch(ship: Ship, tmux: Tmux, name: str) -> str:

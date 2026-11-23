@@ -55,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     except (ShipError, TmuxError) as error:
         note = f" (default ship: {args.default_ship})" if args.default_ship else ""
         completed_error(f"qd: {error}{note}")
+        if args.run is cmd_check:
+            for detail in getattr(error, '__notes__', ()):
+                completed_error(detail)
         return 2
     return status
 

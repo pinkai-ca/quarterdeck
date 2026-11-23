@@ -8,12 +8,13 @@ import json
 import signal
 import subprocess
 import sys
+from contextlib import ExitStack
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
-from quarterdeck import check, check_outcome, cli, pending, post, seat as seatmod, watch
+from quarterdeck import brief_change, check, check_outcome, cli, pending, post, seat as seatmod, ship_locks, trusted_files, watch
 from quarterdeck.drill import Check
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.seat import Launched
@@ -140,6 +141,38 @@ def test_a_check_failing_at_any_step_leaves_no_seat(world, monkeypatch, step, ho
     else:
         assert any(c.passed is False for c in check.check(ship, "fake", server))
     assert seen["seat"].name.startswith("check-fake-")
+    no_seat_left(ship, server)
+
+
+def test_full_check_with_a_held_lock_still_proves_wake_and_keeps_its_evidence(world, monkeypatch):
+    ship, server = world
+    names = []
+    locks = []
+    with ExitStack() as holder:
+        def run(seat, *, hold=False):
+            launch(seat, server, pane=f'%{len(names) + 7}')
+            names.append(seat.name)
+            brief_change.mark(ship.runtime, seat.name, 'Synthetic brief')
+            lock = ship_locks.for_seat_file(seat.trusted, trusted_files.READERS)
+            locks.append(lock)
+            if hold:
+                holder.enter_context(ship_locks.held(lock, 'synthetic'))
+            else:
+                with ship_locks.held(lock, 'synthetic'):
+                    pass
+                (seat.trusted / trusted_files.HUMAN_WAKE).write_text('Synthetic wake evidence\n')
+            return [Check('synthetic step', True)]
+
+        monkeypatch.setattr(check, 'probe', lambda _, seat, *a, **k: run(seat, hold=True))
+        monkeypatch.setattr(check, 'probe_wake', lambda seat, _: run(seat))
+        rows = check.check(ship, 'fake', server)
+        assert all(row.passed for row in rows)
+        assert any(row.name.startswith('proven:') for row in rows)
+        assert len(names) == 2 and names[1].startswith('check-wake-')
+        assert locks[0].exists() and not locks[1].exists()
+        assert any(f'{locks[0].name}: held seat-file lock retained' in str(row) for row in rows)
+    assert all(brief_change.told(ship.runtime, name) is None for name in names)
+    assert (ship.runtime / 'check' / f'{names[1]}-human-wake.json').read_text() == 'Synthetic wake evidence\n'
     no_seat_left(ship, server)
 
 

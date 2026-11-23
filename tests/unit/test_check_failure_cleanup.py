@@ -1,13 +1,14 @@
 """Ordinary check outcomes and teardown on stand-ins without a provider."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import check, check_outcome, cli, launch_opening, lifecycle, pending
+from quarterdeck import brief_change, check, check_outcome, cli, launch_opening, lifecycle, pending
+from quarterdeck import ship_locks, trusted_files
 from quarterdeck import seat as seats
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.harness.limits import Usage
@@ -211,6 +212,93 @@ def test_a_refused_after_read_still_fails_when_before_usage_is_unknown(task_chec
     assert final['usage'] == {'before': 'unknown', 'share_spent': 'unknown'}
     assert calls.count('launch') == calls.count('opening') == 1
     check_scratch_is_retired(ship, session)
+
+
+@pytest.mark.parametrize(('outcome', 'held', 'brief'), [
+    ('passed', False, 'Synthetic brief\n'),
+    ('passed', True, ''),
+    ('failed', False, ''),
+    ('failed', True, 'Synthetic brief\n'),
+    ('probe exception', True, 'Synthetic brief\n'),
+    ('startup exception', True, 'Synthetic brief\n'),
+])
+def test_retired_check_removes_only_its_brief_and_empty_free_locks(
+        task_check, monkeypatch, capsys, outcome, held, brief):
+    ship, tmux, session, calls, faults = task_check
+    runtime = ship.runtime
+    other = RUN + '--other'
+    brief_change.mark(runtime, other, 'Keep this brief')
+    other_lock = ship_locks.for_seat_file(trusted_files.folder(runtime, other), trusted_files.READERS)
+    with ship_locks.held(other_lock, 'synthetic'):
+        pass
+    check_folder = runtime / 'check' / RUN
+    saved = check_folder / 'saved.txt'
+    folder = trusted_files.folder(runtime, RUN)
+    locks = [ship_locks.for_seat_file(folder, name) for name in
+             ('move', trusted_files.READERS, trusted_files.LAUNCHES)]
+    reader_lock = locks[1]
+    status_line = tmux.status_line
+    outcomes = runtime / 'minimal-checks'
+    check_outcome.publish(outcomes, 'fake', check_outcome.event('passed', 'earlier', 'passed'))
+    previous = check_outcome.read(outcomes, 'fake')['definitive']
+
+    with ExitStack() as holders:
+        def status(*args):
+            brief_change.mark(runtime, RUN, brief)
+            for lock in locks:
+                with ship_locks.held(lock, 'synthetic'):
+                    pass
+            if held:
+                holders.enter_context(ship_locks.held(reader_lock, 'synthetic'))
+                locks[0].write_text('Keep this nonempty lock')
+            saved.write_text('Keep the evidence')
+            if outcome == 'startup exception':
+                raise ShipError('synthetic startup abort')
+            status_line(*args)
+
+        monkeypatch.setattr(tmux, 'status_line', status)
+        monkeypatch.setattr(cli, 'load_ship', lambda _: ship)
+        monkeypatch.setattr(cli.Tmux, 'for_ship', lambda _: tmux)
+        if outcome == 'failed':
+            faults.after = Usage((), faults.usage.read_at, 'synthetic bad usage')
+        if outcome == 'probe exception':
+            faults.at = 'proof'
+            with pytest.raises(Injected) as raised:
+                check.check(ship, 'fake', tmux, minimal=True)
+            assert str(raised.value) == 'proof'
+            lines = '\n'.join(raised.value.__notes__)
+        elif outcome == 'startup exception':
+            monkeypatch.setattr(cli, 'handoff', lambda *_: None)
+            monkeypatch.setattr(check.harnesses.get('fake'), 'synthetic', False)
+            assert cli.main(['--ship', str(ship.folder), 'check', 'fake', '--minimal']) == 2
+            lines = capsys.readouterr().err
+            assert 'qd: synthetic startup abort' in lines
+        else:
+            args = SimpleNamespace(harness='fake', minimal=True)
+            lines = '\n'.join(cli.cmd_check(args))
+            assert args.exit_code == (1 if outcome == 'failed' else 0)
+
+        assert (f'{reader_lock.name}: held seat-file lock retained' in lines) is held
+        assert not locks[2].exists()
+        if held:
+            assert reader_lock.stat().st_size == 0
+            assert locks[0].read_text() == 'Keep this nonempty lock'
+        else:
+            assert not reader_lock.exists() and not locks[0].exists()
+
+    check_scratch_is_retired(ship, session)
+    assert brief_change.told(runtime, RUN) is None
+    assert brief_change.told(runtime, other) == 'Keep this brief'
+    assert other_lock.is_file()
+    assert saved.read_text() == 'Keep the evidence'
+    history = check_outcome.read(outcomes, 'fake')
+    if outcome.endswith('exception'):
+        assert history['latest_attempt']['outcome'] == 'unknown'
+        assert history['latest_attempt']['reason'] == 'unclassified'
+        assert history['definitive'] == previous
+    else:
+        assert history['definitive']['outcome'] == outcome
+        assert (check_folder / 'proof.txt').read_bytes() == b'OK\n'
 
 
 @pytest.mark.parametrize('stage', [

@@ -33,7 +33,7 @@ from . import check_outcome, harness as harnesses, durable, human_wake, pending,
 from .door import Delivery, Door
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, program_where, record_fingerprint
-from .seat import Seat, temporary_seat
+from .seat import Seat, collect_check_cleanup_notices, temporary_seat
 from .ship import SeatSpec, Ship, ShipError
 from . import ship as shipmod
 from .tmux import Tmux, TmuxError
@@ -49,6 +49,11 @@ class ProbeCheck(Check):
 @dataclass(frozen=True, kw_only=True)
 class UsageCheck(ProbeCheck):
     stage: str
+
+
+class CleanupNotice(Check):
+    def __str__(self) -> str:
+        return f'NOTE  {self.name} · {self.detail}'
 
 
 def account_question(door: Door) -> str | None:
@@ -114,11 +119,14 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None,
     harness = harnesses.get(name)
     check_outcome.publish(runtime, name, check_outcome.event('unknown', reason='incomplete'))
     version = None
+    cleanup_notices: list[str] = []
     try:
-        with interruptible():
+        with interruptible(), collect_check_cleanup_notices(cleanup_notices):
             checks, version = (_check(ship, name, tmux, harness, model, minimal=True)
                                if minimal else _check(ship, name, tmux, harness, model))
     except BaseException as error:
+        for notice in cleanup_notices:
+            error.add_note(str(CleanupNotice('check seat cleanup', True, notice)))
         interrupted = isinstance(error, (KeyboardInterrupt, SystemExit))
         reason = 'interrupted' if interrupted else 'unclassified'
         check_outcome.publish(runtime, name, check_outcome.event('unknown', version, reason),
@@ -146,6 +154,7 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None,
         detail = ('one short task-only opening, no second order' if getattr(harness, 'minimal_check_task', None) is not None
                   else 'one short write-line task and report')
         checks.insert(0, Check('minimal check mode', True, detail))
+    checks.extend(CleanupNotice('check seat cleanup', True, notice) for notice in cleanup_notices)
     return checks
 
 
