@@ -5,10 +5,10 @@ import tomllib
 
 import pytest
 
-from quarterdeck import cli, idle, ledger, post, quota, record_owner, request_queue, service, ship as shipmod, trusted_files
+from quarterdeck import cli, drill, idle, ledger, post, quota, record_owner, request_queue, service, ship as shipmod, trusted_files
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.harness.limits import Usage, Window
-from quarterdeck.harness.synthetic_control import Rendezvous
+from quarterdeck.harness.synthetic_control import Rendezvous, events
 from quarterdeck.seat import EXPLICIT, Seat
 from .progress import service_progress
 from .waiting import wait_for
@@ -55,6 +55,15 @@ def turn(seat, tmux, words):
     tmux.keys(pane.id, 'Enter')
 
 
+def assert_turns_once(seat, record, since, expected):
+    submitted = [event['text'] for event in events(seat.home)
+                 if event['event'] == 'submitted' and event['text'] in expected]
+    assert submitted == expected, 'simulator submissions'
+    inputs = seat.harness.inputs(record)
+    for text in expected:
+        assert drill.acceptances(inputs, text, since) == 1, f'record acceptance for {text!r}'
+
+
 def at_rest(seat):
     state, hold = idle.reading(seat)
     return state if state is not None and hold is None else None
@@ -75,8 +84,12 @@ def test_a_live_choice_waits_and_keeps_the_record_both_ways(ship, tmux, capsys, 
     seat = current()
     original = seat.launched()
     allowance(ship, 0.0)
-    with Rendezvous(seat.home, 'step', 'initial synthetic turn') as gate:
-        turn(seat, tmux, 'initial synthetic turn')
+    initial, on_key, on_subscription = (
+        'initial synthetic turn', 'synthetic turn on the key', 'synthetic turn on the subscription',
+    )
+    since = post.now()
+    with Rendezvous(seat.home, 'step', initial) as gate:
+        turn(seat, tmux, initial)
         wait_for(gate.reached)
         record = wait_for(seat.record)
         assert seat.harness.state(record).turn_open
@@ -107,21 +120,32 @@ def test_a_live_choice_waits_and_keeps_the_record_both_ways(ship, tmux, capsys, 
 
     seat = current()
     wait_for(lambda: at_rest(seat) and any('moved to pool paid from fake' in i.text for i in seat.harness.inputs(record)))
-    turn(seat, tmux, 'synthetic turn on the key')
-    wait_for(lambda: (state := at_rest(seat)) and state.last_input == 'synthetic turn on the key')
-    assert 'moved to fake from paid' in qd(capsys, 'set', SEAT, 'pool=fake')
-    restored = current()
-    assert restored.launched().pool == 'fake' and restored.launched().pool_selected is None
-    assert restored.launched().resume == paid.resume and restored.record() == record
-    wait_for(lambda: at_rest(restored)
-             and any('moved to pool fake from paid' in i.text for i in restored.harness.inputs(record)))
-    turn(restored, tmux, 'synthetic turn on the subscription')
-    wait_for(lambda: (state := at_rest(restored)) and state.last_input == 'synthetic turn on the subscription')
-    assert [i.text for i in restored.harness.inputs(record) if i.text.startswith(('initial synthetic', 'synthetic turn'))] == [
-        'initial synthetic turn', 'synthetic turn on the key', 'synthetic turn on the subscription',
-    ]
+    turn(seat, tmux, on_key)
+    wait_for(lambda: (state := at_rest(seat)) and state.last_input == on_key)
+    with Rendezvous(seat.home, 'step', 'moved to pool fake from paid') as notice:
+        assert 'moved to fake from paid' in qd(capsys, 'set', SEAT, 'pool=fake')
+        restored = current()
+        assert restored.launched().pool == 'fake' and restored.launched().pool_selected is None
+        assert restored.launched().resume == paid.resume and restored.record() == record
+        wait_for(notice.reached)
+        # A queued input can have both a dequeue entry and a user echo for one acceptance.
+        turn(restored, tmux, on_subscription)
+        wait_for(lambda: restored.harness.state(record).queued == (on_subscription,))
+        notice.release()
+    wait_for(lambda: (state := at_rest(restored)) and state.last_input == on_subscription)
+    expected = [initial, on_key, on_subscription]
+    assert_turns_once(restored, record, since, expected)
     assert not request_queue.pending(ship.runtime, SEAT)
     assert ship.file.read_bytes() == before
+
+    # Submit the same text again and wait for that new turn to run before checking.
+    with Rendezvous(restored.home, 'step', on_subscription) as duplicate:
+        turn(restored, tmux, on_subscription)
+        wait_for(duplicate.reached)
+        duplicate.release()
+    wait_for(lambda: at_rest(restored))
+    with pytest.raises(AssertionError, match='simulator submissions'):
+        assert_turns_once(restored, record, since, expected)
 
 
 def test_a_later_pending_choice_replaces_the_first_on_the_same_launch(ship, tmux, capsys):
