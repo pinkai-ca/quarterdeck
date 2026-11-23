@@ -372,3 +372,124 @@ def test_point_4_a_refused_pool_on_a_live_seat_writes_nothing(wired, monkeypatch
     assert rf.hold_state(w.seat) is rf.Hold.HELD and not releases(w) and not w.live.launches
     lift.assert_not_called()
     disarm.assert_not_called()
+
+
+UNDECLARED = 'elsewhere'
+
+
+def hold_and_arm(w):
+    """A real write-bound hold and a real armed compaction journal, with the claim's own lock file already there."""
+    runtime, name = w.ship.runtime, w.seat.name
+    over = (write_bound.WORKSPACE, 3 * write_bound.GiB, 2 * write_bound.GiB, 'synthetic bound')
+    write_bound.place(runtime, write_bound.Reading(name, [], over, {}))
+    armed = compaction.new()
+    armed.update(reserved='synthetic-handoff', handoff_digest='synthetic-digest', ready={'at': 'synthetic'})
+    compaction.save(runtime, name, armed)
+    with lifecycle.claim(runtime, name):
+        pass
+
+
+def held_and_armed(w):
+    runtime, name = w.ship.runtime, w.seat.name
+    return write_bound.reason(runtime, name) is not None and compaction.load(runtime, name)['reserved'] is not None
+
+
+def assert_refused_unchanged(w, tmp_path, pool, words):
+    launch, saved, row, files = w.seat.launched(), w.seat._saved_name(), rf.attempt_for(w.seat), files_under(tmp_path)
+    with pytest.raises(ShipError) as refused:
+        up(w, pool)
+    assert words in str(refused.value)
+    assert files_under(tmp_path) == files
+    assert held_and_armed(w)
+    assert rf.attempt_for(w.seat) == row and w.seat.launched() == launch and w.seat._saved_name() == saved
+    assert not releases(w) and not w.live.launches
+
+
+def releasing_row(w):
+    _, row = save_attempt(w.seat, 'reserved', pool='rest')
+    assert rf.outcome(w.ship.runtime, row, 'releasing', row.destination)
+    return rf.attempt_for(w.seat)
+
+
+@pytest.mark.parametrize('phase', [None, 'reserved', 'launched', 'releasing', *rf.DESK_RELEASES])
+def test_refused_pool_an_undeclared_choice_on_a_down_seat_changes_nothing(wired, tmp_path, phase):
+    w = wired
+    if phase == 'releasing':
+        releasing_row(w)
+    elif phase is not None:
+        save_attempt(w.seat, phase, pool='rest')
+    w.live.pane = None
+    hold_and_arm(w)
+    assert_refused_unchanged(w, tmp_path, UNDECLARED, f'--pool {UNDECLARED!r} is not one of its declared choices')
+
+
+def test_refused_pool_an_undeclared_choice_on_a_live_retry_changes_nothing(wired, tmp_path):
+    w = wired
+    releasing_row(w)
+    hold_and_arm(w)
+    assert_refused_unchanged(w, tmp_path, UNDECLARED, f'--pool {UNDECLARED!r} is not one of its declared choices')
+
+
+@pytest.mark.parametrize('pool', ['rest', UNDECLARED], ids=['declared', 'undeclared'])
+@pytest.mark.parametrize('row', ['none', 'of-another-launch'])
+def test_refused_pool_a_live_seat_without_its_own_attempt_changes_nothing(wired, tmp_path, pool, row):
+    w = wired
+    if row == 'of-another-launch':
+        save_attempt(w.seat, 'reserved', pool='rest')
+        launch = w.seat.launched()
+        replace(launch, at=(parse(launch.at) + timedelta(seconds=30)).isoformat()).write(w.seat.trusted / 'launch.json')
+        assert not rf.attempt_for(w.seat).matches(w.seat.launched())
+    hold_and_arm(w)
+    assert_refused_unchanged(w, tmp_path, pool, 'worker is up in %1; qd restart worker relaunches it')
+
+
+def test_refused_pool_a_live_retry_on_a_declared_choice_finishes_as_before(wired):
+    w = wired
+    releasing_row(w)
+    hold_and_arm(w)
+    proof = up(w, 'rest')
+    assert proof[0] == 'worker already up in %1' and not w.live.launches
+    assert write_bound.reason(w.ship.runtime, w.seat.name) is None
+    assert compaction.load(w.ship.runtime, w.seat.name)['reserved'] is None
+    assert rf.attempt_for(w.seat).phase != 'releasing'
+
+
+def test_refused_pool_a_down_retry_on_a_declared_choice_launches_once(wired):
+    w = wired
+    releasing_row(w)
+    w.live.pane = None
+    hold_and_arm(w)
+    up(w, 'rest')
+    assert w.seat.launched().pool == 'rest' and len(w.live.launches) == 1
+    assert write_bound.reason(w.ship.runtime, w.seat.name) is None
+    assert rf.attempt_for(w.seat).phase != 'releasing'
+
+
+@pytest.mark.parametrize('pool', [None, 'rest', UNDECLARED], ids=['no-pool', 'declared', 'undeclared'])
+def test_refused_pool_a_live_seat_with_a_launched_attempt_stays_already_up(wired, tmp_path, pool):
+    w = wired
+    _, row = save_attempt(w.seat, 'launched', pool='rest')
+    hold_and_arm(w)
+    files = files_under(tmp_path)
+    assert up(w, pool) == ['worker already up in %1']
+    assert files_under(tmp_path) == files and rf.attempt_for(w.seat) == row and held_and_armed(w)
+
+
+def test_refused_pool_up_without_a_pool_on_a_live_seat_still_lifts_the_hold(wired):
+    w = wired
+    hold_and_arm(w)
+    with pytest.raises(ShipError, match='worker is up in %1'):
+        up(w)
+    assert write_bound.reason(w.ship.runtime, w.seat.name) is None
+    assert compaction.load(w.ship.runtime, w.seat.name)['reserved'] is None
+
+
+@pytest.mark.parametrize('pool', [None, 'rest'], ids=['no-pool', 'declared'])
+def test_refused_pool_up_on_a_down_seat_lifts_the_hold_and_launches(wired, pool):
+    w = wired
+    w.live.pane = None
+    hold_and_arm(w)
+    up(w, pool)
+    assert len(w.live.launches) == 1 and w.seat.launched().pool == (pool or w.seat.launched().pool)
+    assert write_bound.reason(w.ship.runtime, w.seat.name) is None
+    assert compaction.load(w.ship.runtime, w.seat.name)['reserved'] is None

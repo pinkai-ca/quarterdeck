@@ -402,8 +402,10 @@ def _up_by_name(seat: seatmod.Seat, *, resume: bool, pool: str | None) -> list[s
                 elif attempt.phase == 'launched':
                     return [already_up]
         resting_failover.refuse_release(seat, previous, attempt)
-        if live and pool is not None and attempt is not None and attempt.phase != 'releasing':
-            raise ShipError(f'{seat.name} is up in {pane.id}; qd restart {seat.name} relaunches it')
+        if pool is not None:  # a choice that cannot launch is refused before the hold, the arm or the row is touched
+            if live and (attempt is None or attempt.phase != 'releasing'):
+                raise ShipError(f'{seat.name} is up in {pane.id}; qd restart {seat.name} relaunches it')
+            seat.require_declared_pool(pool)
         with resting_failover.releasing(seat, previous, attempt, live=live, caller=caller_of(seat.ship)):
             write_bound.lift(runtime, seat.name, f'qd up by {caller_of(seat.ship)}')
             compaction.disarm(seat, adopt_successor=True)

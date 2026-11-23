@@ -982,14 +982,19 @@ class Seat:
         with self._lifecycle(resting_clear=True):
             return self._up_with_pool_choice(resume, pool=pool, fresh_after_order=True)
 
+    def require_declared_pool(self, pool: str) -> None:
+        """Refuse a one-launch choice the seat does not declare; a plain list declares its choices as tables do."""
+        if pool not in self.spec.pools:
+            raise ShipError(f"{self.name}: --pool {pool!r} is not one of its declared choices "
+                            f"({', '.join(self.spec.pools)})")
+
     def _up_with_pool_choice(self, resume: bool, *, pool: str | None = None, fresh_after_order: bool = False,
                              recorded: bool = False, require_resume_target: bool = False,
                              expected: resume_target.Target | None = None) -> str:
         """Choose and launch while the caller holds the seat's lifecycle claim."""
         self.migrate()  # before the launch choice reads the pool selection in its new place
-        if pool is not None and pool not in self.spec.pools:  # a plain list declares its choices as tables do
-            raise ShipError(f"{self.name}: --pool {pool!r} is not one of its declared choices "
-                            f"({', '.join(self.spec.pools)})")
+        if pool is not None:
+            self.require_declared_pool(pool)
         reported = (fresh_after_order and resume and self.spec.fresh == 'after-order' and not self.is_up
                     and self._last_delivered_order_reported())
         if reported:
