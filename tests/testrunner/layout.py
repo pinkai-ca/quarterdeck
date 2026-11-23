@@ -440,8 +440,11 @@ def _owner_flock(note: dict, key: tuple[int, int]) -> bool | None:
     return None
 
 
-def _process_lifetime(pid: int) -> tuple[str, int] | None:
-    """State and start tick. Return absence only when the process entry is gone."""
+_PF_EXITING = 0x00000004  # Linux task flag, exposed as field 9 of /proc/<pid>/stat
+
+
+def _process_lifetime(pid: int) -> tuple[str, int, int] | None:
+    """State, start tick and flags. Return absence only when the process entry is gone."""
     fields = procs.stat_fields(pid)
     if fields is None:
         try:
@@ -449,7 +452,7 @@ def _process_lifetime(pid: int) -> tuple[str, int] | None:
         except (FileNotFoundError, ProcessLookupError):
             return None
         raise OSError('process lifetime unreadable')
-    return fields[0], int(fields[19])
+    return fields[0], int(fields[19]), int(fields[6])
 
 
 def _inherited_flock(note: dict, key: tuple[int, int]) -> bool | None:
@@ -470,26 +473,50 @@ def _inherited_flock(note: dict, key: tuple[int, int]) -> bool | None:
         # Slot fds are close-on-exec and aren't passed to subprocesses. The controller is gone, so
         # the only possible inheritors are its own-user children between fork and exec, which cannot
         # create more inheritors. Earlier processes cannot have inherited this file description.
+        exiting = {}
         for candidate in procs._ours():
             lifetime = _process_lifetime(candidate)
             if not lifetime or lifetime[0] in procs.EXITED or lifetime[1] < start:
                 continue
+            _, birth, flags = lifetime
+            if flags & _PF_EXITING:
+                exiting[candidate] = birth
+                continue
             try:
                 process_fd = os.open(f'/proc/{candidate}', DIRECTORY)
-            except (FileNotFoundError, ProcessLookupError):
-                continue
-            try:
-                held = _descriptor_flock(process_fd, key)
-            except (FileNotFoundError, ProcessLookupError):
+                try:
+                    held = _descriptor_flock(process_fd, key)
+                finally:
+                    os.close(process_fd)
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                held = None
+            # Exit may begin during the descriptor read. The descriptor view can become unreadable
+            # or empty while the kernel is still releasing the flock.
+            again = _process_lifetime(candidate)
+            if again and again[1] == birth and again[0] not in procs.EXITED:
+                if again[2] & _PF_EXITING:
+                    exiting[candidate] = birth
+                    continue
+                if held is None:
+                    return None
+            if held is True:
+                return True
+
+        deadline = time.monotonic() + 5
+        while exiting:
+            if time.monotonic() >= deadline:
+                return None
+            for candidate, birth in list(exiting.items()):
                 again = _process_lifetime(candidate)
-                if again == lifetime:
-                    return None  # this possible inheritor still exists, with unreadable descriptors
-                continue
-            finally:
-                os.close(process_fd)
-            if held is not False:
-                return held
-        return False
+                if not again or again[1] != birth or again[0] in procs.EXITED:
+                    del exiting[candidate]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            if exiting:
+                time.sleep(min(0.05, remaining))
+        # The first table read preceded the descriptor scan and any waits for exit.
+        return key in _flock_files()
     except (OSError, UnicodeError, ValueError, TypeError, KeyError, IndexError):
         return None
 

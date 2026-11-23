@@ -300,6 +300,129 @@ def test_unreadable_owner_evidence_holds_cleanup(tmp_path, monkeypatch):
         root.close()
 
 
+@pytest.fixture
+def inherited_probe(monkeypatch):
+    """Synthetic proc entries and clock for the scan after the original owner has gone."""
+    namespace = [1, 2]
+    note = {'pid': 100, 'owner': {'boot': 'boot', 'start': '10', 'pidns': namespace}}
+    key = (3, 4)
+    probe = SimpleNamespace(states={}, reads=[], locks=set(), now=0, after_sleep=lambda: None,
+                            descriptor=lambda pid: False, table_reads=0)
+    probe.read = lambda: layout._inherited_flock(note, key)
+
+    def stat_fields(pid):
+        if pid != note['pid']:
+            probe.reads.append(pid)
+        lifetime = probe.states.get(pid)
+        if lifetime is None:
+            return None
+        state, start, flags = lifetime
+        fields = ['0'] * 20
+        fields[0], fields[19], fields[6] = state, str(start), str(flags)
+        return fields
+
+    def stat_process(path):
+        assert int(path.removeprefix('/proc/')) not in probe.states
+        raise FileNotFoundError(path)
+
+    def open_process(path, mode):
+        assert mode == layout.DIRECTORY
+        return int(path.removeprefix('/proc/'))
+
+    def table():
+        probe.table_reads += 1
+        return probe.locks
+
+    def sleep(seconds):
+        assert 0 < seconds <= 0.05
+        probe.now += seconds
+        probe.after_sleep()
+
+    monkeypatch.setattr(layout, '_pid_namespace', lambda: namespace)
+    monkeypatch.setattr(layout.procs, 'boot_id', lambda: 'boot')
+    monkeypatch.setattr(layout.procs, '_ours', lambda: list(probe.states))
+    monkeypatch.setattr(layout.procs, 'stat_fields', stat_fields)
+    monkeypatch.setattr(layout, 'os', SimpleNamespace(open=open_process, close=lambda fd: None, stat=stat_process))
+    monkeypatch.setattr(layout, '_descriptor_flock', lambda fd, slot: probe.descriptor(fd))
+    monkeypatch.setattr(layout, '_flock_files', table)
+    monkeypatch.setattr(layout, 'time', SimpleNamespace(monotonic=lambda: probe.now, sleep=sleep))
+    probe.key = key
+    return probe
+
+
+@pytest.mark.parametrize('finish', ['zombie', 'gone'])
+def test_an_exiting_inheritor_is_rechecked_after_the_scan(inherited_probe, finish):
+    probe = inherited_probe
+    probe.states.update({101: ('R', 11, 4), 102: ('S', 12, 0)})
+
+    def descriptor(pid):
+        assert pid == 102, 'the exiting process is checked by lifetime only'
+        return False
+
+    def settle():
+        if finish == 'zombie':
+            probe.states[101] = ('Z', 11, 4)
+        else:
+            del probe.states[101]
+
+    probe.descriptor = descriptor
+    probe.after_sleep = settle
+    assert probe.read() is False
+    assert probe.reads == [101, 102, 102, 101, 101]
+    assert probe.table_reads == 1
+
+
+def test_an_exiting_inheritor_that_does_not_settle_times_out(inherited_probe):
+    probe = inherited_probe
+    probe.states[101] = ('R', 11, 4)
+    assert probe.read() is None
+    assert probe.now == pytest.approx(5)
+    assert probe.table_reads == 0
+
+
+def test_a_flock_still_in_the_table_after_the_inheritor_exits_is_held(inherited_probe):
+    probe = inherited_probe
+    probe.states[101] = ('R', 11, 4)
+
+    def settle():
+        probe.states[101] = ('Z', 11, 4)
+        probe.locks.add(probe.key)
+
+    probe.after_sleep = settle
+    assert probe.read() is True
+    assert probe.table_reads == 1
+
+
+def test_unreadable_descriptors_of_a_non_exiting_inheritor_are_inconclusive(inherited_probe):
+    probe = inherited_probe
+    probe.states[101] = ('S', 11, 0)
+
+    def denied(pid):
+        raise PermissionError(pid)
+
+    probe.descriptor = denied
+    assert probe.read() is None
+    assert probe.now == 0
+    assert probe.table_reads == 0
+
+
+@pytest.mark.parametrize('held', [False, True])
+def test_an_inheritor_beginning_exit_during_the_descriptor_read_is_unsettled(inherited_probe, held):
+    probe = inherited_probe
+    probe.states[101] = ('R', 11, 0)
+
+    def descriptor(pid):
+        probe.states[pid] = ('R', 11, 4)
+        probe.locks.add(probe.key)
+        return held
+
+    probe.descriptor = descriptor
+    probe.after_sleep = lambda: probe.states.pop(101)
+    assert probe.read() is True
+    assert probe.now > 0
+    assert probe.table_reads == 1
+
+
 @pytest.mark.parametrize('inherited', [False, True])
 def test_a_reaped_slot_owner_checks_for_a_surviving_descriptor(tmp_path, monkeypatch, inherited):
     root = root_at(tmp_path)
