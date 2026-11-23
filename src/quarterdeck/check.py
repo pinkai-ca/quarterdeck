@@ -46,6 +46,11 @@ class ProbeCheck(Check):
     reason: str | None = None
 
 
+@dataclass(frozen=True, kw_only=True)
+class UsageCheck(ProbeCheck):
+    stage: str
+
+
 def account_question(door: Door) -> str | None:
     """Only an adapter's own descriptor supplies an account question classification."""
     screen = door.screen()
@@ -131,6 +136,11 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None,
                                        step=failed.name)
     else:
         observed = check_outcome.event('passed', version, 'passed')
+    unknown_usage = [c.stage for c in checks if isinstance(c, UsageCheck)
+                     and c.passed and c.reason == 'usage-unavailable']
+    if unknown_usage:
+        checks.append(Check('native usage share spent', True, 'usage unknown'))
+        observed['usage'] = dict.fromkeys([*unknown_usage, 'share_spent'], 'unknown')
     check_outcome.publish(runtime, name, observed)
     if minimal:
         detail = ('one short task-only opening, no second order' if getattr(harness, 'minimal_check_task', None) is not None
@@ -224,7 +234,8 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
         try:
             with temporary_seat(ship, tmux, human_spec, human_orders, "qd check human wake", human=True, check_inbox=True) as human_seat:
                 try:
-                    checks += [ProbeCheck(c.name, c.passed, c.detail, 'wake') for c in probe_wake(human_seat, human_orders)]
+                    checks += [c if isinstance(c, ProbeCheck) else ProbeCheck(c.name, c.passed, c.detail, 'wake')
+                               for c in probe_wake(human_seat, human_orders)]
                 finally:
                     wake = human_seat.trusted / trusted_files.HUMAN_WAKE
                     if wake.exists():
@@ -358,6 +369,10 @@ def _check_usage(seat: Seat, stage: str) -> ProbeCheck:
     folder = seat.ship.runtime / 'check' / seat.name
     folder.mkdir(parents=True, exist_ok=True)
     data = asdict(usage) if usage is not None else {'error': 'native check usage unsupported'}
+    unknown = (usage is not None and usage.called and not usage.windows
+               and usage.retry_after is None and 'allowance-unavailable' in usage.diagnostics)
+    if unknown:
+        data['status'] = 'unknown'
     durable.replace_file(folder / f'usage-{stage}.json',
                          json.dumps(data, default=lambda value: value.isoformat()) + '\n')
     known = bool(usage is not None and usage.called and usage.error is None and usage.windows
@@ -365,10 +380,43 @@ def _check_usage(seat: Seat, stage: str) -> ProbeCheck:
     name = f'native usage read {stage} the turn'
     if known:
         return ProbeCheck(name, True, 'decoded allowance retained in private check evidence')
+    if unknown:
+        return UsageCheck(name, True, 'usage unknown: native allowance unavailable', 'usage-unavailable', stage=stage)
     unavailable = (usage is None or not usage.called or 'allowance-unavailable' in usage.diagnostics
                    or (not usage.windows and usage.error is None))
     reason = 'usage-unavailable' if unavailable else 'usage-unreadable'
     return ProbeCheck(name, False, check_outcome.REASONS[reason][1], reason)
+
+
+def _probe_launch(seat: Seat, checks: list[Check]) -> str | None:
+    """Read any adapter-provided launch check before delivering the opening."""
+    read_launch = getattr(seat.harness, 'check_launch_reading', None)
+    if read_launch is None:
+        return seat.up(resume=False)
+
+    observed = None
+
+    def readiness(home, screen):
+        nonlocal observed
+        observed = ProbeCheck(*read_launch(screen))
+        if observed.passed:
+            return seat.harness.opening_readiness(home, screen)
+        return False, observed.detail
+
+    seat._check_opening_readiness = readiness
+    try:
+        launched = seat.up(resume=False)
+    except (ShipError, TmuxError, OSError) as error:
+        if observed is None:
+            raise
+        checks.append(observed)
+        if observed.passed:
+            checks.append(ProbeCheck('launch opening unconfirmed', False, str(error), 'paste'))
+        return None
+    finally:
+        seat._check_opening_readiness = None
+    checks.append(observed if observed is not None else ProbeCheck(*read_launch(None)))
+    return launched if observed is not None and observed.passed else None
 
 
 def _probe_task_opening(seat: Seat, opening: str, *, requested_model: str | None) -> list[Check]:
@@ -390,7 +438,9 @@ def _probe_task_opening(seat: Seat, opening: str, *, requested_model: str | None
     if not before.passed:
         return checks  # no model turn without its before reading
     try:
-        launched = seat.up(resume=False)
+        launched = _probe_launch(seat, checks)
+        if launched is None:
+            return checks
         checks.append(ProbeCheck('launch', seat.is_up, launched, 'launch'))
         confirmed = launch_opening.delivered(seat, opening)
         checks.append(ProbeCheck(f'the {len(opening)}-character opening was confirmed once by its record',
@@ -430,7 +480,9 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
     checks: list[Check] = []
     proof_line = f"qd-check-{secrets.token_hex(4)}"
     proof_file = sandbox.check_proof_file(ship.runtime, seat.name)
-    launched = seat.up(resume=False)
+    launched = _probe_launch(seat, checks)
+    if launched is None:
+        return checks
     checks.append(ProbeCheck("launch", seat.is_up, launched, 'launch'))
     door = Door(seat)
     opened = wait_for(lambda: ready_for_probe(seat, door), PATIENCE if seat.harness.opening_prompt_turn else PATIENCE / 3)
@@ -549,7 +601,9 @@ def _probe_wake(seat: Seat, orders: list[post.Message], observed: dict) -> list[
     this probe never dismisses one or presses a choice (including training).
     """
     checks: list[Check] = []
-    launched = seat.up(resume=False)
+    launched = _probe_launch(seat, checks)
+    if launched is None:
+        return checks
     if not seat.is_up:
         return [Check('human-session waking line', False, f'human launch failed: {launched}')]
     door = Door(seat)

@@ -30,6 +30,8 @@ REASONS = {
     'model': ('model', 'the requested model was not confirmed in the program or its record'),
     'usage-unavailable': ('usage', 'native usage allowance unavailable'),
     'usage-unreadable': ('usage', 'native usage allowance unreadable'),
+    'launch-setting-on': (None, 'reported on at launch'),
+    'launch-setting-unreadable': (None, 'could not be read for this launch'),
     'account-login': ('account holder question', 'account-holder question: login'),
     'account-training': ('account holder question', 'account-holder question: training data'),
     'account-permission': ('account holder question', 'account-holder question: permission'),
@@ -40,6 +42,7 @@ REASONS = {
     'unclassified': (None, 'completion could not be classified'),
 }
 ACCOUNT_QUESTIONS = {'account-login', 'account-training', 'account-permission', 'account-trust'}
+LAUNCH_SETTINGS = {'launch-setting-on', 'launch-setting-unreadable'}
 UNKNOWN = {'incomplete', 'interrupted', 'unclassified'}
 OBSERVATION_REASONS = {'exception': 'check raised an exception'}
 
@@ -59,6 +62,8 @@ def _step_name(step):
 
 
 def _classification(outcome, reason, step):
+    if reason in LAUNCH_SETTINGS:
+        return outcome == 'failed' and _step_name(step)
     if outcome == 'failed' and reason == 'unclassified':
         return _step_name(step)
     if reason not in REASONS or outcome not in ('passed', 'failed', 'unknown'):
@@ -74,7 +79,7 @@ def failure_reason(reason):
 def event(outcome, version=None, reason='unclassified', *, step=None):
     if outcome == 'failed' and reason == 'unclassified':
         step = step if _step_name(step) else 'check step'
-    elif reason in REASONS:
+    elif reason in REASONS and reason not in LAUNCH_SETTINGS:
         step = REASONS[reason][0]
     if not _classification(outcome, reason, step):
         raise ValueError('invalid check classification')
@@ -84,8 +89,15 @@ def event(outcome, version=None, reason='unclassified', *, step=None):
 
 
 def _event(data):
-    if not isinstance(data, dict) or set(data) != {'sequence', 'outcome', 'at', 'version', 'step', 'reason'}:
+    fields = {'sequence', 'outcome', 'at', 'version', 'step', 'reason'}
+    if not isinstance(data, dict) or set(data) not in (fields, fields | {'usage'}):
         raise ValueError('invalid check event')
+    if 'usage' in data:
+        usage = data['usage']
+        if (not isinstance(usage, dict) or not {'before', 'after'} & usage.keys()
+                or 'share_spent' not in usage or usage.keys() - {'before', 'after', 'share_spent'}
+                or any(value != 'unknown' for value in usage.values())):
+            raise ValueError('invalid check usage')
     if type(data['sequence']) is not int or not 0 < data['sequence'] < 2**63:
         raise ValueError('invalid check sequence')
     outcome, reason, version = data['outcome'], data['reason'], data['version']
@@ -241,8 +253,14 @@ def alarms(outcomes):
         final = data['definitive']
         if final is None or final['outcome'] != 'failed':
             continue
+        step = final['step']
         reason = final['reason']
-        detail = f"unclassified failure at {final['step']}" if reason == 'unclassified' else REASONS[reason][1]
+        if reason == 'unclassified':
+            detail = f'unclassified failure at {step}'
+        elif reason in LAUNCH_SETTINGS:
+            detail = f'{step} {REASONS[reason][1]}'
+        else:
+            detail = REASONS[reason][1]
         lines.append(f"{data['harness']} failed its check at {final['at']}: {detail}")
     return lines
 

@@ -150,8 +150,11 @@ ignored. Absent or unreadable allowance stays unknown, never zero used.
 
 The decoder is pure; native periodic usage execution is not yet enabled.
 An explicitly requested minimal check reads `usage --json` before and after
-its one turn in its built private home. Only decoded native buckets are saved
-as private check evidence; raw responses and account labels are discarded.
+its one turn in its built private home. When Muse explicitly reports that
+allowance is unavailable, the check continues. The affected reading and the
+share spent are reported and saved as unknown. An unreadable or refused read
+still fails the check. Private evidence holds decoded readings and
+diagnostics. Raw responses and account labels are discarded.
 The shared usage owner preserves one pool reader, an absolute 1800-second
 minimum interval and persisted refusal pacing. No destination gate performs
 a demand read. A whole installed check has not been run. It requires separate
@@ -169,8 +172,10 @@ seat with an empty brief and the exact opening `Write OK to proof.txt.`:
 the private check task folder. The existing launch-opening journal and Door
 confirm that one paste by the record. The check then verifies `proof.txt`,
 exactly one ended root turn and the requested model, and sends no second
-order. This exception exists only for the owned temporary check lifetime;
-it changes no crew brief or ordinary launch. Its native proof remains pending.
+order. Both forms of the check require the measured contributor-off line on
+the current launch's startup screen before the opening is typed. They report
+the observed contributor mode. A screen showing on or one with no usable
+contributor reading fails the check. The native proof remains pending.
 
 ## Shared interfaces
 

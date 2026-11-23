@@ -10,12 +10,17 @@ import pytest
 from quarterdeck import check, check_outcome, cli, launch_opening, lifecycle, pending
 from quarterdeck import seat as seats
 from quarterdeck.harness.fake import FakeHarness
+from quarterdeck.harness.limits import Usage
 from quarterdeck.harness.muse_usage import decode
 from quarterdeck.ship import Pool, Ship, ShipError
 
 
 RUN = 'check-fake-c01d'
 READABLE = '{"schemaVersion":1,"allowance":{"window":{"usedPercent":20,"resetsAtMs":1893459600000}}}'
+UNAVAILABLE = [
+    '{"schemaVersion":1,"allowance":null}',
+    '{"schemaVersion":1,"allowance":null,"reason":"no_allowance"}',
+]
 
 
 class Injected(RuntimeError):
@@ -34,7 +39,7 @@ def task_check(tmp_path, monkeypatch):
     monkeypatch.setattr(check.secrets, 'token_hex', lambda size: 'c01d' if size == 2 else 'a' * (size * 2))
     session = set()
     calls = []
-    faults = SimpleNamespace(at=None, usage=decode(READABLE))
+    faults = SimpleNamespace(at=None, usage=decode(READABLE), after=None)
     real_make = seats.trusted_files.make
     real_replace = check.durable.replace_file
     real_registration = pending.check_inbox_registration
@@ -78,8 +83,9 @@ def task_check(tmp_path, monkeypatch):
         reach('home')
 
     def usage(*_):
-        reach('usage-after' if 'usage-before' in calls else 'usage-before')
-        return faults.usage
+        after = 'usage-before' in calls
+        reach('usage-after' if after else 'usage-before')
+        return faults.after if after and faults.after is not None else faults.usage
 
     def up(seat, **kwargs):
         with seat._lifecycle():
@@ -136,15 +142,18 @@ def check_scratch_is_retired(ship, session):
     assert not lifecycle.lock_path(runtime, RUN).exists()
 
 
-@pytest.mark.parametrize(('native', 'reason', 'words'), [
-    ('{"schemaVersion":1,"allowance":null}', 'usage-unavailable', 'allowance unavailable'),
-    ('{"schemaVersion":1,"allowance":null,"reason":"no_allowance"}', 'usage-unavailable', 'allowance unavailable'),
-    ('synthetic unreadable private response', 'usage-unreadable', 'allowance unreadable'),
-    ('{"schemaVersion":1,"allowance":{"unmeasured":{}}}', 'usage-unreadable', 'allowance unreadable'),
+@pytest.mark.parametrize(('reading', 'reason'), [
+    (decode('synthetic unreadable private response'), 'usage-unreadable'),
+    (decode('{"schemaVersion":1,"allowance":{"unmeasured":{}}}'), 'usage-unreadable'),
+    (Usage((), decode(READABLE).read_at, 'Muse check settings changed; no usage call', called=False),
+     'usage-unavailable'),
+    (Usage((), decode(READABLE).read_at, 'Muse check usage command refused'), 'usage-unreadable'),
+    (Usage((), decode(READABLE).read_at, 'rate limited', retry_after=900), 'usage-unreadable'),
 ])
-def test_unusable_allowance_returns_the_ordinary_failure_without_launch(task_check, monkeypatch, native, reason, words):
+def test_unusable_allowance_returns_the_ordinary_failure_without_launch(task_check, monkeypatch, reading, reason):
     ship, tmux, session, calls, faults = task_check
-    faults.usage = decode(native)
+    faults.usage = reading
+    words = check_outcome.REASONS[reason][1]
     monkeypatch.setattr(cli, 'load_ship', lambda _: ship)
     monkeypatch.setattr(cli.Tmux, 'for_ship', lambda _: tmux)
     args = SimpleNamespace(harness='fake', minimal=True)
@@ -159,6 +168,48 @@ def test_unusable_allowance_returns_the_ordinary_failure_without_launch(task_che
     assert data['definitive']['reason'] == reason and data['definitive']['step'] == 'usage'
     assert words in check_outcome.alarms([data])[0]
     assert 'synthetic unreadable private response' not in str(lines) + str(data)
+    check_scratch_is_retired(ship, session)
+
+
+@pytest.mark.parametrize('before,after', [
+    (UNAVAILABLE[0], READABLE), (READABLE, UNAVAILABLE[1]), tuple(UNAVAILABLE),
+])
+def test_explicitly_unavailable_allowance_continues_and_saves_unknown(task_check, monkeypatch, before, after):
+    ship, tmux, session, calls, faults = task_check
+    faults.usage, faults.after = decode(before), decode(after)
+    monkeypatch.setattr(cli, 'load_ship', lambda _: ship)
+    monkeypatch.setattr(cli.Tmux, 'for_ship', lambda _: tmux)
+    args = SimpleNamespace(harness='fake', minimal=True)
+    lines = cli.cmd_check(args)
+    assert args.exit_code == 0
+    assert calls.count('launch') == calls.count('opening') == 1
+    assert 'PASS  native usage share spent · usage unknown' in lines
+    evidence = ship.runtime / 'check' / RUN
+    expected = {'share_spent': 'unknown'}
+    for stage, native in [('before', before), ('after', after)]:
+        saved = json.loads((evidence / f'usage-{stage}.json').read_text())
+        line = next(line for line in lines if f'native usage read {stage} the turn' in line)
+        if native in UNAVAILABLE:
+            assert 'usage unknown' in line
+            assert saved['status'] == 'unknown' and saved['windows'] == []
+            expected[stage] = 'unknown'
+        else:
+            assert saved['windows'][0]['used'] == .2
+    final = check_outcome.read(ship.runtime / 'minimal-checks', 'fake')['definitive']
+    assert final['outcome'] == 'passed' and final['usage'] == expected
+    check_scratch_is_retired(ship, session)
+
+
+def test_a_refused_after_read_still_fails_when_before_usage_is_unknown(task_check):
+    ship, tmux, session, calls, faults = task_check
+    faults.usage = decode(UNAVAILABLE[0])
+    faults.after = Usage((), faults.usage.read_at, 'rate limited', retry_after=900)
+    checks = check.check(ship, 'fake', tmux, minimal=True)
+    assert any(row.name == 'native usage read after the turn' and row.passed is False for row in checks)
+    final = check_outcome.read(ship.runtime / 'minimal-checks', 'fake')['definitive']
+    assert final['reason'] == 'usage-unreadable'
+    assert final['usage'] == {'before': 'unknown', 'share_spent': 'unknown'}
+    assert calls.count('launch') == calls.count('opening') == 1
     check_scratch_is_retired(ship, session)
 
 

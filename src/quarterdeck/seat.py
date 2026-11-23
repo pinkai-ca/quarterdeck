@@ -365,6 +365,7 @@ EXPLICIT = trusted_files.EXPLICIT  # beside ``pool``: a person chose that pool f
 
 class Seat:
     _withdrawn_launch: Launched | None = None
+    _check_opening_readiness = None  # set only by the temporary check that observes this launch
 
     def __init__(self, ship: Ship, spec: SeatSpec, tmux: Tmux, *, launching: bool = False):
         self.ship, self.spec, self.tmux = ship, spec, tmux
@@ -1349,7 +1350,9 @@ class Seat:
 
     def _deliver_opening(self, launched):
         from . import launch_opening
-        return launched if self.defer_opening else launch_opening.deliver(self, launched)
+        if self.defer_opening:
+            return launched
+        return launch_opening.deliver(self, launched, readiness=self._check_opening_readiness)
 
     def _resume_target(self) -> resume_target.Target | None:
         from .record_location import retired

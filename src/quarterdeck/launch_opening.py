@@ -94,11 +94,13 @@ def delivered(seat, text):
         return False
 
 
-def deliver(seat, launched, *, wait=True):
+def deliver(seat, launched, *, wait=True, readiness=None):
     from .door import Door
 
     owner = Owner(seat, launched)
     door = Door(seat)
+    if readiness is None:
+        readiness = seat.harness.opening_readiness
     deadline = time.monotonic() + seat.harness.start_seconds
     reason = 'launch opening startup observation expired'
     try:
@@ -106,7 +108,7 @@ def deliver(seat, launched, *, wait=True):
             if pending.current_identity(seat) != owner.data['identity'] or seat.launched() != launched:
                 raise ShipError('launch changed before opening; no input')
             screen = door.screen()
-            ready, reason = seat.harness.opening_readiness(seat.home, screen)
+            ready, reason = readiness(seat.home, screen)
             if ready:
                 break
             if screen is not None and not screen.starting:

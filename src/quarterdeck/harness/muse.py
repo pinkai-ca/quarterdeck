@@ -177,6 +177,22 @@ class MuseHarness(Harness):
         return Launch(tuple(argv), environment,
                       notice=self.workspace_notice(home, seat.cwd), deferred_opening=prompt)
 
+    def check_launch_reading(self, screen) -> tuple[str, bool, str, str | None]:
+        """Use only the current startup screen for the explicit check."""
+        name = 'Muse contributor mode'
+        if screen is not None:
+            if screen.interruption is muse_screen.CONTRIBUTOR_ENABLED:
+                return name, False, "on in this launch's startup screen; opening held", 'launch-setting-on'
+            if (not screen.starting and screen.unknown is None and screen.interruption is None
+                    and re.search(muse_screen.label(muse_screen.CONTRIBUTOR_OFF), screen.text)):
+                return name, True, "off in this launch's startup screen before typing", None
+        detail = 'unknown; no current startup reading'
+        if screen is not None:
+            note = screen.unknown or getattr(screen.interruption, 'name', None)
+            if note:
+                detail = f'{detail} · {note}'
+        return name, False, detail, 'launch-setting-unreadable'
+
     def opening_readiness(self, home, screen):
         if screen is None or screen.starting:
             return False, 'Muse startup screen unavailable; no opening input'
