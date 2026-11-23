@@ -34,6 +34,66 @@ def test_the_drill_passes_every_check(private_socket):
     assert not os.environ.get("QD_SHIP")
 
 
+def test_the_drill_carries_a_second_typing_that_went_blind(private_socket, monkeypatch):
+    """The door's one look is spent on a blind paste: the drill's fresh settles it and carries the order once."""
+    from quarterdeck import pending, post
+
+    original_run, original_all, original_one = drill.Drill.run, drill.Drill.fresh_all, drill.Drill.fresh_after_delivery
+    seen = {}
+
+    def stopped_all(self):
+        # Seeded with the service stopped, so that nothing delivers the order first; one pass is run by hand below.
+        drill.service.stop(self.ship.runtime)
+        try:
+            return original_all(self)
+        finally:
+            drill.service.start(self.ship)
+
+    def seeded(self, seat, order):
+        if seat.name != 'worker-1':
+            return original_one(self, seat, order)
+        bound = pending.current_identity(seat)
+        assert bound is not None
+        first = self.attempts.open(order, seat.name, bound['pane'], bound['pid'], bound['launch'])
+        old = pending.Proof.begin(seat, first, post.typed([order]), before_paste=True)
+        old.save(phase='cancelled', resolution=pending.RETYPED,
+                 look=dict(at=post.now().isoformat(), outcome='retyped', saw='synthetic'))
+        self.attempts.close(first, 'blind', pending.RETYPED)
+        second = self.attempts.open(order, seat.name, bound['pane'], bound['pid'], bound['launch'])
+        journal = pending.Proof.begin(seat, second, post.typed([order], second=(order.id,)), before_paste=True)
+        journal.save(phase='pasting', look=dict(at=post.now().isoformat(), outcome='second delivery',
+                                                of=old.path.name))
+        self.attempts.close(second, 'blind', 'synthetic: paste outcome unconfirmed')
+        ticks = iter(range(10 ** 6))  # the guard counts readings, so a busy machine cannot spend it
+        guard, clock = self.settlement_guard, self.settlement_clock
+        self.settlement_guard, self.settlement_clock = 20, lambda: next(ticks)
+        try:
+            result = original_one(self, seat, order)
+        finally:
+            self.settlement_guard, self.settlement_clock = guard, clock
+        pending.reconcile(drill.service.Service(self.ship, self.tmux))
+        settled = next(p for p in pending.journals(seat)[0] if p.path == journal.path)
+        seen.update(order=order.id, phase=settled.data['phase'],
+                    after_fresh=[a.result for a in self.attempts.for_message(order.id)])
+        return result
+
+    def recorded(self):
+        checks = original_run(self)
+        seen['at_end'] = [a.result for a in self.attempts.for_message(seen['order'])] if 'order' in seen else None
+        return checks
+
+    monkeypatch.setattr(drill.Drill, 'run', recorded)
+    monkeypatch.setattr(drill.Drill, 'fresh_all', stopped_all)
+    monkeypatch.setattr(drill.Drill, 'fresh_after_delivery', seeded)
+    passed, lines = drill.run(None)
+    assert passed, "\n".join(lines)
+    assert any(line.startswith('PASS  worker-1 fresh ') and 'carried after finished blind attempt' in line
+               for line in lines)
+    assert any(line.startswith('PASS  worker-1 briefed with its open order') for line in lines)
+    assert seen['phase'] == 'carried'
+    assert seen['after_fresh'] == seen['at_end'] == ['blind', 'blind', 'launch']  # carried once, never typed again
+
+
 def test_a_between_attempts_kill_cannot_pass_for_mid_delivery(tmp_path, monkeypatch):
     """Negative control: even a later delivery cannot replace the missing crash observation."""
     from types import SimpleNamespace

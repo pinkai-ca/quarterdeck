@@ -306,8 +306,18 @@ class Drill:
                     reason = "pending delivery evidence is unreadable"
                     return None
                 active_phases = {"prepared", "pasting", "submitting", "submitted"}
-                if active := next((p for p in proofs if p.data["phase"] in active_phases), None):
-                    results = {a.path.name: a.result for a in attempts if a.seat == seat.name}
+                results = {a.path.name: a.result for a in attempts if a.seat == seat.name}
+
+                def awaits_launch(data):
+                    # A blind paste whose one look is spent: this fresh can carry its held order.
+                    # Reconciliation can still accept a later positive receipt.
+                    look = data.get("look")
+                    return (data["phase"] == "pasting" and isinstance(look, dict)
+                            and look.get("outcome") in ("held", "second delivery") and bool(data["attempts"])
+                            and all(results.get(name) == "blind" for name in data["attempts"]))
+
+                if active := next((p for p in proofs if p.data["phase"] in active_phases
+                                   and not awaits_launch(p.data)), None):
                     receipts = ', '.join(f'{name}={results.get(name, "missing")}' for name in active.data['attempts'])
                     reason = f"a delivery is still being typed or confirmed ({active.data['phase']}: {receipts})"
                     return None
