@@ -124,6 +124,66 @@ def data_flow_metadata(row) -> bool:
             and all(_derived_session(link, row['sessionId']) for link in sessions))
 
 
+_BRIDGE_STARTUP_METADATA = ('custom-title', 'agent-name', 'mode', 'permission-mode', 'session-owner')
+_BRIDGE_STATUS_TEXT = '/remote-control is active · Continue here, on your phone, or at '
+_BRIDGE_EVENT_ID = re.compile(r'event_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}')
+
+
+class _RemoteControlStartup:
+    """The 2.1.331 interactive bridge's root link event, before any conversational rows."""
+
+    def __init__(self, session):
+        self.phase = 'metadata'
+        self.session = session
+        self.linked = False
+
+    def take(self, row) -> bool:
+        if self.phase is None:
+            return False
+        phase, self.phase = self.phase, None
+        if row.get('sessionId') != self.session:
+            return False
+        kind = row.get('type')
+        if phase == 'metadata':
+            if kind in _BRIDGE_STARTUP_METADATA:
+                self.phase = phase
+            elif (kind == 'bridge-session' and row.keys() == {'type', 'sessionId', 'bridgeSessionId',
+                    'lastSequenceNum', 'ownerAccountUuid', 'ownerOrganizationUuid'}
+                    and type(row['lastSequenceNum']) is int and row['lastSequenceNum'] == 0
+                    and all(isinstance(row[key], str) and row[key]
+                            for key in ('bridgeSessionId', 'ownerAccountUuid', 'ownerOrganizationUuid'))):
+                self.phase = 'status'
+        elif phase == 'status' and self._status(row):
+            self.phase = 'snapshot'
+        elif phase == 'snapshot':
+            self.linked = self._snapshot(row)
+            return self.linked
+        return False
+
+    @staticmethod
+    def _status(row) -> bool:
+        return (row.keys() == {'type', 'subtype', 'content', 'url', 'isMeta', 'timestamp', 'uuid', 'userType',
+                              'entrypoint', 'cwd', 'sessionId', 'version', 'gitBranch', 'dataFlowOn',
+                              'parentUuid', 'isSidechain'}
+                and row['type'] == 'system' and row['subtype'] == 'bridge_status' and row['version'] == '2.1.331'
+                and row['parentUuid'] is None and row['isSidechain'] is False and row['isMeta'] is False
+                and row['dataFlowOn'] is True and row['userType'] == 'external' and row['entrypoint'] == 'cli'
+                and all(isinstance(row[key], str) and row[key] for key in ('uuid', 'url', 'cwd', 'gitBranch'))
+                and row['content'] == _BRIDGE_STATUS_TEXT + row['url'] and when(row['timestamp']) is not None)
+
+    @staticmethod
+    def _snapshot(row) -> bool:
+        if (row.keys() != {'type', 'v', 'sessionId', 'records', 'snapshot'}
+                or row['type'] != 'data-flow-records' or type(row['v']) is not int or row['v'] != 1
+                or row['snapshot'] is not True or not isinstance(row['records'], list) or len(row['records']) != 1):
+            return False
+        event = row['records'][0]
+        # The REPL bridge's recordLastingEvent calls recordSessionEvent, which writes no agentId or tool_use_id.
+        return (isinstance(event, dict) and event.keys() == {'tool_name', 'event_id'}
+                and event['tool_name'] == 'RemoteControlLinked' and isinstance(event['event_id'], str)
+                and _BRIDGE_EVENT_ID.fullmatch(event['event_id']) is not None)
+
+
 def unwrap(text: str) -> str:
     """A long paste is recorded inside ``<pasted_content>`` tags, queued or submitted, with blank lines around
     them when submitted; the message is what is inside."""
@@ -367,7 +427,10 @@ def inputs(record: Path, snapshot) -> list[Input]:
     background = BackgroundBash(record)
     watch_relaunch = WatchRelaunchQueue(background)
     watch_completion = WatchCompletionQueue(background)
+    startup = _RemoteControlStartup(record.stem)
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found, parse=lambda _: snapshot):
+        if startup.take(row):
+            continue
         kind = row.get('type')
         at = when(row.get('timestamp'))
         queue_empty = not any(phase in ('queued', 'pending') for _, phase in queued)
@@ -516,6 +579,7 @@ def person_inputs(record: Path, excluded: tuple[str, ...]) -> list[datetime]:
     if evidence.problems:
         raise ValueError('record has unreadable rows')
     found = []
+    startup = _RemoteControlStartup(Path(record).stem)
 
     def person(row, text):
         if text is not None and text.strip() in excluded:
@@ -526,6 +590,8 @@ def person_inputs(record: Path, excluded: tuple[str, ...]) -> list[datetime]:
         found.append(stamp)
 
     for _, row in rows:
+        if startup.take(row):
+            continue
         kind = row.get('type')
         if kind in DATA_FLOW_ROWS and not data_flow_metadata(row):
             raise ValueError('unknown native data-flow metadata')
@@ -701,6 +767,7 @@ class _Reader(JsonLinesReader):
         self.watch_completion = WatchCompletionQueue(self.background)
         self.children = Children(record)
         self.metadata_session = None
+        self.remote_control_startup = _RemoteControlStartup(record.stem)
         self.walls = []
         self.extra_usage = []
         self.notice_input = None  # accounting candidate only: a notice cannot open a turn
@@ -710,7 +777,9 @@ class _Reader(JsonLinesReader):
     def state(self, *, launched_at=None):
         state = replace(self.children.project(super().state(), self.background, INPUT_IGNORED, ai_title,
                                               launched_at=launched_at), walls=tuple(self.walls))
-        if self.metadata_session is not None and self.children.sessions != {self.metadata_session}:
+        startup = self.remote_control_startup
+        if (self.metadata_session is not None and self.children.sessions != {self.metadata_session}
+                or startup.linked and self.children.sessions - {startup.session}):
             state = replace(state, pending_tools=None)
         if state.queue_error is None and any(slot.uncertain and slot.phase in ('queued', 'pending')
                                              for slot in self.queue_slots):
@@ -742,6 +811,8 @@ class _Reader(JsonLinesReader):
         return (self.clock() - at).total_seconds() < NOTICE_GRACE_SECONDS
 
     def take(self, entry: dict) -> None:
+        if self.remote_control_startup.take(entry):
+            return  # bridge status already joins this metadata to the root before its first turn
         kind = entry.get("type")
         at = when(entry.get('timestamp'))
         private_watch = self.watch_relaunch.take(entry, at, queue_empty=not self.queued and self.open is None)

@@ -1,5 +1,7 @@
 """Synthetic Claude records with source-backed metadata and intact native IDs."""
 
+import json
+
 import pytest
 
 from quarterdeck.harness import claude, claude_record
@@ -164,3 +166,121 @@ def test_unmeasured_metadata_schema_versions_stay_unknown(tmp_path, version):
     assert claude.state(native.path).pending_tools is None
     assert claude.compactions(native.path).count is None
     assert claude.inputs(native.path).skipped
+
+
+def remote_control_startup(session):
+    url = 'https://example.invalid/synthetic-bridge'
+    leaf = 'synthetic-bridge-status'
+    event = dict(tool_name='RemoteControlLinked', event_id='event_00000000-0000-4000-8000-000000000001')
+    return [
+        dict(type='custom-title', sessionId=session, customTitle='Synthetic seat'),
+        dict(type='agent-name', sessionId=session, agentName='Synthetic seat'),
+        dict(type='mode', sessionId=session, mode='normal'),
+        dict(type='permission-mode', sessionId=session, permissionMode='bypassPermissions'),
+        dict(type='session-owner', sessionId=session, accountUuid='synthetic-account',
+             organizationUuid='synthetic-organization'),
+        dict(type='bridge-session', sessionId=session, bridgeSessionId='synthetic-bridge', lastSequenceNum=0,
+             ownerAccountUuid='synthetic-account', ownerOrganizationUuid='synthetic-organization'),
+        dict(type='system', subtype='bridge_status', sessionId=session, uuid=leaf, parentUuid=None,
+             isSidechain=False, version='2.1.331', dataFlowOn=True, userType='external', entrypoint='cli',
+             cwd='/synthetic/workspace', gitBranch='HEAD', isMeta=False, url=url, timestamp='2030-01-01T00:00:00Z',
+             content=f'/remote-control is active · Continue here, on your phone, or at {url}'),
+        dict(type='data-flow-records', v=1, sessionId=session, records=[event], snapshot=True),
+    ]
+
+
+def test_remote_control_startup_keeps_the_root_idle_across_appends(tmp_path):
+    record = tmp_path / 'synthetic-session.jsonl'
+    rows = remote_control_startup(record.stem)
+    record.write_text(''.join(json.dumps(row) + '\n' for row in rows[:7]))
+    for row in [rows[7], dict(type='file-history-snapshot', isSnapshotUpdate=False),
+                dict(type='atis-latch', sessionId=record.stem, atis='')]:
+        assert claude.state(record).pending_tools == ()
+        assert not claude.inputs(record).skipped
+        with record.open('a') as stream:
+            stream.write(json.dumps(row) + '\n')
+
+    state = claude.state(record)
+    assert state.turn_open is False and state.pending_tools == () and state.queue_error is None
+    assert not state.completed_turns and not state.active_tools
+    found = claude.inputs(record)
+    assert not found and not found.skipped
+    assert claude.person_inputs(record, ()) == []
+
+    # Ordinary tool evidence still opens a turn after the startup and stays pending.
+    native = Native(tmp_path / 'ordinary.jsonl', 'claude', conversation=record.stem)
+    native.call()
+    with record.open('a') as stream:
+        for row in native.rows:
+            stream.write(json.dumps(row) + '\n')
+    state = claude.state(record)
+    assert state.turn_open is True and state.pending_tools == ('Bash',)
+
+
+@pytest.mark.parametrize('stripped', [False, True])
+def test_remote_control_checkpoint_uses_ordinary_metadata_and_continuation_stays_unknown(tmp_path, stripped):
+    record = tmp_path / 'synthetic-session.jsonl'
+    rows = remote_control_startup(record.stem)
+    checkpoint = dict(type='last-prompt', leafUuid=rows[6]['uuid'], sessionId=record.stem)
+    record.write_text(''.join(json.dumps(row) + '\n' for row in [*rows, checkpoint]))
+
+    assert claude.state(record).pending_tools == ()
+    assert not claude.inputs(record).skipped
+    assert claude.person_inputs(record, ()) == []
+
+    continuation = rows[7]['records'][0]
+    if stripped:
+        continuation = dict(tool_name='<str 19>', event_id='<str 42>')
+    with record.open('a') as stream:
+        stream.write(json.dumps(dict(type='data-flow-records', v=1, sessionId=record.stem,
+                                     records=[dict(continuation, no_message=True)])) + '\n')
+
+    assert claude.state(record).pending_tools is None
+    assert claude.inputs(record).skipped == [
+        dict(line=10, kind='data-flow-records', reason='unknown native data-flow metadata'),
+    ]
+    with pytest.raises(ValueError, match='unknown native data-flow metadata'):
+        claude.person_inputs(record, ())
+
+
+@pytest.mark.parametrize(('index', 'changes', 'unknown_line'), [
+    (5, {'lastSequenceNum': 1}, 8),
+    (6, {'version': '2.1.317'}, 8),
+    (6, {'entrypoint': 'sdk'}, 8),
+    (6, {'parentUuid': 'prior-turn'}, 8),
+    (6, {'isSidechain': True}, 8),
+    (6, {'sessionId': 'other-session'}, 8),
+    (7, {'snapshot': False}, 8),
+    (7, {'agentId': 'child'}, 8),
+    (7, {'sessionId': 'other-session'}, 8),
+    (7, {'records': [{'tool_name': 'RemoteControlInput', 'event_id':
+                      'event_00000000-0000-4000-8000-000000000001'}]}, 8),
+    (7, {'records': [{'tool_name': 'RemoteControlLinked', 'event_id': 'event_other'}]}, 8),
+])
+def test_unmatched_remote_control_startup_keeps_metadata_unknown(tmp_path, index, changes, unknown_line):
+    record = tmp_path / 'synthetic-session.jsonl'
+    rows = remote_control_startup(record.stem)
+    rows[index].update(changes)
+    record.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    assert claude.state(record).pending_tools is None
+    assert claude.inputs(record).skipped[0] == dict(line=unknown_line, kind='data-flow-records',
+                                                   reason='unknown native data-flow metadata')
+    with pytest.raises(ValueError, match='unknown native data-flow metadata'):
+        claude.person_inputs(record, ())
+
+
+@pytest.mark.parametrize('other_context', ['different-file', 'after-a-turn'])
+def test_remote_control_startup_requires_the_current_root_prefix(tmp_path, other_context):
+    record = tmp_path / 'synthetic-session.jsonl'
+    rows = remote_control_startup(record.stem)
+    if other_context == 'different-file':
+        record = tmp_path / 'other-session.jsonl'
+    else:
+        native = Native(record, 'claude', conversation=record.stem)
+        native.finish()
+        rows = [*native.rows, *rows]
+    record.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    assert claude.state(record).pending_tools is None
+    assert claude.inputs(record).skipped
+    with pytest.raises(ValueError, match='unknown native data-flow metadata'):
+        claude.person_inputs(record, ())
