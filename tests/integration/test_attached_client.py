@@ -7,6 +7,7 @@ import tempfile
 
 import pytest
 
+from . import waiting
 from .waiting import attached_client
 
 MARK = 'synthetic client output'
@@ -30,7 +31,9 @@ def test_a_ready_client_keeps_its_output_while_attached_and_leaves_no_file(own_t
     term = os.environ.get('TERM')
     with attached_client('sleep 30', lambda: True) as client:
         assert client.poll() is None and len(logs(own_tmp)) == 1
+        assert not client.stdin.closed
     assert client.returncode is not None and logs(own_tmp) == []
+    assert client.stdin.closed
     assert os.environ.get('TERM') == term, 'only the client is given its terminal type'
 
 
@@ -50,10 +53,28 @@ def test_a_client_that_never_attaches_fails_with_its_whole_output_and_leaves_no_
     assert logs(own_tmp) == []
 
 
+def test_readiness_timeout_names_the_expected_attachment_with_no_client_output(own_tmp, monkeypatch):
+    script = own_tmp / 'script'
+    script.write_text('#!/bin/sh\nexit 0\n')
+    script.chmod(0o700)
+    monkeypatch.setenv('PATH', str(own_tmp))
+    wait_for = waiting.wait_for
+    monkeypatch.setattr(waiting, 'wait_for', lambda predicate: wait_for(predicate, seconds=0))
+    event = 'one attached client for Bridge ($42) in list-sessions'
+    with pytest.raises(AssertionError) as failure:
+        with attached_client('synthetic-client', lambda: False, event=event):
+            pytest.fail('a client that never attached was handed to the test')
+    text = str(failure.value)
+    assert f'condition not met in time while waiting for {event}' in text
+    assert 'tmux attach script exit=' in text and "client TERM='xterm-256color'" in text
+    assert text.endswith('output:\n')
+    assert logs(own_tmp) == []
+
+
 @needs_script
 def test_a_failure_inside_an_attached_client_is_raised_untouched_and_leaves_no_file(own_tmp):
     with pytest.raises(AssertionError) as failure:
-        with attached_client('sleep 30', lambda: True):
+        with attached_client('sleep 30', lambda: True, event='a synthetic attachment'):
             raise AssertionError('synthetic failure inside the attached test')
     assert str(failure.value) == 'synthetic failure inside the attached test'
     assert logs(own_tmp) == []

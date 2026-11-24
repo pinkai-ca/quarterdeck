@@ -1,6 +1,7 @@
 """Controlled-state and real-process retirement of the terminal-client helper."""
 
 from contextlib import nullcontext
+from io import BytesIO
 from pathlib import Path
 import shlex
 import signal
@@ -85,6 +86,7 @@ def test_force_retirement_stays_bounded_by_the_explicit_window(tmp_path, monkeyp
     class Client:
         pid = 101
         returncode = None
+        stdin = BytesIO()
 
         def poll(self):
             return self.returncode
@@ -111,7 +113,7 @@ def test_force_retirement_stays_bounded_by_the_explicit_window(tmp_path, monkeyp
     monkeypatch.setattr(waiting, 'time', SimpleNamespace(monotonic=lambda: clock.now))
     monkeypatch.setattr(waiting, 'os', SimpleNamespace(environ=waiting.os.environ, killpg=signal_group))
     monkeypatch.setattr(waiting, 'subprocess', SimpleNamespace(
-        Popen=lambda *args, **kwargs: client, DEVNULL=subprocess.DEVNULL,
+        Popen=lambda *args, **kwargs: client, PIPE=subprocess.PIPE,
         STDOUT=subprocess.STDOUT, TimeoutExpired=subprocess.TimeoutExpired))
 
     patience = 0.1
@@ -120,6 +122,7 @@ def test_force_retirement_stays_bounded_by_the_explicit_window(tmp_path, monkeyp
         with waiting.attached_client('synthetic-client', lambda: True, patience=patience) as attached:
             assert attached is client
             assert client.poll() is None
+    assert client.stdin.closed
     assert signals == [
         ('group', signal.SIGTERM, 0.0),
         ('group', signal.SIGKILL, pytest.approx(patience)),

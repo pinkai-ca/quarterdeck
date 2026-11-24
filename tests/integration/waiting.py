@@ -81,14 +81,15 @@ def await_drop(text: str, *, seconds: float = 15) -> str:
 
 
 @contextmanager
-def attached_client(command, attached, *, patience=5.0):
+def attached_client(command, attached, *, event: str | None = None, patience=5.0):
     """Own a terminal client. Its output is kept in a temporary file, embedded whole in an attach failure, and the
-    file is removed on every exit."""
+    file is removed on every exit. The optional event names the expected attachment in the failure."""
     client_env = os.environ.copy()
     inherited_term = client_env.get('TERM')
     client_env['TERM'] = 'xterm-256color'
     with tempfile.NamedTemporaryFile(prefix='tmux-client-', suffix='.log') as output:  # removed when closed
-        client = subprocess.Popen(['script', '-qfc', command, '/dev/null'], stdin=subprocess.DEVNULL,
+        # script sends Ctrl-D to the terminal at EOF. Keep idle input open until retirement.
+        client = subprocess.Popen(['script', '-qfc', command, '/dev/null'], stdin=subprocess.PIPE,
                                   stdout=output, stderr=subprocess.STDOUT, env=client_env, start_new_session=True)
 
         def process(pid):
@@ -192,6 +193,9 @@ def attached_client(command, attached, *, patience=5.0):
                 raise
             output.seek(0)
             captured = output.read().decode('utf-8', errors='replace')
-            raise AssertionError(f'{error}; tmux attach script exit={client.returncode}, '
+            context = f' while waiting for {event}' if event is not None else ''
+            raise AssertionError(f'{error}{context}; tmux attach script exit={client.returncode}, '
                                  f'inherited TERM={inherited_term!r}, client TERM={client_env["TERM"]!r}, '
                                  f'output:\n{captured}') from error
+        finally:
+            client.stdin.close()

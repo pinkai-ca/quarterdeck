@@ -42,7 +42,12 @@ def test_lists_running_declared_sessions_with_creation_and_attachment(drydock, t
 
     bridge_created, office_created = created(bridge), created(office)
 
-    with attached_client(tmux.attach_command("Bridge"), lambda: tmux.clients_attached(["Bridge"])):
+    def bridge_attachment_is_listed():
+        rows = tmux.run("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{session_attached}")
+        return f"{bridge.id}\tBridge\t1" in rows.splitlines()
+
+    event = f"one attached client for Bridge ({bridge.id}) in list-sessions"
+    with attached_client(tmux.attach_command("Bridge"), bridge_attachment_is_listed, event=event):
         text, _ = read(capsys, "--ship", str(drydock), "ls")
         assert text.splitlines() == [
             f"bridge (Bridge) · 2 declared seats · created {bridge_created} · attached",
