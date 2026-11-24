@@ -183,8 +183,10 @@ class MuseHarness(Harness):
         if screen is not None:
             if screen.interruption is muse_screen.CONTRIBUTOR_ENABLED:
                 return name, False, "on in this launch's startup screen; opening held", 'launch-setting-on'
-            if (not screen.starting and screen.unknown is None and screen.interruption is None
-                    and re.search(muse_screen.label(muse_screen.CONTRIBUTOR_OFF), screen.text)):
+            legacy_off = (screen.unknown is None
+                          and re.search(muse_screen.label(muse_screen.CONTRIBUTOR_OFF), screen.text))
+            if (not screen.starting and screen.interruption is None
+                    and (screen.shows.get("contributor_mode") == "off" or legacy_off)):
                 return name, True, "off in this launch's startup screen before typing", None
         detail = 'unknown; no current startup reading'
         if screen is not None:
@@ -205,6 +207,8 @@ class MuseHarness(Harness):
         if (screen.unknown is not None or screen.interruption is not None
                 or screen.working is not False or not empty):
             return False, 'Muse startup is not a measured empty idle composer; no opening input'
+        if screen.shows.get("contributor_mode") == "off":
+            return True, 'Muse contributor-off proof: positive off line on this launch'
         if re.search(muse_screen.label(muse_screen.CONTRIBUTOR_OFF), screen.text):
             muse_home.remember_off(home)
             return True, 'Muse contributor-off proof: positive off line on this launch'

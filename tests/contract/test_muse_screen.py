@@ -1,11 +1,48 @@
 """Synthetic layouts constrained to the safe offline TUI description."""
 
 from datetime import datetime, timezone
+from pathlib import Path
+from textwrap import wrap
 
 import pytest
 
+from quarterdeck.harness.muse import MuseHarness
 from quarterdeck.harness.muse_screen import (EXPAND_HINT, IDLE_HINT, MUTED, PROMPT, TYPED,
-                                           TRUST, VisibleBox, counted_characters, read, wrapped_rows)
+                                           TRUST, VisibleBox, characters, counted_characters, read, wrapped_rows)
+
+CURRENT_STARTUP = Path(__file__).parents[1] / "fixtures/muse/1.4.25/startup-off.ansi"
+
+
+@pytest.mark.parametrize("columns", [80, 120, 200])
+def test_the_current_startup_disclosure_uses_the_screen_at_different_widths(tmp_path, columns):
+    frame = CURRENT_STARTUP.read_text()
+    if columns != 200:
+        plain, _ = characters(frame)
+        rows = plain.splitlines()
+        disclosure = ["  " + line for line in wrap(rows[3].strip(), width=columns - 2)]
+        rows = rows[:3] + disclosure + rows[4:]
+        frame = "\n".join(rows).replace("─" * 200, "─" * columns)
+        frame = frame.replace("/workspace/example", "/different folder/task")
+    adapter = MuseHarness()
+    screen = adapter.screen(frame)
+    assert screen.box == "" and screen.working is False and screen.unknown is None
+    assert adapter.check_launch_reading(screen)[1]
+    assert adapter.opening_readiness(tmp_path, screen)[0]
+    assert not (tmp_path / "muse-contributor-off.json").exists()
+
+    task = adapter.minimal_check_task
+    draft = adapter.screen(frame.replace("❯ ", "❯ \x1b[38;5;252m" + task, 1))
+    assert VisibleBox(task).matches(draft.box, columns - 2)
+    assert not VisibleBox(task + " ").matches(draft.box, columns - 2)
+
+
+def test_a_visible_current_disclosure_does_not_make_a_clipped_composer_ready(tmp_path):
+    frame = CURRENT_STARTUP.read_text().split("Launch overrides", 1)[0]
+    adapter = MuseHarness()
+    screen = adapter.screen(frame)
+    assert adapter.check_launch_reading(screen)[1]
+    assert screen.unknown == "unmeasured Muse footer"
+    assert not adapter.opening_readiness(tmp_path, screen)[0]
 
 
 def frame(text="", status="", working=False):

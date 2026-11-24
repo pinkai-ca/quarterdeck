@@ -13,7 +13,7 @@ import pytest
 
 from quarterdeck import check, check_outcome, cli, launch_opening, pending, post, trusted_files
 from quarterdeck.door import Delivery
-from quarterdeck.harness import muse_home
+from quarterdeck.harness import muse_home, muse_screen
 from quarterdeck.harness.muse import MuseHarness
 from quarterdeck.harness.muse_usage import decode, read_native
 from quarterdeck.seat import Launched, Seat
@@ -41,11 +41,14 @@ print(json.dumps({'schemaVersion': 1, 'allowance': {
 def muse_check(tmp_path, monkeypatch):
     ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, {'meta': Pool('meta', 'meta')}, {}, {})
     adapter = MuseHarness()
-    fixture = Path(__file__).parents[1] / 'fixtures/muse/1.4.20'
+    fixtures = Path(__file__).parents[1] / 'fixtures/muse'
     calls = []
     state = SimpleNamespace(screen=None, journal=None, ordinary_readiness=None)
     monkeypatch.setattr(check.harnesses, 'get', lambda name: adapter)
-    monkeypatch.setattr(check, '_version_in_runtime', lambda *args: '1.4.20')
+    def version():
+        return '1.4.25' if (state.screen or '').startswith('current-') else '1.4.20'
+
+    monkeypatch.setattr(check, '_version_in_runtime', lambda *args: version())
     monkeypatch.setattr(check, 'program_where', lambda *args: None)
     monkeypatch.setattr(cli, 'load_ship', lambda _: ship)
     monkeypatch.setattr(cli.Tmux, 'for_ship', lambda _: object())
@@ -55,6 +58,11 @@ def muse_check(tmp_path, monkeypatch):
         muse_home.prepare(home)
         muse_home.write_settings(home, muse_home.configuration(spec.model, spec.effort, {}, {}))
         muse_home.remember_off(home)
+        if version() == '1.4.25':
+            settings_path = home / 'config/muse/settings.json'
+            settings = json.loads(settings_path.read_text())
+            settings['contributor_mode_disclosure_acknowledged'] = True
+            settings_path.write_text(json.dumps(settings))
 
     monkeypatch.setattr(adapter, 'build_home', build_home)
     monkeypatch.setattr(pending, 'current_identity', lambda seat: launch_opening.binding(seat, seat.launched()))
@@ -63,11 +71,25 @@ def muse_check(tmp_path, monkeypatch):
     def screen(_door):
         if not state.screen:
             return None
+        if version() == '1.4.25':
+            frame = (fixtures / '1.4.25/startup-off.ansi').read_text()
+            if state.screen != 'current-off':
+                plain, _ = muse_screen.characters(frame)
+                rows = plain.splitlines()
+                if state.screen == 'current-on':
+                    rows[3] = ('  Contributor mode is on, so your content may be used for product improvement. '
+                               'Turn it off in /settings.')
+                elif state.screen == 'current-altered':
+                    rows[3] = rows[3].replace('for more information.', 'for further details.')
+                else:
+                    del rows[3]
+                frame = '\n'.join(rows)
+            return adapter.screen(frame)
         name = 'idle-off' if state.screen == 'unmeasured-header' else state.screen
         suffix = 'txt' if name == 'contributor-on' else 'ansi'
-        frame = (fixture / f'{name}-120x40.{suffix}').read_text()
+        frame = (fixtures / '1.4.20' / f'{name}-120x40.{suffix}').read_text()
         if state.screen == 'unmeasured-header':
-            frame = frame.replace(' 1.4.20', ' 1.4.25', 1)
+            frame = frame.replace(' 1.4.20', ' 1.4.26', 1)
         return adapter.screen(frame)
 
     monkeypatch.setattr(check.Door, 'screen', screen)
@@ -88,7 +110,7 @@ def muse_check(tmp_path, monkeypatch):
         def up(*, resume):
             assert resume is False and spec.model == adapter.check_model
             build_home(home, spec)
-            launch = Launched('%123', 1, datetime.now(timezone.utc).isoformat(), 'meta', None, ['synthetic'], '1.4.20')
+            launch = Launched('%123', 1, datetime.now(timezone.utc).isoformat(), 'meta', None, ['synthetic'], version())
             opening = minimal_opening or 'synthetic standard opening'
             launch_opening.prepare(seat, launch, opening)
             launch.write(private / trusted_files.LAUNCH)
@@ -129,6 +151,9 @@ def muse_check(tmp_path, monkeypatch):
 @pytest.mark.parametrize('screen,reason', [('contributor-on', 'launch-setting-on'),
                                            ('idle-after-turn', 'launch-setting-unreadable'),
                                            ('unmeasured-header', 'launch-setting-unreadable'),
+                                           ('current-on', 'launch-setting-unreadable'),
+                                           ('current-altered', 'launch-setting-unreadable'),
+                                           ('current-absent', 'launch-setting-unreadable'),
                                            (None, 'launch-setting-unreadable')])
 def test_a_check_without_current_contributor_off_never_delivers_its_opening(muse_check, minimal, screen, reason, monkeypatch):
     ship, _, calls, state = muse_check
@@ -152,9 +177,10 @@ def test_a_check_without_current_contributor_off_never_delivers_its_opening(muse
 
 
 @pytest.mark.parametrize('minimal', [False, True])
-def test_a_check_reads_positive_startup_contributor_evidence_before_the_opening(muse_check, minimal):
+@pytest.mark.parametrize('screen', ['idle-off', 'current-off'])
+def test_a_check_reads_positive_startup_contributor_evidence_before_the_opening(muse_check, minimal, screen):
     ship, adapter, calls, state = muse_check
-    state.screen = 'idle-off'
+    state.screen = screen
     args = SimpleNamespace(harness='muse', minimal=minimal)
     lines = cli.cmd_check(args)
     assert 'PASS  Muse contributor mode · off in this launch\'s startup screen before typing' in lines

@@ -1,8 +1,8 @@
-"""Muse 1.4.20's measured composer, preserving style and every input row."""
+"""Muse's measured startup and composer, preserving style and every input row."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 from .types import Box, Interruption, Screen
@@ -17,6 +17,11 @@ IDLE_HINT = "Type @ to search and insert workspace file paths"
 EXPAND_HINT = "Paste again to expand for editing"
 WORKING = re.compile(r"(?:Thinking|Working|Double checking) \([0-9]+s · esc to interrupt\)")
 CONTRIBUTOR_OFF = "Contributor mode is off, so your content won't be used for product improvement."
+STARTUP_HEADER = "Muse Code 1.4.25"
+STARTUP_DISCLOSURE = (
+    CONTRIBUTOR_OFF + " Turn it on in /settings. See Terms of Service "
+    "(https://dev.meta.ai/legal/terms-of-service) for more information."
+)
 TRUST = Interruption("Muse workspace trust", r"Do you trust this workspace\?")
 
 
@@ -113,6 +118,19 @@ class ComposerText(str):
         return value
 
 
+def _matches_disclosure(rows: list[str], header: int) -> bool:
+    """Match only the disclosure block immediately following the header."""
+    remaining = STARTUP_DISCLOSURE
+    for row in rows[header + 1:]:
+        line = row.strip()
+        if RULE.fullmatch(line) or (not line and remaining != STARTUP_DISCLOSURE):
+            break
+        if not remaining.startswith(line):
+            return False
+        remaining = remaining[len(line):].removeprefix(" ")
+    return not remaining
+
+
 def read(text: str) -> Screen:
     decoded = characters(text)
     if decoded is None:
@@ -120,6 +138,11 @@ def read(text: str) -> Screen:
     plain, styles = decoded
     if not plain.strip():
         return Screen(plain, None, working=None, starting=True)
+    rows = plain.split("\n")
+    header = next(index for index, row in enumerate(rows) if row.strip())
+    current = rows[header].strip() == STARTUP_HEADER
+    if current and not _matches_disclosure(rows, header):
+        return Screen(plain, None, unknown="unmeasured Muse contributor disclosure")
     for interruption in MODEL_CHOICES:
         if interruption.seen_in(plain):
             # An offered option proves neither selection nor a catalog id.
@@ -127,13 +150,17 @@ def read(text: str) -> Screen:
             return Screen(plain, None, working=None, interruption=interruption)
     if TRUST.seen_in(plain):
         return Screen(plain, None, working=None, interruption=TRUST)
-    rows = plain.split("\n")
+    if not current and not any(row.strip() == "Muse Code 1.4.20" for row in rows):
+        return Screen(plain, None, working=None, unknown="unmeasured Muse header")
+    screen = _composer(plain, styles, rows, current)
+    return replace(screen, shows={"contributor_mode": "off"}) if current else screen
+
+
+def _composer(plain: str, styles: list[Style], rows: list[str], current: bool) -> Screen:
     offsets, offset = [], 0
     for row in rows:
         offsets.append(offset)
         offset += len(row) + 1
-    if not any(row.strip() == "Muse Code 1.4.20" for row in rows):
-        return Screen(plain, None, working=None, unknown="unmeasured Muse header")
     prompts = [index for index, row in enumerate(rows)
                if index > 0 and RULE.fullmatch(rows[index - 1])
                and (row.startswith("❯ ") or row == "❯")
@@ -142,7 +169,7 @@ def read(text: str) -> Screen:
     if len(prompts) != 1:
         return Screen(plain, None, working=None, unknown="Muse composer is not uniquely bound to its rule")
     index = prompts[0]
-    if len(rows[index - 1]) != 120:
+    if not current and len(rows[index - 1]) != 120:
         return Screen(plain, None, working=None, unknown="Muse 1.4.20 composer width not measured")
     bottom = next((stop for stop in range(index + 1, len(rows)) if rows[stop] == rows[index - 1]), None)
     if bottom is None:
@@ -190,12 +217,13 @@ def empty_cell(screen: Screen) -> tuple[int, int] | None:
             or any(char != ' ' for char in screen.box)):
         return None
     rows = screen.text.split('\n')
+    rule = '─' * (getattr(screen.box, 'columns', 118) + 2)
     prompts = [index for index, row in enumerate(rows)
-               if index > 0 and rows[index - 1] == '─' * 120 and row.startswith('❯ ')]
+               if index > 0 and rows[index - 1] == rule and row.startswith('❯ ')]
     if len(prompts) != 1:
         return None
     index = prompts[0]
-    if index + 1 >= len(rows) or rows[index + 1] != '─' * 120:
+    if index + 1 >= len(rows) or rows[index + 1] != rule:
         return None  # only the measured single empty composer row
     return 2, index
 
@@ -211,8 +239,10 @@ class VisibleBox(Box):
         measured = getattr(shown, "columns", None)
         if columns is not None and measured is not None and columns != measured:
             return False
-        width = columns if columns is not None else measured
-        projected = wrapped_rows(self.text, width)
+        if measured is not None:
+            return (input_shape_reason(self.text) is None and len(self.text) <= measured
+                    and self.text == shown)
+        projected = wrapped_rows(self.text, columns)
         return projected is not None and "\n".join(projected) == shown
 
 

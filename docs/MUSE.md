@@ -1,7 +1,8 @@
 # Muse contract facts
 
 Muse is registered as harness `muse`, native company `meta`, for a subscription
-pool. The measured program is Muse Code 1.4.20. The adapter reads the selected
+pool. The contract below was measured on Muse Code 1.4.20, with the contributor
+disclosure at startup also measured on 1.4.25. The adapter reads the selected
 installation's version marker and runs its versioned executable directly;
 it never executes the updating launcher. An executed version observation, not
 the marker or an executable hash, establishes the installed version.
@@ -85,9 +86,12 @@ A failed or unconfirmed opening remains held,
 without retry or a second queue. Startup observation is bounded by the normal
 startup deadline.
 
-The startup proof is either an explicit contributor-off idle screen, or a
-later idle launch of the same previously proved home with the unchanged
-framework-seeded contributor-off setting and a noncontributor model. Native
+For 1.4.25, the exact measured contributor-off disclosure must follow the
+current screen's startup header. The home supplies no disclosure evidence for
+that release. On 1.4.20, an explicit contributor-off idle screen or a later
+idle launch of the same previously proved home with the unchanged
+framework-seeded contributor-off setting and a noncontributor model supplies
+startup proof. Native
 addition of the measured disclosure-acknowledgement flag is the only excluded
 settings change. Every other seeded field remains bound. An on notice always
 holds. The actual proof is appended to the saved launch notice. Absence of the
