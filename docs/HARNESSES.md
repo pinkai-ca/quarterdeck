@@ -28,6 +28,8 @@ An unproven version of a harness still runs, on the newest facts Quarterdeck kno
 
 To select a specific Claude Code executable for a ship, copy the release into its `runtime/programs/` folder and declare its path and SHA-256 in [`[programs.claude]`](design/ship-file.md#program-executables). `qd doctor` shows the executable and `qd check claude` proves that copy. When changing releases, copy the next executable to a new path, update the path and digest together, and check it. Run `qd restart <seat>` when the seat is ready to restart. It uses the new executable and resumes the saved conversation.
 
+For Claude Code 2.1.331, Quarterdeck checks named effort against the program's canonical CLI vocabulary of `low`, `medium`, `high`, `xhigh` and `max`. Claude Code governs which levels are available for each model.
+
 On Claude Code 2.1.331, a live `qd set` model or named effort request waits for the matching native command result in that seat's record. A model cache warning can receive one Enter when the owned pane shows the full, unwrapped panel for the requested model with the measured true-colour focus on Yes. The typed model command drew this panel at 120×50, 273×65 and 319×78. A live run at 319×78 sent one confirmation Enter and confirmed the linked result naming Sonnet 5.5. Direct effort changes were confirmed by the native result. An effort confirmation dialog holds for a person.
 
 ## What a harness runs on

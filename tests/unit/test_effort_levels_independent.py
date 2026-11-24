@@ -1,9 +1,10 @@
 """Independent functional specifications; no native program or account is needed.
 
-Fixture vocabularies below belong only to a synthetic harness. They are not
-measurements of any native program, version, model, or account.
+The fake harness uses synthetic vocabularies. Native vocabularies are checked
+against version-specific declarations without calling the program.
 """
 
+from argparse import Namespace
 from dataclasses import replace
 import json
 import subprocess
@@ -11,7 +12,7 @@ import tomllib
 
 import pytest
 
-from quarterdeck import doctor, endpoint, harness, seat as seatmod, ship as shipmod
+from quarterdeck import cli, doctor, endpoint, harness, seat as seatmod, ship as shipmod
 from quarterdeck.ledger import Count
 from quarterdeck.harness import base, codex, grok
 from quarterdeck.harness.capabilities import EffortCapability, validate_effort, validate_selection
@@ -49,6 +50,7 @@ def test_doctor_program_default_needs_template_home_provenance(tmp_path, mode):
 
 
 PI_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
+CLAUDE_331_LEVELS = ("low", "medium", "high", "xhigh", "max")
 UNMEASURED = ("claude", "codex", "grok", "antigravity")
 DEFAULT_LABEL = "program's default (not checked)"
 
@@ -297,6 +299,43 @@ def test_launch_selection_uses_measured_version_refusal(tmp_path, no_programs, m
     with pytest.raises(shipmod.ShipError, match="fixture-light, fixture-deep"):
         seat._observe_selection()
     assert not ship.runtime.exists()
+
+
+@pytest.mark.parametrize("effort", CLAUDE_331_LEVELS)
+def test_claude_331_launch_selection_accepts_canonical_levels(tmp_path, no_programs, monkeypatch, effort):
+    ship = shipmod.load(write_ship(tmp_path, "claude", f'effort = "{effort}"'))
+    seat = seatmod.Seat(ship, ship.seat("worker-example"), tmux=None)
+    monkeypatch.setattr(seatmod, "_version_in_runtime", lambda *args: "2.1.331")
+    assert seat._observe_selection() == ("2.1.331", None)
+
+
+@pytest.mark.parametrize("effort", ("med", "ultracode", "other"))
+def test_claude_331_launch_selection_refuses_noncanonical_names(tmp_path, no_programs, monkeypatch, effort):
+    ship = shipmod.load(write_ship(tmp_path, "claude", f'effort = "{effort}"'))
+    seat = seatmod.Seat(ship, ship.seat("worker-example"), tmux=None)
+    monkeypatch.setattr(seatmod, "_version_in_runtime", lambda *args: "2.1.331")
+    with pytest.raises(shipmod.ShipError, match=f"effort '{effort}'.*low, medium, high, xhigh, max"):
+        seat._observe_selection()
+
+
+@pytest.mark.parametrize("version", ("2.1.317", "2.1.332", None))
+def test_claude_launch_selection_keeps_unmeasured_versions_unchecked(tmp_path, no_programs, monkeypatch, version):
+    ship = shipmod.load(write_ship(tmp_path, "claude", 'effort = "med"'))
+    seat = seatmod.Seat(ship, ship.seat("worker-example"), tmux=None)
+    monkeypatch.setattr(seatmod, "_version_in_runtime", lambda *args: version)
+    assert seat._observe_selection() == (
+        version, f"levels of claude {version or 'version unknown'} not measured; 'med' unchecked",
+    )
+
+
+def test_claude_controls_reports_unknown_effort_without_an_installed_version(no_programs):
+    reading = cli.cmd_controls(Namespace(harness="claude", seat=None))
+    assert reading.data["effort"] == EffortCapability()
+    assert reading.render(reading.data)[:3] == [
+        "claude: effort unknown",
+        "installed version/support unknown; no program was called",
+        "measured versions: none",
+    ]
 
 
 def launch_arguments(tmp_path, monkeypatch, name, selected):

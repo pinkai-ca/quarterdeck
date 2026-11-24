@@ -4,7 +4,7 @@ Historical CLI vocabularies are not installed-version or model/account evidence.
 The simulator's unrestricted text is an explicit capability, not a finite enum.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..ship import ShipError
 
@@ -56,6 +56,18 @@ class EffortCapability:
     measured: bool = False
 
 
+_CLAUDE_CLI_EFFORTS = EffortCapability(
+    "levels", ("low", "medium", "high", "xhigh", "max"), ("2.1.331",)
+)
+
+
+def effort_facts(harness, version: str | None = None) -> EffortCapability:
+    """Use the measured Claude CLI vocabulary only for the release it describes."""
+    if harness.name == "claude" and version in _CLAUDE_CLI_EFFORTS.measured_versions:
+        return replace(_CLAUDE_CLI_EFFORTS, version=version, measured=True)
+    return harness.effort_capability(version)
+
+
 def default_label(*, unchecked: bool = True) -> str:
     return "program's default" + (" (not checked)" if unchecked else "")
 
@@ -84,7 +96,7 @@ def validate_effort(harness, effort, mode=None, *, version=None, installed=False
         return None
     if not isinstance(effort, str):
         raise ShipError(f"{context}: effort must be text")
-    facts = harness.effort_capability(version)
+    facts = effort_facts(harness, version)
     if facts.kind == "none":
         raise ShipError(f"{context}: {harness.name} takes no effort; effort {effort!r} is not supported")
     if facts.kind == "unrestricted":
