@@ -183,6 +183,24 @@ class ProjectedRow(dict):
     __slots__ = ('identity',)
 
 
+class FileHistoryCheckpoint(dict):
+    __slots__ = ('at',)
+
+
+def file_history_checkpoint(row):
+    """Read the dated empty snapshot form without retaining any file backup data."""
+    if isinstance(row, FileHistoryCheckpoint):
+        return row.at
+    if (row.keys() != {'type', 'messageId', 'snapshot', 'isSnapshotUpdate'}
+            or row['type'] != OMIT_TYPE or row['isSnapshotUpdate'] is not False):
+        return None
+    snapshot = row['snapshot']
+    if (isinstance(snapshot, dict) and snapshot.keys() == {'messageId', 'trackedFileBackups', 'timestamp'}
+            and snapshot['messageId'] == row['messageId'] and snapshot['trackedFileBackups'] == {}):
+        return json_record.when(snapshot['timestamp'])
+    return None
+
+
 def path_shape(path):
     return tuple(None if isinstance(part, int) else part for part in path)
 
@@ -775,6 +793,8 @@ def decoded_size(row):
             size += sys.getsizeof(value.size) + sys.getsizeof(value.image_bytes)
         if isinstance(value, ProjectedRow):
             size += sys.getsizeof(value.identity)
+        if isinstance(value, FileHistoryCheckpoint):
+            size += sys.getsizeof(value.at)
         if isinstance(value, dict):
             pending.extend(value)
             pending.extend(value.values())
@@ -844,7 +864,11 @@ class Line:
             return None, 'non-object', 0
         size = len(self.small)
         if row.get('type') == OMIT_TYPE and OMIT_KEY in row:
+            at = file_history_checkpoint(row)
             del row[OMIT_KEY]
+            if at is not None:
+                row = FileHistoryCheckpoint(row)
+                row.at = at
             size = retained_size(row)
         return row, None, size
 

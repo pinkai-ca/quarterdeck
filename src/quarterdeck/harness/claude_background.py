@@ -8,11 +8,11 @@ an unmeasured version, including any later one, stays unknown.
 """
 
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import re
 
-from .claude_record import BACKGROUND_HEADER
+from .claude_record import BACKGROUND_HEADER, file_history_checkpoint
 from .json_record import when
 from .types import ActiveTool
 from ..seat_command import qd_command
@@ -316,6 +316,12 @@ class WatchOrigin:
     prompt: str | None
 
 
+@dataclass(frozen=True)
+class BashAcknowledgement:
+    description: str
+    output: str
+
+
 def watch_output(block, task):
     """The Bash acknowledgement names the task and its output file in one line."""
     text = block.get('content')
@@ -323,6 +329,28 @@ def watch_output(block, task):
         return None
     match = re.match(rf'{re.escape(BACKGROUND_HEADER)}{re.escape(task)}\. Output is being written to: (\S+)\. ', text)
     return match[1] if match is not None else None
+
+
+BASH_ACK_GUIDANCE = (
+    'You will be notified when it completes — do not poll that file or sleep while waiting. '
+    'Read the file only if the user asks for progress, or if you need a line it prints before you can go on, '
+    "such as a server's ready line or port."
+)
+
+
+def bash_acknowledgement(entry, block, task, call, call_row, command, description):
+    result = entry['toolUseResult']
+    if (not native_task_id(call) or not native_task_id(call_row)
+            or entry.get('sourceToolAssistantUUID') != call_row or entry.get('parentUuid') != call_row
+            or not isinstance(command, str) or not command or not isinstance(description, str) or not description
+            or result.get('stdout') != '' or result.get('stderr') != ''
+            or any(result.get(key) is not False for key in ('interrupted', 'isImage', 'noOutputExpected'))):
+        return None
+    output = watch_output(block, task)
+    if (output is not None and block['content'] == f'{BACKGROUND_HEADER}{task}. Output is being written to: '
+            f'{output}. {BASH_ACK_GUIDANCE}'):
+        return BashAcknowledgement(description, output)
+    return None
 
 
 @dataclass
@@ -345,6 +373,7 @@ class Task:
     evidence_errors: tuple[str, ...] = ()
     undated_evidence: bool = False  # a row about it the reader could not date: it may be from after any launch
     watch: WatchOrigin | None = None
+    bash_ack: BashAcknowledgement | None = None
 
 
 def ship_watch_commands(record: Path | None) -> frozenset[str]:
@@ -397,13 +426,14 @@ class BackgroundBash:
             if not isinstance(block, dict):
                 continue
             if message.get('role') == 'assistant' and block.get('type') == 'tool_use':
-                self.call(block.get('id'), block.get('name'), block.get('input'), at, row.get('version'), linked=linked)
+                self.call(block.get('id'), block.get('name'), block.get('input'), at, row.get('version'),
+                          linked=linked, row_uuid=row.get('uuid'))
             if message.get('role') == 'user' and block.get('type') == 'tool_result':
                 call = block.get('tool_use_id')
                 if isinstance(call, str):
                     self.result(call, row, block, at, linked=linked)
 
-    def call(self, call, name, arguments, at, version, *, linked=True):
+    def call(self, call, name, arguments, at, version, *, linked=True, row_uuid=None):
         if name == 'Monitor' and isinstance(call, str) and call and version in MONITOR_VERSIONS:
             self.monitor_calls.add(call)
             return
@@ -420,7 +450,7 @@ class BackgroundBash:
         wanted = arguments.get('run_in_background', False) if name == 'Bash' else arguments.get('task_id')
         command = arguments.get('command')
         watch = name == 'Bash' and isinstance(command, str) and command in self.watch_commands
-        self.calls[call] = name, wanted, at, version, watch, linked, command, arguments.get('description')
+        self.calls[call] = name, wanted, at, version, watch, linked, command, arguments.get('description'), row_uuid
         if name == 'Bash' and (not isinstance(wanted, bool) or wanted and version not in CALL_VERSIONS):
             self.unknown_calls.add(call)
 
@@ -435,7 +465,7 @@ class BackgroundBash:
         info = self.calls.pop(call, None)
         if info is None:
             return
-        name, wanted, called_at, version, watch, own_call, command, description = info
+        name, wanted, called_at, version, watch, own_call, command, description, call_row = info
         result = entry.get('toolUseResult')
         allowed = CALL_VERSIONS if name == 'Bash' else STOP_VERSIONS
         supported = version in allowed and entry.get('version') == version
@@ -462,8 +492,12 @@ class BackgroundBash:
                     and isinstance(description, str) and description
                     and (output := watch_output(block, task)) is not None):
                 origin = WatchOrigin(command, description, output, entry.get('promptId'))
+            ack = None
+            if version == LINKED_VERSION and not watch and own_call and linked and called_at < at:
+                ack = bash_acknowledgement(entry, block, task, call, call_row, command, description)
             self.tasks[call] = Task(call, task, at, at, other_evidence_at=at, version=version, called_at=called_at,
-                                    acknowledged_at=at, inbox_watch_started=called_at if watch else None, watch=origin)
+                                    acknowledged_at=at, inbox_watch_started=called_at if watch else None,
+                                    watch=origin, bash_ack=ack)
             self.task_calls[task] = call
             for early in self.early.pop(call, ()):
                 self.notice(self.tasks[call], *early)
@@ -747,15 +781,16 @@ def bridge_link_event(row, *, snapshot=False):
     return None
 
 
-def watch_notice_text(task, status):
+def shell_notice_text(task, status, acknowledgement=None):
     header = (f'<task-notification>\n<task-id>{task.task}</task-id>\n'
               f'<tool-use-id>{task.call}</tool-use-id>\n')
     if status == 'stopped':
         return (header + f'<status>stopped</status>\n<summary>{RESUME_SUMMARY}</summary>\n'
                 f'<note>{RESUME_WATCH_NOTE}</note>\n</task-notification>')
     disposition = 'was stopped' if status == 'killed' else 'completed (exit code 0)'
-    return (header + f'<output-file>{task.watch.output}</output-file>\n<status>{status}</status>\n'
-            f'<summary>Background command "{task.watch.description}" {disposition}</summary>\n'
+    source = task.watch if acknowledgement is None else acknowledgement
+    return (header + f'<output-file>{source.output}</output-file>\n<status>{status}</status>\n'
+            f'<summary>Background command "{source.description}" {disposition}</summary>\n'
             '</task-notification>')
 
 
@@ -767,6 +802,13 @@ class WatchExit:
     parent: str
     saved_tools: bool = False
     upgrade_bridge: str | None = None
+
+
+@dataclass
+class OrdinaryBashExit(WatchExit):
+    position: int = 0
+    stop_dequeued_at: datetime | None = None
+    textless_enqueued_at: datetime | None = None
 
 
 @dataclass
@@ -792,8 +834,8 @@ def cost_checkpoint(row):
                     for key in COST_STATE_KEYS - {'type', 'sessionId', 'modelUsage', 'hasUnknownModelCost'}))
 
 
-class WatchRelaunchQueue:
-    """The root watch's adjacent exit pair and its transcript-only resume pair.
+class BashRelaunchQueue:
+    """Join an acknowledged root Bash task's exit to its transcript-only resume.
 
     The old record version scopes the kill. The transcript-only user row
     supplies the version of the resumed launch and settles the stopped pair.
@@ -912,9 +954,16 @@ class WatchRelaunchQueue:
         if fields is None or fields[2:] != ('killed', None):
             return False
         task = self.background.tasks.get(fields[0])
-        if (task is None or task.task != fields[1] or task.watch is None or task.version != self.version
+        if (task is None or task.task != fields[1] or task.version != self.version
                 or task.invalid or task.call in self.background.unknown_calls or task.phase != 'pending'
-                or task.latest > self.turn_end[0] or text != watch_notice_text(task, 'killed')):
+                or task.latest > self.turn_end[0]):
+            return False
+        if (task.bash_ack is not None and self.version == LINKED_VERSION and not self.bridge_seen
+                and self.checkpoint == 'cost-state' and task.latest < self.turn_end[0]
+                and text == shell_notice_text(task, 'killed', task.bash_ack)):
+            self.exit = OrdinaryBashExit(task, 'ordinary-bash', at, self.turn_end[1])
+            return True
+        if task.watch is None or text != shell_notice_text(task, 'killed'):
             return False
         bridge = self.bridge if self.checkpoint == 'cost-state' else None
         if self.version == VERSION:
@@ -929,7 +978,11 @@ class WatchRelaunchQueue:
     def advance(self, exit, row, at, *, queue_empty, old_version):
         # True takes a private carrier, False advances across ordinary metadata,
         # and None breaks the sequence.
-        if not queue_empty or row.get('sessionId') != self.session:
+        if not queue_empty:
+            return None
+        if isinstance(exit, OrdinaryBashExit):
+            return self.advance_ordinary(exit, row, at) if old_version == LINKED_VERSION else None
+        if row.get('sessionId') != self.session:
             return None
         if isinstance(exit, RemoteWatchExit):
             return self.advance_remote(exit, row, at)
@@ -959,7 +1012,7 @@ class WatchRelaunchQueue:
                 return True
             if (phase in ('exited', 'between-launches') and operation == 'enqueue'
                     and row.keys() == QUEUE_KEYS | {'content'}
-                    and row['content'] == watch_notice_text(task, 'stopped')):
+                    and row['content'] == shell_notice_text(task, 'stopped')):
                 exit.phase, exit.at = 'stopped-enqueued', at
                 return True
         upgraded = (phase == 'resume-linked' and linked_notice_origin(row) and row.get('rowSource') == 'harness'
@@ -985,13 +1038,15 @@ class WatchRelaunchQueue:
 
     def stopped_notice(self, exit, row):
         task = exit.task
+        return task.phase == 'ended' and task.terminal == 'killed' and self.stopped_carrier(exit, row)
+
+    def stopped_carrier(self, exit, row):
         return (linked_root(row, self.session)
                 and row.get('origin') == {'kind': 'task-notification'} and row.get('promptSource') == 'system'
                 and row.get('queueSkipAttachments') is True and row.get('queueTranscriptOnly') is True
                 and row.get('parentUuid') == exit.parent
                 and native_task_id(row.get('promptId')) and native_task_id(row.get('uuid'))
-                and row.get('message') == {'role': 'user', 'content': watch_notice_text(task, 'stopped')}
-                and task.phase == 'ended' and task.terminal == 'killed')
+                and row.get('message') == {'role': 'user', 'content': shell_notice_text(exit.task, 'stopped')})
 
     def settle(self, exit, at):
         task = exit.task
@@ -999,12 +1054,58 @@ class WatchRelaunchQueue:
         task.phase, task.terminal, task.latest = 'ended-by-relaunch', None, at
         self.exit = None
 
-    def remote_notice(self, exit, row):
+    def harness_notice(self, exit, row):
         return (linked_notice_origin(row) and row.keys() == REMOTE_RESUME_KEYS and row['rowSource'] == 'harness'
                 and row['dataFlowOn'] is True and row['entrypoint'] == 'cli' and row['userType'] == 'external'
                 and row['permissionMode'] == 'bypassPermissions' and row['uuid'] != exit.parent
-                and all(isinstance(row[key], str) and row[key] for key in ('cwd', 'gitBranch'))
-                and self.stopped_notice(exit, row))
+                and all(isinstance(row[key], str) and row[key] for key in ('cwd', 'gitBranch')))
+
+    def remote_notice(self, exit, row):
+        return self.harness_notice(exit, row) and self.stopped_notice(exit, row)
+
+    def advance_ordinary(self, exit, row, at):
+        """A .331 crew resume records a dated stopped carrier after another queue pair."""
+        task = exit.task
+        if task.phase != 'pending' or task.invalid or task.call in self.background.unknown_calls:
+            return None
+        steps = ('kill-dequeue', 'tools-used', 'before-stop', 'stop-enqueue', 'stop-dequeue',
+                 'textless-enqueue', 'textless-dequeue', 'before-notice', 'notice')
+        step = steps[exit.position]
+        kind = row.get('type')
+        own = row.get('sessionId') == self.session
+        if step in ('before-stop', 'before-notice'):
+            at = file_history_checkpoint(row)
+            valid = native_task_id(row.get('messageId')) and at is not None and at > exit.at
+        elif not own:
+            return None
+        elif step == 'tools-used':
+            valid = row == {'type': 'tools-used', 'sessionId': self.session, 'tools': ['Bash']}
+            at = None
+        elif step == 'notice':
+            # The notice is timestamped 1 ms before the textless enqueue, despite its later file position.
+            if (at is None or at <= exit.stop_dequeued_at or exit.textless_enqueued_at - at != timedelta(milliseconds=1)
+                    or not self.harness_notice(exit, row) or not self.stopped_carrier(exit, row)):
+                return None
+            self.settle(exit, at)
+            return True
+        elif at is None or kind != 'queue-operation':
+            return None
+        elif step == 'stop-enqueue':
+            valid = (at == exit.at and row.keys() == QUEUE_KEYS | {'content'} and row['operation'] == 'enqueue'
+                     and row['content'] == shell_notice_text(task, 'stopped'))
+        else:
+            operation = 'enqueue' if step == 'textless-enqueue' else 'dequeue'
+            valid = at > exit.at and row.keys() == QUEUE_KEYS and row['operation'] == operation
+        if not valid:
+            return None
+        if step == 'stop-dequeue':
+            exit.stop_dequeued_at = at
+        elif step == 'textless-enqueue':
+            exit.textless_enqueued_at = at
+        if at is not None:
+            exit.at = at
+        exit.position += 1
+        return kind == 'queue-operation'
 
     def advance_remote(self, exit, row, at):
         """Remote resumes settle only after the bridge has joined the old leaf and stopped notice."""
@@ -1024,7 +1125,7 @@ class WatchRelaunchQueue:
                      and isinstance(tools, list) and len(tools) == 1 and isinstance(tools[0], str) and bool(tools[0]))
         elif step == 'stop-enqueue':
             valid = (kind == 'queue-operation' and row.get('operation') == 'enqueue'
-                     and row.keys() == QUEUE_KEYS | {'content'} and row['content'] == watch_notice_text(task, 'stopped'))
+                     and row.keys() == QUEUE_KEYS | {'content'} and row['content'] == shell_notice_text(task, 'stopped'))
         elif step == 'derived-from':
             valid = self.resume_lineage(row)
         elif step == 'incomplete':
@@ -1132,7 +1233,7 @@ class WatchCompletionQueue:
         if (watch is None or task.task != notice.task or task.version != LINKED_VERSION or task.phase != 'pending'
                 or task.invalid or task.call in self.background.unknown_calls or at < task.latest
                 or not native_task_id(watch.prompt) or at <= self.turn.started or notice.output != watch.output
-                or text != watch_notice_text(task, 'completed')):
+                or text != shell_notice_text(task, 'completed')):
             return 'ordinary'
         if self.turn.prompt == watch.prompt and not self.background.calls and self.turn.started <= task.called_at:
             self.pending = WatchCompletion(task, text, at, self.turn, 'dequeue')

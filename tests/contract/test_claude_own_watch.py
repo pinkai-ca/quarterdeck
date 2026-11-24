@@ -726,7 +726,7 @@ def test_the_optional_restart_checkpoint_needs_its_bridge_status_anchor(tmp_path
     path = record(tmp_path, remote_origin(NEW) + resume_rows)
     settled = claude.state(path)
     assert idle.check(settled) is None
-    queue = claude._Reader(path).watch_relaunch
+    queue = claude._Reader(path).bash_relaunch
     for entry, private in zip(checkpoint, classified, strict=True):
         assert queue.take(entry, None, queue_empty=True) is private
         with path.open('a') as stream:

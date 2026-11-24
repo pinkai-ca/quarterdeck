@@ -35,7 +35,7 @@ from .claude_record import input_rows, inspect_entries
 from .types import AUTHENTICATION, Inputs, State, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_limits import ExtraUsage, extra_usage_at_refusal, limit_wall, rejected_limit_info
 from .claude_background import (notification as background_notification, BackgroundBash, BRIDGE_EVENT_ID, LINKED_VERSION,
-                                TaskNoticeQueue, WatchCompletionQueue, WatchRelaunchQueue,
+                                BashRelaunchQueue, TaskNoticeQueue, WatchCompletionQueue,
                                 bridge_link_event, bridge_pointer, bridge_status, linked_notice_origin,
                                 linked_root, native_task_id, user_notice)
 from .claude_children import Children, fingerprint as children_fingerprint
@@ -508,14 +508,14 @@ def inputs(record: Path, snapshot) -> list[Input]:
     dequeue = _TextlessDequeue()
     task_queue = TaskNoticeQueue(record.stem)
     background = BackgroundBash(record)
-    watch_relaunch = WatchRelaunchQueue(background)
+    bash_relaunch = BashRelaunchQueue(background)
     watch_completion = WatchCompletionQueue(background)
     startup = _RemoteControlStartup(record.stem)
     remote_input = _RemoteTypedInput(record.stem)
     remote_line = None
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found, parse=lambda _: snapshot):
         if (not snapshot.ends_newline and line == snapshot.line_count
-                and (watch_relaunch.pending or watch_relaunch.after_link is not None or remote_input.pending)):
+                and (bash_relaunch.pending or bash_relaunch.after_link is not None or remote_input.pending)):
             continue  # a partially appended row cannot finish either join
         kind = row.get('type')
         at = when(row.get('timestamp'))
@@ -527,15 +527,15 @@ def inputs(record: Path, snapshot) -> list[Input]:
         elif remote_disposition == 'unbound':
             found.skip(remote_line, 'data-flow-records', 'unknown native data-flow metadata')
         queue_empty = not any(phase in ('queued', 'pending') for _, phase in queued)
-        private_watch = watch_relaunch.take(row, at, queue_empty=queue_empty)
+        private_relaunch = bash_relaunch.take(row, at, queue_empty=queue_empty)
         if startup.take(row):
             continue
         watch_disposition = watch_completion.take(row, at, queue_empty=queue_empty,
                                                   task_queue_empty=task_queue.pending is None)
         row = dequeue.take(row)
-        if private_watch or watch_disposition != 'ordinary':
-            if private_watch and kind == 'data-flow-records':
-                found.remote_events[line] = watch_relaunch.undated_remote_input
+        if private_relaunch or watch_disposition != 'ordinary':
+            if private_relaunch and kind == 'data-flow-records':
+                found.remote_events[line] = bash_relaunch.undated_remote_input
             if 'version' in row:
                 task_queue.version = row['version']
             continue
@@ -629,7 +629,7 @@ def inputs(record: Path, snapshot) -> list[Input]:
     found.extend(entry for entry, phase in queued if phase == 'queued')
     if remote_input.pending:
         found.skip(remote_line, 'data-flow-records', 'unknown native data-flow metadata')
-    if (task_queue.pending is not None or task_queue.unknown or watch_relaunch.pending or watch_relaunch.unknown
+    if (task_queue.pending is not None or task_queue.unknown or bash_relaunch.pending or bash_relaunch.unknown
             or watch_completion.pending is not None or watch_completion.unknown):
         found.skip(0, 'queue-operation', 'task notification queue unresolved')
     return found
@@ -877,7 +877,7 @@ class _Reader(JsonLinesReader):
         self.queue_version = None
         self.task_queue = TaskNoticeQueue(record.stem)
         self.background = BackgroundBash(record)
-        self.watch_relaunch = WatchRelaunchQueue(self.background)
+        self.bash_relaunch = BashRelaunchQueue(self.background)
         self.watch_completion = WatchCompletionQueue(self.background)
         self.children = Children(record)
         self.metadata_session = None
@@ -901,7 +901,7 @@ class _Reader(JsonLinesReader):
                                              for slot in self.queue_slots):
             state = replace(state, queue_error='unknown queue operation')
         if (self.task_queue.pending is not None or self.task_queue.unknown
-                or self.watch_relaunch.pending or self.watch_relaunch.unknown
+                or self.bash_relaunch.pending or self.bash_relaunch.unknown
                 or self.watch_completion.pending is not None or self.watch_completion.unknown):
             state = replace(state, pending_tools=None,
                             queue_error=state.queue_error or 'task notification queue unresolved')
@@ -928,7 +928,7 @@ class _Reader(JsonLinesReader):
 
     def take(self, entry: dict) -> None:
         if (entry is self.unterminated
-                and (self.watch_relaunch.pending or self.watch_relaunch.after_link is not None
+                and (self.bash_relaunch.pending or self.bash_relaunch.after_link is not None
                      or self.remote_input.pending)):
             self.tools_known = False
             return
@@ -937,13 +937,13 @@ class _Reader(JsonLinesReader):
         remote_disposition = self.remote_input.take(entry, at)
         if remote_disposition == 'unbound':
             self.tools_known = False
-        private_watch = self.watch_relaunch.take(entry, at, queue_empty=not self.queued and self.open is None)
+        private_relaunch = self.bash_relaunch.take(entry, at, queue_empty=not self.queued and self.open is None)
         if self.remote_control_startup.take(entry):
             return  # bridge status already joins this metadata to the root before its first turn
         watch_disposition = self.watch_completion.take(entry, at, queue_empty=not self.queued,
                                                         task_queue_empty=self.task_queue.pending is None)
         if kind in DATA_FLOW_ROWS:
-            if private_watch or remote_disposition == 'event':
+            if private_relaunch or remote_disposition == 'event':
                 return
             if not data_flow_metadata(entry) or self.metadata_session not in (None, entry['sessionId']):
                 self.tools_known = False
@@ -954,7 +954,7 @@ class _Reader(JsonLinesReader):
         self.children.observe(entry)
         if not entry.get('isSidechain') and 'version' in entry:
             self.queue_version = entry['version']
-        if private_watch or watch_disposition != 'ordinary':
+        if private_relaunch or watch_disposition != 'ordinary':
             if 'version' in entry:
                 self.background.version = self.task_queue.version = entry['version']
             if watch_disposition == 'turn':
@@ -1260,7 +1260,7 @@ class _Reader(JsonLinesReader):
                         or name != 'Bash' and not child and isinstance(arguments, dict) and arguments.get('run_in_background')):
                     self.tools_known = False  # delegation remains opaque; measured Bash has its own lifetime
                 self.background.call(block.get('id'), name, arguments, when(entry.get('timestamp')),
-                                     entry.get('version'), linked=linked)
+                                     entry.get('version'), linked=linked, row_uuid=entry.get('uuid'))
                 self.open_call(block.get('id'), name, when(entry.get('timestamp')))
             elif block.get("type") == "text" and block.get("text"):
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()
