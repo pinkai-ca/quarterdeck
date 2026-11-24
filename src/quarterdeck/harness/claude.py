@@ -25,6 +25,7 @@ import urllib.request
 from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
 from . import claude_record, record_file
 from .claude_limits import REFUSED_WINDOWS
@@ -45,7 +46,8 @@ from .base import (Box, ship_template, trimmed, record_fingerprint, Input, Contr
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
 INTERRUPTED = "[Request interrupted"
-PASTE_FORM_VERSIONS = frozenset({"2.1.317"})  # versions measured to record a paste in the form recorded_paste gives
+PASTE_FORM_VERSIONS = frozenset({"2.1.317"})  # record-wide paste projections, including queue carriers
+TYPED_PASTE_VERSION = "2.1.331"
 PASTE_TAG, PASTE_TAG_ESCAPED = "<pasted_content", "<\\pasted_content"  # a literal opening tag, as the record escapes it
 # The format characters (Unicode category Cf) among those 2.1.317 treats as hidden when it cleans a paste, read from
 # the program's own sanitiser: it removes each one or, in a context it names (a joiner inside an emoji or an Indic
@@ -60,6 +62,9 @@ INPUT_IGNORED = ('api-request', 'api-request-blob', 'attachment', 'bridge-sessio
                  # Claude Code 2.1.325 artifact publication bookkeeping: no input or execution boundary.
                  'frame-link', 'artifact-comment-monitor', 'artifact-autoreact-ledger')
 PASTED = re.compile(r'^\s*<pasted_content id="[^"]*">\n?(.*?)\n?</pasted_content(?: id="[^"]*")?>\s*$', re.S)
+TYPED_PASTE = re.compile(r'\n*<pasted_content id="([^"\n]+)">\n.*\n</pasted_content id="\1">\n*', re.S)
+LEADING_PASTE_TAB = re.compile(r'^\t(?=[^\t\n])', re.M)
+PASTED_OPENING_LINE = re.compile(r'^<pasted_content(?= id="[^"\n]+">$)', re.M)
 DATA_FLOW_ROWS = ('data-flow-records', 'data-flow-incomplete', 'derived-from')
 RESPONSE_ID = re.compile(r'msg_(?:staging_|local_)?[A-Za-z0-9]{1,64}')
 TOOL_USE_ID = re.compile(r'toolu_[A-Za-z0-9]{1,64}')
@@ -170,6 +175,25 @@ def prompt_text(entry: dict) -> str | None:
     if not isinstance(content, str) or content.startswith(LOCAL_TAGS):
         return None
     return unwrap(content)
+
+
+@dataclass(frozen=True)
+class TypedPaste(Input):
+    """The measured wrapped paste written as a new human turn, with no joined queue slot."""
+
+
+def _accepted_input(row: dict, text: str, stamp: datetime | None) -> Input:
+    message = row['message']
+    content = message.get('content')
+    prompt = row.get('promptId')
+    if (row.get('version') == TYPED_PASTE_VERSION and row.get('isSidechain') is False
+            and row.get('isMeta') is not True and row.get('origin') == {'kind': 'human'}
+            and row.get('promptSource') == 'typed' and row.get('turnOrigin') == 'human'
+            and isinstance(prompt, str) and prompt and prompt == row.get('turnPromptId')
+            and message.get('role') == 'user' and isinstance(content, str)
+            and TYPED_PASTE.fullmatch(content)):
+        return TypedPaste(text, stamp)
+    return Input(text, stamp)
 
 
 def _reactive_auto_boundary(row: dict, metadata: dict) -> bool:
@@ -374,7 +398,7 @@ def inputs(record: Path, snapshot) -> list[Input]:
                 matching = next((i for i, (item, _) in enumerate(queued) if item.text.strip() == text.strip()), None)
                 if matching is None:
                     if not notice:
-                        found.append(Input(text, stamp))
+                        found.append(_accepted_input(row, text, stamp))
                 else:
                     entry, phase = queued[matching]
                     if stamp is not None and (entry.at is None or stamp >= entry.at):
@@ -1614,7 +1638,7 @@ class ClaudeHarness(Harness):
         ``version`` field on the record's rows from ``since``: every one must name a measured version. None,
         or any other, leaves the payload as typed.
         """
-        if "\t" not in text and PASTE_TAG not in text or not self._paste_measured(record, since):
+        if "\t" not in text and PASTE_TAG not in text or self._paste_versions(record, since) != PASTE_FORM_VERSIONS:
             return text
         return text.replace("\t", "    ").replace(PASTE_TAG, PASTE_TAG_ESCAPED)
 
@@ -1625,15 +1649,24 @@ class ClaudeHarness(Harness):
         exactly these from both sides before comparing; nothing else is ignored. Only for a payload that holds
         one, and under the same version scope as ``recorded_paste``.
         """
-        if PASTE_HIDDEN_FORMAT.isdisjoint(text) or not self._paste_measured(record, since):
+        if PASTE_HIDDEN_FORMAT.isdisjoint(text) or self._paste_versions(record, since) != PASTE_FORM_VERSIONS:
             return frozenset()
         return PASTE_HIDDEN_FORMAT
 
+    def recorded_input_projection(self, forms: tuple[str, ...], record: Path,
+                                  since: datetime) -> Callable[[Input], tuple[str, ...]] | None:
+        """The 2.1.331 wrapped idle paste only, with its measured one-way projection."""
+        projected = tuple(PASTED_OPENING_LINE.sub(lambda _: PASTE_TAG_ESCAPED,
+                          LEADING_PASTE_TAB.sub('    ', form)).replace('\u200b', '') for form in forms)
+        if projected == forms or self._paste_versions(record, since) != {TYPED_PASTE_VERSION}:
+            return None
+        return lambda item: projected if isinstance(item, TypedPaste) else ()
+
     @staticmethod
-    def _paste_measured(record: Path, since: datetime) -> bool:
-        versions = {entry.get("version") for entry in inspect_entries(record)
-                    if "version" in entry and (moment := when(entry.get("timestamp"))) is not None and moment >= since}
-        return bool(versions) and versions <= PASTE_FORM_VERSIONS
+    def _paste_versions(record: Path, since: datetime) -> set[str | None]:
+        return {version if isinstance(version := entry["version"], str) else None
+                for entry in inspect_entries(record)
+                if "version" in entry and (moment := when(entry.get("timestamp"))) is not None and moment >= since}
     reads_usage = True
     model_scoped_usage = True
 

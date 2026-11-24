@@ -3,9 +3,10 @@
 from datetime import datetime
 from math import floor
 from pathlib import Path
+from typing import Callable
 
 from .harness import get
-from .harness.base import Harness
+from .harness.base import Harness, Input
 
 
 # A change to a seat's standing orders since it last read them is carried at the head of its next message, between
@@ -75,6 +76,26 @@ def read_forms(harness: Harness | None, record: Path | None, text: str | tuple[s
         return message_forms(None, None, text, since)
 
 
+def matcher(harness: Harness, record: Path, text: str | tuple[str, ...], since: datetime) -> Callable[[Input], bool]:
+    """Match ordinary forms and any adapter projection scoped to an individual input carrier."""
+    forms, ignoring = message_forms(harness, record, text, since)
+    project = getattr(harness, "expected_input", None)
+    prepare = getattr(harness, "recorded_input_projection", None)
+    projected = prepare(forms, record, since) if prepare is not None else None
+    literal = getattr(harness, "exact_input_text", False)
+
+    def matches(item: Input) -> bool:
+        expected = tuple(value for form in forms
+                         if (value := project(item, form) if project is not None else form) is not None)
+        if literal:
+            return (any(without(item.text, ignoring) == without(form, ignoring) for form in expected)
+                    or projected is not None and item.text in projected(item))
+        return (same_input(item.text, expected, ignoring)
+                or projected is not None and same_input(item.text, projected(item)))
+
+    return matches
+
+
 def confirmed(reader: str | Harness, record: Path, text: str | tuple[str, ...], since: datetime) -> str | None:
     """Exact fresh acceptance, queueing or consumption; untimed history proves nothing.
 
@@ -86,18 +107,10 @@ def confirmed(reader: str | Harness, record: Path, text: str | tuple[str, ...], 
         # Native precision affects only this comparison, never the saved attempt.
         since = datetime.fromtimestamp(floor(since.timestamp() / resolution) * resolution, since.tzinfo)
     queued = False
-    forms, ignoring = message_forms(harness, record, text, since)
-    for item in harness.inputs(record):
-        if item.at is None or item.at < since:
-            continue
-        project = getattr(harness, "expected_input", None)
-        expected = tuple(value for form in forms
-                         if (value := project(item, form) if project is not None else form) is not None)
-        if getattr(harness, "exact_input_text", False):
-            matches = any(without(item.text, ignoring) == without(form, ignoring) for form in expected)
-        else:
-            matches = same_input(item.text, expected, ignoring)
-        if not matches:
+    inputs = harness.inputs(record)
+    matches = matcher(harness, record, text, since)
+    for item in inputs:
+        if item.at is None or item.at < since or not matches(item):
             continue
         if item.kind == "accepted":
             return "delivered"

@@ -56,12 +56,23 @@ def not_in_closed_record(seat: 'Seat', proof: 'Proof') -> bool:
         inputs = reader.inputs(record)
         if not isinstance(inputs, Inputs) or inputs.diagnostics()['total']:
             return False
-        since = datetime.fromisoformat(data['at'])
-        forms, ignoring = input_receipt.message_forms(reader, record, data['payload'], since)
+        earliest = datetime.fromisoformat(data['at'])
+        payload = data['payload']
+        matches = input_receipt.matcher(reader, record, payload, earliest)
+        current = earliest
+        projected = None
+        project = getattr(reader, 'recorded_input_projection', None)
+        if project is not None:
+            # A version from an earlier attempt can mask a carrier projection valid for the current attempt.
+            current = datetime.fromisoformat(data.get('since', data['at']))
+            if current > earliest:
+                projected = project((payload,), record, current)
         for item in inputs:
             if item.at is None:
                 return False
-            if item.at >= since and input_receipt.same_input(item.text, forms, ignoring):
+            if item.at >= earliest and matches(item):
+                return False
+            if projected is not None and item.at >= current and input_receipt.same_input(item.text, projected(item)):
                 return False
         return _closed(seat, data['identity'])
     except (OSError, ValueError, TypeError, KeyError, AttributeError, TmuxError):
