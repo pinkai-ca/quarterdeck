@@ -703,8 +703,48 @@ SAME_VERSION_RESUME_KEYS = frozenset({
     'message', 'origin', 'promptSource', 'queueSkipAttachments', 'queueTranscriptOnly',
     'entrypoint', 'userType', 'permissionMode', 'cwd', 'gitBranch',
 })
+REMOTE_RESUME_KEYS = SAME_VERSION_RESUME_KEYS | {'rowSource', 'dataFlowOn'}
+BRIDGE_KEYS = frozenset({'type', 'sessionId', 'bridgeSessionId', 'lastSequenceNum',
+                         'ownerAccountUuid', 'ownerOrganizationUuid'})
+BRIDGE_STATUS_TEXT = '/remote-control is active · Continue here, on your phone, or at '
+BRIDGE_EVENT_ID = re.compile(r'event_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}')
+COST_STATE_KEYS = frozenset({'type', 'sessionId', 'totalCostUSD', 'totalAPIDuration',
+                             'totalAPIDurationWithoutRetries', 'totalToolDuration', 'totalLinesAdded',
+                             'totalLinesRemoved', 'totalDuration', 'startTime', 'modelUsage', 'hasUnknownModelCost'})
 RESUME_SUMMARY = "Background shell command didn't finish before the previous session ended"
 RESUME_WATCH_NOTE = RESUME_STOPPED + ' Check the output file for partial results before assuming it completed.'
+
+
+def bridge_pointer(row):
+    return (row.keys() == BRIDGE_KEYS and row['type'] == 'bridge-session'
+            and type(row['lastSequenceNum']) is int and row['lastSequenceNum'] == 0
+            and all(isinstance(row[key], str) and row[key]
+                    for key in ('bridgeSessionId', 'ownerAccountUuid', 'ownerOrganizationUuid')))
+
+
+def bridge_status(row, parent):
+    return (row.keys() == {'type', 'subtype', 'content', 'url', 'isMeta', 'timestamp', 'uuid', 'userType',
+                          'entrypoint', 'cwd', 'sessionId', 'version', 'gitBranch', 'dataFlowOn',
+                          'parentUuid', 'isSidechain'}
+            and row['type'] == 'system' and row['subtype'] == 'bridge_status' and row['version'] == LINKED_VERSION
+            and row['parentUuid'] == parent and row['isSidechain'] is False and row['isMeta'] is False
+            and row['dataFlowOn'] is True and row['userType'] == 'external' and row['entrypoint'] == 'cli'
+            and all(isinstance(row[key], str) and row[key] for key in ('uuid', 'url', 'cwd', 'gitBranch'))
+            and row['content'] == BRIDGE_STATUS_TEXT + row['url'] and when(row['timestamp']) is not None)
+
+
+def bridge_link_event(row, *, snapshot=False):
+    keys = {'type', 'v', 'sessionId', 'records'}
+    if (row.keys() != (keys | {'snapshot'} if snapshot else keys) or row['type'] != 'data-flow-records'
+            or snapshot and row['snapshot'] is not True or type(row['v']) is not int or row['v'] != 1
+            or not isinstance(row['records'], list) or len(row['records']) != 1):
+        return None
+    event = row['records'][0]
+    if (isinstance(event, dict) and event.keys() == {'tool_name', 'event_id'}
+            and event['tool_name'] == 'RemoteControlLinked' and isinstance(event['event_id'], str)
+            and BRIDGE_EVENT_ID.fullmatch(event['event_id']) is not None):
+        return event['event_id']
+    return None
 
 
 def watch_notice_text(task, status):
@@ -726,6 +766,30 @@ class WatchExit:
     at: datetime
     parent: str
     saved_tools: bool = False
+    upgrade_bridge: str | None = None
+
+
+@dataclass
+class RemoteWatchExit(WatchExit):
+    bridge: str = ''
+    position: int = 0
+    notice: str = ''
+    status: str = ''
+
+    @property
+    def steps(self):
+        if self.task.version == VERSION:
+            return ('incomplete', 'empty-records', 'bridge-session', 'bridge-status', 'link')
+        common = ('kill-dequeue', 'tools-used')
+        stopped = ('stop-enqueue', 'stop-dequeue')
+        return (*common, 'derived-from', 'incomplete', *stopped, 'notice', 'bridge-session', 'bridge-status')
+
+
+def cost_checkpoint(row):
+    return (row.keys() == COST_STATE_KEYS and row['type'] == 'cost-state'
+            and isinstance(row['modelUsage'], dict) and type(row['hasUnknownModelCost']) is bool
+            and all(type(row[key]) in (int, float)
+                    for key in COST_STATE_KEYS - {'type', 'sessionId', 'modelUsage', 'hasUnknownModelCost'}))
 
 
 class WatchRelaunchQueue:
@@ -742,13 +806,87 @@ class WatchRelaunchQueue:
         self.turn_end = None
         self.exit = None
         self.unknown = False
+        self.bridge_seen = False
+        self.bridge = None
+        self.bridge_events = set()
+        self.checkpoint = None
+        self.after_link = None
+        self.after_status = None
+        self.undated_remote_input = False
 
     @property
     def pending(self):
-        return self.exit is not None and self.exit.phase not in ('exited', 'between-launches')
+        return self.exit is not None and (
+            self.exit.phase not in ('exited', 'between-launches') or self.exit.upgrade_bridge is not None)
 
     def take(self, row, at, *, queue_empty):
         """Consume only a proved native carrier, leaving every other queue operation to its reader."""
+        self.undated_remote_input = False
+        continued = self.remote_continuation(row)
+        checkpoint = self.remote_checkpoint(row)
+        private = continued or checkpoint or self._take(row, at, queue_empty=queue_empty)
+        self.remember(row)
+        return private
+
+    def remote_checkpoint(self, row):
+        after, self.after_status = self.after_status, None
+        if after is None or row.get('sessionId') != self.session:
+            return False
+        status, prompt_seen = after
+        if prompt_seen:
+            return cost_checkpoint(row)
+        if self.last_prompt(row, status):
+            self.after_status = status, True
+            return True
+        return False
+
+    def remote_continuation(self, row):
+        after, self.after_link = self.after_link, None
+        if after is None or row.get('sessionId') != self.session:
+            return False
+        event, status, checkpoint = after
+        if not checkpoint:
+            if self.last_prompt(row, status):
+                self.after_link = event, status, True
+            return False
+        if (row.keys() != {'type', 'v', 'sessionId', 'records'} or row['type'] != 'data-flow-records'
+                or type(row['v']) is not int or row['v'] != 1
+                or not isinstance(row['records'], list) or len(row['records']) != 2):
+            return False
+        linked, remote = row['records']
+        if (linked != {'tool_name': 'RemoteControlLinked', 'event_id': event, 'no_message': True}
+                or linked['no_message'] is not True or not isinstance(remote, dict)
+                or remote.keys() != {'tool_name', 'event_id', 'no_message'}
+                or remote['tool_name'] != 'RemoteControlInput' or remote['no_message'] is not True
+                or not isinstance(remote['event_id'], str) or BRIDGE_EVENT_ID.fullmatch(remote['event_id']) is None
+                or remote['event_id'] in self.bridge_events):
+            return False
+        self.undated_remote_input = True
+        return True
+
+    @staticmethod
+    def last_prompt(row, leaf):
+        return (row.keys() == {'type', 'sessionId', 'leafUuid', 'lastPrompt'} and row['type'] == 'last-prompt'
+                and row['leafUuid'] == leaf and isinstance(row['lastPrompt'], str) and bool(row['lastPrompt']))
+
+    def remember(self, row):
+        previous, self.checkpoint = self.checkpoint, None
+        if row.get('sessionId') != self.session:
+            return
+        kind = row.get('type')
+        if kind == 'bridge-session':
+            self.bridge_seen = True
+            self.bridge = row['bridgeSessionId'] if bridge_pointer(row) else None
+        elif kind == 'system' and row.get('subtype') == 'bridge_status':
+            self.bridge_seen = True
+        elif kind == 'data-flow-records' and (event := bridge_link_event(row, snapshot='snapshot' in row)):
+            self.bridge_events.add(event)
+        elif self.turn_end is not None and self.last_prompt(row, self.turn_end[1]):
+            self.checkpoint = 'last-prompt'
+        elif previous == 'last-prompt' and cost_checkpoint(row):
+            self.checkpoint = 'cost-state'
+
+    def _take(self, row, at, *, queue_empty):
         kind, old_version = row.get('type'), self.version
         if not row.get('isSidechain') and 'version' in row:
             self.version = row['version']
@@ -761,10 +899,10 @@ class WatchRelaunchQueue:
             self.exit = None
         if kind in ('assistant', 'user') or row.get('subtype') == 'compact_boundary':
             self.turn_end = None
-        if (kind == 'system' and row.get('subtype') == 'turn_duration' and self.version == VERSION
+        if (kind == 'system' and row.get('subtype') == 'turn_duration' and self.version in (VERSION, LINKED_VERSION)
                 and linked_root(row, self.session) and at is not None and native_task_id(row.get('uuid'))):
             self.turn_end = at, row['uuid']
-        if (not queue_empty or self.turn_end is None or self.version != VERSION
+        if (not queue_empty or self.turn_end is None or self.version not in (VERSION, LINKED_VERSION)
                 or kind != 'queue-operation' or row.get('operation') != 'enqueue'
                 or row.keys() != QUEUE_KEYS | {'content'} or row.get('sessionId') != self.session
                 or at is None or at <= self.turn_end[0]):
@@ -774,17 +912,28 @@ class WatchRelaunchQueue:
         if fields is None or fields[2:] != ('killed', None):
             return False
         task = self.background.tasks.get(fields[0])
-        if (task is None or task.task != fields[1] or task.watch is None or task.version != VERSION
+        if (task is None or task.task != fields[1] or task.watch is None or task.version != self.version
                 or task.invalid or task.call in self.background.unknown_calls or task.phase != 'pending'
                 or task.latest > self.turn_end[0] or text != watch_notice_text(task, 'killed')):
             return False
-        self.exit = WatchExit(task, 'killed-enqueued', at, self.turn_end[1])
+        bridge = self.bridge if self.checkpoint == 'cost-state' else None
+        if self.version == VERSION:
+            # The older launch's exit is shared with its native same-version resume.
+            self.exit = WatchExit(task, 'killed-enqueued', at, self.turn_end[1], upgrade_bridge=bridge)
+        elif bridge is not None:
+            self.exit = RemoteWatchExit(task, 'remote', at, self.turn_end[1], bridge=bridge)
+        else:
+            return False
         return True
 
     def advance(self, exit, row, at, *, queue_empty, old_version):
         # True takes a private carrier, False advances across ordinary metadata,
         # and None breaks the sequence.
-        if not queue_empty or row.get('sessionId') != self.session or old_version != VERSION:
+        if not queue_empty or row.get('sessionId') != self.session:
+            return None
+        if isinstance(exit, RemoteWatchExit):
+            return self.advance_remote(exit, row, at)
+        if old_version != VERSION:
             return None
         kind, phase, task = row.get('type'), exit.phase, exit.task
         if phase == 'exited' and kind == 'tools-used' and row.keys() == {'type', 'tools', 'sessionId'}:
@@ -792,9 +941,7 @@ class WatchRelaunchQueue:
             tools = row['tools']
             exit.saved_tools = isinstance(tools, list) and len(tools) == 1 and isinstance(tools[0], str) and bool(tools[0])
             return False  # this is still normal metadata
-        if (phase == 'stopped-dequeued' and type(row.get('v')) is int
-                and row == {'type': 'derived-from', 'v': 1, 'sessionId': self.session,
-                            'sessions': [{'type': 'claude_code_session', 'id': self.session, 'via': 'resume'}]}):
+        if phase == 'stopped-dequeued' and self.resume_lineage(row):
             exit.phase = 'resume-linked'
             return False  # this is still normal metadata
         if at is None or at <= exit.at or task.invalid or task.call in self.background.unknown_calls:
@@ -821,18 +968,103 @@ class WatchRelaunchQueue:
                         and row.get('version') == VERSION and row.keys() == SAME_VERSION_RESUME_KEYS
                         and row['entrypoint'] == 'cli' and row['userType'] == 'external'
                         and row['permissionMode'] == 'bypassPermissions')
-        if ((upgraded or same_version) and linked_root(row, self.session)
+        if upgraded and self.bridge_seen:
+            if exit.upgrade_bridge is None or not exit.saved_tools or not self.remote_notice(exit, row):
+                return None
+            self.exit = RemoteWatchExit(task, 'remote', at, exit.parent, bridge=exit.upgrade_bridge, notice=row['uuid'])
+            return True
+        if (upgraded or same_version) and self.stopped_notice(exit, row):
+            self.settle(exit, at)
+            return True
+        return None
+
+    def resume_lineage(self, row):
+        return (type(row.get('v')) is int
+                and row == {'type': 'derived-from', 'v': 1, 'sessionId': self.session,
+                            'sessions': [{'type': 'claude_code_session', 'id': self.session, 'via': 'resume'}]})
+
+    def stopped_notice(self, exit, row):
+        task = exit.task
+        return (linked_root(row, self.session)
                 and row.get('origin') == {'kind': 'task-notification'} and row.get('promptSource') == 'system'
                 and row.get('queueSkipAttachments') is True and row.get('queueTranscriptOnly') is True
                 and row.get('parentUuid') == exit.parent
                 and native_task_id(row.get('promptId')) and native_task_id(row.get('uuid'))
                 and row.get('message') == {'role': 'user', 'content': watch_notice_text(task, 'stopped')}
-                and task.phase == 'ended' and task.terminal == 'killed'):
-            self.background.seen(task, at)
-            task.phase, task.terminal, task.latest = 'ended-by-relaunch', None, at
-            self.exit = None
-            return True
-        return None
+                and task.phase == 'ended' and task.terminal == 'killed')
+
+    def settle(self, exit, at):
+        task = exit.task
+        self.background.seen(task, at)
+        task.phase, task.terminal, task.latest = 'ended-by-relaunch', None, at
+        self.exit = None
+
+    def remote_notice(self, exit, row):
+        return (linked_notice_origin(row) and row.keys() == REMOTE_RESUME_KEYS and row['rowSource'] == 'harness'
+                and row['dataFlowOn'] is True and row['entrypoint'] == 'cli' and row['userType'] == 'external'
+                and row['permissionMode'] == 'bypassPermissions' and row['uuid'] != exit.parent
+                and all(isinstance(row[key], str) and row[key] for key in ('cwd', 'gitBranch'))
+                and self.stopped_notice(exit, row))
+
+    def advance_remote(self, exit, row, at):
+        """Remote resumes settle only after the bridge has joined the old leaf and stopped notice."""
+        task, steps = exit.task, exit.steps
+        step = steps[exit.position]
+        if task.invalid or task.call in self.background.unknown_calls:
+            return None
+        timed = step in ('kill-dequeue', 'stop-enqueue', 'stop-dequeue', 'notice', 'bridge-status')
+        if timed and (at is None or at <= exit.at):
+            return None
+        kind = row.get('type')
+        if step in ('kill-dequeue', 'stop-dequeue'):
+            valid = kind == 'queue-operation' and row.get('operation') == 'dequeue' and row.keys() == QUEUE_KEYS
+        elif step == 'tools-used':
+            tools = row.get('tools')
+            valid = (kind == step and row.keys() == {'type', 'tools', 'sessionId'}
+                     and isinstance(tools, list) and len(tools) == 1 and isinstance(tools[0], str) and bool(tools[0]))
+        elif step == 'stop-enqueue':
+            valid = (kind == 'queue-operation' and row.get('operation') == 'enqueue'
+                     and row.keys() == QUEUE_KEYS | {'content'} and row['content'] == watch_notice_text(task, 'stopped'))
+        elif step == 'derived-from':
+            valid = self.resume_lineage(row)
+        elif step == 'incomplete':
+            codes = row.get('codes')
+            valid = (kind == 'data-flow-incomplete' and type(row.get('v')) is int and row['v'] == 1
+                     and row.keys() == {'type', 'v', 'sessionId', 'codes'} and isinstance(codes, list)
+                     and all(type(code) is int for code in codes)
+                     and (codes == [9] or task.version == LINKED_VERSION and codes == [9, 10]))
+        elif step == 'notice':
+            valid = self.remote_notice(exit, row)
+        elif step == 'empty-records':
+            valid = (type(row.get('v')) is int
+                     and row == {'type': 'data-flow-records', 'v': 1, 'sessionId': self.session, 'records': []})
+        elif step == 'bridge-session':
+            valid = bridge_pointer(row) and row['bridgeSessionId'] == exit.bridge
+        elif step == 'bridge-status':
+            valid = (bridge_status(row, exit.notice) and native_task_id(row['uuid'])
+                     and row['uuid'] not in (exit.notice, exit.parent))
+        else:  # link
+            event = bridge_link_event(row)
+            valid = event is not None and event not in self.bridge_events
+        if not valid:
+            return None
+        if step == 'kill-dequeue':
+            self.background.end(task, 'killed', exit.at)
+        elif step == 'notice':
+            exit.notice = row['uuid']
+        elif step == 'bridge-status':
+            exit.status = row['uuid']
+        elif step == 'link':
+            self.after_link = event, exit.status, False
+        if timed:
+            exit.at = at
+        exit.position += 1
+        if exit.position == len(steps):
+            self.settle(exit, exit.at)
+            if step == 'bridge-status':
+                # The undated checkpoint can be written after the seat was eligible to wake.
+                self.after_status = exit.status, False
+        return kind == 'queue-operation' or step in ('notice', 'link')
 
 
 @dataclass(frozen=True)
