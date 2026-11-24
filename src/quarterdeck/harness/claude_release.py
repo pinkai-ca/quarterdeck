@@ -71,6 +71,10 @@ def _version(value: object) -> bool:
     return isinstance(value, str) and VERSION.fullmatch(value) is not None
 
 
+def _version_parts(version: str) -> tuple[int, ...]:
+    return tuple(map(int, version.split('.')))
+
+
 def _digest(value: object) -> bool:
     return isinstance(value, str) and DIGEST.fullmatch(value) is not None
 
@@ -132,7 +136,8 @@ class State:
         if (any(type(value) not in (int, float) or not math.isfinite(value) or value < 0
                 for value in (self.due_wall, self.due_monotonic))
                 or not isinstance(self.boot, str) or type(self.failures) is not int or not 0 <= self.failures <= 6
-                or self.result not in ('', 'attempting', 'held', 'at-or-below-active', 'unchanged', 'duplicate', 'staged')
+                or self.result not in ('', 'attempting', 'held', 'at-or-below-active', 'at-active',
+                                       'publisher-rollback', 'unchanged', 'duplicate', 'staged')
                 or self.error not in (None, *Reason) or self.version is not None and not _version(self.version)
                 or any(value is not None and not _header(value) for value in (self.etag, self.modified))):
             raise ValueError('invalid release state')
@@ -404,7 +409,7 @@ class Fetch:
         return response, target.getvalue()
 
 
-def _gpg(home: Path, stage_fd: int, *args: str) -> list[list[str]]:
+def _gpg(home: Path, stage_fd: int, *args: str) -> list[str]:
     command = [_tool('gpg'), '--no-options', '--homedir', str(home), '--batch', '--no-tty',
                '--disable-dirmngr', '--no-autostart', '--no-auto-key-retrieve', '--no-auto-key-locate',
                '--no-auto-key-import', '--no-random-seed-file', *args]
@@ -414,7 +419,7 @@ def _gpg(home: Path, stage_fd: int, *args: str) -> list[list[str]]:
                                 stderr=subprocess.DEVNULL, timeout=15, check=True)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         raise Held(Reason.SIGNER) from None
-    return [line.split() for line in result.stdout.decode('ascii', 'replace').splitlines()]
+    return result.stdout.decode('ascii', 'replace').split('\n')
 
 
 def _verify(stage: Directory, key: bytes, manifest: bytes, signature: bytes) -> None:
@@ -425,7 +430,7 @@ def _verify(stage: Directory, key: bytes, manifest: bytes, signature: bytes) -> 
         path.write_bytes(data)
     # Fingerprints are emitted immediately after the corresponding public key record. The
     # isolated keyring accepts exactly one public primary key, independently of its user ID.
-    rows = [line[0].split(':') for line in _gpg(home, stage.fd, '--with-colons', '--show-keys', str(key_path)) if line]
+    rows = [line.split(':') for line in _gpg(home, stage.fd, '--with-colons', '--show-keys', str(key_path)) if line]
     primary = [index for index, row in enumerate(rows) if row[0] == 'pub']
     if len(primary) != 1 or any(row[0] in ('sec', 'ssb') for row in rows):
         raise Held(Reason.SIGNER)
@@ -433,8 +438,8 @@ def _verify(stage: Directory, key: bytes, manifest: bytes, signature: bytes) -> 
     if fingerprint[:1] != ['fpr'] or fingerprint[9:10] != [FINGERPRINT]:
         raise Held(Reason.SIGNER)
     _gpg(home, stage.fd, '--import', str(key_path))
-    statuses = [row[1:] for row in _gpg(home, stage.fd, '--status-fd', '1', '--verify', str(signature_path),
-                                       str(manifest_path)) if row[:1] == ['[GNUPG:]']]
+    lines = _gpg(home, stage.fd, '--status-fd', '1', '--verify', str(signature_path), str(manifest_path))
+    statuses = [row[1:] for line in lines if (row := line.split())[:1] == ['[GNUPG:]']]
     valid = [row for row in statuses if row[:1] == ['VALIDSIG']]
     if (len(valid) != 1 or len(valid[0]) != 11 or valid[0][1] != FINGERPRINT or valid[0][-1] != FINGERPRINT
             or not any(row[:1] == ['GOODSIG'] for row in statuses)
@@ -567,8 +572,10 @@ def _discover(folder: Path, programs: Directory, pin, state: State) -> State:
         if not _version(version):
             raise Held(Reason.MANIFEST)
         candidate = None
-        if tuple(map(int, version.split('.'))) <= tuple(map(int, active.split('.'))):
-            result = 'at-or-below-active'
+        if version == active:
+            result = 'at-active'
+        elif _version_parts(version) < _version_parts(active):
+            result = 'publisher-rollback'
         elif (unchanged and previous is not None and previous.version == version and previous.platform == native
               and _installed(programs, previous)):
             candidate, result = previous, 'unchanged'
@@ -630,21 +637,29 @@ def _poll(root: Directory, folder: Directory, pin, clock) -> float:
     return reserved.wait(clock())
 
 
-def alerts(ship) -> list[str]:
+def status(ship) -> tuple[list[str], list[str]]:
+    """Return discovery holds and informational notices from one read of the last observation."""
     if SOURCE not in getattr(ship, 'release_sources', ()):
-        return []
+        return [], []
     try:
         with _directory(ship.runtime) as root, _state_folder(root) as folder:
             state = _read_state(folder.path)
     except FileNotFoundError:
-        return []
+        return [], []
     except (Held, OSError):
-        return [f'{SOURCE} release discovery held ({Reason.STORAGE})']
+        return [f'{SOURCE} release discovery held ({Reason.STORAGE})'], []
     finished_failures = state.failures - (state.result == 'attempting')
     if state.error and (finished_failures >= 2 or state.error in (
             Reason.ACTIVE, Reason.PLATFORM, Reason.ORIGIN, Reason.SIGNER, Reason.MANIFEST, Reason.DIGEST, Reason.EXISTING)):
-        return [f'{SOURCE} release discovery held ({state.error})']
-    return []
+        return [f'{SOURCE} release discovery held ({state.error})'], []
+    if state.version is not None:
+        try:
+            active = _active_version(ship.program_pins.get(SOURCE))
+        except Held:
+            return [], []
+        if _version_parts(state.version) < _version_parts(active):
+            return [], [f'{SOURCE} publisher rollback: latest {state.version}, active {active}']
+    return [], []
 
 
 class Schedule:

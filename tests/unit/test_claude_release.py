@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from quarterdeck import cli
 from quarterdeck.harness import claude_release as releases
 from quarterdeck.ship import ProgramPin, ShipError, _from_text
 from quarterdeck.watch import Facts
@@ -28,6 +29,14 @@ BASE = releases.RELEASES
 LATEST = f'{BASE}/latest'
 MANIFEST = f'{BASE}/{VERSION}/manifest.json'
 BINARY = f'{BASE}/{VERSION}/{PLATFORM}/claude'
+
+
+def test_publisher_trust_constants():
+    # C11: Changes to any of these constants go to Security before landing.
+    assert releases.ORIGIN == 'https://downloads.claude.ai'
+    assert releases.KEY_URL == 'https://downloads.claude.ai/keys/claude-code.asc'
+    assert releases.FINGERPRINT == '31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE'
+    assert releases.PLATFORMS == ('linux-x64', 'linux-arm64')
 
 
 @pytest.fixture(scope='module')
@@ -44,13 +53,21 @@ def signer(tmp_path_factory):
 
     try:
         identities = {}
-        for name in ('release-author', 'separate-author'):
-            gpg('--passphrase', '', '--quick-generate-key', name, 'ed25519', 'sign', '0')
-            identity = gpg('--with-colons', '--fingerprint', name).decode()
+        for name in ('release-author', 'separate-author', 'unrelated-author'):
+            user_id = name.replace('-', ' ').title()
+            gpg('--passphrase', '', '--quick-generate-key', user_id, 'ed25519', 'sign', '0')
+            identity = gpg('--with-colons', '--fingerprint', user_id).decode()
             fingerprint = next(line.split(':')[9] for line in identity.splitlines() if line.startswith('fpr:'))
             key = gpg('--armor', '--export', fingerprint)
             identities[name] = (fingerprint, key)
-        yield identities, lambda who, raw: gpg('--local-user', identities[who][0], '--armor', '--detach-sign', data=raw)
+
+        def sign(who, raw):
+            return gpg('--local-user', identities[who][0], '--armor', '--detach-sign', data=raw)
+
+        def export(*names):
+            return gpg('--armor', '--export', *(identities[name][0] for name in names))
+
+        yield identities, sign, export
     finally:
         subprocess.run([releases._tool('gpgconf'), '--homedir', str(home), '--kill', 'gpg-agent'],
                        env=env, check=True, capture_output=True)
@@ -98,7 +115,7 @@ class Network:
 
 @pytest.fixture
 def world(tmp_path, monkeypatch, signer):
-    keys, sign = signer
+    keys, sign, _ = signer
     fingerprint, key = keys['release-author']
     runtime = tmp_path / 'runtime'
     runtime.mkdir()
@@ -240,13 +257,86 @@ def test_duplicate_manifest_reuses_inode_and_changed_digest_has_its_own_path(wor
     assert second.read_bytes() == changed
 
 
-@pytest.mark.parametrize('latest', [b'9.8.6\n', b'9.8.5\n'])
-def test_older_or_equal_release_is_reported_without_fetching_artifact(world, latest):
-    world.net.set(LATEST, latest)
+@pytest.mark.parametrize(('latest', 'result', 'note'), [
+    ('9.8.5', 'publisher-rollback', 'claude publisher rollback: latest 9.8.5, active 9.8.6'),
+    ('9.8.6', 'at-active', None),
+])
+def test_older_or_equal_release_in_status(world, latest, result, note, monkeypatch, capsys):
+    ship_folder = world.runtime.parent
+    (ship_folder / 'ship.toml').write_text(f"""[ship]
+name = "synthetic"
+release_sources = ["claude"]
+[programs.claude]
+path = "runtime/programs/{world.pin.path.name}"
+sha256 = "{world.pin.sha256}"
+""")
+    monkeypatch.delenv('QD_TMUX_SOCKET', raising=False)
+    status = ['--ship', str(ship_folder), 'status']
+    state_path = world.folder / 'state.json'
+
+    def check_status(expected):
+        before = state_path.read_bytes(), state_path.stat().st_ino, state_path.stat().st_mtime_ns
+        for options in ([], ['--line']):
+            assert cli.main([*status, *options]) == 0
+            output = capsys.readouterr().out
+            assert output.count('publisher rollback') == (1 if expected else 0)
+            if expected:
+                assert expected in output
+            assert 'release discovery hold' not in output
+        assert cli.main(['--json', *status, '--line']) == 0
+        facts = json.loads(capsys.readouterr().out)
+        assert facts['release_failures'] == []
+        assert facts['release_notices'] == ([expected] if expected else [])
+        assert (state_path.read_bytes(), state_path.stat().st_ino, state_path.stat().st_mtime_ns) == before
+
+    world.net.set(LATEST, latest.encode() + b'\n', ETag='"current"')
+    assert world.poll() == releases.HOUR
+    state = world.state()
+    assert (state.result, state.error, state.failures, state.pending) == (result, None, 0, None)
+    check_status(note)
+    assert world.poll() == releases.HOUR
+    check_status(note)
+
+    # Previous releases stored this outcome under one result name for both cases.
+    old_state = json.loads(state_path.read_bytes()) | {'result': 'at-or-below-active'}
+    state_path.write_text(json.dumps(old_state))
+    check_status(note)
+    world.advance(releases.HOUR)
+    world.net.set(LATEST, status=304)
+    assert world.poll() == releases.HOUR
+    assert world.net.calls == [(LATEST, {}, 256), (LATEST, {'If-None-Match': '"current"'}, 256)]
+    state = world.state()
+    assert (state.result, state.error, state.failures, state.pending) == (result, None, 0, None)
+    check_status(note)
+    assert not list(world.programs.iterdir())
+
+    if note:
+        world.advance(releases.HOUR)
+        world.net.set(LATEST, b'9.8.6\n')
+        world.poll()
+        check_status(None)
+
+
+def test_gpg_preserves_spaces_in_colon_rows(world):
+    home = world.runtime / 'key-reading'
+    home.mkdir(mode=0o700)
+    key = home / 'key.asc'
+    key.write_bytes(world.keys['release-author'][1])
+    with releases._directory(home) as directory:
+        rows = releases._gpg(directory.path, directory.fd, '--with-colons', '--show-keys',
+                             str(directory.path / key.name))
+    uid, = (row.split(':') for row in rows if row.startswith('uid:'))
+    assert uid[9] == 'Release Author'
+
+
+@pytest.mark.parametrize('first', ['separate-author', 'release-author'])
+def test_publisher_keyring_requires_one_primary(world, signer, first):
+    _, _, export = signer
+    world.net.set(releases.KEY_URL, export(first, 'unrelated-author'))
     world.poll()
-    assert [url for url, _, _ in world.net.calls] == [LATEST]
-    assert world.state().result == 'at-or-below-active'
-    assert world.state().pending is None
+    state = world.state()
+    assert (state.result, state.error, state.pending) == ('held', releases.Reason.SIGNER, None)
+    assert [url for url, _, _ in world.net.calls] == [LATEST, MANIFEST, f'{MANIFEST}.sig', releases.KEY_URL]
     assert not list(world.programs.iterdir())
 
 
@@ -385,10 +475,12 @@ def test_repeated_failure_is_visible_and_backs_off_across_restarts(world):
     original = world.net.replies[LATEST]
     world.net.set(LATEST, status=503)
     assert world.poll() == releases.HOUR
-    assert releases.alerts(world.ship) == []
+    assert releases.status(world.ship) == ([], [])
     world.advance(releases.HOUR)
     assert world.poll() == 2 * releases.HOUR
-    alert, = releases.alerts(world.ship)
+    alerts, notices = releases.status(world.ship)
+    alert, = alerts
+    assert not notices
     assert releases.Reason.HTTP in alert
     assert alert in Facts('ok', 0, 0, 0, release_failures=[alert]).line()
     assert len(world.net.calls) == 2
@@ -401,7 +493,7 @@ def test_repeated_failure_is_visible_and_backs_off_across_restarts(world):
     world.advance(releases.HOUR)
     world.net.replies[LATEST] = original
     assert world.poll() == releases.HOUR
-    assert not releases.alerts(world.ship)
+    assert releases.status(world.ship) == ([], [])
 
 
 def test_redirects_stay_on_allowed_https_origin(world):

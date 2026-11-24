@@ -47,7 +47,9 @@ Qualification takes the exact path and digest together from a state whose
 carry the last verified candidate. A later staging can update the pending
 pointer while earlier release directories retain their bytes. Persistent
 attempt results and origins are in this private runtime folder. Repeated
-failures and verification holds appear in status.
+failures and verification holds appear in status. A publisher `latest` below
+the active pin appears as one informational rollback notice in status while
+that is the latest known version. Equality produces no notice.
 
 Staging leaves the active declaration and running seats as they are.
 Qualification and adoption are separate operations. The pin declaration above

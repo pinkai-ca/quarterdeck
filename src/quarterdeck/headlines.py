@@ -169,6 +169,7 @@ def sections(facts, *, detailed=False) -> Headline:
         _named(facts.check_unknown, 'checks unknown', singular='check unknown'),
         _named((facts.cutover,) if facts.cutover else (), 'server changes needed', singular='server change needed'),
         _named(facts.operational_notices, 'tool notices', singular='tool notice'),
+        _named(facts.release_notices, 'release notices', singular='release notice'),
     )
     return Headline(_plain(lead), tuple(group for group in immediate if group.count or group.summary == '0 waiting'),
                     tuple(group for group in lower if group.count))

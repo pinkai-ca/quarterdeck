@@ -662,6 +662,7 @@ class Facts:
     usage_errors: list[str] = field(default_factory=list)
     release_failures: list[str] = field(default_factory=list)
     credential_recoveries: list[str] = field(default_factory=list)
+    release_notices: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         from .headlines import status_line
@@ -1278,11 +1279,11 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
     from . import brief_change, compaction_alert, jail_end, ledger_recovery, model_mismatch, pr_screen, stop_barrier, write_bound
     from . import raise_notice
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
-    release_failures = []
+    release_failures, release_notices = [], []
     if getattr(ship, "release_sources", ()):
-        from .harness.claude_release import alerts
+        from .harness import claude_release
 
-        release_failures = alerts(ship)
+        release_failures, release_notices = claude_release.status(ship)
     from . import usage_forecast
     lists = _replay(reading)
     fields = _post_fields(ship, store, attempts, post_held, records, latest, lists['waiting'], reading)
@@ -1313,6 +1314,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         check_unknown=check_outcome.unknown_alarms(outcomes) + outcome_errors,
         usage_errors=quota.pacing_alerts(ship, now),
         release_failures=release_failures,
+        release_notices=release_notices,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),
         disks=disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())]),
