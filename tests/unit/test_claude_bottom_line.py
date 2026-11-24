@@ -47,6 +47,21 @@ def test_each_measured_bottom_line_names_what_runs_in_the_background(version, na
     assert ClaudeHarness().background(screen, version) == names
 
 
+@pytest.mark.parametrize(('suffix', 'names'), [
+    (' (shift+tab to cycle)', ()),
+    (' · 1 shell · ↓ to manage', (('shell', 1),)),
+    (' · 1 shell', None),
+    (' · 2 shells · ↓ to manage', None),
+    (' · 1 shell · esc to interrupt · ↓ to manage', None),
+    (' · 1 shell · ← for agents · ↓ to manage', None),
+])
+def test_mover_footers_on_the_measured_release_only(suffix, names):
+    harness = ClaudeHarness()
+    screen = drawn(MODE + suffix)
+    assert harness.background(screen, '2.1.331') == names
+    assert harness.background(screen, '2.1.332') is None
+
+
 def test_one_feedback_draft_with_the_cycling_hint_leaves_the_composer_at_rest():
     screen = drawn(FEEDBACK_DRAFT)
     assert screen.box == '' and screen.working is False
@@ -151,7 +166,7 @@ def test_the_line_must_be_the_last_the_screen_draws_and_under_a_read_composer():
 
 
 def test_the_measured_forms_are_an_exact_set_per_version():
-    assert set(BOTTOM_LINES) == {'2.1.317', '2.1.325'}
+    assert set(BOTTOM_LINES) == {'2.1.317', '2.1.325', '2.1.331'}
 
 
 @pytest.mark.parametrize(('version', 'name'), [

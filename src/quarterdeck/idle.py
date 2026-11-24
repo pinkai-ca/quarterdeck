@@ -201,6 +201,10 @@ def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
     names = seat.harness.background(screen, version)
     if names is None:
         return unknown("its screen's bottom line is not a measured form")
+    rest_versions = getattr(seat.harness, 'background_rest_versions', seat.harness.background_versions)
+    if version not in rest_versions:
+        saw = f'{named(names)} in the background' if names else 'nothing in the background'
+        return state, hold, saw
     if names == ():
         return rest, None, 'nothing in the background'
     if names == WATCH_ALONE and own_watch_call(seat, state) and inbox_watch.alone(seat):

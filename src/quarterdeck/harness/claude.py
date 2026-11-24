@@ -35,7 +35,8 @@ from .claude_record import input_rows, inspect_entries
 from .types import AUTHENTICATION, Inputs, State, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_limits import ExtraUsage, extra_usage_at_refusal, limit_wall, rejected_limit_info
 from .claude_background import (notification as background_notification, BackgroundBash, LINKED_VERSION,
-                                TaskNoticeQueue, linked_notice_origin, linked_root, user_notice)
+                                TaskNoticeQueue, WatchCompletionQueue, WatchRelaunchQueue,
+                                linked_notice_origin, linked_root, user_notice)
 from .claude_children import Children, fingerprint as children_fingerprint
 
 from .. import durable, seat_files
@@ -356,33 +357,51 @@ class _TextlessDequeue:
 
 @input_reader(lambda row: (row.get('type') not in ('assistant', 'system', *INPUT_IGNORED)
                            and not data_flow_metadata(row))
-              or row.get('type') == 'ai-title' and not ai_title(row), parse=claude_record.parse)
+              or row.get('type') == 'ai-title' and not ai_title(row)
+              or (row.get('type') == 'system' and row.get('subtype') == 'turn_duration'
+                  and row.get('version') == LINKED_VERSION), parse=claude_record.parse)
 def inputs(record: Path, snapshot) -> list[Input]:
     found, queued = Inputs(), []
     dequeue = _TextlessDequeue()
     task_queue = TaskNoticeQueue(record.stem)
+    background = BackgroundBash(record)
+    watch_relaunch = WatchRelaunchQueue(background)
+    watch_completion = WatchCompletionQueue(background)
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found, parse=lambda _: snapshot):
         kind = row.get('type')
+        at = when(row.get('timestamp'))
+        queue_empty = not any(phase in ('queued', 'pending') for _, phase in queued)
+        private_watch = watch_relaunch.take(row, at, queue_empty=queue_empty)
+        watch_disposition = watch_completion.take(row, at, queue_empty=queue_empty,
+                                                  task_queue_empty=task_queue.pending is None)
+        row = dequeue.take(row)
+        if private_watch or watch_disposition != 'ordinary':
+            if 'version' in row:
+                task_queue.version = row['version']
+            continue
         if kind in DATA_FLOW_ROWS:
             if not data_flow_metadata(row):
                 found.skip(line, kind, 'unknown native data-flow metadata')
             continue
-        row = dequeue.take(row)
-        private, _ = task_queue.take(row, when(row.get('timestamp')))
+        private, _ = task_queue.take(row, at)
         if private:
             continue  # the native task queue produces no receipt for a person
         if kind == 'ai-title' and not ai_title(row):
             found.skip(line, 'ai-title', 'unknown title bookkeeping')
             continue
-        if kind in INPUT_IGNORED:
-            continue  # known non-input metadata does not establish the program format
-        if kind not in _Reader.kinds:
-            found.skip(line, 'unknown', 'unknown row kind')
-            continue
-        if row.get("isSidechain"):
+        if row.get('isSidechain'):
+            if kind not in (*INPUT_IGNORED, *_Reader.kinds):
+                found.skip(line, 'unknown', 'unknown row kind')
             continue
         try:
-            stamp = when(row.get("timestamp"))
+            stamp = at
+            background.observe(row, stamp)
+            background.observe_tools(row, stamp)
+            if kind in INPUT_IGNORED:
+                continue  # known non-input metadata does not establish the program format
+            if kind not in _Reader.kinds:
+                found.skip(line, 'unknown', 'unknown row kind')
+                continue
             if kind == 'user':
                 content = row.get('message', {}).get('content')
                 if not isinstance(content, (str, list)):
@@ -448,7 +467,8 @@ def inputs(record: Path, snapshot) -> list[Input]:
         except (TypeError, ValueError, AttributeError, KeyError):
             found.skip(line, kind, 'malformed input row')
     found.extend(entry for entry, phase in queued if phase == 'queued')
-    if task_queue.pending is not None or task_queue.unknown:
+    if (task_queue.pending is not None or task_queue.unknown or watch_relaunch.pending or watch_relaunch.unknown
+            or watch_completion.pending is not None or watch_completion.unknown):
         found.skip(0, 'queue-operation', 'task notification queue unresolved')
     return found
 
@@ -677,6 +697,8 @@ class _Reader(JsonLinesReader):
         self.queue_version = None
         self.task_queue = TaskNoticeQueue(record.stem)
         self.background = BackgroundBash(record)
+        self.watch_relaunch = WatchRelaunchQueue(self.background)
+        self.watch_completion = WatchCompletionQueue(self.background)
         self.children = Children(record)
         self.metadata_session = None
         self.walls = []
@@ -693,7 +715,9 @@ class _Reader(JsonLinesReader):
         if state.queue_error is None and any(slot.uncertain and slot.phase in ('queued', 'pending')
                                              for slot in self.queue_slots):
             state = replace(state, queue_error='unknown queue operation')
-        if self.task_queue.pending is not None or self.task_queue.unknown:
+        if (self.task_queue.pending is not None or self.task_queue.unknown
+                or self.watch_relaunch.pending or self.watch_relaunch.unknown
+                or self.watch_completion.pending is not None or self.watch_completion.unknown):
             state = replace(state, pending_tools=None,
                             queue_error=state.queue_error or 'task notification queue unresolved')
         if self.answering_notice():
@@ -719,6 +743,10 @@ class _Reader(JsonLinesReader):
 
     def take(self, entry: dict) -> None:
         kind = entry.get("type")
+        at = when(entry.get('timestamp'))
+        private_watch = self.watch_relaunch.take(entry, at, queue_empty=not self.queued and self.open is None)
+        watch_disposition = self.watch_completion.take(entry, at, queue_empty=not self.queued,
+                                                        task_queue_empty=self.task_queue.pending is None)
         if kind in DATA_FLOW_ROWS:
             if not data_flow_metadata(entry) or self.metadata_session not in (None, entry['sessionId']):
                 self.tools_known = False
@@ -729,7 +757,12 @@ class _Reader(JsonLinesReader):
         self.children.observe(entry)
         if not entry.get('isSidechain') and 'version' in entry:
             self.queue_version = entry['version']
-        at = when(entry.get('timestamp'))
+        if private_watch or watch_disposition != 'ordinary':
+            if 'version' in entry:
+                self.background.version = self.task_queue.version = entry['version']
+            if watch_disposition == 'turn':
+                self.start_notice_turn(at)
+            return
         private, evidence = self.task_queue.take(entry, at)
         if private:
             if evidence is not None:
@@ -738,11 +771,7 @@ class _Reader(JsonLinesReader):
                     self.background.delivered_to_child(notice, enqueued_at, self.children.compacted_at)
                 else:
                     self.children.notice(notice, enqueued_at)
-                    if self.open is None:
-                        self.start_turn(dict(started=at, input='', usage={}, tools=[],
-                                             reply='', model=None, subagents=self.subagent_turns))
-                    else:
-                        self.tools_known = False  # the measured notice starts a separate root turn
+                    self.start_notice_turn(at)
             return
         if kind == 'ai-title' and not ai_title(entry):
             self.tools_known = False
@@ -782,6 +811,13 @@ class _Reader(JsonLinesReader):
                 self.complete_queue(entry)
         elif kind not in ('system', *INPUT_IGNORED):
             self.tools_known = False
+
+    def start_notice_turn(self, at):
+        if self.open is None:
+            self.start_turn(dict(started=at, input='', usage={}, tools=[],
+                                 reply='', model=None, subagents=self.subagent_turns))
+        else:
+            self.tools_known = False  # this native notice belongs to a separate root turn
 
     def queue(self, entry: dict) -> None:
         """A message queued mid-turn; removed when the program takes it, often into the running turn itself."""
@@ -1099,6 +1135,8 @@ WORKING = re.compile(r"esc to interrupt|^[*✻✶✳✢✽·⠂⠄⠆] \S+… \(
 #            for some thirty seconds after it ended, and for the first seconds after a launch, a hint alone
 #   2.1.325  the same two bodies, each followed by the name of the session's published page; a helper agent
 #            running in the background adds a panel of its own below the line, gone when the helper ends
+#   2.1.331  the mover witness saw the cycling hint with no shell after restart and the manage hint
+#            with one shell (its inbox watch) before and after manual compaction.
 # Any other bottom line, or one that is not the screen's last, says nothing here.
 BOTTOM_LINES = {
     "2.1.317": re.compile(r"  ⏵⏵ bypass permissions on(?: \(shift\+tab to cycle\)(?: · 1 feedback draft)?"
@@ -1106,6 +1144,8 @@ BOTTOM_LINES = {
                           r"(?:(?P<monitor>, 1 monitor)|(?<= · 1 shell) · 1 feedback draft)?)"),
     "2.1.325": re.compile(r"  ⏵⏵ bypass permissions on(?: \(shift\+tab to cycle\)"
                           r"| · (?P<shells>[1-9]\d*) (?P<noun>shells?)) · ⧉ \S+"),
+    LINKED_VERSION: re.compile(r"  ⏵⏵ bypass permissions on(?: \(shift\+tab to cycle\)"
+                               r"| · (?P<shells>1) (?P<noun>shell) · ↓ to manage)"),
 }
 SET_MODEL = re.compile(r"Set model to `?([^`]+?)`? and saved")
 SET_EFFORT = re.compile(r"Set effort level to `?(\w+)`?")
@@ -1835,6 +1875,8 @@ class ClaudeHarness(Harness):
                       queued=queued, shows={"effort": mode.group(1)} if mode else {})
 
     background_versions = frozenset(BOTTOM_LINES)
+    # The new footer reports its shell count. It cannot settle unknown record evidence.
+    background_rest_versions = background_versions - {LINKED_VERSION}
 
     def background(self, screen: Screen, version: str | None) -> tuple[tuple[str, int], ...] | None:
         form = BOTTOM_LINES.get(version)

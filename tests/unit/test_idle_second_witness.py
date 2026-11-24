@@ -70,7 +70,8 @@ class Case:
             launched=lambda: self.launch, record=lambda: tmp_path / 'record-fern.jsonl',
             pane=lambda: SimpleNamespace(dead=False, id=self.launch.pane, pid=self.launch.pid),
             harness=SimpleNamespace(state=lambda record: self.state, waiting_for_human=lambda reading: False,
-                                    background=native.background, background_versions=native.background_versions),
+                                    background=native.background, background_versions=native.background_versions,
+                                    background_rest_versions=native.background_rest_versions),
             failover_to=lambda pool: self.moved.append(pool) or 'synthetic move proof',
             require_restart_target=lambda: None,
             restart=lambda: self.moved.append('restart') or 'synthetic restart proof',
@@ -347,6 +348,15 @@ def test_2_1_325_is_read_by_its_own_forms_only(case):
     assert case(unread(), text(page), alone=True, version='2.1.325').second()[1] is None
     assert case(unread(), text(ONE_SHELL), alone=True, version='2.1.325').second()[1].dimension == 'tools-unknown'
     assert case(unread(), text(page), alone=True, version='2.1.317').second()[1].dimension == 'tools-unknown'
+
+
+@pytest.mark.parametrize('bottom', [NOTHING, ONE_SHELL + ' · ↓ to manage'])
+def test_candidate_footer_reports_what_it_shows_without_clearing_unknown_tools(case, bottom):
+    built = case(unread(), text(bottom), alone=True, version='2.1.331')
+    state, hold, saw = built.second()
+    assert state is built.state and hold is UNKNOWN
+    assert saw in ('nothing in the background', '1 shell in the background')
+    assert built.asked == [] and built.reads == 1
 
 
 # -- the reading every consumer shares --------------------------------------------------------------------------

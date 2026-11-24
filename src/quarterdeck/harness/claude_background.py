@@ -1,7 +1,8 @@
 """Claude Code root Bash task evidence, independent of turn accounting.
 
-Only measured structural fields are joined. Notification summaries and command/output
-text supply no execution proof. Unknown evidence is never a record-wide reset.
+Only measured structural fields are joined. The own-watch carriers also match
+their exact native text against the acknowledged watch. Unknown evidence is
+never a record-wide reset.
 Each evidence form trusts only the exact versions measured to record it the same way;
 an unmeasured version, including any later one, stays unknown.
 """
@@ -11,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 
+from .claude_record import BACKGROUND_HEADER
 from .json_record import when
 from .types import ActiveTool
 from ..seat_command import qd_command
@@ -198,7 +200,7 @@ def linked_notice_origin(entry):
             and not entry.get('isSidechain') and isinstance(origin, dict) and origin.get('kind') == 'task-notification')
 
 
-def linked_user_notice(entry):
+def linked_user_notice(entry, *, own_shell=False):
     if not linked_notice_origin(entry) or entry.get('isSidechain') is not False:
         return None
     origin, message, prompt = entry['origin'], entry.get('message'), entry.get('promptId')
@@ -210,7 +212,7 @@ def linked_user_notice(entry):
             or not isinstance(message, dict) or message.get('role') != 'user'):
         return None
     notice = linked_notice(message.get('content'))
-    return notice if notice is not None and notice.kind != 'bash' else None
+    return notice if notice is not None and (notice.kind != 'bash' or own_shell) else None
 
 
 @dataclass
@@ -306,6 +308,23 @@ def user_notice(entry):
     return fields is not None and fields[2] in {*TERMINAL, 'stopped'}
 
 
+@dataclass(frozen=True)
+class WatchOrigin:
+    command: str
+    description: str
+    output: str
+    prompt: str | None
+
+
+def watch_output(block, task):
+    """The Bash acknowledgement names the task and its output file in one line."""
+    text = block.get('content')
+    if block.get('is_error') is not False or not isinstance(text, str):
+        return None
+    match = re.match(rf'{re.escape(BACKGROUND_HEADER)}{re.escape(task)}\. Output is being written to: (\S+)\. ', text)
+    return match[1] if match is not None else None
+
+
 @dataclass
 class Task:
     call: str
@@ -325,6 +344,7 @@ class Task:
     kind: str = 'Bash'
     evidence_errors: tuple[str, ...] = ()
     undated_evidence: bool = False  # a row about it the reader could not date: it may be from after any launch
+    watch: WatchOrigin | None = None
 
 
 def ship_watch_commands(record: Path | None) -> frozenset[str]:
@@ -348,7 +368,9 @@ def ship_watch_commands(record: Path | None) -> frozenset[str]:
 
 class BackgroundBash:
     def __init__(self, record: Path | None = None):
-        self.watch_commands = set(ship_watch_commands(record))
+        self.watch_commands = ship_watch_commands(record)
+        self.session = Path(record).stem if record is not None else None
+        self.manual_compact_at = None
         self.calls = {}
         self.tasks = {}  # includes terminal identities so later duplicate carriers can be joined
         self.task_calls = {}
@@ -362,6 +384,24 @@ class BackgroundBash:
         # creates the task; one still waiting at the record's end leaves the record's tools unknown.
         self.early = {}
         self.version = None  # queue carriers inherit the nearest preceding explicit record version
+
+    def observe_tools(self, row, at):
+        """Retain native call/acknowledgement evidence during the input walk."""
+        if row.get('isSidechain') or row.get('type') not in ('assistant', 'user'):
+            return
+        message = row.get('message')
+        if not isinstance(message, dict) or not isinstance(message.get('content'), list):
+            return
+        linked = linked_root(row, self.session)
+        for block in message['content']:
+            if not isinstance(block, dict):
+                continue
+            if message.get('role') == 'assistant' and block.get('type') == 'tool_use':
+                self.call(block.get('id'), block.get('name'), block.get('input'), at, row.get('version'), linked=linked)
+            if message.get('role') == 'user' and block.get('type') == 'tool_result':
+                call = block.get('tool_use_id')
+                if isinstance(call, str):
+                    self.result(call, row, block, at, linked=linked)
 
     def call(self, call, name, arguments, at, version, *, linked=True):
         if name == 'Monitor' and isinstance(call, str) and call and version in MONITOR_VERSIONS:
@@ -380,7 +420,7 @@ class BackgroundBash:
         wanted = arguments.get('run_in_background', False) if name == 'Bash' else arguments.get('task_id')
         command = arguments.get('command')
         watch = name == 'Bash' and isinstance(command, str) and command in self.watch_commands
-        self.calls[call] = name, wanted, at, version, watch
+        self.calls[call] = name, wanted, at, version, watch, linked, command, arguments.get('description')
         if name == 'Bash' and (not isinstance(wanted, bool) or wanted and version not in CALL_VERSIONS):
             self.unknown_calls.add(call)
 
@@ -395,7 +435,7 @@ class BackgroundBash:
         info = self.calls.pop(call, None)
         if info is None:
             return
-        name, wanted, called_at, version, watch = info
+        name, wanted, called_at, version, watch, own_call, command, description = info
         result = entry.get('toolUseResult')
         allowed = CALL_VERSIONS if name == 'Bash' else STOP_VERSIONS
         supported = version in allowed and entry.get('version') == version
@@ -417,8 +457,13 @@ class BackgroundBash:
                     or call in self.tasks or task in self.task_calls):
                 self.unknown_calls.add(call)
                 return
-            self.tasks[call] = Task(call, task, at, at, other_evidence_at=at, version=version, called_at=called_at, acknowledged_at=at,
-                                    inbox_watch_started=called_at if watch else None)
+            origin = None
+            if (watch and own_call and linked and wanted is True and native_task_id(call) and native_task_id(task)
+                    and isinstance(description, str) and description
+                    and (output := watch_output(block, task)) is not None):
+                origin = WatchOrigin(command, description, output, entry.get('promptId'))
+            self.tasks[call] = Task(call, task, at, at, other_evidence_at=at, version=version, called_at=called_at,
+                                    acknowledged_at=at, inbox_watch_started=called_at if watch else None, watch=origin)
             self.task_calls[task] = call
             for early in self.early.pop(call, ()):
                 self.notice(self.tasks[call], *early)
@@ -474,7 +519,7 @@ class BackgroundBash:
                       and task.called_at is not None and at >= task.called_at)
         if at is None or at < task.latest and not before_ack or task.invalid:
             self.invalidate(task, 'terminal-time-or-status-conflict')
-        elif task.phase == 'ended' and task.terminal != status:
+        elif task.phase == 'ended-by-relaunch' or task.phase == 'ended' and task.terminal != status:
             self.invalidate(task, 'terminal-time-or-status-conflict')
         elif task.phase != 'ended':
             task.phase, task.terminal, task.latest = 'ended', status, at
@@ -489,6 +534,19 @@ class BackgroundBash:
         if 'version' in entry:
             self.version = entry['version']
         version = self.version if kind == 'queue-operation' else entry.get('version')
+        if kind == 'system' and entry.get('subtype') == 'compact_boundary':
+            metadata = entry.get('compactMetadata')
+            self.manual_compact_at = (at if version == LINKED_VERSION and linked_root(entry, self.session)
+                                      and isinstance(metadata, dict) and metadata.get('trigger') == 'manual' else None)
+        elif self.manual_compact_at is not None and kind in ('assistant', 'user'):
+            message = entry.get('message')
+            content = message.get('content') if isinstance(message, dict) else None
+            local_compact = (kind == 'user' and version == LINKED_VERSION and linked_root(entry, self.session)
+                             and (entry.get('isCompactSummary') is True or isinstance(content, str)
+                                  and content.startswith(('<local-command-caveat>', '<command-name>/compact</command-name>',
+                                                          '<local-command-stdout>'))))
+            if not local_compact:
+                self.manual_compact_at = None
         text, notice, carrier = None, False, None
         if kind == 'queue-operation' and entry.get('operation') in ('enqueue', 'remove'):
             carrier = ('queue-operation', entry['operation'])
@@ -501,7 +559,7 @@ class BackgroundBash:
         elif kind == 'attachment' and isinstance(entry.get('attachment'), dict):
             attachment = entry['attachment']
             if attachment.get('type') == 'task_status' and attachment.get('taskType') == 'local_bash':
-                self.running(attachment, at, version)
+                self.running(attachment, at, version, root=linked_root(entry, self.session))
                 return
             if attachment.get('type') == 'queued_command' and attachment.get('commandMode') == 'task-notification':
                 carrier = ('attachment', 'queued_command')
@@ -575,7 +633,7 @@ class BackgroundBash:
             if resumed:
                 task.resume_stopped_at = max(at, task.resume_stopped_at or at)
 
-    def running(self, attachment, at, version):
+    def running(self, attachment, at, version, *, root=False):
         identity = attachment.get('taskId')
         target = self.task_calls.get(identity) if isinstance(identity, str) else None
         if target is None:
@@ -584,11 +642,25 @@ class BackgroundBash:
         task = self.tasks[target]
         task.running_seen = True
         self.seen(task, at)
-        if (version not in STATUS_VERSIONS or attachment.get('status') != 'running' or at is None
-                or at < task.latest or task.phase == 'ended' or task.invalid):
+        supported = version in STATUS_VERSIONS or (
+            version == LINKED_VERSION and root and self.restored_watch(task, attachment))
+        if (not supported or attachment.get('status') != 'running' or at is None
+                or at < task.latest or task.phase in ('ended', 'ended-by-relaunch') or task.invalid):
             self.invalidate(task, 'unmeasured-or-conflicting-task-status')
         else:
             task.phase, task.latest = 'pending', at
+
+    def restored_watch(self, task, attachment):
+        """The manual-compact attachment preserves one already acknowledged root watch."""
+        watch = task.watch
+        return (task.version == LINKED_VERSION and task.phase == 'pending' and watch is not None
+                and self.manual_compact_at is not None and task.acknowledged_at < self.manual_compact_at
+                and attachment.keys() == {'type', 'taskId', 'taskType', 'status', 'description', 'deltaSummary',
+                                         'outputFilePath', 'shell'}
+                and attachment['deltaSummary'] is None and attachment['outputFilePath'] == watch.output
+                and attachment['description'] == watch.description
+                and attachment['shell'] == {'kind': 'bash', 'command': watch.command, 'toolUseId': task.call})
+
 
     def task_states(self, launched_at=None):
         """Launch-scoped death is its own state, without changing native completion evidence."""
@@ -602,7 +674,7 @@ class BackgroundBash:
             measured = task.phase == 'pending' or (task.resume_stopped_at is not None
                                                   and task.latest == task.resume_stopped_at)
             if (launched_at is not None and task.kind == 'Bash' and task.version in EXIT_VERSIONS and measured
-                    and not task.invalid and task.phase != 'ended'
+                    and not task.invalid and task.phase not in ('ended', 'ended-by-relaunch')
                     and task.started < launched_at
                     and (task.latest < launched_at or task.resume_stopped_at is not None
                          and launched_at <= task.resume_stopped_at)
@@ -623,3 +695,405 @@ class BackgroundBash:
                        state.pending_tools + tuple('Bash' for task in active),
                        active_tools=state.active_tools + tuple(
                            ActiveTool('Bash', task.started, task.inbox_watch_started) for task in active))
+
+
+QUEUE_KEYS = frozenset({'type', 'operation', 'timestamp', 'sessionId'})
+SAME_VERSION_RESUME_KEYS = frozenset({
+    'type', 'isSidechain', 'version', 'sessionId', 'timestamp', 'uuid', 'parentUuid', 'promptId',
+    'message', 'origin', 'promptSource', 'queueSkipAttachments', 'queueTranscriptOnly',
+    'entrypoint', 'userType', 'permissionMode', 'cwd', 'gitBranch',
+})
+RESUME_SUMMARY = "Background shell command didn't finish before the previous session ended"
+RESUME_WATCH_NOTE = RESUME_STOPPED + ' Check the output file for partial results before assuming it completed.'
+
+
+def watch_notice_text(task, status):
+    header = (f'<task-notification>\n<task-id>{task.task}</task-id>\n'
+              f'<tool-use-id>{task.call}</tool-use-id>\n')
+    if status == 'stopped':
+        return (header + f'<status>stopped</status>\n<summary>{RESUME_SUMMARY}</summary>\n'
+                f'<note>{RESUME_WATCH_NOTE}</note>\n</task-notification>')
+    disposition = 'was stopped' if status == 'killed' else 'completed (exit code 0)'
+    return (header + f'<output-file>{task.watch.output}</output-file>\n<status>{status}</status>\n'
+            f'<summary>Background command "{task.watch.description}" {disposition}</summary>\n'
+            '</task-notification>')
+
+
+@dataclass
+class WatchExit:
+    task: Task
+    phase: str
+    at: datetime
+    parent: str
+    saved_tools: bool = False
+
+
+class WatchRelaunchQueue:
+    """The root watch's adjacent exit pair and its transcript-only resume pair.
+
+    The old record version scopes the kill. The transcript-only user row
+    supplies the version of the resumed launch and settles the stopped pair.
+    """
+
+    def __init__(self, background):
+        self.background = background
+        self.session = background.session
+        self.version = None
+        self.turn_end = None
+        self.exit = None
+        self.unknown = False
+
+    @property
+    def pending(self):
+        return self.exit is not None and self.exit.phase not in ('exited', 'between-launches')
+
+    def take(self, row, at, *, queue_empty):
+        """Consume only a proved native carrier, leaving every other queue operation to its reader."""
+        kind, old_version = row.get('type'), self.version
+        if not row.get('isSidechain') and 'version' in row:
+            self.version = row['version']
+        exit = self.exit
+        if exit is not None:
+            if (private := self.advance(exit, row, at, queue_empty=queue_empty, old_version=old_version)) is not None:
+                return private
+            if self.pending:
+                self.unknown = True
+            self.exit = None
+        if kind in ('assistant', 'user') or row.get('subtype') == 'compact_boundary':
+            self.turn_end = None
+        if (kind == 'system' and row.get('subtype') == 'turn_duration' and self.version == VERSION
+                and linked_root(row, self.session) and at is not None and native_task_id(row.get('uuid'))):
+            self.turn_end = at, row['uuid']
+        if (not queue_empty or self.turn_end is None or self.version != VERSION
+                or kind != 'queue-operation' or row.get('operation') != 'enqueue'
+                or row.keys() != QUEUE_KEYS | {'content'} or row.get('sessionId') != self.session
+                or at is None or at <= self.turn_end[0]):
+            return False
+        text = row['content']
+        fields = notification(text)
+        if fields is None or fields[2:] != ('killed', None):
+            return False
+        task = self.background.tasks.get(fields[0])
+        if (task is None or task.task != fields[1] or task.watch is None or task.version != VERSION
+                or task.invalid or task.call in self.background.unknown_calls or task.phase != 'pending'
+                or task.latest > self.turn_end[0] or text != watch_notice_text(task, 'killed')):
+            return False
+        self.exit = WatchExit(task, 'killed-enqueued', at, self.turn_end[1])
+        return True
+
+    def advance(self, exit, row, at, *, queue_empty, old_version):
+        # True takes a private carrier, False advances across ordinary metadata,
+        # and None breaks the sequence.
+        if not queue_empty or row.get('sessionId') != self.session or old_version != VERSION:
+            return None
+        kind, phase, task = row.get('type'), exit.phase, exit.task
+        if phase == 'exited' and kind == 'tools-used' and row.keys() == {'type', 'tools', 'sessionId'}:
+            exit.phase = 'between-launches'
+            tools = row['tools']
+            exit.saved_tools = isinstance(tools, list) and len(tools) == 1 and isinstance(tools[0], str) and bool(tools[0])
+            return False  # this is still normal metadata
+        if (phase == 'stopped-dequeued' and type(row.get('v')) is int
+                and row == {'type': 'derived-from', 'v': 1, 'sessionId': self.session,
+                            'sessions': [{'type': 'claude_code_session', 'id': self.session, 'via': 'resume'}]}):
+            exit.phase = 'resume-linked'
+            return False  # this is still normal metadata
+        if at is None or at <= exit.at or task.invalid or task.call in self.background.unknown_calls:
+            return None
+        if kind == 'queue-operation':
+            operation = row.get('operation')
+            if (operation == 'dequeue' and row.keys() == QUEUE_KEYS
+                    and phase in ('killed-enqueued', 'stopped-enqueued')):
+                if phase == 'killed-enqueued':
+                    self.background.end(task, 'killed', exit.at)
+                    exit.phase = 'exited'
+                else:
+                    exit.phase = 'stopped-dequeued'
+                exit.at = at
+                return True
+            if (phase in ('exited', 'between-launches') and operation == 'enqueue'
+                    and row.keys() == QUEUE_KEYS | {'content'}
+                    and row['content'] == watch_notice_text(task, 'stopped')):
+                exit.phase, exit.at = 'stopped-enqueued', at
+                return True
+        upgraded = (phase == 'resume-linked' and linked_notice_origin(row) and row.get('rowSource') == 'harness'
+                    and not row.keys() & {'turnOrigin', 'turnPosition', 'turnPromptId', 'isMeta', 'isCompactSummary'})
+        same_version = (phase == 'stopped-dequeued' and exit.saved_tools and kind == 'user'
+                        and row.get('version') == VERSION and row.keys() == SAME_VERSION_RESUME_KEYS
+                        and row['entrypoint'] == 'cli' and row['userType'] == 'external'
+                        and row['permissionMode'] == 'bypassPermissions')
+        if ((upgraded or same_version) and linked_root(row, self.session)
+                and row.get('origin') == {'kind': 'task-notification'} and row.get('promptSource') == 'system'
+                and row.get('queueSkipAttachments') is True and row.get('queueTranscriptOnly') is True
+                and row.get('parentUuid') == exit.parent
+                and native_task_id(row.get('promptId')) and native_task_id(row.get('uuid'))
+                and row.get('message') == {'role': 'user', 'content': watch_notice_text(task, 'stopped')}
+                and task.phase == 'ended' and task.terminal == 'killed'):
+            self.background.seen(task, at)
+            task.phase, task.terminal, task.latest = 'ended-by-relaunch', None, at
+            self.exit = None
+            return True
+        return None
+
+
+@dataclass(frozen=True)
+class WatchTurn:
+    prompt: str
+    started: datetime
+
+
+@dataclass(frozen=True)
+class ForegroundBash:
+    call: str
+    row: str
+    started: datetime
+
+
+@dataclass
+class WatchCompletion:
+    task: Task
+    text: str
+    enqueued_at: datetime
+    turn: WatchTurn
+    phase: str
+    foreground: ForegroundBash | None = None
+    disposed_at: datetime | None = None
+    command: str | None = None
+    delivery: str | None = None
+    parent: str | None = None
+    parent_at: datetime | None = None
+
+
+class WatchCompletionQueue:
+    """Only the two measured dispositions for a completed root inbox watch."""
+
+    def __init__(self, background):
+        self.background = background
+        self.session = background.session
+        self.version = None
+        self.turn = None
+        self.foreground = None
+        self.pending = None
+        self.unknown = False
+
+    def take(self, row, at, *, queue_empty, task_queue_empty):
+        """Return ordinary, private, or the start of a native callback turn."""
+        if self.pending is not None:
+            disposition = self.advance(self.pending, row, at)
+            if disposition is not None:
+                if disposition == 'turn':
+                    self.turn = self.foreground = None
+                return disposition
+            self.pending, self.unknown = None, True
+        self.track_turn(row, at)
+        if not row.get('isSidechain') and 'version' in row:
+            self.version = row['version']
+        if (self.version != LINKED_VERSION or self.turn is None or not queue_empty or not task_queue_empty
+                or row.get('type') != 'queue-operation' or row.get('operation') != 'enqueue'
+                or row.keys() != QUEUE_KEYS | {'content'} or row['sessionId'] != self.session or at is None):
+            return 'ordinary'
+        text = row['content']
+        notice = linked_notice(text)
+        if notice is None or notice.kind != 'bash':
+            return 'ordinary'
+        task = self.background.tasks.get(notice.call)
+        watch = task.watch if task is not None else None
+        if (watch is None or task.task != notice.task or task.version != LINKED_VERSION or task.phase != 'pending'
+                or task.invalid or task.call in self.background.unknown_calls or at < task.latest
+                or not native_task_id(watch.prompt) or at <= self.turn.started or notice.output != watch.output
+                or text != watch_notice_text(task, 'completed')):
+            return 'ordinary'
+        if self.turn.prompt == watch.prompt and not self.background.calls and self.turn.started <= task.called_at:
+            self.pending = WatchCompletion(task, text, at, self.turn, 'dequeue')
+        elif self.turn.prompt != watch.prompt and task.acknowledged_at < self.turn.started:
+            foreground = self.foreground
+            if foreground is not None and self.turn.started <= foreground.started < at:
+                self.pending = WatchCompletion(task, text, at, self.turn, 'remove', foreground)
+            elif not self.background.calls:
+                # Native output can persist the enqueue before the already-running Bash call.
+                self.pending = WatchCompletion(task, text, at, self.turn, 'foreground')
+        if self.pending is None:
+            return 'ordinary'
+        return 'private'
+
+    def root(self, row):
+        return (row.get('version') == LINKED_VERSION and linked_root(row, self.session)
+                and row.get('session_id', self.session) == self.session)
+
+    def track_turn(self, row, at):
+        """Retain only the typed root prompt and foreground Bash relevant to a watch enqueue."""
+        kind = row.get('type')
+        if kind == 'system' and row.get('subtype') in ('turn_duration', 'compact_boundary'):
+            self.turn = self.foreground = None
+        if kind not in ('user', 'assistant'):
+            return
+        if not self.root(row) or at is None:
+            self.turn = self.foreground = None
+            return
+        message = row.get('message')
+        if not isinstance(message, dict):
+            self.turn = self.foreground = None
+            return
+        content = message.get('content')
+        if kind == 'user':
+            self.foreground = None
+            if root_tool_result(row):
+                return
+            prompt = row.get('promptId')
+            self.turn = (WatchTurn(prompt, at) if native_task_id(prompt) and row.get('turnPromptId') == prompt
+                         and row.get('origin') == {'kind': 'human'} and row.get('promptSource') == 'typed'
+                         and row.get('turnOrigin') == 'human' and message.get('role') == 'user'
+                         and isinstance(content, str) and content else None)
+        elif self.turn is not None and isinstance(content, list):
+            calls = [block for block in content if isinstance(block, dict) and block.get('type') == 'tool_use']
+            if calls:
+                self.foreground = foreground_bash(row, at) if self.foreground is None else None
+
+    def advance(self, pending, row, at):
+        if pending.task.invalid or pending.task.phase != 'pending' or pending.task.call in self.background.unknown_calls:
+            return None
+        kind, phase = row.get('type'), pending.phase
+        if kind == 'queue-operation':
+            return self.queue_disposition(pending, row, at)
+        if row.get('sessionId') != self.session:
+            return None
+        metadata = ('api-request', 'api-request-blob', 'api-request-shape', 'data-flow-records', 'last-prompt',
+                    'tools-used', 'custom-title', 'agent-name', 'mode', 'permission-mode', 'session-owner', 'atis-latch')
+        if (phase == 'dequeue' and kind == 'data-flow-records' and 'version' not in row
+                or phase == 'finish' and kind in metadata and row.get('version') in (None, LINKED_VERSION)):
+            return 'ordinary'
+        if not self.root(row) or at is None:
+            return None
+        if phase == 'dequeue' and total_tokens_attachment(row) and at <= pending.enqueued_at:
+            return 'ordinary'
+        if phase == 'foreground' and pending.turn.started <= at < pending.enqueued_at:
+            foreground = foreground_bash(row, at)
+            if foreground is not None:
+                pending.phase, pending.foreground = 'remove', foreground
+                return 'ordinary'
+        if phase == 'result' and self.first_result(pending, row, at):
+            pending.phase, pending.parent = 'attachment', row['uuid']
+            return 'ordinary'
+        if phase == 'attachment' and self.queued_attachment(pending, row, at):
+            pending.phase = 'finish'
+            return 'private'
+        if phase in ('last-answer', 'finish') and kind == 'assistant':
+            if not native_task_id(row.get('uuid')) or at <= pending.enqueued_at:
+                return None
+            message = row.get('message')
+            if not isinstance(message, dict) or message.get('role') != 'assistant':
+                return None
+            if (message.get('stop_reason') == 'end_turn' and isinstance(message.get('content'), list)
+                    and message['content']
+                    and all(isinstance(block, dict) and block.get('type') == 'text' for block in message['content'])):
+                pending.parent, pending.parent_at = row['uuid'], at
+                if phase == 'last-answer':
+                    if at > pending.disposed_at:
+                        return None
+                    pending.phase = 'duration'
+            elif phase == 'last-answer':
+                return None
+            else:
+                pending.parent, pending.parent_at = None, None
+            return 'ordinary'
+        if phase in ('duration', 'finish') and kind == 'system' and row.get('subtype') == 'turn_duration':
+            if (pending.parent is None or row.get('parentUuid') != pending.parent or at < pending.parent_at
+                    or not native_task_id(row.get('uuid')) or type(row.get('durationMs')) is not int
+                    or row['durationMs'] <= 0):
+                return None
+            if phase == 'duration' and at <= pending.disposed_at:
+                pending.phase, pending.parent = 'callback', row['uuid']
+                return 'ordinary'
+            if phase == 'finish' and at > pending.disposed_at:
+                self.end(pending)
+                self.turn = self.foreground = None
+                return 'ordinary'
+            return None
+        if (phase == 'callback' and kind == 'user' and at > pending.disposed_at
+                and row.get('parentUuid') == pending.parent and row.get('promptId') != pending.turn.prompt
+                and native_task_id(row.get('uuid')) and linked_user_notice(row, own_shell=True) is not None
+                and row['message']['content'] == pending.text and 'queueTranscriptOnly' not in row):
+            self.end(pending)
+            return 'turn'
+        if phase == 'finish':
+            if kind == 'user' and row.get('promptId') == pending.turn.prompt and root_tool_result(row):
+                return 'ordinary'
+            if total_tokens_attachment(row):
+                return 'ordinary'
+        return None
+
+    def queue_disposition(self, pending, row, at):
+        if row.get('sessionId') != self.session or at is None or at <= pending.enqueued_at:
+            return None
+        if (pending.phase == 'dequeue' and row.get('operation') == 'dequeue' and row.keys() == QUEUE_KEYS):
+            pending.phase, pending.disposed_at = 'last-answer', at
+            return 'private'
+        if (pending.phase == 'remove' and row.get('operation') == 'remove'
+                and row.keys() == QUEUE_KEYS | {'content', 'reason', 'commandUuid', 'deliveryId'}
+                and row['reason'] == 'absorbed_mid_turn' and row['content'] == pending.text
+                and native_task_id(row['commandUuid']) and native_task_id(row['deliveryId'])
+                and row['commandUuid'] != row['deliveryId']):
+            pending.phase, pending.disposed_at = 'result', at
+            pending.command, pending.delivery = row['commandUuid'], row['deliveryId']
+            return 'private'
+        return None
+
+    @staticmethod
+    def first_result(pending, row, at):
+        # The result is filed after removal, with a slightly earlier timestamp.
+        result = root_tool_result(row)
+        foreground = pending.foreground
+        return (result is not None and result.get('tool_use_id') == foreground.call
+                and result.get('is_error') is False and row.get('promptId') == pending.turn.prompt
+                and row.get('sourceToolAssistantUUID') == row.get('parentUuid') == foreground.row
+                and native_task_id(row.get('uuid')) and pending.enqueued_at < at < pending.disposed_at)
+
+    @staticmethod
+    def queued_attachment(pending, row, at):
+        # The attachment is filed beside that result and retains the enqueue time.
+        value = row.get('attachment')
+        return (row.get('type') == 'attachment' and isinstance(value, dict) and row.get('parentUuid') == pending.parent
+                and native_task_id(row.get('uuid')) and at == pending.enqueued_at
+                and row.get('dataFlowOn') is True and 'rowSource' not in row
+                and value.keys() == {'type', 'prompt', 'source_uuid', 'delivery_id', 'commandMode', 'origin',
+                                     'rowSource', 'runId', 'timestamp'}
+                and value['type'] == 'queued_command' and value['commandMode'] == 'task-notification'
+                and value['origin'] == {'kind': 'task-notification', 'producer': 'session-task'}
+                and value['rowSource'] == 'recorded' and isinstance(value['runId'], str) and bool(value['runId'])
+                and value['prompt'] == pending.text and value['source_uuid'] == pending.command
+                and value['delivery_id'] == pending.delivery and when(value['timestamp']) == at)
+
+    def end(self, pending):
+        self.background.end(pending.task, 'completed', pending.enqueued_at)
+        self.pending = None
+
+
+def foreground_bash(row, at):
+    message = row.get('message')
+    if (row.get('type') != 'assistant' or not isinstance(message, dict) or message.get('role') != 'assistant'
+            or message.get('stop_reason') != 'tool_use' or not native_task_id(row.get('uuid'))):
+        return None
+    content = message.get('content')
+    if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict):
+        return None
+    block = content[0]
+    args = block.get('input')
+    if (block.get('type') == 'tool_use' and block.get('name') == 'Bash' and native_task_id(block.get('id'))
+            and isinstance(args, dict) and isinstance(args.get('command'), str)
+            and args.get('run_in_background', False) is False):
+        return ForegroundBash(block['id'], row['uuid'], at)
+    return None
+
+
+def root_tool_result(row):
+    message = row.get('message')
+    if row.get('type') == 'user' and isinstance(message, dict) and message.get('role') == 'user':
+        content = message.get('content')
+        if (isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict)
+                and content[0].get('type') == 'tool_result'):
+            return content[0]
+    return None
+
+
+def total_tokens_attachment(row):
+    value = row.get('attachment')
+    return row.get('type') == 'attachment' and isinstance(value, dict) and value.get('type') == 'total_tokens_reminder'
