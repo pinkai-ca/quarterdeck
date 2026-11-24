@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 from types import SimpleNamespace
 
@@ -18,6 +19,41 @@ from quarterdeck.harness.muse import MuseHarness
 from quarterdeck.harness.muse_usage import decode, read_native
 from quarterdeck.seat import Launched, Seat
 from quarterdeck.ship import Pool, Ship
+
+FIXTURES = Path(__file__).parents[1] / 'fixtures/muse'
+
+
+def startup_frame(name):
+    if name is None:
+        return None
+    if name.startswith('current-'):
+        frame = (FIXTURES / '1.4.25/startup-off.ansi').read_text()
+        rows = frame.splitlines(keepends=True)
+        if name == 'current-on':
+            rows[3] = ('  Contributor mode is on, so your content may be used for product improvement. '
+                       'Turn it off in /settings.\n')
+        elif name == 'current-altered':
+            rows[3] = rows[3].replace('for more information.', 'for further details.')
+        elif name == 'current-other':
+            rows[3] = '  A different startup notice.\n'
+        elif name == 'current-pending':
+            del rows[3:5]
+        elif name == 'current-unmeasured':
+            del rows[3]
+        return ''.join(rows)
+    fixture = 'idle-off' if name == 'unmeasured-header' else name
+    suffix = 'txt' if fixture == 'contributor-on' else 'ansi'
+    frame = (FIXTURES / '1.4.20' / f'{fixture}-120x40.{suffix}').read_text()
+    return frame.replace(' 1.4.20', ' 1.4.26', 1) if name == 'unmeasured-header' else frame
+
+
+def assert_startup_evidence(ship, name):
+    folder, = (ship.runtime / 'check').glob('*/startup')
+    frame = startup_frame(name)
+    plain, _ = muse_screen.characters(frame)
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+    assert (folder / 'styled.ansi').read_bytes() == frame.encode()
+    assert (folder / 'plain.txt').read_bytes() == plain.encode()
 
 
 def test_the_explicit_check_usage_runs_the_native_subcommand_and_decodes_buckets(tmp_path):
@@ -41,9 +77,8 @@ print(json.dumps({'schemaVersion': 1, 'allowance': {
 def muse_check(tmp_path, monkeypatch):
     ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, {'meta': Pool('meta', 'meta')}, {}, {})
     adapter = MuseHarness()
-    fixtures = Path(__file__).parents[1] / 'fixtures/muse'
     calls = []
-    state = SimpleNamespace(screen=None, journal=None, ordinary_readiness=None)
+    state = SimpleNamespace(screen=None, frames=[], sampled=[], journal=None, ordinary_readiness=None)
     monkeypatch.setattr(check.harnesses, 'get', lambda name: adapter)
     def version():
         return '1.4.25' if (state.screen or '').startswith('current-') else '1.4.20'
@@ -66,34 +101,6 @@ def muse_check(tmp_path, monkeypatch):
 
     monkeypatch.setattr(adapter, 'build_home', build_home)
     monkeypatch.setattr(pending, 'current_identity', lambda seat: launch_opening.binding(seat, seat.launched()))
-    # Keep the real screen parser, opening owner and record reader. The test
-    # transport supplies only one startup frame and the ordered task receipt.
-    def screen(_door):
-        if not state.screen:
-            return None
-        if version() == '1.4.25':
-            frame = (fixtures / '1.4.25/startup-off.ansi').read_text()
-            if state.screen != 'current-off':
-                plain, _ = muse_screen.characters(frame)
-                rows = plain.splitlines()
-                if state.screen == 'current-on':
-                    rows[3] = ('  Contributor mode is on, so your content may be used for product improvement. '
-                               'Turn it off in /settings.')
-                elif state.screen == 'current-altered':
-                    rows[3] = rows[3].replace('for more information.', 'for further details.')
-                else:
-                    del rows[3]
-                frame = '\n'.join(rows)
-            return adapter.screen(frame)
-        name = 'idle-off' if state.screen == 'unmeasured-header' else state.screen
-        suffix = 'txt' if name == 'contributor-on' else 'ansi'
-        frame = (fixtures / '1.4.20' / f'{name}-120x40.{suffix}').read_text()
-        if state.screen == 'unmeasured-header':
-            frame = frame.replace(' 1.4.20', ' 1.4.26', 1)
-        return adapter.screen(frame)
-
-    monkeypatch.setattr(check.Door, 'screen', screen)
-
     @contextmanager
     def temporary(ship, tmux, spec, orders, purpose, *, minimal_opening=None, **kwargs):
         folder = ship.runtime / 'check' / spec.name
@@ -106,6 +113,14 @@ def muse_check(tmp_path, monkeypatch):
                                folder=folder, home=home, trusted=private, defer_opening=False, is_up=True)
         seat.launched = lambda: Seat.launched(seat)
         seat.record = lambda: native_record if native_record.exists() else None
+
+        def read_pane():
+            name = state.frames.pop(0) if state.frames else state.screen
+            state.sampled.append(name)
+            frame = startup_frame(name)
+            return (SimpleNamespace(id='%123', pid=1), frame) if frame is not None else None
+
+        seat.read_pane = read_pane
 
         def up(*, resume):
             assert resume is False and spec.model == adapter.check_model
@@ -153,20 +168,24 @@ def muse_check(tmp_path, monkeypatch):
                                            ('unmeasured-header', 'launch-setting-unreadable'),
                                            ('current-on', 'launch-setting-unreadable'),
                                            ('current-altered', 'launch-setting-unreadable'),
-                                           ('current-absent', 'launch-setting-unreadable'),
+                                           ('current-other', 'launch-setting-unreadable'),
+                                           ('current-unmeasured', 'launch-setting-unreadable'),
                                            (None, 'launch-setting-unreadable')])
 def test_a_check_without_current_contributor_off_never_delivers_its_opening(muse_check, minimal, screen, reason, monkeypatch):
     ship, _, calls, state = muse_check
     state.screen = screen
-    if screen is None:
-        times = iter([0, 0, 999])
-        monkeypatch.setattr(launch_opening, 'time', SimpleNamespace(monotonic=lambda: next(times), sleep=lambda _: None))
+    times = iter([0, 0, 999] if screen is None else [0, 0])
+    monkeypatch.setattr(launch_opening, 'time', SimpleNamespace(monotonic=lambda: next(times), sleep=lambda _: None))
     args = SimpleNamespace(harness='muse', minimal=minimal)
     lines = cli.cmd_check(args)
     assert args.exit_code == 1 and not calls and post.Store(ship.runtime).all() == []
     contributor = next(line for line in lines if 'Muse contributor mode' in line)
     assert contributor.startswith('FAIL') and 'off' not in contributor
     assert state.journal['phase'] == 'held'
+    if screen is None:
+        assert not list((ship.runtime / 'check').glob('*/startup'))
+    else:
+        assert_startup_evidence(ship, screen)
     if screen == 'idle-after-turn':
         assert state.ordinary_readiness is True
     runtime = ship.runtime / 'minimal-checks' if minimal else ship.runtime
@@ -184,6 +203,7 @@ def test_a_check_reads_positive_startup_contributor_evidence_before_the_opening(
     args = SimpleNamespace(harness='muse', minimal=minimal)
     lines = cli.cmd_check(args)
     assert 'PASS  Muse contributor mode · off in this launch\'s startup screen before typing' in lines
+    assert_startup_evidence(ship, screen)
     if minimal:
         assert args.exit_code == 0 and calls == [adapter.minimal_check_task] and state.journal['phase'] == 'delivered'
         saved = check_outcome.read(ship.runtime / 'minimal-checks', 'muse')['definitive']
@@ -192,3 +212,43 @@ def test_a_check_reads_positive_startup_contributor_evidence_before_the_opening(
     else:
         assert args.exit_code == 1 and calls == ['synthetic standard opening'] and state.journal['phase'] == 'held'
     assert post.Store(ship.runtime).all() == []
+
+
+@pytest.mark.parametrize('settled', ['current-off', 'current-on', 'current-altered', 'current-pending'])
+def test_a_measured_pending_frame_waits_for_the_next_verdict_or_the_deadline(muse_check, settled, monkeypatch):
+    ship, adapter, calls, state = muse_check
+    state.screen = 'current-other'  # a later frame cannot replace the verdict's evidence
+    state.frames = ['current-pending', settled]
+    times = iter([0, 0, 0.05, 999] if settled == 'current-pending' else [0, 0, 0.05])
+    sleeps = []
+
+    def wait(seconds):
+        assert not calls
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(launch_opening, 'time', SimpleNamespace(monotonic=lambda: next(times), sleep=wait))
+    args = SimpleNamespace(harness='muse', minimal=True)
+    lines = cli.cmd_check(args)
+    assert state.sampled[:2] == ['current-pending', settled]
+    assert_startup_evidence(ship, settled)
+    assert sleeps == [0.05] * (2 if settled == 'current-pending' else 1)
+    if settled == 'current-off':
+        assert args.exit_code == 0 and calls == [adapter.minimal_check_task]
+        assert state.journal['phase'] == 'delivered'
+        assert state.sampled[2:] == ['current-other']
+    else:
+        assert args.exit_code == 1 and not calls and state.journal['phase'] == 'held'
+        assert any(line.startswith('FAIL  Muse contributor mode · unknown;') for line in lines)
+        saved = check_outcome.read(ship.runtime / 'minimal-checks', 'muse')['definitive']
+        assert saved['reason'] == 'launch-setting-unreadable'
+
+
+def test_the_pending_frame_grants_no_ordinary_opening_authority(tmp_path):
+    adapter = MuseHarness()
+    muse_home.prepare(tmp_path)
+    muse_home.write_settings(tmp_path, muse_home.configuration(adapter.check_model, adapter.check_effort, {}, {}))
+    muse_home.remember_off(tmp_path)
+    screen = adapter.screen(startup_frame('current-pending'))
+    assert adapter.check_launch_reading(screen)[1] is None
+    assert not adapter.opening_readiness(tmp_path, screen)[0]
+    assert adapter.delivery_obstruction(None, screen)

@@ -99,8 +99,6 @@ def deliver(seat, launched, *, wait=True, readiness=None):
 
     owner = Owner(seat, launched)
     door = Door(seat)
-    if readiness is None:
-        readiness = seat.harness.opening_readiness
     deadline = time.monotonic() + seat.harness.start_seconds
     reason = 'launch opening startup observation expired'
     try:
@@ -108,10 +106,15 @@ def deliver(seat, launched, *, wait=True, readiness=None):
             if pending.current_identity(seat) != owner.data['identity'] or seat.launched() != launched:
                 raise ShipError('launch changed before opening; no input')
             screen = door.screen()
-            ready, reason = readiness(seat.home, screen)
+            if readiness is None:
+                ready, reason = seat.harness.opening_readiness(seat.home, screen)
+            else:
+                ready, reason = readiness(seat.home, screen, door.captured_text)
             if ready:
                 break
-            if screen is not None and not screen.starting:
+            # An explicit check can defer a measured incomplete frame through
+            # this same deadline. Ordinary openings use their existing gate.
+            if ready is not None and screen is not None and not screen.starting:
                 raise ShipError(reason)
             if not wait:
                 if datetime.now(timezone.utc) >= launched.when + timedelta(seconds=seat.harness.start_seconds):

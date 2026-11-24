@@ -18,6 +18,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import stat
 from contextlib import contextmanager
 from pathlib import Path
@@ -409,13 +410,17 @@ def _probe_launch(seat: Seat, checks: list[Check]) -> str | None:
         return seat.up(resume=False)
 
     observed = None
+    frame = None
 
-    def readiness(home, screen):
-        nonlocal observed
-        observed = ProbeCheck(*read_launch(screen))
-        if observed.passed:
+    def readiness(home, screen, captured):
+        nonlocal observed, frame
+        name, passed, detail, reason = read_launch(screen)
+        if screen is not None or observed is None:
+            observed = ProbeCheck(name, passed is True, detail, reason)
+            frame = captured
+        if passed:
             return seat.harness.opening_readiness(home, screen)
-        return False, observed.detail
+        return passed, detail
 
     seat._check_opening_readiness = readiness
     try:
@@ -429,6 +434,14 @@ def _probe_launch(seat: Seat, checks: list[Check]) -> str | None:
         return None
     finally:
         seat._check_opening_readiness = None
+        if frame is not None:
+            folder = sandbox.ensure_check_proof_folder(seat.ship.runtime, seat.name) / 'startup'
+            folder.mkdir(mode=0o700)
+            # Both views come from the owned capture that was judged. A new
+            # pane read could already contain the opening or a different frame.
+            plain = re.sub(r'\x1b\[[0-9;:]*m', '', frame)
+            durable.replace_file(folder / 'plain.txt', plain, encoding='utf-8')
+            durable.replace_file(folder / 'styled.ansi', frame, encoding='utf-8')
     checks.append(observed if observed is not None else ProbeCheck(*read_launch(None)))
     return launched if observed is not None and observed.passed else None
 

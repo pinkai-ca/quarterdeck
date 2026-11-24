@@ -131,24 +131,30 @@ class Door:
         self.before_submit = None
         self.after_paste = None
         self.captured_pane = None
+        self.captured_text: str | None = None
         self.human_wake = False
         self.opening_owner = None
         self.observation_seconds: float | None = None
         self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
+        self.captured_pane = None
+        self.captured_text = None
         try:
-            self.captured_pane = None
             if hasattr(self.seat, 'read_pane'):
                 found = self.seat.read_pane()
-                self.captured_pane = found[0] if found else None
-                return self.known(self.padded(self.read_frame(*found))) if found else None
-            pane = self.seat.pane()
-            if pane is None or pane.dead:
-                return None
+                if found is None:
+                    return None
+                pane, text = found
+            else:
+                pane = self.seat.pane()
+                if pane is None or pane.dead:
+                    return None
+                text = self.tmux.capture(pane.id)
             self.captured_pane = pane
-            return self.known(self.padded(self.read_frame(pane, self.tmux.capture(pane.id))))
-
+            screen = self.known(self.padded(self.read_frame(pane, text)))
+            self.captured_text = text
+            return screen
         except (OSError, TmuxError):
             self.captured_pane = None
             return None

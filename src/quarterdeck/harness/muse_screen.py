@@ -22,6 +22,7 @@ STARTUP_DISCLOSURE = (
     CONTRIBUTOR_OFF + " Turn it on in /settings. See Terms of Service "
     "(https://dev.meta.ai/legal/terms-of-service) for more information."
 )
+STARTUP_FOOTER = re.compile(r"  muse-wonder-1\.0 · minimal · .+ · Launch overrides *")
 TRUST = Interruption("Muse workspace trust", r"Do you trust this workspace\?")
 
 
@@ -131,6 +132,18 @@ def _matches_disclosure(rows: list[str], header: int) -> bool:
     return not remaining
 
 
+def _disclosure_pending(plain: str, styles: list[Style], rows: list[str], header: int) -> bool:
+    """The startup composer drawn at 1.0 s, with only the disclosure still missing."""
+    if len(rows) < header + 6:
+        return False
+    gap, top, prompt, bottom, footer, *tail = rows[header + 1:]
+    if (gap.strip() or not RULE.fullmatch(top) or bottom != top or prompt not in ("❯", "❯ ")
+            or not STARTUP_FOOTER.fullmatch(footer) or any(row.strip() for row in tail)):
+        return False
+    composer = _composer(plain, styles, rows, current=True)
+    return composer.working is False and composer.box == ""
+
+
 def read(text: str) -> Screen:
     decoded = characters(text)
     if decoded is None:
@@ -142,7 +155,8 @@ def read(text: str) -> Screen:
     header = next(index for index, row in enumerate(rows) if row.strip())
     current = rows[header].strip() == STARTUP_HEADER
     if current and not _matches_disclosure(rows, header):
-        return Screen(plain, None, unknown="unmeasured Muse contributor disclosure")
+        shows = {"contributor_mode": "pending"} if _disclosure_pending(plain, styles, rows, header) else {}
+        return Screen(plain, None, unknown="unmeasured Muse contributor disclosure", shows=shows)
     for interruption in MODEL_CHOICES:
         if interruption.seen_in(plain):
             # An offered option proves neither selection nor a catalog id.

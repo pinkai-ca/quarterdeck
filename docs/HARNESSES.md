@@ -58,6 +58,8 @@ Pi 0.79.0 needs five pane rows for its empty box; an unfolded payload needs four
 
 Each harness proven live launched, took a long paste that the harness's own record confirmed, wrote a named file, posted a report with `qd post`, and had the turn read by Quarterdeck.
 
+Muse checks wait for this launch's contributor disclosure when its measured startup screen is still drawing. The check saves the frame used for its verdict, when available, in the owner-only `runtime/check/<check-seat>/startup/` directory. `styled.ansi` contains the original capture and `plain.txt` contains the same frame with styling removed.
+
 - Every check ran on the ship that builds Quarterdeck: one ship, one person, that person's own hardware.
 - Each harness is proven as one agent's harness in a crew. The whole default crew has run on Claude Code with an Anthropic key and on Codex with a Codex subscription, as described below.
 
