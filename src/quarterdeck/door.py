@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import ledger as ledgermod, pending, input_receipt, quota, pane_obstruction, trusted_files
 from .harness.base import Harness, Screen, record_fingerprint
-from .harness.capabilities import held_box_wrap_rule, persistent_screen_queue
+from .harness.capabilities import held_box_wrap_rule, persistent_screen_queue, screen_forms
 from .harness.types import _cells, held_box_matches
 from .quota import reset_text, stamp
 from .seat import Seat
@@ -142,16 +142,25 @@ class Door:
             if hasattr(self.seat, 'read_pane'):
                 found = self.seat.read_pane()
                 self.captured_pane = found[0] if found else None
-                return self.known(self.padded(self.harness.screen(found[1]))) if found else None
+                return self.known(self.padded(self.read_frame(*found))) if found else None
             pane = self.seat.pane()
             if pane is None or pane.dead:
                 return None
             self.captured_pane = pane
-            return self.known(self.padded(self.harness.screen(self.tmux.capture(pane.id))))
+            return self.known(self.padded(self.read_frame(pane, self.tmux.capture(pane.id))))
 
         except (OSError, TmuxError):
             self.captured_pane = None
             return None
+
+    def read_frame(self, pane, text: str) -> Screen:
+        """Interpret the captured frame with evidence specific to its launch."""
+        screen = self.harness.screen(text)
+        forms = screen_forms(self.harness.name)
+        if forms is not None and (read_launch := getattr(self.seat, 'launched', None)) is not None:
+            if question := forms.interruption(screen, pane, read_launch):
+                return replace(screen, interruption=question)
+        return screen
 
     def padded(self, screen: Screen | None) -> Screen | None:
         """A composer whose one row is only padding, in a program that draws typed spaces like its padding,

@@ -33,6 +33,7 @@ from . import check_outcome, harness as harnesses, durable, human_wake, pending,
 from .door import Delivery, Door
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, program_where, record_fingerprint
+from .harness.capabilities import screen_forms
 from .seat import Seat, collect_check_cleanup_notices, temporary_seat
 from .ship import SeatSpec, Ship, ShipError
 from . import ship as shipmod
@@ -61,7 +62,11 @@ def account_question(door: Door) -> str | None:
     screen = door.screen()
     if screen is None or screen.interruption is None:
         return None
-    return next((reason for descriptor, reason in door.harness.check_account_questions()
+    forms = screen_forms(door.harness.name)
+    questions = door.harness.check_account_questions()
+    if forms is not None:
+        questions += forms.ACCOUNT_QUESTIONS
+    return next((reason for descriptor, reason in questions
                  if screen.interruption is descriptor), None)
 
 

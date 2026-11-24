@@ -325,7 +325,7 @@ def _frame(door):
     found = door.seat.read_pane()
     if found is None:
         return None, None
-    return found[0], door.harness.screen(found[1])
+    return found[0], door.read_frame(*found)
 
 
 def _settled(door, screen):

@@ -37,6 +37,19 @@ def plain(text):
     return line.ANSI.sub("", text)
 
 
+def test_native_callback_with_optional_prompt_cache_and_cost_uses_context_and_effort():
+    callback = {
+        'model': {'display_name': 'Haiku 5.5'}, 'effort': {'level': 'medium'},
+        'context_window': {'used_percentage': 4},
+        'prompt_cache': {'warm': True, 'requests': 2, 'misses': 1, 'hit_ratio': 0.5},
+        'cost': {'total_cost_usd': 0.125, 'total_duration_ms': 200, 'total_api_duration_ms': 125,
+                 'total_lines_added': 0, 'total_lines_removed': 0},
+    }
+    assert plain(line.identity({}, 'sample', callback, 2)) == 'Sample · Haiku 5.5 · medium · context 4%'
+    del callback['prompt_cache']
+    assert plain(line.identity({}, 'sample', callback, 2)).endswith('Haiku 5.5 · medium · context 4%')
+
+
 def test_declared_subscriptions_use_generic_ledger_windows():
     providers = ("anthropic", "openai", "google", "xai", "new-provider")
     pools = {f"sample-{n}": {"provider": provider} for n, provider in enumerate(providers)}

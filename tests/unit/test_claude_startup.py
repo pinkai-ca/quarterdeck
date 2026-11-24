@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from quarterdeck import check
 from quarterdeck import ship as shipmod
 from quarterdeck.door import Door
 from quarterdeck.harness.claude import ClaudeHarness
@@ -16,6 +17,34 @@ from tests.conftest import FIXTURES
 
 def frame(name):
     return (FIXTURES/'claude/2.1.317'/f'{name}.txt').read_text()
+
+
+def signed_out_frame(stage):
+    rule = '─' * 120
+    if stage == 'trust dialog':
+        return f"""{rule}
+ Accessing workspace:
+
+ /synthetic/workspace
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source
+ project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+"""
+    caption = ' synthetic '
+    top = rule[:-len(caption) - 1] + caption + '─'
+    return (f'{top}\n❯\u00a0\n{rule}\n'
+            '  ⏵⏵ auto mode on (shift+tab to cycle) · install gh for PR status · ← for agents'
+            '            Not logged in · run /login\n'
+            '                                                                                                    ◐ medium · /effort\n')
 
 
 @pytest.fixture
@@ -35,6 +64,100 @@ def startup(drydock, monkeypatch):
     state = seat.home/'.claude.json'
     state.write_text('{}')
     return SimpleNamespace(seat=seat, shown=shown, calls=calls, state=state)
+
+
+@pytest.mark.parametrize(('stage', 'reason', 'box'), [
+    ('trust dialog', 'account-trust', None),
+    ('login', 'account-login', ''),
+])
+def test_signed_out_startup_is_reported_at_the_door_and_launch_check(startup, monkeypatch, stage, reason, box):
+    w = startup
+    pane = w.seat.pane()
+    pane.width, pane.height = 120, 40
+    launch = SimpleNamespace(version='2.1.331', pane=pane.id, pid=pane.pid)
+    monkeypatch.setattr(w.seat, 'launched', lambda: launch)
+    monkeypatch.setattr(w.seat, 'record', lambda: None)
+    w.state.write_text(json.dumps({'hasSeenAutoDefaultNudge': True}))
+    w.shown[0] = signed_out_frame(stage)
+    door = Door(w.seat)
+    monkeypatch.setattr(door, 'wall', lambda screen: None)
+
+    screen = door.screen()
+    assert screen.box == box
+    assert screen.interruption.name == stage
+    assert screen.interruption.key is None and screen.interruption.click is None
+    assert door.reading().reason == stage
+    assert not check.ready_for_probe(w.seat, door)
+    assert check.account_question(door) == reason
+    assert w.calls == []
+
+    launch.version = '2.1.317'
+    assert door.screen().interruption is None
+    launch.version = '2.1.331'
+    launch.pid += 1
+    assert door.screen().interruption is None
+
+
+@pytest.mark.parametrize('text', [
+    signed_out_frame('trust dialog').replace('❯ No, exit', '  No, exit'),
+    signed_out_frame('login').replace('❯\u00a0', '❯ synthetic draft'),
+    signed_out_frame('login').replace('← for agents', '← for tasks'),
+    'A quoted notice: Not logged in · run /login\n',
+])
+def test_partial_startup_text_does_not_supply_an_account_reason(startup, monkeypatch, text):
+    w = startup
+    pane = w.seat.pane()
+    pane.width, pane.height = 120, 40
+    launch = SimpleNamespace(version='2.1.331', pane=pane.id, pid=pane.pid)
+    monkeypatch.setattr(w.seat, 'launched', lambda: launch)
+    w.shown[0] = text
+    assert check.account_question(Door(w.seat)) is None
+
+
+def test_detailed_transcript_has_its_own_stop_and_a_collapsed_notice_leaves_the_box(startup, monkeypatch):
+    w = startup
+    pane = w.seat.pane()
+    pane.width, pane.height = 120, 50
+    launch = SimpleNamespace(version='2.1.331', pane=pane.id, pid=pane.pid)
+    monkeypatch.setattr(w.seat, 'launched', lambda: launch)
+    monkeypatch.setattr(w.seat, 'record', lambda: None)
+    door = Door(w.seat)
+    monkeypatch.setattr(door, 'wall', lambda screen: None)
+    w.state.write_text(json.dumps({'hasSeenAutoDefaultNudge': True}))
+    rule = '─' * 120
+    w.shown[0] = (f'Synthetic notice in the expanded transcript\n{rule}\n'
+                  '  Showing detailed transcript · ctrl+o to toggle · ↑/↓ to scroll · v to open in vi · ? for shortcuts'
+                  '            verbose\n')
+
+    assert door.reading().reason == 'detailed transcript is open'
+    assert check.account_question(door) is None
+    assert door.screen().interruption.key is None
+    pane.height = 40
+    assert door.screen().interruption is None
+    pane.height = 50
+    w.shown[0] = (f'  1 more notice hidden (ctrl+o to expand)\n{rule}\n❯\u00a0\n{rule}\n'
+                  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n')
+    assert check.ready_for_probe(w.seat, door)
+    assert w.calls == []
+
+
+def test_signed_in_queue_and_held_paste_display_use_existing_readings():
+    adapter = ClaudeHarness()
+    rule = '─' * 120
+
+    def screen(before, prompt, footer):
+        return adapter.screen(f'{before}{rule}\n❯\u00a0{prompt}\n{rule}\n  witness status line\n{footer}\n')
+
+    held = screen('', 'synthetic draft[Pasted text #1 +12 lines]', '  paste again to expand')
+    assert held.box == 'synthetic draft[Pasted text #1 +12 lines]'
+    assert held.working is False and not held.queued
+    working = screen(
+        '  ⎿  Queued · ctrl+x ctrl+s to send now\n✻ Deciphering… (2s · ↓ 12 tokens)\n'
+        '                                                                        Removed 1 invisible character from your prompt\n',
+        'Press up to edit queued messages', '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+    )
+    assert working.box == '' and working.working is True and working.queued == 1
+    assert working.interruption is None
 
 
 def test_pre_offer_box_never_admits_paste_until_native_choice_is_resolved(startup):
