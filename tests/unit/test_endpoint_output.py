@@ -132,6 +132,36 @@ def test_endpoint_transport_follows_the_exact_url(tmp_path, monkeypatch, name, a
 
 
 @pytest.mark.parametrize('name', ['opencode', 'pi'])
+@pytest.mark.parametrize('suffix', ['', '/'])
+def test_google_launch_uses_bare_id_and_listed_metadata(tmp_path, monkeypatch, name, suffix):
+    address = 'https://generativelanguage.googleapis.com/v1beta/openai' + suffix
+    model_id = 'gemini-test'
+    monkeypatch.setattr(endpoint, 'models', lambda *a, **k: [
+        endpoint.Served('decoy'), endpoint.Served(f'models/{model_id}', 98304),
+    ])
+    monkeypatch.setattr(endpoint, '_secret', lambda pool: 'synthetic-key')
+    pool = Pool('gemini', 'google', endpoint=address, api_key='keys:unused')
+    home = tmp_path / 'runtime/seats/synthetic/home'
+    harness = {'opencode': OpenCodeHarness, 'pi': PiHarness}[name]()
+    seat = SeatSpec('synthetic', 'Synthetic', 'worker', name, (pool.name,), model=model_id)
+    harness.build_home(home, seat, pool, None)
+    assert endpoint.Choice.read(home) == endpoint.Choice(pool.name, model_id, 98304, 8192)
+    launch = harness.launch(seat, pool, home, tmp_path / 'brief.md', None, None)
+    launched_model = launch.argv[launch.argv.index('--model') + 1]
+    if name == 'opencode':
+        config = json.loads((home / 'config/opencode/opencode.json').read_text())
+        provider = config['provider'][pool.name]
+        assert config['model'] == launched_model == f'{pool.name}/{model_id}'
+        assert list(provider['models']) == [model_id]
+        assert provider['models'][model_id]['limit']['context'] == 98304
+    else:
+        config = json.loads((home / 'agent/models.json').read_text())
+        model, = config['providers'][pool.name]['models']
+        assert model['id'] == launched_model == model_id
+        assert model['contextWindow'] == 98304
+
+
+@pytest.mark.parametrize('name', ['opencode', 'pi'])
 def test_layer_with_different_address_keeps_compatible_transport(tmp_path, monkeypatch, name):
     monkeypatch.setattr(endpoint, 'models', lambda *a, **k: [endpoint.Served('selected')])
     pool = Pool('custom', 'openai', endpoint=endpoint.OPENAI_RESPONSES_BASE)

@@ -72,6 +72,37 @@ def test_choose_takes_the_named_model_or_the_first_and_says_where_the_context_co
         endpoint.choose(Pool("codex", "codex", config_dir=Path("/x")), None)
 
 
+def test_google_choice_prefers_exact_matches_and_keeps_the_listed_ids(monkeypatch):
+    address = "https://generativelanguage.googleapis.com/v1beta/openai"
+    listing = {"data": [{"id": "models/gemini-test", "max_model_len": 98304},
+                        {"id": "gemini-test", "max_model_len": 4096}]}
+    monkeypatch.setattr(endpoint.urllib.request, "urlopen", answer(listing))
+    pool = Pool("gemini", "google", endpoint=address)
+    assert endpoint.choose(pool, "gemini-test") == endpoint.Choice("gemini", "gemini-test", 4096, 1024)
+    prefixed = endpoint.Choice("gemini", "models/gemini-test", 98304, 8192)
+    assert endpoint.choose(pool, "models/gemini-test") == prefixed
+    assert endpoint.choose(pool, None) == prefixed
+    assert endpoint.describe(pool).endswith("models/gemini-test (98,304 tokens), gemini-test (4,096 tokens)")
+
+
+@pytest.mark.parametrize("provider,path,wanted,listed", [
+    ("openai", "/v1beta/openai", "gemini-test", "models/gemini-test"),
+    ("google", "/v1beta", "gemini-test", "models/gemini-test"),
+    ("google", "/v1beta/openai//", "gemini-test", "models/gemini-test"),
+    ("google", "/v1beta/openai", "gemini-test", "publishers/google/models/gemini-test"),
+    ("google", "/v1beta/openai", "gemini-test", "models/gemini-test-other"),
+    ("google", "/v1beta/openai", "gemini-test", "models/Gemini-test"),
+    ("google", "/v1beta/openai", "models/gemini-test", "gemini-test"),
+    ("google", "/v1beta/openai", "other/gemini-test", "models/other/gemini-test"),
+    ("google", "/v1beta/openai", "", "models/"),
+])
+def test_google_bare_id_fallback_rejects_other_routes_and_names(monkeypatch, provider, path, wanted, listed):
+    monkeypatch.setattr(endpoint, "models", lambda *a, **k: [endpoint.Served(listed)])
+    pool = Pool("custom", provider, endpoint="https://generativelanguage.googleapis.com" + path)
+    with pytest.raises(ShipError, match="does not serve"):
+        endpoint.choose(pool, wanted)
+
+
 def test_a_refusal_from_the_server_names_the_pool_and_what_would_lift_it(monkeypatch):
     def down(url, timeout=0, **kwargs):
         raise ShipError(f"{url} does not answer: connection refused")

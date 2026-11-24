@@ -39,6 +39,8 @@ A harness runs on a pool, one way of paying:
 - **An endpoint**: a model served at an OpenAI-compatible URL, local or remote, such as a local model, or OpenRouter with an API key. The open harnesses, OpenCode and pi, take compatible endpoints, with an optional key from the same file.
   At `https://api.openai.com/v1`, OpenCode and pi use the Responses API by default, with function tools and the pool's output allowance for model turns. OpenCode defaults title generation to the selected model, and pi loads a bundled output-limit hook with extension discovery off. Other endpoints default to Chat Completions. Both clients still select a model from the endpoint's `/models` listing.
 
+  On a `google` pool at `https://generativelanguage.googleapis.com/v1beta/openai`, an explicitly requested bare model ID can match a `models/<id>` listing entry. OpenCode and pi send the bare ID and use the matching entry's metadata.
+
 ## In the ship's file
 
 [A ship of your own](SHIPS.md#a-project-ship-of-your-own) shows how to write the ship's file, `ship.toml`, where an agent is a seat. [The parts of Quarterdeck](PARTS.md) explains the other words.

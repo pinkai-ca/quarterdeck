@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from . import key_proof, keyfile
@@ -23,6 +23,7 @@ from .pricing import save_price, saved_price
 
 KEY_VARIABLE = "QD_ENDPOINT_KEY"  # the variable a keyed endpoint's program reads; the key itself is never written
 OPENAI_RESPONSES_BASE = "https://api.openai.com/v1"
+GOOGLE_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_CONTEXT = 32768
 DEFAULT_OUTPUT = 8192
 TIMEOUT = 5.0
@@ -125,6 +126,10 @@ def choose(pool: Pool, wanted: str | None) -> Choice:
         model = served[0]
     else:
         model = next((m for m in served if m.id == wanted), None)
+        if (model is None and wanted and "/" not in wanted and pool.provider == "google"
+                and pool.endpoint.removesuffix("/") == GOOGLE_OPENAI_BASE):
+            # Gemini's compatible endpoint can list resource names but expects a bare ID in requests.
+            model = next((replace(m, id=wanted) for m in served if m.id == f"models/{wanted}"), None)
         if model is None:
             names = ", ".join(m.id for m in served)
             raise ShipError(f"pool {pool.name}: {pool.endpoint} does not serve {wanted!r}; it serves {names}")
