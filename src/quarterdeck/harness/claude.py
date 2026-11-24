@@ -171,6 +171,44 @@ def prompt_text(entry: dict) -> str | None:
     return unwrap(content)
 
 
+def _reactive_auto_boundary(row: dict, metadata: dict) -> bool:
+    """The interactive 2.1.331 auto writer's saved form shared with the witnessed /compact."""
+    if (row.keys() != {'type', 'subtype', 'content', 'level', 'parentUuid', 'logicalParentUuid', 'isSidechain',
+                       'uuid', 'timestamp', 'userType', 'entrypoint', 'cwd', 'sessionId', 'version',
+                       'gitBranch', 'slug', 'dataFlowOn', 'compactMetadata'}
+            or row['version'] != '2.1.331' or row['content'] != 'Conversation compacted' or row['level'] != 'info'
+            or row['parentUuid'] is not None or row['isSidechain'] is not False or row['dataFlowOn'] is not True
+            or row['userType'] != 'external' or row['entrypoint'] != 'cli' or when(row['timestamp']) is None
+            or not all(isinstance(row[field], str) and row[field]
+                       for field in ('uuid', 'logicalParentUuid', 'cwd', 'gitBranch', 'slug'))):
+        return False
+    if (metadata.keys() != {'trigger', 'preTokens', 'postTokens', 'cumulativeDroppedTokens', 'durationMs',
+                            'preservedSegment', 'preservedMessages', 'preCompactOrganizations',
+                            'preCompactOrganizationsCoverStart'}
+            or not all(type(metadata[field]) is int and metadata[field] >= 0
+                       for field in ('preTokens', 'postTokens', 'cumulativeDroppedTokens', 'durationMs'))
+            or metadata['cumulativeDroppedTokens'] < max(0, metadata['preTokens'] - metadata['postTokens'])
+            or type(metadata['preCompactOrganizationsCoverStart']) is not bool
+            or not _compaction_ids(metadata['preCompactOrganizations'])):
+        return False
+    segment, messages = metadata['preservedSegment'], metadata['preservedMessages']
+    if (not isinstance(segment, dict) or segment.keys() != {'headUuid', 'anchorUuid', 'tailUuid'}
+            or not isinstance(messages, dict) or messages.keys() != {'anchorUuid', 'uuids', 'allUuids'}
+            or not _compaction_ids(messages['uuids']) or not _compaction_ids(messages['allUuids'])):
+        return False
+    anchor, kept = messages['anchorUuid'], messages['uuids']
+    return (isinstance(anchor, str) and bool(anchor) and anchor == segment['anchorUuid']
+            and anchor != row['uuid'] and anchor not in messages['allUuids']
+            and segment['headUuid'] == kept[0] and segment['tailUuid'] == kept[-1]
+            and set(kept) <= set(messages['allUuids']))
+
+
+def _compaction_ids(values) -> bool:
+    return (isinstance(values, list) and bool(values)
+            and all(isinstance(value, str) and value for value in values)
+            and len(set(values)) == len(values))
+
+
 def compactions(record: Path):
     from .compactions import History, read
 
@@ -181,6 +219,7 @@ def compactions(record: Path):
         def __init__(self):
             self.history, self.seen, self.native_turn = History(), {}, None
             self.metadata_session = None
+            self.version = None
 
         def work(self, row, *, turn=False):
             self.history.work(row, turn=turn)
@@ -210,6 +249,7 @@ def compactions(record: Path):
                 if kind not in (*_Reader.kinds, *INPUT_IGNORED):
                     raise ValueError('unknown native history')
                 key = row.get('uuid')
+                version = row.get('version')
                 if key is not None:
                     if not isinstance(key, str) or key in self.seen:
                         raise ValueError('duplicate native history identity')
@@ -228,12 +268,17 @@ def compactions(record: Path):
                     if row.get('sessionId') != self.history.conversation:
                         raise ValueError('mixed native conversation')
                     self.seen[key] = parent
+                    if isinstance(version, str) and version:
+                        self.version = version
                 elif kind in ('user', 'assistant') or row.get('subtype') == 'compact_boundary':
                     raise ValueError('native identity missing')
                 if kind == 'system' and row.get('subtype') == 'compact_boundary':
                     metadata = row.get('compactMetadata')
                     if not isinstance(metadata, dict) or metadata.get('trigger') not in ('auto', 'manual'):
                         raise ValueError('unknown compaction boundary')
+                    if (self.version == '2.1.331' and metadata['trigger'] == 'auto'
+                            and not _reactive_auto_boundary(row, metadata)):
+                        raise ValueError('unknown automatic compaction boundary')
                     self.history.count += 1
                     self.work(row)
                 elif kind == 'system' and row.get('subtype') == 'turn_duration':

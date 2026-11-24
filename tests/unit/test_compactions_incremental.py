@@ -10,7 +10,7 @@ import hashlib
 
 import pytest
 
-from quarterdeck.harness import claude, codex, json_record
+from quarterdeck.harness import claude, claude_record, codex, json_record
 from tests.compaction_shapes import Native
 
 PROGRAMS = [('claude', claude), ('codex', codex)]
@@ -86,3 +86,92 @@ def test_a_refused_history_stays_refused_across_appends_and_a_rewrite_reads_whol
     native.previous = native.rows[-1]['uuid']
     native.finish()
     assert claude.compactions(native.path).reason is None
+
+
+def candidate_boundary(native, trigger):
+    # The interactive saved form from the stripped manual witness, with synthetic values.
+    kept = [row['uuid'] for row in native.rows[-2:]]
+    anchor = 'synthetic-summary'
+    native.compact()
+    row = native.rows[-1]
+    row.update(content='Conversation compacted', level='info', userType='external', entrypoint='cli',
+               cwd='/synthetic/workspace', version='2.1.331', gitBranch='main', slug='synthetic-slug',
+               dataFlowOn=True, compactMetadata={
+                   'trigger': trigger, 'preTokens': 100, 'postTokens': 10,
+                   'cumulativeDroppedTokens': 90, 'durationMs': 20,
+                   'preservedSegment': dict(headUuid=kept[0], anchorUuid=anchor, tailUuid=kept[-1]),
+                   'preservedMessages': dict(anchorUuid=anchor, uuids=kept, allUuids=kept),
+                   'preCompactOrganizations': ['synthetic-org'],
+                   'preCompactOrganizationsCoverStart': True,
+               })
+    return row
+
+
+@pytest.mark.parametrize('trigger', ['manual', 'auto'])
+@pytest.mark.parametrize('compatibility', [False, True], ids=['streaming', 'full'])
+def test_interactive_candidate_boundary_counts_once_and_preserves_the_turn(tmp_path, monkeypatch, trigger,
+                                                                      compatibility):
+    native = history(tmp_path, 'claude')
+    before = claude.compactions(native.path)
+    candidate_boundary(native, trigger)
+    native.add('user', isCompactSummary=True, message=dict(role='user', content='Synthetic summary'))
+    native.rows[-1]['uuid'] = 'synthetic-summary'
+    if compatibility:
+        monkeypatch.setattr(claude_record, 'ROW_BYTES', 1024)
+        native.rows.append(dict(type='file-history-snapshot', message=dict(content='x' * 1024)))
+    native.flush()
+
+    after = claude.compactions(native.path)
+    assert after.reason is None and after.count == 1
+    assert after.state.projection_usage.compatibility is compatibility
+    assert after.matches_prefix(before.extent, before.digest)
+    assert after.conversation == before.conversation
+    assert after.complete and after.turn == before.turn and after.frontier != before.frontier
+    assert [item.text for item in claude.inputs(native.path)] == ['Synthetic task']
+
+
+@pytest.mark.parametrize('variant', ['full', 'precomputed', 'replacement', 'headless', 'direct-idle',
+                                    'wrong-anchor', 'wrong-token-type', 'wrong-parent', 'missing-version'])
+def test_distinct_or_malformed_candidate_auto_boundary_leaves_the_count_unknown(tmp_path, variant):
+    native = history(tmp_path, 'claude')
+    native.rows[-1]['version'] = '2.1.331'
+    native.flush()
+    assert claude.compactions(native.path).count == 0
+    row = candidate_boundary(native, 'auto')
+    metadata = row['compactMetadata']
+    if variant in ('full', 'replacement'):
+        del metadata['preservedSegment'], metadata['preservedMessages']
+    if variant == 'precomputed':
+        metadata['precomputed'] = True
+    if variant == 'headless':
+        metadata['runningTurnPrompt'] = {}
+    if variant == 'direct-idle':
+        row['isMeta'] = False
+    if variant == 'wrong-anchor':
+        metadata['preservedSegment']['anchorUuid'] = row['uuid']
+    if variant == 'wrong-token-type':
+        metadata['postTokens'] = True
+    if variant == 'wrong-parent':
+        row['parentUuid'] = row['logicalParentUuid']
+    if variant == 'missing-version':
+        del row['version']
+    if variant == 'replacement':
+        metadata['precomputed'] = True
+    native.flush()
+
+    reading = claude.compactions(native.path)
+    assert reading.count is None and reading.reason is not None
+    native.begin('Synthetic later task')
+    native.finish()
+    assert claude.compactions(native.path).count is None
+
+
+@pytest.mark.parametrize('version', [None, '2.1.317', '2.1.325'])
+def test_legacy_automatic_boundaries_keep_the_existing_metadata_contract(tmp_path, version):
+    native = history(tmp_path, 'claude')
+    native.compact()
+    if version is not None:
+        native.rows[-1]['version'] = version
+        native.flush()
+    reading = claude.compactions(native.path)
+    assert reading.reason is None and reading.count == 1
