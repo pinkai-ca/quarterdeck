@@ -58,6 +58,10 @@ INPUT_IGNORED = ('api-request', 'api-request-blob', 'attachment', 'bridge-sessio
                  # Claude Code 2.1.325 artifact publication bookkeeping: no input or execution boundary.
                  'frame-link', 'artifact-comment-monitor', 'artifact-autoreact-ledger')
 PASTED = re.compile(r'^\s*<pasted_content id="[^"]*">\n?(.*?)\n?</pasted_content(?: id="[^"]*")?>\s*$', re.S)
+DATA_FLOW_ROWS = ('data-flow-records', 'data-flow-incomplete', 'derived-from')
+RESPONSE_ID = re.compile(r'msg_(?:staging_|local_)?[A-Za-z0-9]{1,64}')
+TOOL_USE_ID = re.compile(r'toolu_[A-Za-z0-9]{1,64}')
+COMPACT_SNAPSHOT_TOOLS = ('Agent', 'Bash', 'TaskStop')
 
 
 def ai_title(entry: dict) -> bool:
@@ -65,6 +69,51 @@ def ai_title(entry: dict) -> bool:
     return (set(entry) == {'type', 'aiTitle', 'sessionId'}
             and isinstance(entry['aiTitle'], str) and isinstance(entry['sessionId'], str)
             and bool(entry['sessionId']))
+
+
+def _data_flow_response(entry) -> bool:
+    if not isinstance(entry, dict) or not {'response_id'} <= entry.keys() <= {'response_id', 'mark_sent_by', 'listed'}:
+        return False
+    response = entry['response_id']
+    sender = entry.get('mark_sent_by')
+    listed = entry.get('listed', [])
+    return (isinstance(response, str) and RESPONSE_ID.fullmatch(response) is not None
+            and ('mark_sent_by' not in entry or isinstance(sender, str) and bool(sender))
+            and isinstance(listed, list)
+            and all(isinstance(item, str) and RESPONSE_ID.fullmatch(item) is not None for item in listed))
+
+
+def _data_flow_snapshot_tool(entry) -> bool:
+    return (isinstance(entry, dict) and entry.keys() == {'tool_name', 'tool_use_id'}
+            and entry['tool_name'] in COMPACT_SNAPSHOT_TOOLS
+            and isinstance(entry['tool_use_id'], str) and TOOL_USE_ID.fullmatch(entry['tool_use_id']) is not None)
+
+
+def _derived_session(entry, session: str) -> bool:
+    return (isinstance(entry, dict) and entry.keys() == {'type', 'id', 'via'}
+            and entry['type'] == 'claude_code_session' and isinstance(entry['id'], str) and bool(entry['id'])
+            and (entry['via'] in ('resume', 'branch') or entry['via'] == 'compact' and entry['id'] == session))
+
+
+def data_flow_metadata(row) -> bool:
+    """Root transcript bookkeeping from the native v1 writers and sanitized row shapes."""
+    kind = row.get('type')
+    if (kind not in DATA_FLOW_ROWS or type(row.get('v')) is not int or row['v'] != 1
+            or not isinstance(row.get('sessionId'), str) or not row['sessionId']):
+        return False
+    fields = row.keys() - {'type', 'v', 'sessionId'}
+    if kind == 'data-flow-records':
+        items = row.get('records')
+        snapshot = fields == {'records', 'snapshot'} and row['snapshot'] is True
+        return ((fields == {'records'} or snapshot) and isinstance(items, list)
+                and all(_data_flow_response(item) or snapshot and _data_flow_snapshot_tool(item) for item in items))
+    if kind == 'data-flow-incomplete':
+        codes = row.get('codes')
+        return (fields == {'codes'} and isinstance(codes, list) and bool(codes)
+                and all(type(code) is int and 1 <= code <= 255 for code in codes))
+    sessions = row.get('sessions')
+    return (fields == {'sessions'} and isinstance(sessions, list) and bool(sessions)
+            and all(_derived_session(link, row['sessionId']) for link in sessions))
 
 
 def unwrap(text: str) -> str:
@@ -130,6 +179,7 @@ def compactions(record: Path):
 
         def __init__(self):
             self.history, self.seen, self.native_turn = History(), {}, None
+            self.metadata_session = None
 
         def work(self, row, *, turn=False):
             self.history.work(row, turn=turn)
@@ -141,11 +191,19 @@ def compactions(record: Path):
 
         def feed(self, rows):
             for row in rows:
+                kind = row.get('type')
+                if kind in DATA_FLOW_ROWS:
+                    if not data_flow_metadata(row):
+                        raise ValueError('unknown native data-flow metadata')
+                    session = row['sessionId']
+                    if (self.history.conversation or self.metadata_session) not in (None, session):
+                        raise ValueError('mixed native conversation')
+                    self.metadata_session = session
+                    continue
                 if 'isSidechain' in row and type(row['isSidechain']) is not bool:
                     raise ValueError('unknown root history identity')
                 if row.get('isSidechain'):
                     continue
-                kind = row.get('type')
                 if kind == 'ai-title' and not ai_title(row):
                     raise ValueError('unknown title bookkeeping')
                 if kind not in (*_Reader.kinds, *INPUT_IGNORED):
@@ -164,6 +222,8 @@ def compactions(record: Path):
                         self.history.origin = when(row.get('timestamp'))
                         if not isinstance(self.history.conversation, str) or not self.history.conversation:
                             raise ValueError('native identity missing')
+                        if self.metadata_session not in (None, self.history.conversation):
+                            raise ValueError('mixed native conversation')
                     if row.get('sessionId') != self.history.conversation:
                         raise ValueError('mixed native conversation')
                     self.seen[key] = parent
@@ -223,14 +283,19 @@ class _TextlessDequeue:
         return entry
 
 
-@input_reader(lambda row: row.get('type') not in ('assistant', 'system', *INPUT_IGNORED)
+@input_reader(lambda row: (row.get('type') not in ('assistant', 'system', *INPUT_IGNORED)
+                           and not data_flow_metadata(row))
               or row.get('type') == 'ai-title' and not ai_title(row), parse=claude_record.parse)
 def inputs(record: Path, snapshot) -> list[Input]:
     found, queued = Inputs(), []
     dequeue = _TextlessDequeue()
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found, parse=lambda _: snapshot):
-        row = dequeue.take(row)
         kind = row.get('type')
+        if kind in DATA_FLOW_ROWS:
+            if not data_flow_metadata(row):
+                found.skip(line, kind, 'unknown native data-flow metadata')
+            continue
+        row = dequeue.take(row)
         if kind == 'ai-title' and not ai_title(row):
             found.skip(line, 'ai-title', 'unknown title bookkeeping')
             continue
@@ -364,11 +429,13 @@ def person_inputs(record: Path, excluded: tuple[str, ...]) -> list[datetime]:
         found.append(stamp)
 
     for _, row in rows:
+        kind = row.get('type')
+        if kind in DATA_FLOW_ROWS and not data_flow_metadata(row):
+            raise ValueError('unknown native data-flow metadata')
         if 'isSidechain' in row and type(row['isSidechain']) is not bool:
             raise ValueError('an input row has an unknown history identity')
         if row.get('isSidechain'):
             continue
-        kind = row.get('type')
         if kind == 'ai-title' and not ai_title(row):
             raise ValueError('unknown title bookkeeping')
         if kind == 'user':
@@ -493,6 +560,7 @@ class _Reader(JsonLinesReader):
         self.queue_version = None
         self.background = BackgroundBash(record)
         self.children = Children(record)
+        self.metadata_session = None
         self.walls = []
         self.extra_usage = []
         self.notice_input = None  # accounting candidate only: a notice cannot open a turn
@@ -502,6 +570,8 @@ class _Reader(JsonLinesReader):
     def state(self, *, launched_at=None):
         state = replace(self.children.project(super().state(), self.background, INPUT_IGNORED, ai_title,
                                               launched_at=launched_at), walls=tuple(self.walls))
+        if self.metadata_session is not None and self.children.sessions != {self.metadata_session}:
+            state = replace(state, pending_tools=None)
         if state.queue_error is None and any(slot.uncertain and slot.phase in ('queued', 'pending')
                                              for slot in self.queue_slots):
             state = replace(state, queue_error='unknown queue operation')
@@ -527,8 +597,14 @@ class _Reader(JsonLinesReader):
         return (self.clock() - at).total_seconds() < NOTICE_GRACE_SECONDS
 
     def take(self, entry: dict) -> None:
-        entry = self.textless_dequeue.take(entry)
         kind = entry.get("type")
+        if kind in DATA_FLOW_ROWS:
+            if not data_flow_metadata(entry) or self.metadata_session not in (None, entry['sessionId']):
+                self.tools_known = False
+            else:
+                self.metadata_session = entry['sessionId']
+            return
+        entry = self.textless_dequeue.take(entry)
         self.children.observe(entry)
         if not entry.get('isSidechain') and 'version' in entry:
             self.queue_version = entry['version']

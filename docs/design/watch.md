@@ -55,6 +55,12 @@ After credential reseeding, guarded resume requires local valid sign-in, saved p
 
 A valid pool may wait up to fifteen minutes for renewal, displaying `sign-in: waiting for the renewed pass`; expired/unknown credentials call a person immediately. Window expiry or a proved new failure after the third attempt needs attention. An attempt whose relaunch did not start, held by a lifecycle check or raising, is a failure, not a wait: the status names it, `sign-in resume held by <check>: <reason>` or `sign-in resume raised <error kind>`, and a person is called at once; a relaunch that started still waits for the renewed pass. An old failure visible while resume starts remains waiting in that window. Only adapter-proved successful completion after the last attempt ends the episode, not merely an open turn. Claude's successful fact requires a root non-API-error assistant response closed by native duration; unknown or interrupted responses cannot clear it. Human-session seats receive alarms, never automatic recovery. Older readers lacking this failure kind lose its presentation on rollback.
 
+### Claude record metadata
+
+The Claude reader recognizes the measured version-one root forms of `data-flow-records`, `data-flow-incomplete` and `derived-from` as bookkeeping. They supply no input, tool result, turn end or ownership evidence. A mixed-version resume still needs the original root and parent links to prove its compaction history. Unrecognized forms leave execution and compaction evidence unknown, and the same record-size limits and raw prefix proof apply.
+
+The witnessed manual compaction adds a same-session `compact` provenance link and a data-flow snapshot with tool references for Bash, Agent and TaskStop. These references are bookkeeping. The tool and child readers still need their own native lifetime evidence.
+
 ### Model observations
 
 Running model is read from the owned record first, then an adapter-proved screen identity. Comparison uses the effective pool/seat choice and that adapter's identity rule; default selection invents no expected ID. Only a matching pending model control suppresses its own temporary difference. Unknown observations neither create a difference alarm nor clear a previously proved one.
