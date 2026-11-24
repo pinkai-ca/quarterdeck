@@ -35,6 +35,25 @@ def info(**changes):
                                                    "rateLimitType": "seven_day", **changes}}}
 
 
+def terminal_refusal_rows(*, at=AT, reset=RESET, session='synthetic'):
+    """The loopback shape with invented input, links, time and response text."""
+    root = dict(version='2.1.331', sessionId=session, isSidechain=False)
+    prompt = dict(root, type='user', uuid='synthetic-input', parentUuid=None,
+                  timestamp=(at - timedelta(seconds=1)).isoformat(),
+                  message=dict(role='user', content='Synthetic task.'))
+    rows = [prompt]
+    for name in ('environment', 'model', 'deferred_tools_delta', 'agent_listing_delta', 'skill_listing',
+                 'session_context', 'date', 'remote_session_change', 'prompt_snapshot'):
+        rows.append(dict(root, type='attachment', attachment=dict(type=name), uuid=f'synthetic-{name}',
+                         parentUuid=rows[-1]['uuid'], timestamp=prompt['timestamp']))
+    error = refusal('five_hour', at=at, reset=reset, **root, parentUuid=rows[-1]['uuid'],
+                    failedResponseHadNoToolCall=True)
+    error['apiErrorParams']['rate_limit_info']['isUsingOverage'] = False
+    error['message'].update(type='message', stop_sequence='', usage=dict(
+        input_tokens=0, output_tokens=0, cache_read_input_tokens=0, cache_creation_input_tokens=0))
+    return [*rows, error]
+
+
 # -- the meter -----------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("severity", ["critical", "exceeded", "error", "warning", "normal"])

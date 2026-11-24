@@ -1,5 +1,6 @@
 """Synthetic native records for retained evidence and raw observation semantics."""
 
+from datetime import timedelta
 from hashlib import sha256
 import json
 import os
@@ -12,6 +13,7 @@ from quarterdeck import idle, record_location
 from quarterdeck.harness import claude, claude_record, json_record, record_file
 from tests.compaction_shapes import Native
 from tests.measure_claude_reader import Case, semantic_digest
+from .test_spent_only_walls import AT, RESET, terminal_refusal_rows
 
 
 @pytest.fixture(autouse=True)
@@ -218,6 +220,91 @@ def test_claude_overload_leaves_queued_input_to_its_own_receipt(tmp_path):
     assert state.turn_open is True and state.last_input == queue['content']
     assert state.queued == () and state.consumed == (queue['content'],)
     assert state.turns == 1
+
+
+@pytest.mark.parametrize('full_read', [False, True], ids=['streaming', 'full'])
+def test_terminal_usage_refusal_closes_its_linked_root_turn(tmp_path, monkeypatch, full_read):
+    record = tmp_path / 'synthetic.jsonl'
+    harness = claude.ClaudeHarness()
+    *prefix, refusal = terminal_refusal_rows()
+    append_rows(record, *prefix)
+    if full_read:
+        require_full_read(SimpleNamespace(path=record), monkeypatch)
+    assert idle.check(harness.state(record)).dimension == 'turn-open'
+
+    append_rows(record, refusal, dict(type='system', subtype='informational', parentUuid=refusal['uuid']))
+    state, turns = harness.reader(record)
+    turn, = turns
+    wall, = state.walls
+    assert state.projection_usage.compatibility is full_read
+    assert state.turn_open is False and state.pending_tools == () and idle.check(state) is None
+    assert state.completed_turns == (turn,) and turn.timed and turn.successful is False
+    assert turn.started == state.last_input_at and turn.ended == AT and turn.tools == ()
+    assert wall.key == 'limit:synthetic-refusal' and wall.at == AT and wall.resets_at == RESET
+
+
+@pytest.mark.parametrize('change', [
+    {'version': '2.1.317'}, {'sessionId': 'other'}, {'isSidechain': True}, {'parentUuid': 'synthetic-input'},
+    {'uuid': 'synthetic-prompt_snapshot'}, {'apiErrorStatus': '429'}, {'apiErrorStatus': 429.0},
+    {'apiErrorStatus': 503}, {'apiError': None}, {'apiError': 'model_requires_usage_credits'},
+    {'failedResponseHadNoToolCall': False}, {'isApiErrorMessage': False}, {'apiErrorIsTransient': True},
+    {'truncatedAfterOutput': True}, {'streamCutCause': 'transport'}, {'apiErrorParams': None},
+    {'timestamp': '2030-01-01T00:00:00Z'}, {'timestamp': 'unreadable'},
+])
+def test_terminal_usage_refusal_rejects_unmeasured_errors(tmp_path, change):
+    record = tmp_path / 'synthetic.jsonl'
+    *prefix, refusal = terminal_refusal_rows()
+    append_rows(record, *prefix, {**refusal, **change})
+    state, turns = claude.ClaudeHarness().reader(record)
+    assert state.turn_open is True and state.completed_turns == () and turns == []
+
+
+@pytest.mark.parametrize(('index', 'change'), [
+    (0, {'uuid': None}), (0, {'isVirtual': True}), (1, {'sessionId': 'other'}),
+    (1, {'parentUuid': 'other'}), (1, {'uuid': 'synthetic-input'}),
+    (1, {'attachment': {'type': 'other'}}), (1, {'version': '2.1.317'}),
+])
+def test_terminal_usage_refusal_rejects_unbound_ancestry(tmp_path, index, change):
+    record = tmp_path / 'synthetic.jsonl'
+    rows = terminal_refusal_rows()
+    rows[index].update(change)
+    append_rows(record, *rows)
+    assert claude.state(record).turn_open is True
+
+
+@pytest.mark.parametrize('change', [
+    {'status': 'allowed'}, {'rateLimitType': 'overage'}, {'resetsAt': True},
+    {'isUsingOverage': True}, {'dailyCapPaused': True},
+])
+def test_terminal_usage_refusal_requires_rejected_plan_window_metadata(tmp_path, change):
+    record = tmp_path / 'synthetic.jsonl'
+    rows = terminal_refusal_rows()
+    rows[-1]['apiErrorParams']['rate_limit_info'].update(change)
+    append_rows(record, *rows)
+    assert claude.state(record).turn_open is True
+
+
+def test_terminal_usage_refusal_closes_without_making_an_expired_wall_or_consuming_queued_input(tmp_path):
+    record = tmp_path / 'synthetic.jsonl'
+    prompt, *_, refusal = terminal_refusal_rows(reset=AT - timedelta(seconds=1))
+    refusal['parentUuid'] = prompt['uuid']
+    queue = dict(type='queue-operation', operation='enqueue', sessionId=prompt['sessionId'],
+                 timestamp=prompt['timestamp'], content='Queued synthetic prompt.')
+    append_rows(record, prompt, queue, refusal, dict(type='unclassified-bookkeeping'))
+    state = claude.state(record)
+    assert state.turn_open is False and len(state.completed_turns) == 1 and state.walls == ()
+    assert state.queued == (queue['content'],) and state.consumed == () and state.pending_tools is None
+
+
+def test_terminal_usage_refusal_leaves_prior_foreground_work_open(tmp_path):
+    record = tmp_path / 'synthetic.jsonl'
+    *prefix, refusal = terminal_refusal_rows()
+    call = dict(type='assistant', timestamp=prefix[0]['timestamp'], message=dict(
+        id='call', role='assistant',
+        content=[dict(type='tool_use', name='Bash', id='call', input=dict(command='synthetic command'))]))
+    append_rows(record, *prefix, call, refusal)
+    state = claude.state(record)
+    assert state.turn_open is True and state.pending_tools == ('Bash',) and state.completed_turns == ()
 
 
 

@@ -30,7 +30,7 @@ from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship, ShipError, _from_text
 from quarterdeck.tmux import Pane
 from .resting_attempts import UNSETTLED, save_attempt, settle
-from .test_spent_only_walls import refusal
+from .test_spent_only_walls import refusal, terminal_refusal_rows
 
 
 def make_sign_in(pool, expiry, *, refresh=True, grant=None):
@@ -687,6 +687,34 @@ def test_native_quota_refusal_holds_only_before_proved_use(world, monkeypatch, p
         hold = 'worker: resting subscription rest: quota refused before first success; needs the desk (qd up worker)'
         assert stated.relaunches == [hold]
         assert 'qd up worker' in stated.line()
+
+
+@pytest.mark.parametrize('linked', [True, False], ids=['terminal', 'unbound'])
+def test_native_usage_refusal_without_duration_must_close_before_failover(world, monkeypatch, linked):
+    w = world
+    w.remember('first', w.window(0.25), at=w.clock.wall)
+    w.remember('rest', w.window(), at=w.clock.wall)
+    assert not quota.current_walled(w.seat, w.svc.ledger)
+    rows = terminal_refusal_rows(at=w.clock.wall, reset=w.clock.wall + timedelta(hours=1),
+                                session=w.record.session)
+    rows[0]['parentUuid'] = w.record.parent
+    if not linked:
+        rows[-1]['parentUuid'] = w.record.parent
+    for row in rows:
+        w.record.write(row)
+    w.svc.account_records(process_table={})
+    assert quota.current_walled(w.seat, w.svc.ledger)
+
+    route = Mock(return_value=None)
+    monkeypatch.setattr(w.seat, 'failover_to', route)
+    w.svc.failover()
+    if linked:
+        assert w.svc.not_idle_at_wall(w.seat) is None
+        route.assert_called_once_with('rest')
+    else:
+        assert w.svc.not_idle_at_wall(w.seat) == 'a turn is open'
+        route.assert_not_called()
+    assert w.live.launches == [] and w.seat.launched().pool == 'first'
 
 
 def test_optional_named_unit_declaration(tmp_path):

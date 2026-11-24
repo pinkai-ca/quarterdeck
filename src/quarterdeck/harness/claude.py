@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import claude_record, record_file
+from .claude_limits import REFUSED_WINDOWS
 from .json_record import JsonLinesReader, input_reader, records_matching
 from .claude_record import entries as entries
 from .claude_record import input_rows, inspect_entries
@@ -540,29 +541,45 @@ def usage_tokens(usage: dict) -> Tokens:
 
 QUEUE_COMPLETION_VERSIONS = frozenset({'2.1.317'})  # crew enqueue/receipt/turn_duration measurements
 
-# The 2.1.331 interactive finalizer omits turn_duration on the simple terminal overload path.
-# The stripped 2.1.330 overload witness corroborates the row and its missing duration.
-TERMINAL_OVERLOAD_VERSION = '2.1.331'
+# The 2.1.331 interactive finalizer omits turn_duration on simple terminal API failures.
+TERMINAL_ERROR_VERSION = '2.1.331'
+# The refusal witness links the assistant back to the root through these context attachments.
+USAGE_REFUSAL_ATTACHMENTS = (
+    'environment', 'model', 'deferred_tools_delta', 'agent_listing_delta', 'skill_listing',
+    'session_context', 'date', 'remote_session_change', 'prompt_snapshot',
+)
 
 
-def _terminal_overload(entry: dict, message: dict) -> bool:
-    """Recognize the native synthetic error emitted after overload recovery is exhausted."""
+def _terminal_api_error(entry: dict, message: dict) -> bool:
+    """The native synthetic envelope of a failed response with no tool call."""
     content = message.get('content')
-    return (entry.get('version') == TERMINAL_OVERLOAD_VERSION
+    return (entry.get('version') == TERMINAL_ERROR_VERSION
             and entry.get('isSidechain') is False
             and entry.get('isApiErrorMessage') is True
             and entry.get('failedResponseHadNoToolCall') is True
-            and entry.get('error') == 'server_error'
-            and type(entry.get('apiErrorStatus')) is int and entry['apiErrorStatus'] == 529
+            and type(entry.get('apiErrorStatus')) is int
             and all(entry.get(key, False) is False for key in
                     ('isMeta', 'isVirtual', 'apiErrorIsTransient', 'truncatedAfterOutput', 'streamWatchdogGaveUp'))
-            and entry.get('streamCutCause') is None and entry.get('apiError') is None
+            and entry.get('streamCutCause') is None
             and message.get('model') == '<synthetic>' and message.get('role') == 'assistant'
             and message.get('type') == 'message'
             and message.get('stop_reason') == 'stop_sequence' and message.get('stop_sequence') == ''
             and isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict)
             and content[0].get('type') == 'text'
             and isinstance(content[0].get('text'), str) and bool(content[0]['text'].strip()))
+
+
+def _usage_limit_refusal(entry: dict, chain: list[str]) -> bool:
+    uuid = entry.get('uuid')
+    if (entry['apiErrorStatus'] != 429 or not chain or entry.get('parentUuid') != chain[-1]
+            or not isinstance(uuid, str) or not uuid or uuid in chain):
+        return False
+    info = rejected_limit_info(entry)
+    if info is None:
+        return False
+    window = info.get('rateLimitType')
+    return (isinstance(window, str) and window in REFUSED_WINDOWS and type(info.get('resetsAt')) is int
+            and info.get('isUsingOverage') is False and info.get('dailyCapPaused', False) is False)
 
 
 @dataclass(frozen=True)
@@ -728,6 +745,7 @@ class _Reader(JsonLinesReader):
         elif kind == "user":
             self.user(entry)
         elif kind == 'attachment':
+            self.usage_refusal_attachment(entry)
             if (text := queued_notice(entry)) is not None:
                 self.consume_queued(text, receipt=entry)
         elif kind == "assistant":
@@ -889,10 +907,13 @@ class _Reader(JsonLinesReader):
             self.start_turn({"started": self.last_input_at, "input": text, "usage": {}, "tools": [],
                          "reply": "", "model": None, "subagents": self.subagent_turns})
             session = entry.get('sessionId')
-            if (entry.get('version') == TERMINAL_OVERLOAD_VERSION and entry.get('isSidechain') is False
+            if (entry.get('version') == TERMINAL_ERROR_VERSION and entry.get('isSidechain') is False
                     and entry.get('isMeta', False) is False and message.get('role') == 'user'
                     and self.last_input_at is not None and isinstance(session, str) and session):
-                self.open['overload_session'] = session
+                self.open['terminal_error_session'] = session
+                uuid = entry.get('uuid')
+                if isinstance(uuid, str) and uuid and text.strip() and entry.get('isVirtual', False) is False:
+                    self.open['usage_refusal_chain'] = [uuid]
             return
         for block in entry.get("message", {}).get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_result":
@@ -900,6 +921,21 @@ class _Reader(JsonLinesReader):
                                        linked=linked_root(entry, self.record.stem))
                 self.children.result(block.get('tool_use_id'), entry, block, when(entry.get('timestamp')))
                 self.close_tool(block.get("tool_use_id"), when(entry.get("timestamp")), bool(block.get("is_error")))
+
+    def usage_refusal_attachment(self, entry: dict) -> None:
+        """Extend the bounded lineage from a typed root through measured context rows."""
+        if self.open is None or not (chain := self.open.get('usage_refusal_chain')):
+            return
+        uuid, attachment = entry.get('uuid'), entry.get('attachment')
+        if (len(chain) <= len(USAGE_REFUSAL_ATTACHMENTS)
+                and entry.get('version') == TERMINAL_ERROR_VERSION and entry.get('isSidechain') is False
+                and entry.get('isMeta', False) is False and entry.get('isVirtual', False) is False
+                and entry.get('sessionId') == self.open['terminal_error_session']
+                and entry.get('parentUuid') == chain[-1] and isinstance(uuid, str) and uuid and uuid not in chain
+                and isinstance(attachment, dict) and attachment.get('type') in USAGE_REFUSAL_ATTACHMENTS):
+            chain.append(uuid)
+        else:
+            del self.open['usage_refusal_chain']
 
     def assistant(self, entry: dict) -> None:
         """One entry per content block, all carrying the message's usage and stop reason.
@@ -949,7 +985,7 @@ class _Reader(JsonLinesReader):
             if any(block.get('type') == 'tool_use' for block in message.get('content') or []):
                 self.tools_known = False  # an out-of-turn call is not absent execution
             return
-        overload_at = self._terminal_overload_end(entry, message)
+        terminal_at = self._terminal_error_end(entry, message)
         self.open["model"] = self.model
         key = message.get("id") or entry.get("requestId") or entry.get("uuid") or len(self.open["usage"])
         measured = usage_tokens(message.get("usage"))
@@ -971,14 +1007,17 @@ class _Reader(JsonLinesReader):
                 self.open_call(block.get('id'), name, when(entry.get('timestamp')))
             elif block.get("type") == "text" and block.get("text"):
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()
-        if overload_at is not None:
-            self.end(overload_at, native_end=True)
+        if terminal_at is not None:
+            self.end(terminal_at, native_end=True)
 
-    def _terminal_overload_end(self, entry: dict, message: dict) -> datetime | None:
-        session = self.open.get('overload_session')
+    def _terminal_error_end(self, entry: dict, message: dict) -> datetime | None:
+        session = self.open.get('terminal_error_session')
         if (session is None or entry.get('sessionId') != session
                 or self.open['usage'] or self.open['tools'] or self.live_tools
-                or not _terminal_overload(entry, message)):
+                or not _terminal_api_error(entry, message)):
+            return None
+        overload = entry['apiErrorStatus'] == 529 and entry.get('error') == 'server_error' and entry.get('apiError') is None
+        if not overload and not _usage_limit_refusal(entry, self.open.get('usage_refusal_chain', [])):
             return None
         at = when(entry.get('timestamp'))
         if at is not None and at >= self.open['started']:
