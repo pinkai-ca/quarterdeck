@@ -26,7 +26,7 @@ def held_box_wrap_rule(harness: str):
 
 
 def screen_forms(harness: str):
-    """Optional control-side reader for launch-bound screen stops."""
+    """Optional control-side reader for launch-bound screen forms."""
     if harness == "claude":
         from . import claude_screen_forms
         return claude_screen_forms

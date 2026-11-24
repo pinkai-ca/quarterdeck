@@ -10,8 +10,10 @@ from quarterdeck import check
 from quarterdeck import ship as shipmod
 from quarterdeck.door import Door
 from quarterdeck.harness.claude import ClaudeHarness
+from quarterdeck.harness.types import _cells
 from quarterdeck.seat import Seat
 from quarterdeck.ship import Pool, SeatSpec
+from quarterdeck.tmux import ControlFrame
 from tests.conftest import FIXTURES
 
 
@@ -158,6 +160,120 @@ def test_signed_in_queue_and_held_paste_display_use_existing_readings():
     )
     assert working.box == '' and working.working is True and working.queued == 1
     assert working.interruption is None
+
+
+@pytest.fixture
+def after_overload(startup, monkeypatch, request):
+    w = startup
+    word = 'Resend your message to try again'
+    pane = w.seat.pane()
+    pane.width, pane.height, label = getattr(request, 'param', (120, 40, 'overload-witness'))
+    launch = SimpleNamespace(version='2.1.331', pane=pane.id, pid=pane.pid)
+    monkeypatch.setattr(w.seat, 'launched', lambda: launch)
+    monkeypatch.setattr(w.seat, 'record', lambda: None)
+    rule = '─' * pane.width
+    caption = f' {label} ─' if label else ''
+    top = rule[:pane.width - _cells(caption)] + caption
+    url = 'https://example.invalid/permissions'
+    link = f'\x1b]8;id=synthetic;{url}\x1b\\{url}\x1b]8;;\x1b\\'
+    padding = '\n' * (pane.height - 5)
+    plain = f'▎ {url}\n{padding}{top}\n❯\u00a0{word}\n{rule}\n  ⏵⏵ auto mode on\n'
+    styled = f'▎ {link}\n{padding}' + (
+        f'\x1b[38;5;244m{top}\n'
+        '\x1b[39m❯\u00a0\x1b[7mR\x1b[0;2mesend your message to try again\x1b[0m\n'
+        f'\x1b[38;5;244m{rule}\n\x1b[39m  ⏵⏵ auto mode on\n'
+    )
+    control = [ControlFrame(pane, styled, False, (2, pane.height - 3))]
+    monkeypatch.setattr(w.seat, 'read_control_frame', lambda: control[0])
+    w.shown[0] = plain
+    door = Door(w.seat)
+    monkeypatch.setattr(door, 'wall', lambda screen: None)
+    return SimpleNamespace(**vars(w), door=door, launch=launch, control=control, word=word,
+                           top=top, rule=rule)
+
+
+@pytest.mark.parametrize('after_overload', [
+    (120, 40, 'overload-witness'), (319, 78, 'overload-witness'), (273, 65, 'overload-witness'),
+    (80, 24, None), (220, 52, 'First Officer'), (200, 60, 'Crew 船'),
+], indirect=True)
+def test_retry_hint_and_identical_draft_read_differently_at_the_door(after_overload):
+    w = after_overload
+    assert w.door.screen().box == ''
+    assert not w.door.reading().open, 'the ordinary startup gate still applies'
+    w.state.write_text(json.dumps({'hasSeenAutoDefaultNudge': True}))
+    assert w.door.reading().open
+    frame = w.control[0]
+    row = '❯\u00a0\x1b[7mR\x1b[0;2mesend your message to try again\x1b[0m'
+    draft = f'❯\u00a0{w.word}\x1b[7m \x1b[0m'
+    w.control[0] = replace(frame, text=frame.text.replace(row, draft), cursor=(34, frame.cursor[1]))
+    assert w.door.screen().box == w.word
+    assert w.door.reading().reason == 'text in the box'
+    assert w.calls == []
+
+
+@pytest.mark.parametrize('rule', ['short top', 'short bottom', 'long top', 'long bottom',
+                                  'malformed label', 'missing bottom'])
+def test_retry_hint_requires_two_complete_native_rules(after_overload, rule):
+    w = after_overload
+    original, reading = {
+        'short top': (w.top, w.top[1:]),
+        'short bottom': (w.rule, w.rule[1:]),
+        'long top': (w.top, '─' + w.top),
+        'long bottom': (w.rule, '─' + w.rule),
+        'malformed label': (w.top, w.top.replace('witness ─', 'witness──')),
+        'missing bottom': (w.rule, ''),
+    }[rule]
+    w.shown[0] = w.shown[0].replace(original, reading)
+    frame = w.control[0]
+    w.control[0] = replace(frame, text=frame.text.replace(original, reading))
+    expected = w.seat.harness.screen(w.shown[0]).box
+    assert expected and w.door.screen().box == expected
+
+
+@pytest.mark.parametrize('after_overload', [(33, 24, None)], indirect=True)
+def test_retry_hint_stays_text_when_the_pane_is_too_narrow(after_overload):
+    w = after_overload
+    assert w.door.screen().box == w.word
+
+
+@pytest.mark.parametrize('after_overload', [(30, 24, None)], indirect=True)
+def test_wrapped_retry_hint_stays_text(after_overload):
+    w = after_overload
+    w.shown[0] = w.shown[0].replace('try again', 'try\n  again')
+    frame = w.control[0]
+    w.control[0] = replace(frame, text=frame.text.replace('try again', 'try\n  again'))
+    assert w.door.screen().box == 'Resend your message to try\nagain'
+
+
+@pytest.mark.parametrize('missing', ['frame', 'style', 'cursor', 'pane', 'launch', 'current'])
+def test_retry_words_stay_text_with_incomplete_evidence(after_overload, missing):
+    w = after_overload
+    frame = w.control[0]
+    if missing == 'frame':
+        w.control[0] = None
+    elif missing == 'style':
+        w.control[0] = replace(frame, text=frame.text.replace('\x1b[0;2m', '\x1b[0m'))
+    elif missing == 'cursor':
+        w.control[0] = replace(frame, cursor=(2, 36))
+    elif missing == 'pane':
+        w.control[0] = replace(frame, pane=SimpleNamespace(**(vars(frame.pane) | {'id': '%2'})))
+    elif missing == 'launch':
+        w.launch.version = '2.1.317'
+    elif missing == 'current':
+        w.control[0] = replace(frame, text=frame.text.replace('auto mode on', 'other footer'))
+    assert w.door.screen().box == w.word
+
+
+@pytest.mark.parametrize('working', [False, True])
+def test_fable_usage_warning_above_composer_leaves_box_and_activity_alone(startup, working):
+    rule = '─' * 120
+    activity = '✻ Deciphering… (2s · ↓ 12 tokens)\n' if working else ''
+    warning = ("  You've used 76% of your Fable limit · resets Nov 25, 4pm (America/Vancouver)"
+               " · /usage-credits to keep using Claude …")
+    startup.shown[0] = f'{activity}{warning}\n{rule}\n❯\u00a0\n{rule}\n  ⏵⏵ auto mode on\n'
+    screen = Door(startup.seat).screen()
+    assert screen.box == '' and screen.working is working
+    assert screen.quota is None and screen.interruption is None
 
 
 def test_pre_offer_box_never_admits_paste_until_native_choice_is_resolved(startup):

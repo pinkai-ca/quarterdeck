@@ -166,6 +166,9 @@ class Door:
         if forms is not None and (read_launch := getattr(self.seat, 'launched', None)) is not None:
             if question := forms.interruption(screen, pane, read_launch):
                 return replace(screen, interruption=question)
+            read_control = getattr(self.seat, 'read_control_frame', None)
+            if read_control is not None and forms.empty_box(screen, pane, read_launch, read_control):
+                return replace(screen, box="")
         return screen
 
     def padded(self, screen: Screen | None) -> Screen | None:
