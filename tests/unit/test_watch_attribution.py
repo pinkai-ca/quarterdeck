@@ -77,3 +77,22 @@ def test_exact_foreground_watcher_output_is_tied_to_its_result_time(tmp_path):
     store=Store(tmp_path); order=message(store,'ord-change')
     path=write(tmp_path/'record.jsonl',[call('watch','qd inbox --wait'),result('watch',typed([order]),12)])
     assert inputs(path)[0].at==AT+timedelta(seconds=12)
+
+
+def test_watch_rearm_footer_keeps_full_envelopes_for_attribution(tmp_path):
+    from quarterdeck.seat_command import qd_command, watch_instruction
+
+    ship = tmp_path / 'ship with spaces'
+    runtime = ship / 'runtime'
+    store = Store(runtime)
+    orders = [message(store, name, to='worker') for name in ('ord-first', 'ord-second')]
+    folder = runtime / 'seats/worker/home/projects/workspace'
+    folder.mkdir(parents=True)
+    command = qd_command(ship, 'inbox', '--wait')
+    text = typed(orders) + watch_instruction(command)
+    path = write(folder / 'record.jsonl', [call('watch', command), result('watch', text, 12)])
+    [found] = inputs(path)
+    assert [item['message'] for item in Threads(store).received(found.text, found.at, 'worker')] == [
+        order.id for order in orders
+    ]
+    assert ClaudeHarness().inputs(path) == []

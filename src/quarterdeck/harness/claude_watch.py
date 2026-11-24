@@ -12,6 +12,7 @@ from collections import defaultdict
 from .claude_record import BACKGROUND_HEADER, WATCH_HEADER, inspect_entries
 from .json_record import when
 from .types import Input
+from ..seat_command import watch_instruction
 
 BACKGROUND = re.compile(r'^' + re.escape(BACKGROUND_HEADER) + r'\S+\. Output is being written to: (\S+)\. ')
 
@@ -34,7 +35,9 @@ def text(value):
 def inputs(record):
     from .claude_background import ship_watch_commands
     # The watch by the bare 'qd' or by this ship's own absolute qd (the brief's), word for word; no other path.
-    watches = {tuple(words(command)) for command in ship_watch_commands(record)}
+    commands = ship_watch_commands(record)
+    watches = {tuple(words(command)) for command in commands}
+    footers = tuple('\n' + watch_instruction(command) for command in commands if command != 'qd inbox --wait')
     calls, called_at, ambiguous, results = {}, {}, set(), []
     for row in inspect_entries(record):
         if row.get('isSidechain'):
@@ -91,6 +94,8 @@ def inputs(record):
                 continue
             raw = '\n'.join(row[2] for row in rows)
         raw = raw.strip().removesuffix('\n[exited with code 0]').strip()
+        for footer in footers:
+            raw = raw.removesuffix(footer)
         if raw.startswith(WATCH_HEADER):
             found.append(Input(raw, at, 'watch'))
     return found

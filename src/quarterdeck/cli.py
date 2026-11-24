@@ -1174,12 +1174,17 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     second = {m.id for m in messages if any(a.seat == seat and a.path not in now for a in every.for_message(m.id))}
     # A change to the seat's standing orders since it last read them rides at the head of the batch, as at a door.
     from . import brief_change
+    from .seat_command import qd_command, watch_instruction
     changed = None if role == 'hand' else brief_change.head(ship.runtime, seat)
     data = {"seat": seat, "messages": messages}
     if changed:
         data["standing_orders_changed"] = changed[0]
+    caller = os.environ.get('QD_SEAT') or ship.operator.lower()
+    target = () if caller == seat else (seat,)
+    instruction = watch_instruction(qd_command(ship.folder, 'inbox', '--wait', *target))
     batch = Reading(data, lambda data: (data.get("standing_orders_changed", "")
-                                        + post.typed(data["messages"], second=second)).rstrip("\n"))
+                                        + post.typed(data["messages"], second=second)
+                                        + instruction))
     emit(args, batch)  # serialization, output and flush must all succeed before the receipt
     if validate is not None:
         validate()

@@ -72,6 +72,7 @@ def test_live_temporary_inbox_still_reads_its_messages(inbox, capsys, name):
 @pytest.mark.parametrize("failure", [None, "serialize", "write", "short write", "flush"])
 def test_wait_batch_receipts_follow_successful_output_only(inbox, monkeypatch, json_output, failure):  # law: one-door
     folder, store, messages = inbox
+    monkeypatch.setenv("QD_SEAT", "desk")
     attempts = post.Attempts(folder / "runtime")
     events = []
 
@@ -105,9 +106,14 @@ def test_wait_batch_receipts_follow_successful_output_only(inbox, monkeypatch, j
             data = json.loads(target.getvalue())
             assert [m["id"] for m in data["messages"]] == [m.id for m in messages]
             assert [m["body"] for m in data["messages"]] == [m.body for m in messages]
-            assert "result" not in data, "emitted data cannot claim its own later receipt"
+            assert set(data) == {"seat", "messages"} and data["seat"] == "desk"
         else:
-            assert target.getvalue() == post.typed(messages)
+            from quarterdeck.seat_command import qd_command
+            text = target.getvalue()
+            assert text.startswith(post.typed(messages))
+            assert text.endswith('To re-arm your inbox watch, run this command in the background.\n'
+                                 + qd_command(folder, 'inbox', '--wait') + '\n')
+            assert 'Finish your current task, then read and act on the delivered messages.' in text
         events.append("receipt")
         original_printed(runtime, opened)
 
@@ -138,6 +144,14 @@ def test_wait_batch_receipts_follow_successful_output_only(inbox, monkeypatch, j
         assert events[-2:] == ["flush", "receipt"]
         assert [a.result for a in attempts.all()] == ["watch", "watch"]
     assert not post.watch_file(folder / "runtime", "desk").exists()
+
+
+def test_wait_batch_rearm_names_a_seat_selected_by_the_operator(inbox, capsys):
+    from quarterdeck.seat_command import qd_command
+
+    folder, _, _ = inbox
+    assert cli.main(["--ship", str(folder), "inbox", "desk", "--wait"]) == 0
+    assert capsys.readouterr().out.endswith(qd_command(folder, 'inbox', '--wait', 'desk') + '\n')
 
 
 def test_waiting_a_door_seat_is_still_refused(inbox, capsys):
