@@ -44,6 +44,43 @@ def test_measured_pi_screen(name, box, working, effort):
     assert screen.echoes == ()
 
 
+def test_xai_key_startup_draws_the_editor_after_the_migration_warning():
+    harness = PiHarness()
+    warning = harness.screen((FIXTURES / 'xai-key-warning-80.txt').read_text())
+    ready = harness.screen((FIXTURES / 'xai-key-startup-80.txt').read_text())
+
+    assert warning.box is None and warning.unknown == 'pi footer not found'
+    assert warning.interruption is None
+    assert ready.box == '' and ready.working is False
+    assert ready.unknown is None and ready.interruption is None
+    assert ready.shows == {'model': 'grok-4.20-0309-non-reasoning', 'effort': 'off'}
+
+
+def test_xai_key_editor_is_open_after_the_footer_clips_at_the_pane_edge():
+    screen = PiHarness().screen((FIXTURES / 'xai-key-after-turn-80.txt').read_text())
+
+    assert screen.box == '' and screen.working is False
+    assert screen.unknown is None and screen.interruption is None
+    assert screen.shows == {'model': 'grok-4.20-0309-non-reasoning'}
+
+
+@pytest.mark.parametrize('old,new', [
+    ('thinking of', 'thinking o'),
+    ('thinking of', 'thinking of '),
+    ('grok-4.20-0309-non-reasoning', 'grok-4.21-0309-non-reasoning'),
+    ('CH99.2%', 'XX99.2%'),
+    ('─' * 80, '─' * 79),
+    ('<test folder>/workspace', '<test folder>/workspace\nExtra row'),
+])
+def test_xai_key_clipped_footer_needs_the_measured_stats_and_editor_edges(old, new):
+    text = (FIXTURES / 'xai-key-after-turn-80.txt').read_text()
+    assert old in text
+
+    screen = PiHarness().screen(text.replace(old, new, 1))
+
+    assert screen.box is None and screen.unknown == 'pi footer not found'
+
+
 @pytest.mark.parametrize('name,payload,width', [
     ('paste-short-120', SHORT, 120),
     ('paste-wrapped-120', ' '.join(['sample words'] * 70), 120),

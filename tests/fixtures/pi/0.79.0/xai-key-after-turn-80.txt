@@ -1,0 +1,15 @@
+Warning: Migrated API key/header environment references to explicit $ENV_VAR syn
+tax. Plain strings will be treated as literals.
+  - models.json.providers["xai-endpoint"].apiKey: QD_ENDPOINT_KEY -> $QD_ENDPOIN
+T_KEY
+
+ Reply with READY only. Use no tools.
+
+
+ READY
+
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+<test folder>/workspace
+↑87 ↓1 R11k CH99.2% 35.0%/33k (auto)  grok-4.20-0309-non-reasoning • thinking of

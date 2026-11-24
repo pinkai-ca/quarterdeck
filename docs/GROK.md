@@ -6,6 +6,15 @@ synthetic input and preserve measured layouts without machine or session data.
 Fixture checks and installed `qd check grok` establish different things. No
 installed version is marked proven by adding fixtures.
 
+The settled API-key startup for `grok-4.20-0309-non-reasoning` draws an empty
+composer and a footer with the model ID and no effort. The right-aligned
+`Logged in with API key` banner shares a row with the 1.0.77 version at 80×50.
+At 319×78, the version is in the centered menu box. The cursor reading
+distinguishes the empty box from padding. At both sizes, a measured single-row
+draft keeps the model footer and shows the idle send hints. The door checks
+the exact text before submitting. Other window sizes, folded drafts and other
+layouts still require separate native measurements.
+
 | Contract | Implementation and evidence | Remaining limits |
 | --- | --- | --- |
 | Version context | Launch, doctor, `qd check` and native billing share the ship's verified pin when declared. With no pin, they use the first `grok` on the launch PATH (the folder holding `qd` first). Launch records the absolute program path, and `qd check` proves that its seat ran it. An eligible runtime supplies a private, temporary version-call home. Without that context, version lookup reads the selected executable's basename. | Installed evidence belongs to the ship that ran the check. Pin proofs are specific to their artifact digest. |

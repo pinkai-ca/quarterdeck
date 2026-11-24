@@ -383,6 +383,13 @@ RULE = re.compile(r"^─{20,}\s*$")
 # 0.79.0 also draws "(provider) model • medium" when multiple providers are
 # available and the prefix fits. A model without reasoning has no thinking level.
 FOOTER = re.compile(r"^(?P<stats>\S.*?)\s{2,}(?:\([^()\s]+\) )?(?P<model>\S+)(?: • (?P<level>thinking off|\w+))?\s*$")
+# At 80 columns the 0.79.0 xAI footer can lose the last cell of "thinking off"
+# once the usage section fills, while both editor rules still span the pane.
+CLIPPED_OFF_FOOTER = re.compile(
+    r"↑[0-9]+ ↓[0-9]+ R[0-9]+(?:\.[0-9]+)?k? CH[0-9]+\.[0-9]+% "
+    r"[0-9]+\.[0-9]+%/[0-9]+k \(auto\) {2,}(?P<model>grok-4\.20-0309-non-reasoning) • thinking of"
+)
+RULE_80 = "─" * 80
 WORKING = re.compile(r"^\s*[⠁-⣿] Working\.\.\.", re.M)
 QUEUED_HINT = "Alt+Up to edit all queued messages"
 STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
@@ -572,14 +579,18 @@ class PiHarness(EndpointHarness):
         queued = 1 if QUEUED_HINT in text else 0
         echoes = tuple(m.group(1) for m in STEERING.finditer(text))
         footer_at = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)  # the program draws top-down: rows below it stay blank
-        footer = FOOTER.match(lines[footer_at]) if footer_at is not None else None
+        footer_line = lines[footer_at] if footer_at is not None else ""
+        footer = FOOTER.match(footer_line)
+        clipped = CLIPPED_OFF_FOOTER.fullmatch(footer_line) if footer is None else None
+        if clipped is not None and _cells(footer_line) != 80:
+            clipped = None
         shows = {}
         if footer:
             shows = {"model": footer.group("model"),
                      **({"effort": footer.group("level").removeprefix('thinking ')} if footer.group("level") else {})}
         interruption = self.recognize(text)
-        if footer is None or interruption is not None:
-            unknown = None if footer or interruption else "pi footer not found"
+        if (footer is None and clipped is None) or interruption is not None:
+            unknown = None if interruption else "pi footer not found"
             return Screen(text, box=None, working=working, interruption=interruption, unknown=unknown, queued=queued, shows=shows, echoes=echoes)
         bottom = next((i for i in range(footer_at - 1, -1, -1) if RULE.match(lines[i])), None)
         if bottom is None or footer_at - bottom > 3:  # the working directory sits between the bottom rule and the footer
@@ -587,6 +598,10 @@ class PiHarness(EndpointHarness):
         top = next((i for i in range(bottom - 1, -1, -1) if RULE.match(lines[i])), None)
         if top is None:
             return Screen(text, box=None, working=working, unknown="pi input box not found", queued=queued, shows=shows, echoes=echoes)
+        if clipped is not None:
+            if footer_at - bottom != 2 or lines[top] != RULE_80 or lines[bottom] != RULE_80:
+                return Screen(text, box=None, working=working, unknown="pi footer not found", queued=queued, echoes=echoes)
+            shows = {"model": clipped.group("model")}
         body = lines[top + 1:bottom]
         body = trimmed(body)
         return Screen(text, box="\n".join(body), working=working, queued=queued, shows=shows, echoes=echoes)

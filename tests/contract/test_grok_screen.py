@@ -30,6 +30,84 @@ def test_ordinary_composer_and_running_settings(name):
     assert "\x1b" not in screen.text
 
 
+@pytest.mark.parametrize("style", ["plain", "styled"])
+@pytest.mark.parametrize("width,height", [(80, 50), (319, 78)])
+def test_xai_key_startup_reads_non_reasoning_composer(style, width, height):
+    adapter = GrokHarness()
+    screen = adapter.screen(fixture(f"xai-key-startup-{width}-{style}"))
+
+    assert screen.box == " " * (width - 9)
+    assert adapter.empty_cell(screen) == (6, height - 5)
+    assert screen.shows == {"model": "grok-4.20-0309-non-reasoning"}
+    assert screen.working is False
+    assert screen.unknown is None and screen.interruption is None
+
+
+@pytest.mark.parametrize("style", ["plain", "styled"])
+@pytest.mark.parametrize("width", [80, 319])
+def test_xai_key_short_draft_reads_the_exact_text(style, width):
+    adapter = GrokHarness()
+    screen = adapter.screen(fixture(f"xai-key-draft-{width}-{style}"))
+    draft = "synthetic draft not to be sent"
+
+    assert screen.box == draft.ljust(width - 9)
+    assert adapter.box(draft).matches(screen.box, adapter.box_columns(width))
+    assert adapter.empty_cell(screen) is None
+    assert screen.shows == {"model": "grok-4.20-0309-non-reasoning"}
+    assert screen.working is False and screen.unknown is None and screen.interruption is None
+
+
+@pytest.mark.parametrize("old,new", [
+    ("Logged in with API key  │  Grok Build  1.0.77", "Grok Build  1.0.77"),
+    ("Logged in with API key", "Logged in to account"),
+    ("Grok Build  1.0.77", "Grok Build  1.0.78"),
+    ("grok-4.20-0309-non-reasoning", "grok-4.21-0309-non-reasoning"),
+    ("always-approve", "unknown-mode"),
+    ("╮", ""),
+    ("❯    ", "❯ abc"),
+    ("Copies need this terminal to stay focused.", "┌─ Unrecognized dialog ─┐"),
+    (" Logged in with API key", "Logged in with API key"),
+])
+def test_unmeasured_xai_key_startup_remains_held(old, new):
+    text = fixture("xai-key-startup-80-plain")
+    assert old in text
+
+    screen = GrokHarness().screen(text.replace(old, new))
+
+    assert screen.box is None and screen.unknown
+
+
+@pytest.mark.parametrize("old,new", [
+    (" Logged in with API key", "Logged in with API key"),
+    ("Logged in with API key", "Logged in to account"),
+    ("Grok Build  1.0.77", "Grok Build  1.0.78"),
+    ("\n" + " " * 100 + "╭", "\n" + " " * 99 + "╭"),
+    ("always-approve ─╯", "always-approve ──╯"),
+])
+def test_unmeasured_wide_xai_key_startup_remains_held(old, new):
+    text = fixture("xai-key-startup-319-plain")
+    assert old in text
+
+    screen = GrokHarness().screen(text.replace(old, new))
+
+    assert screen.box is None and screen.unknown
+
+
+@pytest.mark.parametrize("old,new", [
+    ("Enter:send", "Enter:queue"),
+    ("synthetic draft not to be sent", " " * 30),
+    ("synthetic draft not to be sent", "[Pasted: 6 lines]".ljust(30)),
+    ("[Dashboard]", "[Dashboard]\n┌─ Unrecognized dialog ─┐"),
+])
+def test_unmeasured_xai_key_draft_remains_held(old, new):
+    text = fixture("xai-key-draft-80-plain")
+    assert old in text
+
+    screen = GrokHarness().screen(text.replace(old, new))
+
+    assert screen.box is None and screen.unknown
+
+
 def test_hard_newlines_and_exact_multiline_content():
     adapter = GrokHarness()
     screen = adapter.screen(fixture("draft-multiline"))

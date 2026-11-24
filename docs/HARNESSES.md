@@ -59,6 +59,9 @@ A harness runs on a pool, one way of paying:
 ## What a live check proves
 
 Pi 0.79.0 needs five pane rows for its empty box; an unfolded payload needs four more rows than its wrapped text (including a final newline's cursor row), and over five text rows also need enough pane height for pi's 30% editor viewport; large pastes fold to one row.
+At 80 columns, the measured pi 0.79.0 xAI footer can clip the final letter of
+`thinking off` after a turn. When both editor rules also span 80 columns, the
+reader reads the complete model field and leaves effort unset.
 
 Each harness proven live launched, took a long paste that the harness's own record confirmed, wrote a named file, posted a report with `qd post`, and had the turn read by Quarterdeck.
 

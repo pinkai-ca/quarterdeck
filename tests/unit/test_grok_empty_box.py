@@ -116,6 +116,54 @@ def test_the_empty_composer_at_80_columns_reads_empty(ordinary):
     assert Door(d.seat).reading().open
 
 
+@pytest.mark.parametrize("width", [80, 319])
+def test_xai_key_startup_reads_an_empty_composer_in_the_owned_pane(ordinary, width):
+    name = f"xai-key-startup-{width}-styled"
+    captured = measured(name)
+    d = ordinary(frame(name), tuple(captured["cursor"]), width=captured["width"], height=captured["height"])
+    door = Door(d.seat)
+
+    assert door.screen().box == ""
+    assert door.reading().open
+
+    d.tmux.cursor = (8, captured["cursor"][1])
+    assert door.screen().box == " " * (width - 9)
+
+    d.tmux.panes["%1"].pid += 1
+    assert door.screen() is None
+    assert d.tmux.sent == []
+
+
+@pytest.mark.parametrize("width", [80, 319])
+@pytest.mark.parametrize("style", ["plain", "styled"])
+def test_xai_key_startup_and_short_draft_go_through_the_ordinary_door(ordinary, monkeypatch, width, style):
+    name = f"xai-key-startup-{width}-{style}"
+    captured = measured(name)
+    draft_name = f"xai-key-draft-{width}-{style}"
+    startup, draft = frame(name), frame(draft_name)
+    payload = "synthetic draft not to be sent"
+    d = ordinary(startup, tuple(captured["cursor"]), width=captured["width"], height=captured["height"],
+                 visible=captured["cursor_visible"])
+    draft_info = measured(draft_name)
+    assert (draft_info['width'], draft_info['height']) == (captured['width'], captured['height'])
+    assert draft_info['cursor_visible'] and draft_info['cursor'] == [6 + len(payload), captured['cursor'][1]]
+    monkeypatch.setattr(d.tmux, "frame", lambda: draft if d.tmux.box else startup)
+    paste = d.tmux.paste
+
+    def pasted(*args, **kwargs):
+        paste(*args, **kwargs)
+        d.tmux.cursor = tuple(draft_info['cursor'])
+
+    monkeypatch.setattr(d.tmux, "paste", pasted)
+    door = Door(d.seat)
+
+    delivery = door.deliver(payload)
+
+    assert delivery.result == "delivered"
+    assert d.tmux.sent == [("paste", payload), ("keys", ("Enter",))]
+    assert d.seat.harness.inputs(d.record)[-1].text == payload
+
+
 def test_the_empty_composer_at_112_columns_reads_empty(ordinary):
     d = ordinary(IDLE_112, (6, 30), width=112, height=35)
     screen = Door(d.seat).screen()

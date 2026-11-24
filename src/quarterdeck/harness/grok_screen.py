@@ -18,6 +18,11 @@ FOOTER = re.compile(
     r"^  ╰─+ (?:Weekly limit left: (?:100|[1-9]?[0-9])% · )?"
     r"(Grok [0-9.]+(?: Fast)?) \((low|medium|high|xhigh)\) · (always-approve) ─╯ *$"
 )
+# The xAI API-key launch and short draft show this model id without an effort.
+XAI_KEY_FOOTER = re.compile(r"  ╰─+ (grok-4\.20-0309-non-reasoning) · always-approve ─╯ *")
+XAI_KEY_BANNER = "Logged in with API key"
+XAI_KEY_VERSION = "Grok Build  1.0.77"
+XAI_KEY_DRAFT_HINT = re.compile(r"  Enter:send  │  Alt\+Enter:newline  │  Shift\+Tab:mode  │  Ctrl\+x:shortcuts *")
 MODEL_HINT = "<model> [window] [effort]"
 COMMANDS = Interruption("commands", r"┌─ Commands ─.*\[✗\].*┐", "Escape")
 MODEL_PICKER = Interruption("model picker", r"Grok [0-9.]+ \(current\)", "C-c")
@@ -316,6 +321,47 @@ def composer_rows(rows: list[str]) -> tuple[int, int] | None:
     return None if top is None else (top, footer_at)
 
 
+def xai_key_composer(rows: list[str]) -> tuple[int, str, bool] | None:
+    """Find the measured footer and whether the row below it shows a draft."""
+    last = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].strip(" ")), -1)
+    if last < 2 or rows[last - 1].strip(" "):
+        return None
+    footer_at = last - 2
+    footer = XAI_KEY_FOOTER.fullmatch(rows[footer_at])
+    if footer is None:
+        return None
+    if XAI_KEY_DRAFT_HINT.fullmatch(rows[last]):
+        return footer_at, footer[1], True
+    banner = rows[last].rstrip(" ")
+    edge = len(rows[footer_at].rstrip(" "))
+    if len(banner) != edge:
+        return None
+    label = banner.lstrip(" ")
+    if (label == f"{XAI_KEY_BANNER}  │  {XAI_KEY_VERSION}"
+            or label == XAI_KEY_BANNER and xai_version_box(rows[:footer_at], edge + 2)):
+        return footer_at, footer[1], False
+    return None
+
+
+def xai_version_box(rows: list[str], width: int) -> bool:
+    """Wide startup puts the version in a separate centered 120-cell menu."""
+    height, menu_width = 16, 120
+    if width < menu_width:
+        return False
+    left = " " * ((width - menu_width + 1) // 2)
+    rule = "─" * (menu_width - 2)
+    for index in range(len(rows) - height + 1):
+        if rows[index].rstrip(" ") != left + "╭" + rule + "╮":
+            continue
+        body = [row.rstrip(" ") for row in rows[index + 1:index + height - 1]]
+        if (rows[index + height - 1].rstrip(" ") == left + "╰" + rule + "╯"
+                and all(row.startswith(left + "│") and row.endswith("│")
+                        and _cells(row) == len(left) + menu_width for row in body)
+                and re.search(r"  " + re.escape(XAI_KEY_VERSION) + r" +│$", body[1])):
+            return True
+    return False
+
+
 def read(text: str) -> Screen:
     decoded = characters(text)
     if decoded is None:
@@ -329,11 +375,17 @@ def read(text: str) -> Screen:
         offsets.append(offset)
         offset += len(row) + 1
     footer_at = next((i for i in range(len(rows) - 1, -1, -1) if FOOTER.fullmatch(rows[i])), None)
+    keyed = None
     if footer_at is None:
-        return Screen(plain, box=None, unknown="no fullscreen composer drawn as Grok 1.0.77 draws it")
-    footer = FOOTER.fullmatch(rows[footer_at])
-    shows = dict(model=footer[1], effort=footer[2])
-    if COMMANDS.seen_in(plain) and "Enter select  |  Esc close" in plain:
+        keyed = xai_key_composer(rows)
+        if keyed is None:
+            return Screen(plain, box=None, unknown="no fullscreen composer drawn as Grok 1.0.77 draws it")
+        footer_at, model, draft = keyed
+        shows = dict(model=model)
+    else:
+        footer = FOOTER.fullmatch(rows[footer_at])
+        shows = dict(model=footer[1], effort=footer[2])
+    if keyed is None and COMMANDS.seen_in(plain) and "Enter select  |  Esc close" in plain:
         return Screen(plain, box=None, interruption=COMMANDS, shows=shows)
     # An unrecognized rectangular modal is never an ordinary composer, even if
     # the program has left its footer visible underneath.
@@ -362,7 +414,7 @@ def read(text: str) -> Screen:
         body.append((content, style[begin:begin + len(content)]))
     if scrolled_composer(body, right):
         return Screen(plain, box=None, unknown=SCROLLED, shows=shows)
-    picker = (len(body) == 1 and body[0][0].startswith("/model ")
+    picker = (keyed is None and len(body) == 1 and body[0][0].startswith("/model ")
               and MODEL_PICKER.seen_in(plain)
               and any(re.fullmatch(r"  ─{8,}.*", row) for row in rows[:top]))
     if picker:
@@ -377,12 +429,13 @@ def read(text: str) -> Screen:
         return Screen(plain, box=box, interruption=MODEL_PICKER, shows=shows)
     for content, attributes in body:
         token = content.rstrip(" ")
-        folded = (len(body) == 1 and re.fullmatch(r"\[Pasted: [1-9][0-9]* lines\]", token)
-                  and len(attributes) >= len(token)
-                  and any(attributes[0] == bracket and attributes[len(token) - 1] == bracket
-                          and all(attribute == label for attribute in attributes[1:len(token) - 1])
-                          for bracket, label in FOLDED_CHIP_STYLES))
-        if folded:
+        folded_label = len(body) == 1 and re.fullmatch(r"\[Pasted: [1-9][0-9]* lines\]", token)
+        if folded_label and keyed is not None:
+            return Screen(plain, box=None, unknown="unmeasured folded Grok API-key draft", shows=shows)
+        if (folded_label and len(attributes) >= len(token)
+                and any(attributes[0] == bracket and attributes[len(token) - 1] == bracket
+                        and all(attribute == label for attribute in attributes[1:len(token) - 1])
+                        for bracket, label in FOLDED_CHIP_STYLES)):
             # Keep the native chip for the payload-derived Box comparison.
             # It proves only the visual submission contract, never delivery.
             continue
@@ -392,6 +445,11 @@ def read(text: str) -> Screen:
                          or attribute.background not in (None, (20, 20, 20)))):
                 return Screen(plain, box=None, unknown="unmeasured Grok composer text styling", shows=shows)
     box = "\n".join(content for content, _ in body)
+    if keyed is not None:
+        if (len(body) == 1 and bool(box.strip(" ")) == draft and top > 0
+                and not rows[top - 1].strip(" ") and not training_altered(rows, top)):
+            return Screen(plain, box=box, working=False, shows=shows)
+        return Screen(plain, box=None, unknown="unmeasured Grok API-key composer", shows=shows)
     if training_question(rows, top):
         # Named, never an unknown dialog. The hint row under the footer is read as on any other screen: M4
         # drew the working hint under the question while the launch's turn ran, then the idle hint. Nothing
