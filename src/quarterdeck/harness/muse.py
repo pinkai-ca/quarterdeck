@@ -22,7 +22,7 @@ class MuseHarness(Harness):
     name = program = "muse"
     native_provider = "meta"
     credential_file = "auth.json"
-    launch_unset = ("META_API_KEY", "MUSE_AUTH_PATH", "MUSE_LOGIN")
+    launch_unset = ("META_API_KEY", "MUSE_AUTH_PATH", "MUSE_LOGIN", "COLORTERM")
     check_model = "muse-wonder-1.0"
     check_effort = "minimal"
     minimal_check_task = "Write OK to proof.txt."

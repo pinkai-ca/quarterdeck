@@ -13,6 +13,7 @@ RULE = re.compile(r"─{8,}")
 TYPED = 252
 MUTED = 242
 PROMPT = 75
+PROMPT_RGB = (90, 160, 255)
 IDLE_HINT = "Type @ to search and insert workspace file paths"
 EXPAND_HINT = "Paste again to expand for editing"
 WORKING = re.compile(r"(?:Thinking|Working|Double checking) \([0-9]+s · esc to interrupt\)")
@@ -175,11 +176,12 @@ def _composer(plain: str, styles: list[Style], rows: list[str], current: bool) -
     for row in rows:
         offsets.append(offset)
         offset += len(row) + 1
+    prompt_foregrounds = (None, PROMPT, PROMPT_RGB) if current else (None, PROMPT)
     prompts = [index for index, row in enumerate(rows)
                if index > 0 and RULE.fullmatch(rows[index - 1])
                and (row.startswith("❯ ") or row == "❯")
                and styles[offsets[index]].background is None
-               and styles[offsets[index]].foreground in (None, PROMPT)]
+               and styles[offsets[index]].foreground in prompt_foregrounds]
     if len(prompts) != 1:
         return Screen(plain, None, working=None, unknown="Muse composer is not uniquely bound to its rule")
     index = prompts[0]

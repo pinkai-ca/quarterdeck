@@ -144,6 +144,46 @@ Other forms are named unsupported and withheld, pending the rest of that
 measurement. No old version's projection is borrowed. Literal input retains
 every character and collapsed evidence is unmatched.
 
+### Startup colour depth
+
+The 1.4.25 startup reader also recognizes the 273-column check frame with an
+RGB `(90, 160, 255)` prompt. It reads pending while the contributor disclosure
+is absent. The indexed capture has prompt foreground 75 both before and after
+the disclosure appears. Default foreground also works for a plain prompt. The
+rules, footer, and exact disclosure are text comparisons. The RGB capture uses
+dim `(103, 108, 116)` on the rules and spans of `(103, 108, 116)`,
+`(138, 144, 152)`, and `(90, 160, 255)` on the footer. The composer requires
+default background on the prefix and body and checks the foreground of the
+prompt glyph. Ordinary body text still requires default foreground or index
+252. The RGB capture supplies evidence for the prompt glyph alone. The
+RGB test with a disclosure inserts the measured plain line synthetically.
+
+`qd check` takes its temporary seat through `Tmux.for_ship`, `Seat.up`, and
+`Seat._open_window`. The production tmux server reads the operator's tmux
+configuration, and its new-session client starts from the framework's declared
+environment. The pane supplies `TERM`. The Muse adapter includes `COLORTERM`
+in its `launch_unset` list. `Seat._launch_words` passes that name to
+`seat.launch_words`, so the pane's `launch.sh` executes `env -u COLORTERM`
+before running the versioned executable. This removes the value even if tmux
+supplies it to the pane. The launch carries the pane's `TERM` through unchanged.
+The screen reader uses the captured pane text and styles. The separate version
+probe starts with `env -i` and supplies only its explicit environment.
+
+The host configuration sets `default-terminal` to `tmux-256color` and declares
+RGB features for outer `xterm-256color` and `alacritty` clients. In a private,
+detached tmux 3.6 probe, the prior launch passed `TERM=tmux-256color` and
+`COLORTERM=truecolor` to an inert program. Repeating the launch with the Muse
+adapter's removal kept `TERM=tmux-256color` and left `COLORTERM` absent, even
+when set in the tmux pane environment. The indexed Muse capture used `env -i`
+with `TERM=xterm-256color` and no `COLORTERM`.
+
+Static inspection of the installed ELF at `$HOME/.local/bin/muse-bin-1.4.25-R9361.1`
+shows the detector at `0x108c0be0` reading `COLORTERM` first and falling back to
+`TERM` when absent. A match for `24bit` or `truecolor` returns `0xffff`. On the
+`tmux-256color` fallback, the `256` substring returns `0x100` (indexed colour).
+The retired check retained the styled and plain frames. Its terminal environment
+and effective native colour-depth setting remain unknown.
+
 ## Allowance and remaining proof
 
 The native command is exactly `muse usage --json`; TUI flags do not prefix it.

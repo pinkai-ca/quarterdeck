@@ -328,10 +328,11 @@ def test_the_launch_script_leaves_the_program_no_tmux_server_and_no_inherited_se
         assert kept in seen  # an adapter's own setting, and every preference, stay
 
 
-@pytest.mark.parametrize("program,kept", [("grok", False), ("claude", True), ("codex", True), ("opencode", True)])
-def test_only_grok_launches_without_the_operators_vte_version(tmp_path, program, kept):
-    """Grok 1.0.77 draws another hint row under a VTE it reads as telling Shift+Enter apart (measured 13 November);
-    a seat's terminal is tmux, so Grok's launch removes it. Every other program keeps what it was measured with."""
+@pytest.mark.parametrize("program,removed", [
+    ("grok", {"VTE_VERSION"}), ("muse", {"COLORTERM"}), ("claude", set()), ("codex", set()), ("opencode", set()),
+])
+def test_launch_uses_the_adapters_measured_terminal_environment(tmp_path, program, removed):
+    """Grok's hint row depends on VTE_VERSION. Muse's colour detector prefers COLORTERM to TERM."""
     from types import SimpleNamespace
     from quarterdeck import harness
     launching = SimpleNamespace(harness=harness.get(program), _launch_tmpdir=tmp_path / "t",
@@ -339,11 +340,13 @@ def test_only_grok_launches_without_the_operators_vte_version(tmp_path, program,
     words = seatmod.Seat._launch_words(launching, ["env"], {}, os.environ["PATH"])
     script = tmp_path / "launch.sh"
     script.write_text(seatmod.launch_script("synthetic", words))
-    inherited = {"PATH": os.environ["PATH"], "VTE_VERSION": "8400", "COLORTERM": "truecolor"}
+    terminal = {"TERM": "tmux-256color", "VTE_VERSION": "8400", "COLORTERM": "truecolor"}
+    inherited = {"PATH": os.environ["PATH"], **terminal}
     done = subprocess.run(["sh", str(script)], env=inherited, capture_output=True, text=True, timeout=10, check=True)
     seen = dict(line.split("=", 1) for line in done.stdout.splitlines() if "=" in line)
-    assert ("VTE_VERSION" in seen) is kept
-    assert seen["COLORTERM"] == "truecolor"  # nothing else of the terminal is touched
+    assert {name: seen[name] for name in terminal if name in seen} == {
+        name: value for name, value in terminal.items() if name not in removed
+    }
 
 
 def test_a_ship_still_on_the_default_server_keeps_its_alert_when_the_status_line_overflows():

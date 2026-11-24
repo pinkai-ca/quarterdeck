@@ -10,7 +10,55 @@ from quarterdeck.harness.muse import MuseHarness
 from quarterdeck.harness.muse_screen import (EXPAND_HINT, IDLE_HINT, MUTED, PROMPT, TYPED,
                                            TRUST, VisibleBox, characters, counted_characters, read, wrapped_rows)
 
-CURRENT_STARTUP = Path(__file__).parents[1] / "fixtures/muse/1.4.25/startup-off.ansi"
+CURRENT_FIXTURES = Path(__file__).parents[1] / "fixtures/muse/1.4.25"
+CURRENT_STARTUP = CURRENT_FIXTURES / "startup-off.ansi"
+RGB_PENDING = CURRENT_FIXTURES / "startup-pending-rgb-273x65.ansi"
+INDEXED_OFF = CURRENT_FIXTURES / "startup-off-indexed-273x65.ansi"
+
+
+def synthetic_rgb_off():
+    """Insert the measured plain disclosure into the RGB capture that lacks it."""
+    plain, _ = characters(INDEXED_OFF.read_text())
+    disclosure = plain.splitlines()[3]
+    rows = RGB_PENDING.read_text().splitlines(keepends=True)
+    rows[3:3] = [disclosure + "\n", "\n"]
+    return "".join(rows)
+
+
+@pytest.mark.parametrize("fixture,contributor", [
+    (RGB_PENDING, "pending"),
+    (CURRENT_FIXTURES / "startup-pending-indexed-273x65.ansi", "pending"),
+    (INDEXED_OFF, "off"),
+    (None, "off"),  # Synthetic RGB disclosure.
+], ids=["saved-rgb-pending", "captured-indexed-pending", "captured-indexed-off", "synthetic-rgb-off"])
+def test_273_column_startup_reads_the_disclosure_at_both_colour_depths(tmp_path, fixture, contributor):
+    frame = fixture.read_text() if fixture is not None else synthetic_rgb_off()
+    adapter = MuseHarness()
+    screen = adapter.screen(frame)
+    assert [row for row in screen.text.splitlines() if row.startswith("─")] == ["─" * 273] * 2
+    assert screen.shows == {"contributor_mode": contributor}
+    if contributor == "pending":
+        assert screen.box is None and screen.unknown == "unmeasured Muse contributor disclosure"
+        assert adapter.check_launch_reading(screen)[1] is None
+        assert not adapter.opening_readiness(tmp_path, screen)[0]
+    else:
+        assert screen.box == "" and screen.working is False and screen.unknown is None
+        assert adapter.check_launch_reading(screen)[1] is True
+        assert adapter.opening_readiness(tmp_path, screen)[0]
+
+
+def test_an_unmeasured_rgb_prompt_does_not_read_pending():
+    frame = RGB_PENDING.read_text().replace("\x1b[38;2;90;160;255m❯", "\x1b[38;2;90;160;254m❯", 1)
+    adapter = MuseHarness()
+    screen = adapter.screen(frame)
+    assert screen.shows == {} and screen.box is None
+    assert adapter.check_launch_reading(screen)[1] is False
+
+
+def test_rgb_prompt_evidence_does_not_admit_rgb_body_text():
+    frame = synthetic_rgb_off().replace("❯ \n", "❯ \x1b[38;2;204;211;219mDraft\n", 1)
+    screen = read(frame)
+    assert screen.box is None and screen.unknown == "unmeasured Muse composer text or contextual tip"
 
 
 @pytest.mark.parametrize("columns", [80, 120, 200])
@@ -95,6 +143,14 @@ def composer(rows, columns=120, foreground=TYPED, footer="", transcript=""):
     return ("  " + colour("Muse Code", TYPED) + " 1.4.20\n" + transcript
             + rule + "\n" + body + "\n" + rule + "\n"
             + "  echo · synthetic-folder · Launch overrides" + footer)
+
+
+def test_the_legacy_composer_does_not_admit_the_current_rgb_prompt():
+    frame = composer([""])
+    assert read(frame).box == ""
+    rgb = frame.replace(colour("❯ ", PROMPT), colour("❯ ", (90, 160, 255)), 1)
+    screen = read(rgb)
+    assert screen.box is None and screen.unknown == "Muse composer is not uniquely bound to its rule"
 
 
 def test_known_grey_idle_tip_is_empty_while_the_same_bright_literal_is_text():
