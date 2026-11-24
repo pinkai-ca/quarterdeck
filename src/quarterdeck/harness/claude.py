@@ -1018,7 +1018,7 @@ class _Reader(JsonLinesReader):
                 self.notice_unanswered, self.notice_at = True, when(entry.get('timestamp'))
             return
         if isinstance(content, str) and content.startswith("<local-command-stdout>"):
-            if match := SET_MODEL.search(content):
+            if match := set_model_match(content, entry.get('version')):
                 self.model = match.group(1)  # the display name, until the next assistant entry names the id
             if match := SET_EFFORT.search(content):
                 self.effort = match.group(1)
@@ -1219,11 +1219,20 @@ BOTTOM_LINES = {
                                r"| · (?P<shells>1) (?P<noun>shell) · ↓ to manage)"),
 }
 SET_MODEL = re.compile(r"Set model to `?([^`]+?)`? and saved")
+SESSION_MODEL = re.compile(r"Set model to `?([^`\r\n]+?)`? for this session only")
 SET_EFFORT = re.compile(r"Set effort level to `?(\w+)`?")
 QUEUED_PLACEHOLDER = "Press up to edit queued messages"
-# Exact native IDs established for 2.1.317. ModelPicker/account catalogs may override display names:
+# Exact native IDs established in assistant rows. ModelPicker/account catalogs may override display names:
 # a display-only command-output line never establishes identity or record confirmation.
 MODEL_IDENTITIES = frozenset({'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'})
+CONTROL_VERSION = '2.1.331'
+CONTROL_VERSIONS = frozenset({'2.1.317', CONTROL_VERSION})
+MODEL_QUESTION = 'Switch model?'
+NAMED_CONTROL_EFFORTS = frozenset({'low', 'medium', 'high', 'xhigh', 'max'})
+
+
+def set_model_match(content: str, version: str | None):
+    return SET_MODEL.search(content) or (SESSION_MODEL.search(content) if version == CONTROL_VERSION else None)
 
 
 def screen_reader_boolean(value: str | None) -> bool | None:
@@ -1238,7 +1247,8 @@ def screen_reader_boolean(value: str | None) -> bool | None:
     return None
 
 
-def catalog_display(data: dict, target: str, *, launched: datetime, now: datetime) -> tuple[str, int, int] | None:
+def catalog_display(data: dict, target: str, *, launched: datetime, now: datetime,
+                    unique_name: bool = False) -> tuple[str, int, int] | None:
     """A fresh persisted catalog candidate, not proof of the process's in-memory name or native ID."""
     try:
         if not isinstance(target, str) or not target:
@@ -1261,17 +1271,19 @@ def catalog_display(data: dict, target: str, *, launched: datetime, now: datetim
         name = matching[0]['name']
         if not isinstance(name, str) or not name or len(name) > 200 or not all(c.isprintable() for c in name):
             return None
+        if unique_name and sum(row.get('name') == name for row in rows) != 1:
+            return None
         return name, fetched, stale
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
         return None
 
 
-def model_display(seat, target):
+def model_display(seat, target, launched):
     """A per-seat fresh catalog precondition, never a global display-name alias."""
     try:
-        launched = seat.launched()
-        if launched is None or launched.version != '2.1.317':
+        if launched is None or launched.version not in CONTROL_VERSIONS:
             return None
+        candidate = launched.version == CONTROL_VERSION
         argv = launched.argv
         if ('--settings' in argv or '--setting-sources' not in argv
                 or argv[argv.index('--setting-sources') + 1] != 'user'):
@@ -1289,12 +1301,15 @@ def model_display(seat, target):
         for path in (seat.home / 'cache' / 'model-catalog').glob('*.json'):
             raw = path.read_bytes()
             data = json.loads(raw)
-            bound = catalog_display(data, target, launched=launched.when, now=datetime.now(timezone.utc))
+            bound = catalog_display(data, target, launched=launched.when, now=datetime.now(timezone.utc),
+                                    unique_name=candidate)
             if bound is not None:
                 display, fetched, stale = bound
                 candidates.append(dict(display=display, catalog=str(path), fetched=fetched, stale=stale,
                                        digest=hashlib.sha256(raw).hexdigest(),
                                        settings=hashlib.sha256(settings_raw).hexdigest()))
+                if candidate:
+                    candidates[-1].update(version=launched.version, target=target)
         if settings_path.read_bytes() != settings_raw:
             return None
         return candidates[0] if len(candidates) == 1 else None
@@ -1368,20 +1383,25 @@ def control_origin(record: Path | None, display: dict, *, launch: dict | None = 
 
 
 def command_model_result(record: Path, origin: dict, value: str, display: str) -> str | None:
-    """A new exact model command/result triple linked by native parents."""
+    """The established 2.1.317 result, also used by the synthetic adapter."""
+    return command_result(record, origin, 'model', value, display)
+
+
+def command_result(record: Path, origin: dict, name: str, value: str, display: str,
+                   *, version: str | None = None) -> str | None:
+    """A new exact local command/result triple linked by native parents."""
     try:
         before = record.stat()
         rows = control_suffix(record, origin)
         if rows is None:
             return None
         triples = []
+        command_tag = f'<command-name>/{name}</command-name>'
         for index, row in enumerate(rows):
             content = row.get('message', {}).get('content')
-            if row.get('type') != 'user' or not isinstance(content, str) or '<command-name>' not in content:
-                continue
-            # Any second local model command makes ownership ambiguous, even if its target
+            # Any second same-kind command makes ownership ambiguous, even if its target
             # happens to agree. A missing caveat/result cannot be filled from older history.
-            if '<command-name>/model</command-name>' not in content:
+            if row.get('type') != 'user' or not isinstance(content, str) or command_tag not in content:
                 continue
             if index == 0 or index + 1 >= len(rows):
                 return None
@@ -1400,11 +1420,22 @@ def command_model_result(record: Path, origin: dict, value: str, display: str) -
             introduction = caveat.get('message', {}).get('content')
             output = stdout.get('message', {}).get('content')
             arguments = re.findall(r'<command-args>(.*?)</command-args>', content, re.S)
-            matches = SET_MODEL.findall(output) if isinstance(output, str) else []
             if (not isinstance(introduction, str) or not introduction.startswith('<local-command-caveat>')
                     or arguments != [value] or not isinstance(output, str)
-                    or not output.startswith('<local-command-stdout>')
-                    or matches != [display]):
+                    or not output.startswith('<local-command-stdout>')):
+                return None
+            if version == CONTROL_VERSION:
+                session = row.get('sessionId')
+                command = (f'{command_tag}\n            <command-message>{name}</command-message>\n'
+                           f'            <command-args>{value}</command-args>')
+                if (session != record.stem or content != command
+                        or any(item.get('type') in ('user', 'queue-operation') for item in rows[:index - 1])
+                        or any(item.get('sessionId') != session or item.get('version') != version
+                               or item['message'].get('role') != 'user' for item in group)
+                        or not introduction.endswith('</local-command-caveat>')
+                        or not candidate_control_output(output, name, display)):
+                    return None
+            elif SET_MODEL.findall(output) != [display]:
                 return None
             triples.append(group)
         after = record.stat()
@@ -1414,6 +1445,20 @@ def command_model_result(record: Path, origin: dict, value: str, display: str) -
         return value if len(triples) == 1 else None
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return None
+
+
+def candidate_control_output(output: str, name: str, display: str) -> bool:
+    end = '</local-command-stdout>'
+    if not output.endswith(end):
+        return False
+    body = output[len('<local-command-stdout>'):-len(end)]
+    if name == 'model':
+        labels = (display, f'`{display}`')
+        return body in {f'Set model to {label}{suffix}' for label in labels
+                        for suffix in (' and saved as your default for new sessions', ' for this session only')}
+    return re.fullmatch(
+        rf'Set effort level to {re.escape(display)} '
+        r'\((?:saved as your default for new sessions|this session only)\): [^\r\n]+', body) is not None
 
 
 def styled_rows(text):
@@ -1581,7 +1626,7 @@ class ClaudeHarness(Harness):
     def model_identity(self, value: str | None, *, version: str | None = None) -> str | None:
         if not isinstance(value, str):
             return None
-        if value in MODEL_IDENTITIES:
+        if value in MODEL_IDENTITIES or (version == CONTROL_VERSION and value == 'claude-fable-5-2'):
             return value
         return None
 
@@ -1598,21 +1643,39 @@ class ClaudeHarness(Harness):
             if not isinstance(message, dict):
                 continue
             if row.get('type') == 'assistant' and message.get('model') is not None:
-                model = self.model_identity(message['model'])
+                model = self.model_identity(message['model'], version=row.get('version'))
             elif row.get('type') == 'user':
                 content = message.get('content')
-                if isinstance(content, str) and content.startswith('<local-command-stdout>') and SET_MODEL.search(content):
+                if (isinstance(content, str) and content.startswith('<local-command-stdout>')
+                        and set_model_match(content, row.get('version'))):
                     model = None
         return model if record_fingerprint(record) == before else None
 
     def model_control_origin(self, seat, record: Path | None, value: str) -> dict | None:
-        if record is None or self.model_identity(value) is None:
+        if record is None:
             return None
-        display = model_display(seat, value)
+        try:
+            launched = seat.launched()
+        except (OSError, ValueError):
+            return None
+        if launched is None or self.model_identity(value, version=launched.version) is None:
+            return None
+        display = model_display(seat, value, launched)
         return control_origin(record, display) if display is not None else None
 
     def model_control_result(self, seat, record: Path, value: str, origin: dict) -> str | None:
-        current_display = model_display(seat, value)
+        launched = seat.launched()
+        if launched is None or self.model_identity(value, version=launched.version) is None:
+            return None
+        if launched.version == CONTROL_VERSION:
+            display = origin.get('display', {})
+            label = display.get('display')
+            if display.get('version') == CONTROL_VERSION and display.get('target') == value and isinstance(label, str):
+                # The native command can save the model and invalidate its catalog cache. The
+                # admission-time display remains the binding for the exact appended result.
+                return command_result(record, origin, 'model', value, label, version=CONTROL_VERSION)
+            return None
+        current_display = model_display(seat, value, launched)
         if current_display is None or current_display != origin.get('display'):
             return None
         return command_model_result(record, origin, value, current_display['display'])
@@ -1628,25 +1691,59 @@ class ClaudeHarness(Harness):
             return None
         return True
 
+    @staticmethod
+    def request_bound_effort(version: str | None) -> bool:
+        return version == CONTROL_VERSION
+
+    def effort_control_origin(self, seat, record: Path | None, value: str) -> dict | None:
+        if record is None or value not in NAMED_CONTROL_EFFORTS:
+            return None
+        return control_origin(record, dict(version=CONTROL_VERSION, target=value))
+
+    def effort_control_result(self, seat, record: Path, value: str, origin: dict) -> str | None:
+        if origin.get('display') != dict(version=CONTROL_VERSION, target=value):
+            return None
+        return command_result(record, origin, 'effort', value, value, version=CONTROL_VERSION)
+
+    def bound_control_current(self, seat, record: Path, control: Control, value: str, origin: dict) -> bool | None:
+        launch = seat.launched()
+        if launch is None:
+            return None
+        if launch.version == CONTROL_VERSION:
+            display = (model_display(seat, value, launch) if control.name == 'model'
+                       else dict(version=launch.version, target=value))
+            if display is None or display != origin.get('display'):
+                return None
+        return self.model_control_current(record, origin)
+
     def control_context(self, seat, control: Control, value: str, screen: Screen,
                         *, version: str | None = None, question: str | None = None) -> ControlContext | None:
-        if control.name != 'model' or version != '2.1.317' or question is None:
+        target = self.control_target(control, value, version)
+        if target is None or question is None:
             return None
-        display = model_display(seat, value)
-        if display is None:
+        launch = seat.launched()
+        if launch is None or launch.version != version:
             return None
-        frame = seat.read_control_frame()
-        if (frame is None or frame.cursor_visible is not False
-                or (frame.pane.width, frame.pane.height) != (120, 40)):
-            return None  # only this complete native geometry/style was measured
+        display = model_display(seat, value, launch)
+        if display is None or (frame := seat.read_control_frame()) is None:
+            return None
+        geometry = frame.pane.width, frame.pane.height
+        if (frame.cursor_visible is not False or (frame.pane.id, frame.pane.pid) != (launch.pane, launch.pid)
+                or version != CONTROL_VERSION and geometry != (120, 40)):
+            return None
         rows = styled_rows(frame.text)
-        if rows is None:
+        if rows is None or len(rows) != frame.pane.height:
             return None
         plain = '\n'.join(row[0] for row in rows) + '\n'
-        if (plain.rstrip('\n') != screen.text.rstrip('\n')
-                or hashlib.sha256(screen.text.encode()).hexdigest() != question
-                or len(rows) != 40 or self.screen(plain).box is not None):
-            return None  # physical/joined disagreement (including wrapped frames) stays unknown
+        if hashlib.sha256(screen.text.encode()).hexdigest() != question or self.screen(plain).box is not None:
+            return None
+        if version == CONTROL_VERSION:
+            # A styled capture can retain trailing background cells omitted by the plain capture.
+            if [row.rstrip(' ') for row, _ in rows] != [row.rstrip(' ') for row in screen.text.splitlines()]:
+                return None  # physical/joined content or row count disagreement, including wraps
+            return self.candidate_control_context(target, display, frame, rows, question)
+        if plain.rstrip('\n') != screen.text.rstrip('\n'):
+            return None
         label = f'Yes, switch to {display["display"]}'
         yes, no = rows[37], rows[38]
         if yes[0].rstrip(' ') != f'   ❯ 1. {label}' or no[0].rstrip(' ') != '     2. No, go back':
@@ -1657,7 +1754,7 @@ class ClaudeHarness(Harness):
                 or any(color != ('indexed', 246) for color in no[1][5:8])
                 or any(color is not None for color in no[1][8:8 + len('No, go back')])):
             return None
-        titles = [index for index, row in enumerate(rows) if row[0].strip() == 'Switch model?']
+        titles = [index for index, row in enumerate(rows) if row[0].strip() == MODEL_QUESTION]
         if len(titles) != 1 or titles[0] >= 37:
             return None
         body = [row[0].strip() for row in rows[titles[0] + 1:37]]
@@ -1676,13 +1773,44 @@ class ClaudeHarness(Harness):
         return ControlContext(version, value, display['display'], screen_reader_off=True, focused=True,
                               composer_hidden=True, cursor_visible=False, yes_highlighted=True, scope=scope)
 
+    def control_target(self, control: Control, value: str, version: str | None) -> str | None:
+        if control.name == 'model' and version in CONTROL_VERSIONS:
+            return self.model_identity(value, version=version)
+        return None
+
+    @staticmethod
+    def candidate_control_context(target, display, frame, rows, question) -> ControlContext | None:
+        from .types import _cells
+
+        width = frame.pane.width
+        label = display['display']
+        yes = f'Yes, switch to {label}'
+        dialog = ('▔' * width, f'  {MODEL_QUESTION}',
+                  '  Your next response will be slower and use more tokens', '',
+                  f'  This conversation is cached for the current model. Switching to {label}'
+                  ' means the full history gets re-read.',
+                  '', f'  ❯ 1. {yes}', '    2. No, go back', '', '  Enter to confirm · Esc to cancel')
+        if (tuple(row.rstrip(' ') for row, _ in rows[-len(dialog):]) != dialog
+                or any((cells := _cells(row)) is None or cells > width for row in dialog)):
+            return None
+        styled = frame.text.splitlines()
+        selected, number = '\x1b[38;2;177;185;249m', '\x1b[38;2;153;153;153m'
+        focus = f'  {selected}❯\x1b[39m {number}1. {selected}{yes}\x1b[39m'
+        if (styled[-4].rstrip(' ') != focus
+                or styled[-3].rstrip(' ') != f'    {number}2. \x1b[39mNo, go back'):
+            return None
+        scope = (frame.pane.id, frame.pane.pid, frame.pane.width, frame.pane.height,
+                 display.get('catalog'), display.get('digest'), display.get('settings'), question,
+                 hashlib.sha256(frame.text.encode()).hexdigest())
+        return ControlContext(CONTROL_VERSION, target, label, screen_reader_off=True, focused=True,
+                              composer_hidden=True, cursor_visible=False, yes_highlighted=True, scope=scope)
+
     def control_answer(self, control: Control, value: str, screen: Screen,
                        *, version: str | None = None, context: ControlContext | None = None) -> ControlAnswer | None:
-        if (control.name != 'model' or version != '2.1.317'
-                or not isinstance(screen.interruption, ControlInterruption)
-                or screen.interruption.control != 'model'):
+        if (not isinstance(screen.interruption, ControlInterruption)
+                or screen.interruption.control != control.name):
             return None
-        target = self.model_identity(value, version=version)
+        target = self.control_target(control, value, version)
         if (not isinstance(context, ControlContext) or context.version != version or context.target != target
                 or target is None or context.screen_reader_off is not True or context.focused is not True
                 or context.composer_hidden is not True or context.cursor_visible is not False
@@ -1690,7 +1818,7 @@ class ClaudeHarness(Harness):
                 or not context.scope or not context.display or len(context.display) > 200
                 or not all(char.isprintable() for char in context.display)):
             return None
-        if sum(line.strip(' \u00a0') == 'Switch model?' for line in screen.text.splitlines()) != 1:
+        if sum(line.strip(' \u00a0') == MODEL_QUESTION for line in screen.text.splitlines()) != 1:
             return None
         pattern = re.compile(r'^[ \u00a0]*(?P<cursor>❯[ \u00a0]*)?(?P<number>[0-9]+)\. (?P<text>.*?)[ \u00a0]*$')
         options = [match for line in screen.text.splitlines() if (match := pattern.fullmatch(line))]
@@ -1701,9 +1829,7 @@ class ClaudeHarness(Harness):
             return None
         if not yes[0]['cursor'] or no[0]['cursor']:
             return None
-        # 2.1.317 measured Enter only on highlighted, selected Yes, with composer/cursor hidden.
-        # No digit action or cursor movement is authorized by that native proof.
-        return ControlAnswer('model', value, label, ('Enter',))
+        return ControlAnswer(control.name, value, label, ('Enter',))
 
     reads_queue_error = True
     compactions = staticmethod(compactions)
@@ -1980,6 +2106,7 @@ class ClaudeHarness(Harness):
     def interruptions(self) -> tuple[Interruption, ...]:
         return (
             ControlInterruption("switch-model confirmation", r"Switch model\?", control="model"),
+            ControlInterruption("change-effort confirmation", r"(?m)^  Change effort level\? *$", control="effort"),
             LOGIN_QUESTION,
             TRUST_QUESTION,
             PERMISSION_QUESTION,

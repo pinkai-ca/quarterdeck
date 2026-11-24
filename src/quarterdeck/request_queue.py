@@ -366,7 +366,7 @@ def control_continuation(path, data=None, meta=None):
     launch, inputs, record = (origin.get(key) for key in ('launch', 'inputs', 'record'))
     digest = lambda value: (isinstance(value, str) and len(value) == 64
                             and all(char in '0123456789abcdef' for char in value))
-    if (state.control != 'model' or not isinstance(launch, dict) or not isinstance(inputs, dict)
+    if (state.control not in {'model', 'effort'} or not isinstance(launch, dict) or not isinstance(inputs, dict)
             or not isinstance(record, dict) or not isinstance(origin.get('declaration'), list)
             or len(origin['declaration']) != 3 or not isinstance(record.get('display'), dict)
             or any(key not in inputs for key in ('record', 'device', 'inode', 'input_count', 'inputs_digest'))
@@ -392,7 +392,7 @@ def control_continuation(path, data=None, meta=None):
                     and record['display'].get('synthetic') is True
                     and (bound_record or record.get('path') is None and record.get('device') is None
                          and record.get('inode') is None))
-    if not pinned_inputs and not first_inputs:
+    if not pinned_inputs and (state.control != 'model' or not first_inputs):
         raise ShipError('control continuation record provenance unknown; retained without retyping')
     if (data.get('kind') != 'control' or data.get('name') != state.control
             or str(data.get('value')) != state.value or data.get('seat') != state.origin.get('seat')

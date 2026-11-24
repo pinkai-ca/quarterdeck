@@ -180,14 +180,14 @@ def unconfirmed_proof(state: Continuation) -> str:
 
 
 def observe_control(seat, control, state: Continuation, now: datetime, *, persist, verify,
-                    answer_current=None, confirmed_model=None) -> Decision:
+                    answer_current=None, record_result=None) -> Decision:
     """Advance a consumed request through its existing owner's persistence/identity callbacks.
 
     There is deliberately no command-delivery operation here. A resumed reservation can only observe
     the record or expire; only a positively submitted control can own its subsequent question. verify
     checks the immutable request/launch/declaration; answer_current additionally checks the input scope,
-    not the continuation's mutable phase. confirmed_model must bind the adapter-proved record result to
-    this request's command envelope; a current model reading may predate the request and is insufficient.
+    not the continuation's mutable phase. record_result binds the native result to this request's
+    command envelope. The program's current model or effort may predate the request.
     A missing request-specific binding remains unknown. No callback is supplied by a second queue.
     """
     from .door import Door
@@ -196,14 +196,13 @@ def observe_control(seat, control, state: Continuation, now: datetime, *, persis
         return Decision(state, 'unconfirmed', 'control source changed; command is not retyped')
     record = seat.record()
     try:
-        reported = seat.harness.state(record) if record is not None and control.name != 'model' else None
-        model_id = (confirmed_model(record, state)
-                    if record is not None and control.name == 'model' and confirmed_model is not None else None)
+        result = record_result(record, state) if record is not None and record_result is not None else None
     except (OSError, ValueError, TypeError):
-        reported, model_id = None, None
+        result = None
     launched = seat.launched()
     version = launched.version if launched else None
-    confirmed = record_confirmation(seat.harness, control, state.value, reported, version=version, model_id=model_id)
+    confirmed = (record_confirmation(seat.harness, control, state.value, None, version=version, model_id=result)
+                 if control.name == 'model' else None if result is None else result == state.value)
     decision = advance(state, now, confirmed=confirmed)
     if decision.action != 'wait' or state.phase != 'submitted' or state.question_changed:
         return decision

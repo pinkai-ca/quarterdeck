@@ -1900,12 +1900,13 @@ class Service:
             return f"{name} written; qd restart {seat.name} applies it"
         if name == 'model':
             validate_mode(value, 'named', 'model', f'seat {seat.name}')
-        note = None
+        note, bound_effort = None, False
         if name == 'effort':
             launched = seat.launched()
             version = launched.version if launched and record_owner.launch_reader(launched) == seat.harness.name else None
             note = validate_effort(seat.harness, value, version=version,
                                    installed=True, context=f'seat {seat.name}')
+            bound_effort = getattr(seat.harness, 'request_bound_effort', lambda _: False)(version)
         unchecked = f" · {note}" if note else ''
         control = seat.harness.control(name)
         if control is None or control.session is None:
@@ -1941,9 +1942,9 @@ class Service:
             return None  # controls do not inherit the move's timed/queue predicate
         door = Door(seat)
         command = control.command(value)
-        if name == 'model':
+        if name == 'model' or bound_effort:
             if self is None:
-                return 'model held: durable request owner unavailable; command not typed'
+                return f'{name} held: durable request owner unavailable; command not typed'
             return self.begin_model_control(seat, control, value, door)
         delivery = door.deliver(command, confirm=False)
         if delivery.result != "typed":
@@ -1964,20 +1965,23 @@ class Service:
         return f"{name} = {value} · typed {command} in {seat.pane().id} · not confirmed by the {control.confirmed_by} yet{unchecked}"
 
     def begin_model_control(self, seat, control, value, door):
+        """Reserve the sole transport of a request-bound control before using the door."""
         from . import control_confirmation as confirmation, request_queue
+        name = control.name
         path = getattr(self, 'request_path', None)
         if path is None:
-            return 'model held: durable request owner unavailable; command not typed'
+            return f'{name} held: durable request owner unavailable; command not typed'
         record = seat.record()
         inputs = confirmation.input_scope(seat, record)
-        bound = seat.harness.model_control_origin(seat, record, value)
+        bind = seat.harness.model_control_origin if name == 'model' else seat.harness.effort_control_origin
+        bound = bind(seat, record, value)
         launch = request_queue.launch_binding(seat)
         if inputs is None or bound is None or launch is None:
-            self.request_wait = ('control-confirmation', 'request-bound model record/display evidence unknown')
+            self.request_wait = ('control-confirmation', f'request-bound {name} record/target evidence unknown')
             return None
         origin = dict(seat=seat.name, launch=launch, inputs=inputs, record=bound,
-                      declaration=[seat.harness.name, seat.spec.model_mode, seat.spec.model])
-        state = confirmation.Continuation.begin(control.name, value, origin, post.now())
+                      declaration=[seat.harness.name, getattr(seat.spec, f'{name}_mode'), getattr(seat.spec, name)])
+        state = confirmation.Continuation.begin(name, value, origin, post.now())
         meta = self.request_metadata
 
         def persist(state):
@@ -1987,8 +1991,17 @@ class Service:
         persist(state)  # consumed reservation survives a crash BEFORE the sole command transport
         if (request_queue.launch_binding(seat) != launch
                 or confirmation.input_scope(seat, record) != inputs):
-            return 'model unconfirmed: source changed before command; not retyped'
-        delivery = door.deliver(control.command(value), confirm=False)
+            return f'{name} unconfirmed: source changed before command; not retyped'
+        if record is not None and bound['display'].get('version') is not None:
+            def current():
+                return (request_queue.control_continuation(path) == state
+                        and request_queue.launch_binding(seat) == launch and seat.record() == record
+                        and confirmation.input_scope(seat, record) == inputs
+                        and seat.harness.bound_control_current(seat, record, control, value, bound) is True)
+
+            delivery = door.deliver(control.command(value), confirm=False, verify=current)
+        else:
+            delivery = door.deliver(control.command(value), confirm=False)
         if delivery.result == 'typed':
             state = confirmation.submitted(state)
             persist(state)
@@ -1996,21 +2009,31 @@ class Service:
             # A withheld or ambiguous transport is never permission to send this command again.
             self.request_wait = ('control-confirmation', f'control transport {delivery.result}; record confirmation pending')
             return None
-        return self.continue_model_control(seat, control.name, value)
+        return self.continue_model_control(seat, name, value)
 
     def continue_model_control(self, seat, name, value):
         from . import control_confirmation as confirmation, request_queue
         path, meta = self.request_path, self.request_metadata
         state = request_queue.control_continuation(path, meta=meta)
         control = seat.harness.control(name)
-        if state is None or control is None or state.control != 'model' or state.value != value:
+        if state is None or control is None or state.control != name or state.value != value:
             raise request_queue.RequestHold('control-confirmation', 'control continuation unsupported; retained')
+        native_result = seat.harness.model_control_result
+        confirmed_by = control.confirmed_by
+        if name == 'effort':
+            launch = seat.launched()
+            version = launch.version if launch and record_owner.launch_reader(launch) == seat.harness.name else None
+            if not getattr(seat.harness, 'request_bound_effort', lambda _: False)(version):
+                raise request_queue.RequestHold('control-confirmation', 'control continuation unsupported; retained')
+            native_result = seat.harness.effort_control_result
+            confirmed_by = 'record'
 
         def verify():
             current = request_queue.control_continuation(path)
             return (current == state and state.origin.get('launch') == request_queue.launch_binding(seat)
                     and (state.origin['inputs']['record'] is not None or getattr(seat.harness, 'synthetic', False) is True)
-                    and state.origin.get('declaration') == [seat.harness.name, seat.spec.model_mode, seat.spec.model])
+                    and state.origin.get('declaration') == [
+                        seat.harness.name, getattr(seat.spec, f'{name}_mode'), getattr(seat.spec, name)])
 
         def persist(updated):
             nonlocal state
@@ -2030,13 +2053,17 @@ class Service:
             record = seat.record()
             if not verify() or confirmation.input_scope(seat, record) != state.origin.get('inputs'):
                 return False
-            return (seat.harness.model_control_current(record, state.origin.get('record', {}))
-                    if record is not None else None)
+            if record is None:
+                return None
+            bound = state.origin.get('record', {})
+            current = getattr(seat.harness, 'bound_control_current', None)
+            return (current(seat, record, control, value, bound) if current is not None
+                    else seat.harness.model_control_current(record, bound))
 
         try:
             decision = confirmation.observe_control(
                 seat, control, state, post.now(), persist=persist, verify=verify, answer_current=answer_current,
-                confirmed_model=lambda record, current: seat.harness.model_control_result(
+                record_result=lambda record, current: native_result(
                     seat, record, current.value, current.origin.get('record', {})))
         except (OSError, ShipError, TmuxError) as error:
             # A failed observation/gesture keeps the durable reservation. Its next pass observes
@@ -2049,10 +2076,10 @@ class Service:
             decision = replace(decision, reason=f'{decision.reason}; control observation unavailable ({type(error).__name__})')
         if decision.action == 'confirmed':
             pane = decision.state.origin['launch']['pane']
-            return (f'model = {value} · applied by {control.command(value)} in {pane} · '
-                    f'{confirmation.proof(decision.state)} · confirmed by {control.confirmed_by}')
+            return (f'{name} = {value} · applied by {control.command(value)} in {pane} · '
+                    f'{confirmation.proof(decision.state)} · confirmed by {confirmed_by}')
         if decision.action == 'unconfirmed':
-            return f'model = {value} · {confirmation.unconfirmed_proof(decision.state)}: {decision.reason}'
+            return f'{name} = {value} · {confirmation.unconfirmed_proof(decision.state)}: {decision.reason}'
         self.request_wait = ('control-confirmation', decision.reason)
         return None
 

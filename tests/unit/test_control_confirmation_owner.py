@@ -73,10 +73,16 @@ def test_first_fake_model_input_confirms_only_in_its_new_launch_record(tmp_path)
             pinned['record'] = harness.join(home, launched.when).record
         return pinned['record']
 
-    frame = '\n'.join(['─' * 40, '> ', '─' * 40,
-                       'fake claude · model synthetic-next · effort low · idle'])
+    model, screen_reads = 'synthetic-next', []
+
+    def read_pane():
+        screen_reads.append(model)
+        frame = '\n'.join(['─' * 40, '> ', '─' * 40,
+                           f'fake claude · model {model} · effort low · idle'])
+        return object(), frame
+
     seat = SimpleNamespace(name='synthetic-seat', harness=harness, home=home, record=record,
-                           launched=lambda: launched, read_pane=lambda: (object(), frame),
+                           launched=lambda: launched, read_pane=read_pane,
                            spec=SimpleNamespace(settings={'as': 'claude'}, model_mode='named', model='synthetic-next'))
     folder = tmp_path / 'requests'
     folder.mkdir()
@@ -92,16 +98,27 @@ def test_first_fake_model_input_confirms_only_in_its_new_launch_record(tmp_path)
     def deliver(command, confirm):
         assert confirm is False and record() is None
         commands.append(command)
-        writer.command(command, 'Set model to synthetic-next and saved as your default for new sessions')
         return SimpleNamespace(result='typed')
 
     door = SimpleNamespace(deliver=deliver)
     service.answer = lambda data: Service.begin_model_control(
         service, seat, harness.control('model'), data['value'], door)
     Service.requests(service)
+    done = path.with_suffix('.done')
+    assert not done.exists() and screen_reads == []
+
+    service.answer = lambda data: service.continue_model_control(seat, 'model', data['value'])
+    writer.command(commands[0], 'Set model to synthetic-next and saved as your default for new sessions')
+    model = 'synthetic-prior'
+    Service.requests(service)
+    assert not done.exists() and screen_reads == ['synthetic-prior']
+
+    model = 'synthetic-next'
+    Service.requests(service)
     assert commands == ['/model synthetic-next']
     assert record() == writer.path
-    assert 'record confirmed' in path.with_suffix('.done').read_text()
+    assert screen_reads == ['synthetic-prior', 'synthetic-next']
+    assert done.read_text().endswith('record confirmed · confirmed by screen\n')
     assert not path.exists() and not path.with_suffix('.claimed').exists()
 
     later = Launched('synthetic-later-pane', 456, (post.now() + timedelta(seconds=1)).isoformat(),
