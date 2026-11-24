@@ -338,14 +338,29 @@ def pool_check(pool: Pool) -> Check:
 def fix(ship: Ship, failed: list[Check], tmux: Tmux) -> list[Check]:
     """Open a throwaway seat on the first pool whose program runs, hand it the failures as an order, and wait for its report."""
     searched = program_path()
-    candidates = [(pool, reader) for pool in ship.pools.values() for name in harnesses.NAMES
-                  if keyfile.accepts(reader := harnesses.get(name), pool) is None and shutil.which(reader.program, path=searched)]
+    candidates, refused = [], []
+    for pool in ship.pools.values():
+        for name in harnesses.NAMES:
+            reader = shipmod.program_adapter(ship, harnesses.get(name))
+            if keyfile.accepts(reader, pool) is not None:
+                continue
+            try:
+                if getattr(reader, 'program_pin', None) is not None:
+                    reader.selected_program()
+                elif shutil.which(reader.program, path=searched) is None:
+                    continue
+            except shipmod.ProgramPinError as error:
+                refused.append(str(error))
+                continue
+            candidates.append((pool, reader))
     available = next(((pool, reader) for pool, reader in candidates if keyfile.usable(pool)), None)
     if available is None and candidates:
         # Only pools whose key cannot be read could carry its seat: that is the cause, not a missing program.
         unusable = candidates[0][0]
         return [Check("seat opened", False, f"doctor: its pool {unusable.name}: {keyfile.problem(unusable)}; nothing was started")]
     if available is None:
+        if refused:
+            return [Check("seat opened", False, ' · '.join(dict.fromkeys(refused)))]
         return [Check("seat opened", False, "no declared pool's program is on the PATH, so no seat can be asked; install one first")]
     pool, reader = available
     run = secrets.token_hex(2)

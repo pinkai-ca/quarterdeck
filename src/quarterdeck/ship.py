@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import shutil
 import stat
 import subprocess
 import tomllib
@@ -95,6 +96,48 @@ def program_adapter(ship, adapter):
     """Give a program consumer its ship's pin, if it has one."""
     pins = getattr(ship, "program_pins", None)
     return adapter.with_program_pin(pin) if pins and (pin := pins.get(adapter.name)) is not None else adapter
+
+
+def stage_program_pin(origin: Ship, copied: Ship, program: str) -> None:
+    """Stage a new copy of the verified executable for this program in a disposable ship."""
+    pin = origin.program_pins.get(program)
+    staged = copied.program_pins.get(program)
+    if pin is None and staged is None:
+        return
+    if pin is None or staged is None or (pin.path.name, pin.sha256) != (staged.path.name, staged.sha256):
+        raise ProgramPinError(f"{program} pin declaration changed while preparing the disposable ship. Try again.")
+
+    changed = f"{program} pin {pin.path}: file changed while staging the executable. Restore the declared runtime copy."
+    try:
+        original = pin.path.lstat()
+        pin.verified()
+        staged.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.path.lexists(staged.path):
+            staged.verified()  # identical declarations may share a destination
+            return
+        # Reopen without following links, and copy only the inode the origin verifier saw.
+        directory = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        with ExitStack() as opened:
+            runtime_fd = os.open(origin.runtime, directory)
+            opened.callback(os.close, runtime_fd)
+            programs_fd = os.open('programs', directory, dir_fd=runtime_fd)
+            opened.callback(os.close, programs_fd)
+            fd = os.open(pin.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=programs_fd)
+            with os.fdopen(fd, 'rb') as source:
+                before = os.fstat(fd)
+                if not os.path.samestat(original, before) or original.st_ctime_ns != before.st_ctime_ns:
+                    raise ProgramPinError(changed)
+                with staged.path.open('xb') as target:
+                    shutil.copyfileobj(source, target)
+                    os.fchmod(target.fileno(), 0o500)
+                if os.fstat(fd).st_ctime_ns != before.st_ctime_ns:
+                    raise ProgramPinError(changed)
+    except FileNotFoundError:
+        raise ProgramPinError(
+            f"{program} pin {pin.path}: file is missing. Restore the declared runtime copy."
+        ) from None
+    except OSError as error:
+        raise ProgramPinError(f"{program} pin {pin.path}: could not stage the executable: {error}") from None
 
 
 @dataclass(frozen=True)

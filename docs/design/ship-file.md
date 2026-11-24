@@ -6,6 +6,20 @@ A page of [the design](../DESIGN.md).
 
 `ship.toml` is the ship's only configuration. It declares sessions, seats, workspaces and ways of paying for each program. Loading it validates the declaration without running a program or reading an account. Nothing undeclared runs.
 
+### Program executables
+
+Claude Code and Grok Build support optional executable pins. Copy the release's executable into `runtime/programs/` beside `ship.toml`. The directory must belong to the ship's user and have mode `0700`. The copy must be an owned regular file with mode `0500`. Compute its SHA-256 with `sha256sum` and use all 64 hexadecimal digits in the declaration.
+
+```toml
+[programs.claude]
+path = "runtime/programs/claude-release"
+sha256 = "<64 hexadecimal digits>"
+```
+
+Quarterdeck verifies the copy before each launch and refuses a missing or changed pin. With the table omitted, Claude Code uses the executable on PATH. `qd doctor` reports the declared copy and `qd check claude` runs it in temporary seats. To adopt a new release, stage another copy under a different filename, update the path and digest together in `ship.toml`, then run `qd check claude`. When a seat is ready, `qd restart <seat>` starts the selected copy with its saved conversation.
+
+### Example ship
+
 The example declares a captain, an engineer and Maeve as desk:
 
 ```toml

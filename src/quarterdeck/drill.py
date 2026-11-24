@@ -409,14 +409,23 @@ def temporary_drydock() -> tuple[shipmod.Ship, Tmux, Path]:
 def temporary_copy(ship: shipmod.Ship) -> tuple[shipmod.Ship, Path]:
     """A named ship's declaration copied for the live drill: its real pools and programs, in throwaway
     ``qd-drill`` sessions, with a runtime of its own; the live ship's seats and service are never touched."""
-    folder = Path(tempfile.mkdtemp(prefix="qd-drill-")) / ship.folder.name
-    shutil.copytree(ship.folder, folder, ignore=shutil.ignore_patterns("runtime", ".git"))
-    text = (folder / "ship.toml").read_text()
-    text = shipmod.edit(text, 'ship', 'code', 'checkout')
-    for name, session in ship.sessions.items():
-        text = shipmod.edit(text, f"sessions.{name}", "title", f"qd-drill {session.title}")
-    (folder / "ship.toml").write_text(text)
-    return shipmod.load(folder), folder.parent
+    parent = Path(tempfile.mkdtemp(prefix="qd-drill-"))
+    folder = parent / ship.folder.name
+    try:
+        shutil.copytree(ship.folder, folder, ignore=shutil.ignore_patterns("runtime", ".git"))
+        text = (folder / "ship.toml").read_text()
+        text = shipmod.edit(text, 'ship', 'code', 'checkout')
+        for name, session in ship.sessions.items():
+            text = shipmod.edit(text, f"sessions.{name}", "title", f"qd-drill {session.title}")
+        (folder / "ship.toml").write_text(text)
+        copied = shipmod.load(folder)
+        programs = {spec.for_pool(pool).harness for spec in copied.seats.values() for pool in spec.pools}
+        for program in sorted(programs & (ship.program_pins.keys() | copied.program_pins.keys())):
+            shipmod.stage_program_pin(ship, copied, program)
+        return copied, parent
+    except BaseException:
+        shutil.rmtree(parent)
+        raise
 
 
 def run(ship: shipmod.Ship | None, keep: bool = False) -> tuple[bool, list[str]]:

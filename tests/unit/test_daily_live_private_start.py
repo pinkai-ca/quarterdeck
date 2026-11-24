@@ -51,17 +51,18 @@ print('synthetic observer completed once')
 
 
 @pytest.mark.parametrize('problem', [None, 'wrong digest', 'missing'])
-def test_check_child_uses_a_private_copy_of_the_declared_pin(tmp_path, problem):
+@pytest.mark.parametrize('program', ['grok', 'claude'])
+def test_check_child_uses_a_private_copy_of_the_declared_pin(tmp_path, program, problem):
     origin = ship(tmp_path / 'origin')
     executable = b'#!/bin/sh\nprintf "synthetic pin 1.2.3\\n"\n'
     digest = hashlib.sha256(executable).hexdigest()
     origin.file.write_text(origin.file.read_text() + f'''
-[programs.grok]
-path = "runtime/programs/synthetic-grok"
+[programs.{program}]
+path = "runtime/programs/synthetic-{program}"
 sha256 = "{digest}"
 ''')
     origin = daily_live.shipmod.load(origin.folder)
-    pin = origin.program_pins['grok'].path
+    pin = origin.program_pins[program].path
     pin.parent.mkdir(mode=0o700, parents=True)
     (pin.parent / 'undeclared').write_text('do not copy this file')
     (origin.runtime / 'other').write_text('do not copy this file either')
@@ -80,12 +81,12 @@ from pathlib import Path
 sys.path.insert(0, {str(source)!r})
 from quarterdeck.harness import get
 from quarterdeck.ship import load, program_adapter
-assert sys.argv[1:] == ['--ship', os.environ['QD_SHIP'], 'check', 'grok', '--minimal']
+assert sys.argv[1:] == ['--ship', os.environ['QD_SHIP'], 'check', {program!r}, '--minimal']
 copied = load(Path(sys.argv[2]))
 assert os.environ['QD_TMUX_SOCKET']
-assert copied.program_pins['grok'].sha256 == {digest!r}
-selected = program_adapter(copied, get('grok')).selected_program()
-assert selected == copied.runtime / 'programs' / 'synthetic-grok'
+assert copied.program_pins[{program!r}].sha256 == {digest!r}
+selected = program_adapter(copied, get({program!r})).selected_program()
+assert selected == copied.runtime / 'programs' / 'synthetic-{program}'
 assert not selected.samefile({str(pin)!r})
 assert list(selected.parent.iterdir()) == [selected]
 assert list(copied.runtime.iterdir()) == [selected.parent]
@@ -93,7 +94,7 @@ print(subprocess.check_output([selected, '--version'], text=True).strip())
 ''')
     command.chmod(0o700)
 
-    result = daily_live.invoke(origin, 'grok', tmp_path / 'scratch', str(command))
+    result = daily_live.invoke(origin, program, tmp_path / 'scratch', str(command))
 
     assert result.retained is None
     assert not Path(result.place).exists()
@@ -103,7 +104,7 @@ print(subprocess.check_output([selected, '--version'], text=True).strip())
         assert not Path(result.socket).parent.exists()
     else:
         assert result.exit_code is None and result.socket is None
-        assert f'grok pin {pin}' in result.output
+        assert f'{program} pin {pin}' in result.output
         reason = 'SHA-256 does not match ship.toml' if problem == 'wrong digest' else 'file is missing'
         assert reason in result.output
     if original is None:

@@ -36,9 +36,9 @@ from .claude_background import notification as background_notification, Backgrou
 from .claude_children import Children, fingerprint as children_fingerprint
 
 from .. import durable, seat_files
-from ..ship import Pool, SeatSpec
+from ..ship import Pool, ProgramPin, SeatSpec
 from .base import (Box, ship_template, trimmed, record_fingerprint, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
-                   Turn, Usage, Window, credential, key_environment, merged, when)
+                   Turn, Usage, Window, credential, key_environment, merged, program_version, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
@@ -1174,6 +1174,20 @@ PERMISSION_QUESTION = Interruption("permission prompt", r"Do you want to proceed
 
 
 class ClaudeHarness(Harness):
+    def __init__(self, program_pin: ProgramPin | None = None):
+        self.program_pin = program_pin
+
+    def with_program_pin(self, pin: ProgramPin) -> ClaudeHarness:
+        return type(self)(pin)
+
+    def selected_program(self) -> Path | None:
+        """The verified runtime copy, if declared. Otherwise Claude resolves through PATH."""
+        return self.program_pin.verified() if self.program_pin is not None else None
+
+    def version(self, home: Path | None = None) -> str | None:
+        program = self.selected_program() or self.program
+        return program_version(("env", "DISABLE_AUTOUPDATER=1", str(program), "--version"))
+
     reading_fingerprint = staticmethod(children_fingerprint)
     native_status_stream = True
     box_geometry_known = True  # box_columns below declares the established text area
@@ -1462,7 +1476,8 @@ class ClaudeHarness(Harness):
             "type": "command", "refreshInterval": 30,
             "command": shlex.join([sys.executable, "-I", "-S", str(Path(claude_statusline.__file__).resolve())]),
         }})
-        settings = copy.deepcopy(merged(merged(defaults, template), seat.settings))  # policy cannot mutate shared defaults
+        settings = merged(merged(defaults, template), seat.settings)
+        settings = copy.deepcopy(merged(settings, {"env": SETTINGS["env"]}))  # the updater stays off
         if not seat.human_session:
             permissions = settings.setdefault('permissions', {})
             permissions['deny'] = list(dict.fromkeys([*permissions.get('deny', []), 'AskUserQuestion']))
@@ -1486,7 +1501,8 @@ class ClaudeHarness(Harness):
         return credential(pool, home / self.credential_file, "ANTHROPIC_API_KEY")
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
-        argv = [self.program, "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", seat.display]
+        program = self.selected_program() or self.program
+        argv = [str(program), "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", seat.display]
         if seat.remote_control:
             argv += ["--remote-control", seat.display]  # the same session from the operator's phone, under the seat's name
         if seat.model:
@@ -1497,7 +1513,7 @@ class ClaudeHarness(Harness):
             argv += ["--resume", resume]
         if first:
             argv.append(first)
-        env = {self.home_variable: str(home), **key_environment(pool, "ANTHROPIC_API_KEY")}
+        env = {self.home_variable: str(home), "DISABLE_AUTOUPDATER": "1", **key_environment(pool, "ANTHROPIC_API_KEY")}
         return Launch(tuple(argv), env)
 
     inputs = staticmethod(inputs)

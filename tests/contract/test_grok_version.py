@@ -13,7 +13,7 @@ import pytest
 from quarterdeck import check as live_check, doctor, seat as seat_module
 from quarterdeck.drill import Check
 from quarterdeck.harness import get
-from quarterdeck.harness import base, grok
+from quarterdeck.harness import base, claude, grok
 from quarterdeck.harness.grok import GrokHarness
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship
 
@@ -140,12 +140,14 @@ def test_missing_runtime_uses_filename_without_creating_context(tmp_path, select
 @pytest.mark.parametrize("name", ["claude", "codex", "fake"])
 def test_default_and_synthetic_adapters_keep_no_context_behavior(tmp_path, monkeypatch, name):
     calls = []
-    monkeypatch.setattr(base, "program_version", lambda argv: calls.append(argv) or "synthetic-version")
+    client = claude if name == "claude" else base
+    monkeypatch.setattr(client, "program_version", lambda argv: calls.append(argv) or "synthetic-version")
     parent = runtime(tmp_path)
     adapter = get(name)
     actual = base._version_in_runtime(adapter, parent)
     assert actual == ("fake" if name == "fake" else "synthetic-version")
-    assert calls == ([] if name == "fake" else [(adapter.program, "--version")])
+    prefix = ("env", "DISABLE_AUTOUPDATER=1") if name == "claude" else ()
+    assert calls == ([] if name == "fake" else [(*prefix, adapter.program, "--version")])
     assert [p.name for p in parent.iterdir()] == [".git"]
 
 

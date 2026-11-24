@@ -26,6 +26,8 @@ qd check claude  # prove one harness live on your ship, here Claude Code; spends
 
 An unproven version of a harness still runs, on the newest facts Quarterdeck knows about the harness.
 
+To select a specific Claude Code executable for a ship, copy the release into its `runtime/programs/` folder and declare its path and SHA-256 in [`[programs.claude]`](design/ship-file.md#program-executables). `qd doctor` shows the executable and `qd check claude` proves that copy. When changing releases, copy the next executable to a new path, update the path and digest together, and check it. Run `qd restart <seat>` when the seat is ready to restart. It uses the new executable and resumes the saved conversation.
+
 ## What a harness runs on
 
 A harness runs on a pool, one way of paying:

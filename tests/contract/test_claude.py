@@ -174,7 +174,7 @@ def test_the_launch_carries_our_files_and_nothing_of_the_users(tmp_path: Path):
     launch = harness.launch(seat, pool, home, brief, None, "qd > briefed as chair")
     assert launch.argv == ("claude", "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", "Chair",
                            "--model", "claude-opus-5-5", "--effort", "max", "qd > briefed as chair")
-    assert launch.env == {"CLAUDE_CONFIG_DIR": str(home)}
+    assert launch.env == {"CLAUDE_CONFIG_DIR": str(home), "DISABLE_AUTOUPDATER": "1"}
     resumed = harness.launch(seat, pool, home, brief, "abc-123", None)
     assert resumed.argv[-2:] == ("--resume", "abc-123")
     reachable = harness.launch(replace(seat, remote_control=True), pool, home, brief, None, "qd > briefed as chair")
