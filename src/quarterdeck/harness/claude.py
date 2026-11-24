@@ -488,6 +488,30 @@ def usage_tokens(usage: dict) -> Tokens:
 
 QUEUE_COMPLETION_VERSIONS = frozenset({'2.1.317'})  # crew enqueue/receipt/turn_duration measurements
 
+# The 2.1.331 interactive finalizer omits turn_duration on the simple terminal overload path.
+# The stripped 2.1.330 overload witness corroborates the row and its missing duration.
+TERMINAL_OVERLOAD_VERSION = '2.1.331'
+
+
+def _terminal_overload(entry: dict, message: dict) -> bool:
+    """Recognize the native synthetic error emitted after overload recovery is exhausted."""
+    content = message.get('content')
+    return (entry.get('version') == TERMINAL_OVERLOAD_VERSION
+            and entry.get('isSidechain') is False
+            and entry.get('isApiErrorMessage') is True
+            and entry.get('failedResponseHadNoToolCall') is True
+            and entry.get('error') == 'server_error'
+            and type(entry.get('apiErrorStatus')) is int and entry['apiErrorStatus'] == 529
+            and all(entry.get(key, False) is False for key in
+                    ('isMeta', 'isVirtual', 'apiErrorIsTransient', 'truncatedAfterOutput', 'streamWatchdogGaveUp'))
+            and entry.get('streamCutCause') is None and entry.get('apiError') is None
+            and message.get('model') == '<synthetic>' and message.get('role') == 'assistant'
+            and message.get('type') == 'message'
+            and message.get('stop_reason') == 'stop_sequence' and message.get('stop_sequence') == ''
+            and isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict)
+            and content[0].get('type') == 'text'
+            and isinstance(content[0].get('text'), str) and bool(content[0]['text'].strip()))
+
 
 @dataclass(frozen=True)
 class _QueueSlot:
@@ -641,7 +665,7 @@ class _Reader(JsonLinesReader):
             self.notice_input = None
             self.notice_unanswered = False
             if self.open is not None:
-                self.end(when(entry.get("timestamp")), native_end=True)  # the one entry that says the turn is over
+                self.end(when(entry.get("timestamp")), native_end=True)
                 self.complete_queue(entry)
         elif kind not in ('system', *INPUT_IGNORED):
             self.tools_known = False
@@ -793,6 +817,11 @@ class _Reader(JsonLinesReader):
                 self.end(self.last_input_at, completed=False)  # a later prompt bounds accounting, not terminal evidence
             self.start_turn({"started": self.last_input_at, "input": text, "usage": {}, "tools": [],
                          "reply": "", "model": None, "subagents": self.subagent_turns})
+            session = entry.get('sessionId')
+            if (entry.get('version') == TERMINAL_OVERLOAD_VERSION and entry.get('isSidechain') is False
+                    and entry.get('isMeta', False) is False and message.get('role') == 'user'
+                    and self.last_input_at is not None and isinstance(session, str) and session):
+                self.open['overload_session'] = session
             return
         for block in entry.get("message", {}).get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_result":
@@ -803,9 +832,9 @@ class _Reader(JsonLinesReader):
     def assistant(self, entry: dict) -> None:
         """One entry per content block, all carrying the message's usage and stop reason.
 
-        No stop reason ends the turn: the program may take a queued message into the same
-        turn after an ``end_turn`` block. Only ``turn_duration``, an interruption or the
-        next prompt does.
+        A stop reason alone cannot end a turn: the program may take a queued message into
+        the same turn after an ``end_turn`` block. A measured terminal API error can end
+        the simple turn that produced it without a duration row.
         """
         message = entry.get("message", {})
         self.notice_unanswered = False  # the program has answered: its reply row decides from here
@@ -848,6 +877,7 @@ class _Reader(JsonLinesReader):
             if any(block.get('type') == 'tool_use' for block in message.get('content') or []):
                 self.tools_known = False  # an out-of-turn call is not absent execution
             return
+        overload_at = self._terminal_overload_end(entry, message)
         self.open["model"] = self.model
         key = message.get("id") or entry.get("requestId") or entry.get("uuid") or len(self.open["usage"])
         measured = usage_tokens(message.get("usage"))
@@ -866,6 +896,23 @@ class _Reader(JsonLinesReader):
                 self.open_call(block.get('id'), name, when(entry.get('timestamp')))
             elif block.get("type") == "text" and block.get("text"):
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()
+        if overload_at is not None:
+            self.end(overload_at, native_end=True)
+
+    def _terminal_overload_end(self, entry: dict, message: dict) -> datetime | None:
+        session = self.open.get('overload_session')
+        if (session is None or entry.get('sessionId') != session
+                or self.open['usage'] or self.open['tools'] or self.live_tools
+                or not _terminal_overload(entry, message)):
+            return None
+        at = when(entry.get('timestamp'))
+        if at is not None and at >= self.open['started']:
+            # Check background evidence separately. Unknown rows may independently limit
+            # execution knowledge, and queued input still needs its own receipt.
+            background = self.background.state(State(pending_tools=()))
+            if background.pending_tools == ():
+                return at
+        return None
 
     def end(self, at: datetime | None, *, completed: bool = True, native_end: bool = False) -> None:
         self.notice_input = None

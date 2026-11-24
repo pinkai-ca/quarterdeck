@@ -8,7 +8,7 @@ from weakref import ref
 
 import pytest
 
-from quarterdeck import record_location
+from quarterdeck import idle, record_location
 from quarterdeck.harness import claude, claude_record, json_record, record_file
 from tests.compaction_shapes import Native
 from tests.measure_claude_reader import Case, semantic_digest
@@ -104,6 +104,162 @@ def test_dense_required_rows_preserve_reader_and_accounting_evidence(tmp_path, m
     assert streamed['account_errors'] == []
     assert streamed['totals'] and streamed['attribution']
     json_record.release(case.record)
+
+
+
+def overload_prompt():
+    return dict(type='user', isSidechain=False, version='2.1.331', sessionId='synthetic',
+                uuid='input', parentUuid=None, timestamp='2026-11-23T09:42:05.094Z',
+                message=dict(role='user', content='Synthetic prompt.'))
+
+
+def overload_error():
+    # The stripped 2.1.330 witness supplies the envelope. Candidate program text
+    # supplies the terminal markers and the duration-free interactive path.
+    return dict(type='assistant', isSidechain=False, version='2.1.331', sessionId='synthetic',
+                uuid='error', parentUuid='input', timestamp='2026-11-23T09:43:37.380Z',
+                isApiErrorMessage=True, failedResponseHadNoToolCall=True, error='server_error',
+                apiErrorStatus=529, message=dict(
+                    id='synthetic-error', model='<synthetic>', role='assistant', type='message',
+                    stop_reason='stop_sequence', stop_sequence='',
+                    usage=dict(input_tokens=0, output_tokens=0,
+                               cache_creation_input_tokens=0, cache_read_input_tokens=0),
+                    content=[dict(type='text', text='Synthetic API error.')]))
+
+
+def append_rows(record, *rows):
+    with record.open('a') as stream:
+        for row in rows:
+            stream.write(json.dumps(row) + '\n')
+
+
+@pytest.mark.parametrize('full_read', [False, True], ids=['streaming', 'full'])
+def test_claude_terminal_overload_projects_a_timed_failed_turn(tmp_path, monkeypatch, full_read):
+    record = tmp_path / 'synthetic.jsonl'
+    harness = claude.ClaudeHarness()
+    prompt, error = overload_prompt(), overload_error()
+    append_rows(record, prompt)
+    if full_read:
+        require_full_read(SimpleNamespace(path=record), monkeypatch)
+    assert idle.check(harness.state(record)).dimension == 'turn-open'
+
+    append_rows(record, error, dict(type='last-prompt', sessionId='synthetic', leafUuid='error'))
+    state, turns = harness.reader(record)
+    assert state.projection_usage.compatibility is full_read
+    assert state.turn_open is False and state.pending_tools == ()
+    assert state.completed_turns == tuple(turns) and len(turns) == 1
+    turn, = turns
+    assert turn.input == 'Synthetic prompt.' and turn.reply == 'Synthetic API error.'
+    assert turn.started == state.last_input_at and turn.ended.isoformat() == '2026-11-23T09:43:37.380000+00:00'
+    assert turn.timed and turn.successful is False and turn.tools == ()
+    assert idle.check(state) is None
+
+
+@pytest.mark.parametrize('change', [
+    {'version': '2.1.330'}, {'version': '2.1.332'}, {'version': None},
+    {'isSidechain': True}, {'isSidechain': None}, {'sessionId': 'other'},
+    {'isApiErrorMessage': False}, {'apiErrorStatus': '529'}, {'apiErrorStatus': 529.0},
+    {'apiErrorStatus': 503}, {'error': 'authentication_failed'},
+    {'failedResponseHadNoToolCall': 1}, {'failedResponseHadNoToolCall': None},
+    {'truncatedAfterOutput': True}, {'streamCutCause': 'transport'},
+    {'apiError': 'stream_idle_timeout'}, {'apiErrorIsTransient': True}, {'isVirtual': True},
+    {'timestamp': 'not an ISO timestamp'}, {'timestamp': '2026-11-23T09:42:00Z'},
+    {'message': {'model': 'synthetic-real-model'}}, {'message': {'stop_reason': 'end_turn'}},
+    {'message': {'stop_sequence': 'other'}}, {'message': {'role': 'user'}},
+    {'message': {'content': []}},
+])
+def test_claude_overload_rejects_unmeasured_markers(tmp_path, change):
+    record = tmp_path / 'synthetic.jsonl'
+    error = overload_error()
+    error = ({**error, 'message': {**error['message'], **change['message']}}
+             if 'message' in change else {**error, **change})
+    append_rows(record, overload_prompt(), error)
+    state, turns = claude.ClaudeHarness().reader(record)
+    assert state.turn_open is True and state.completed_turns == () and turns == []
+
+
+
+@pytest.mark.parametrize('change', [{'version': '2.1.317'}, {'isSidechain': None}, {'isMeta': True},
+                                    {'timestamp': None}, {'sessionId': None}])
+def test_claude_overload_requires_an_owning_candidate_prompt(tmp_path, change):
+    record = tmp_path / 'synthetic.jsonl'
+    append_rows(record, {**overload_prompt(), **change}, overload_error())
+    assert claude.state(record).turn_open is True
+
+
+def test_claude_older_overload_still_finishes_on_duration(tmp_path):
+    record = tmp_path / 'synthetic.jsonl'
+    prompt, error = overload_prompt(), overload_error()
+    append_rows(record, dict(prompt, version='2.1.317'), dict(error, version='2.1.317'))
+    assert claude.state(record).turn_open is True
+    append_rows(record, dict(type='system', subtype='turn_duration', version='2.1.317',
+                             timestamp='2026-11-23T09:43:38Z', durationMs=92906))
+    state, turns = claude.read(record)
+    turn, = turns
+    assert state.turn_open is False and state.completed_turns == (turn,)
+    assert turn.successful is False and turn.ended.isoformat() == '2026-11-23T09:43:38+00:00'
+
+
+def test_claude_overload_leaves_queued_input_to_its_own_receipt(tmp_path):
+    record = tmp_path / 'synthetic.jsonl'
+    queue = dict(type='queue-operation', operation='enqueue', sessionId='synthetic',
+                 timestamp='2026-11-23T09:42:07Z', content='Queued synthetic prompt.')
+    append_rows(record, overload_prompt(), queue, overload_error())
+    state = claude.state(record)
+    assert state.turn_open is False and state.turns == 1
+    assert state.queued == (queue['content'],) and state.consumed == ()
+    assert idle.check(state).dimension == 'queue-pending'
+
+    append_rows(record,
+                dict(queue, operation='dequeue', timestamp='2026-11-23T09:43:38Z'),
+                dict(overload_prompt(), uuid='next-input', parentUuid='error',
+                     timestamp='2026-11-23T09:43:39Z', message=dict(role='user', content=queue['content'])))
+    state = claude.state(record)
+    assert state.turn_open is True and state.last_input == queue['content']
+    assert state.queued == () and state.consumed == (queue['content'],)
+    assert state.turns == 1
+
+
+
+def test_claude_overload_does_not_classify_unrelated_rows_as_known_execution(tmp_path):
+    record = tmp_path / 'synthetic.jsonl'
+    append_rows(record, overload_prompt(), dict(type='unclassified-bookkeeping'), overload_error())
+    state = claude.state(record)
+    assert state.turn_open is False and len(state.completed_turns) == 1
+    assert state.pending_tools is None and idle.check(state).dimension == 'tools-unknown'
+
+@pytest.mark.parametrize('earlier', ['ordinary', 'recoverable', 'foreground', 'background'])
+def test_claude_overload_does_not_end_a_turn_with_earlier_response_or_tool_work(tmp_path, earlier):
+    record = tmp_path / 'synthetic.jsonl'
+    prompt, error = overload_prompt(), overload_error()
+    prefix = [prompt]
+    stamp = '2026-11-23T09:42:06Z'
+    if earlier == 'ordinary':
+        prefix.append(dict(type='assistant', timestamp=stamp, message=dict(
+            id='reply', model='synthetic-real-model', role='assistant', stop_reason='end_turn',
+            content=[dict(type='text', text='Synthetic ordinary reply.')])))
+    elif earlier == 'recoverable':
+        prefix.append(dict(error, uuid='early-error', timestamp=stamp, failedResponseHadNoToolCall=False))
+    else:
+        prefix.append(dict(type='assistant', timestamp=stamp, version='2.1.317', message=dict(
+            id='call', role='assistant',
+            content=[dict(type='tool_use', name='Bash', id='call',
+                          input=dict(command='synthetic command', run_in_background=earlier == 'background'))])))
+        if earlier == 'background':
+            prefix[0] = dict(prompt, version='2.1.317')
+            prefix.extend([
+                dict(type='user', timestamp='2026-11-23T09:42:07Z', version='2.1.317',
+                     message=dict(role='user', content=[dict(type='tool_result', tool_use_id='call')]),
+                     toolUseResult=dict(backgroundTaskId='background-task')),
+                dict(type='system', timestamp='2026-11-23T09:42:08Z', subtype='turn_duration'),
+                dict(prompt, timestamp='2026-11-23T09:42:09Z', uuid='next-input', parentUuid='input'),
+            ])
+    append_rows(record, *prefix, error)
+    state = claude.state(record)
+    assert state.turn_open is True
+    if earlier in ('foreground', 'background'):
+        assert state.pending_tools == ('Bash',)
+        assert len(state.active_tools) == 1
 
 
 def test_fallback_read_releases_the_abandoned_projection(tmp_path, monkeypatch):
