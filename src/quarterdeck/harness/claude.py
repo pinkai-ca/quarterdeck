@@ -32,7 +32,8 @@ from .claude_record import entries as entries
 from .claude_record import input_rows, inspect_entries
 from .types import AUTHENTICATION, Inputs, State, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_limits import ExtraUsage, extra_usage_at_refusal, limit_wall, rejected_limit_info
-from .claude_background import notification as background_notification, BackgroundBash, user_notice
+from .claude_background import (notification as background_notification, BackgroundBash, LINKED_VERSION,
+                                TaskNoticeQueue, linked_notice_origin, linked_root, user_notice)
 from .claude_children import Children, fingerprint as children_fingerprint
 
 from .. import durable, seat_files
@@ -158,7 +159,7 @@ def prompt_text(entry: dict) -> str | None:
     and an idle compaction is followed by no reply, so counting it would open a turn nothing closes.
     """
     if (entry.get("type") != "user" or entry.get("isSidechain")
-            or entry.get("isCompactSummary") is True or user_notice(entry)):
+            or entry.get("isCompactSummary") is True or linked_notice_origin(entry) or user_notice(entry)):
         return None
     content = entry.get("message", {}).get("content")
     if isinstance(content, list):
@@ -289,6 +290,7 @@ class _TextlessDequeue:
 def inputs(record: Path, snapshot) -> list[Input]:
     found, queued = Inputs(), []
     dequeue = _TextlessDequeue()
+    task_queue = TaskNoticeQueue(record.stem)
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found, parse=lambda _: snapshot):
         kind = row.get('type')
         if kind in DATA_FLOW_ROWS:
@@ -296,6 +298,9 @@ def inputs(record: Path, snapshot) -> list[Input]:
                 found.skip(line, kind, 'unknown native data-flow metadata')
             continue
         row = dequeue.take(row)
+        private, _ = task_queue.take(row, when(row.get('timestamp')))
+        if private:
+            continue  # the native task queue produces no receipt for a person
         if kind == 'ai-title' and not ai_title(row):
             found.skip(line, 'ai-title', 'unknown title bookkeeping')
             continue
@@ -373,6 +378,8 @@ def inputs(record: Path, snapshot) -> list[Input]:
         except (TypeError, ValueError, AttributeError, KeyError):
             found.skip(line, kind, 'malformed input row')
     found.extend(entry for entry, phase in queued if phase == 'queued')
+    if task_queue.pending is not None or task_queue.unknown:
+        found.skip(0, 'queue-operation', 'task notification queue unresolved')
     return found
 
 
@@ -582,6 +589,7 @@ class _Reader(JsonLinesReader):
         self.textless_dequeue = _TextlessDequeue()
         self.queue_slots = []  # FIFO, including returned drafts and consumed echo identities
         self.queue_version = None
+        self.task_queue = TaskNoticeQueue(record.stem)
         self.background = BackgroundBash(record)
         self.children = Children(record)
         self.metadata_session = None
@@ -599,6 +607,9 @@ class _Reader(JsonLinesReader):
         if state.queue_error is None and any(slot.uncertain and slot.phase in ('queued', 'pending')
                                              for slot in self.queue_slots):
             state = replace(state, queue_error='unknown queue operation')
+        if self.task_queue.pending is not None or self.task_queue.unknown:
+            state = replace(state, pending_tools=None,
+                            queue_error=state.queue_error or 'task notification queue unresolved')
         if self.answering_notice():
             state = replace(state, turn_open=None)
         if self.open is None and self.orphan_auth:
@@ -632,20 +643,35 @@ class _Reader(JsonLinesReader):
         self.children.observe(entry)
         if not entry.get('isSidechain') and 'version' in entry:
             self.queue_version = entry['version']
+        at = when(entry.get('timestamp'))
+        private, evidence = self.task_queue.take(entry, at)
+        if private:
+            if evidence is not None:
+                notice, enqueued_at = evidence
+                if notice.kind == 'bash':
+                    self.background.delivered_to_child(notice, enqueued_at, self.children.compacted_at)
+                else:
+                    self.children.notice(notice, enqueued_at)
+                    if self.open is None:
+                        self.start_turn(dict(started=at, input='', usage={}, tools=[],
+                                             reply='', model=None, subagents=self.subagent_turns))
+                    else:
+                        self.tools_known = False  # the measured notice starts a separate root turn
+            return
         if kind == 'ai-title' and not ai_title(entry):
             self.tools_known = False
             return
         if kind == "assistant":
             info = rejected_limit_info(entry)
             uuid = entry.get("uuid")
-            at = when(entry.get("timestamp")) if info is not None else None
-            wall = limit_wall(info, f"limit:{uuid}" if isinstance(uuid, str) and uuid else f"limit:{len(self.walls)}", at)
+            refusal_at = at if info is not None else None
+            wall = limit_wall(info, f"limit:{uuid}" if isinstance(uuid, str) and uuid else f"limit:{len(self.walls)}", refusal_at)
             if wall is not None:
                 self.walls.append(wall)  # the provider refused work at this limit, whichever branch asked
-            if (reading := extra_usage_at_refusal(info, at)) is not None:
+            if (reading := extra_usage_at_refusal(info, refusal_at)) is not None:
                 self.extra_usage.append(reading)
         if not entry.get('isSidechain'):
-            self.background.observe(entry, when(entry.get('timestamp')))
+            self.background.observe(entry, at)
         if kind == "queue-operation":
             self.queue(entry)
         elif entry.get("isSidechain"):
@@ -825,7 +851,8 @@ class _Reader(JsonLinesReader):
             return
         for block in entry.get("message", {}).get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_result":
-                self.background.result(block.get('tool_use_id'), entry, block, when(entry.get('timestamp')))
+                self.background.result(block.get('tool_use_id'), entry, block, when(entry.get('timestamp')),
+                                       linked=linked_root(entry, self.record.stem))
                 self.children.result(block.get('tool_use_id'), entry, block, when(entry.get('timestamp')))
                 self.close_tool(block.get("tool_use_id"), when(entry.get("timestamp")), bool(block.get("is_error")))
 
@@ -887,12 +914,15 @@ class _Reader(JsonLinesReader):
             if block.get("type") == "tool_use":
                 name = block.get('name', '?')
                 arguments = block.get('input')
-                child = self.children.call(block.get('id'), name, arguments, when(entry.get('timestamp')), entry.get('version'))
+                linked = linked_root(entry, self.record.stem)
+                child = self.children.call(block.get('id'), name, arguments, when(entry.get('timestamp')),
+                                           entry.get('version'), linked=linked)
                 if (block.get('id') in self.live_tools or name in ('Task', 'Agent') and not child
                         or arguments is not None and not isinstance(arguments, dict)
                         or name != 'Bash' and not child and isinstance(arguments, dict) and arguments.get('run_in_background')):
                     self.tools_known = False  # delegation remains opaque; measured Bash has its own lifetime
-                self.background.call(block.get('id'), name, arguments, when(entry.get('timestamp')), entry.get('version'))
+                self.background.call(block.get('id'), name, arguments, when(entry.get('timestamp')),
+                                     entry.get('version'), linked=linked)
                 self.open_call(block.get('id'), name, when(entry.get('timestamp')))
             elif block.get("type") == "text" and block.get("text"):
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()

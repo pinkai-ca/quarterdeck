@@ -1,4 +1,4 @@
-"""Measured Claude Code 2.1.325 child execution, joined to its root conversation.
+"""Measured Claude Code child execution, joined to its root conversation.
 
 A child file proves starts, never an end merely because its parent returned.
 The root's native notices settle its background Bash tasks. Every state reading
@@ -13,7 +13,7 @@ import re
 import stat
 
 from .. import trusted_files
-from .claude_background import BackgroundBash
+from .claude_background import BackgroundBash, LINKED_VERSION, linked_root
 from .claude_record import object_lines
 from .json_record import when
 from .types import ActiveTool
@@ -104,9 +104,14 @@ def blocks(row, kind):
 @dataclass
 class Agent:
     name: str
-    started: object
+    started: datetime
+    version: str
     child: str | None = None
     invalid: bool = False
+    acknowledged: datetime | None = None
+    output: str | None = None
+    finished_at: datetime | None = None
+    compacted: bool = False
 
 
 class Leaf:
@@ -118,6 +123,8 @@ class Leaf:
         self.open = None
         self.ended_at = None
         self.started = None
+        self.version = None
+        self.latest = None
         self.queued = []
         agent = path.stem.removeprefix('agent-')
         skipped = []
@@ -127,12 +134,20 @@ class Leaf:
         for _, row in source:
             kind = row.get('type')
             if kind in ('assistant', 'user'):
+                version = row.get('version')
                 if (row.get('sessionId') != session or row.get('agentId') != agent
-                        or row.get('isSidechain') is not True or row.get('version') != VERSION
+                        or row.get('isSidechain') is not True or version not in (VERSION, LINKED_VERSION)
+                        or self.version is not None and version != self.version
                         or not isinstance(row.get('message'), dict) or row['message'].get('role') != kind):
                     self.known = False
                     continue
+                self.version = version
             at = when(row.get('timestamp'))
+            if self.version == LINKED_VERSION and kind in ('user', 'assistant'):
+                if (at is None or self.latest is not None and at < self.latest
+                        or row.get('isApiErrorMessage') is True):
+                    self.known = False
+                self.latest = at
             if kind == 'assistant':
                 if not isinstance(row['message'].get('content'), list):
                     self.known = False
@@ -145,7 +160,8 @@ class Leaf:
                             or not name or call in self.live or not isinstance(args, dict) or at is None):
                         self.known = False
                         continue
-                    if name in ('Agent', 'Task') or name != 'Bash' and args.get('run_in_background'):
+                    if (name in ('Agent', 'Task') or name != 'Bash' and args.get('run_in_background')
+                            or self.version == LINKED_VERSION and name != 'Bash'):
                         self.known = False  # nested delegation is not a measured join
                     self.live[call] = ActiveTool(name, at)
                     self.call_times[call] = at
@@ -160,6 +176,9 @@ class Leaf:
                 self.started = self.started or at
                 for block in blocks(row, 'tool_result'):
                     call = block.get('tool_use_id')
+                    if self.version == LINKED_VERSION and (call not in self.live
+                            or type(block.get('is_error', False)) is not bool):
+                        self.known = False
                     self.background.result(call, row, block, at)
                     self.live.pop(call, None)
             elif kind == 'queue-operation':
@@ -174,6 +193,10 @@ class Leaf:
                 value = row.get('attachment')
                 if isinstance(value, dict) and value.get('type') == 'task_status' and value.get('taskType') == 'local_bash':
                     self.background.running(value, at, row.get('version'))
+            elif kind == 'data-flow-records' and self.version == LINKED_VERSION:
+                if (type(row.get('v')) is not int or row != dict(type=kind, v=1, sessionId=session,
+                                                               agentId=agent, records=[])):
+                    self.known = False
             elif kind == 'ai-title' and not title_valid(row):
                 self.known = False
             elif kind not in ('system', *ignored):
@@ -187,6 +210,7 @@ class Children:
         self.record = Path(record)
         self.sessions = set()
         self.agents = {}
+        self.compacted_at = None
         self.unknown = False
         self.tasks = {}  # the last projected task phases, including ended-by-relaunch
 
@@ -195,15 +219,31 @@ class Children:
             session = row.get('sessionId')
             if isinstance(session, str) and session:
                 self.sessions.add(session)
+        if row.get('version') != LINKED_VERSION:
+            return
+        if (row.get('type') == 'system' and row.get('subtype') == 'compact_boundary'
+                and linked_root(row, self.record.stem)):
+            self.compacted_at = when(row.get('timestamp'))
+            if self.compacted_at is None:
+                self.unknown = True
+            for agent in self.agents.values():
+                if agent.version == LINKED_VERSION:
+                    agent.compacted = True
+        if row.get('type') == 'attachment':
+            attachment = row.get('attachment')
+            if (isinstance(attachment, dict) and attachment.get('type') == 'task_status'
+                    and attachment.get('status') == 'completed'):
+                self.unknown = True  # the stripped witness lacks this carrier's type and timing
 
-    def call(self, call, name, args, at, version):
+    def call(self, call, name, args, at, version, *, linked=True):
         if name not in ('Agent', 'Task'):
             return False
         # Agent's async form and child layout are measured here; older Task forms stay opaque.
-        supported = (name == 'Agent' and version == VERSION and isinstance(call, str) and bool(call)
+        supported = (name == 'Agent' and (version == VERSION or version == LINKED_VERSION and linked)
+                     and isinstance(call, str) and bool(call)
                      and isinstance(args, dict) and at is not None and call not in self.agents)
         if supported:
-            self.agents[call] = Agent(name, at)
+            self.agents[call] = Agent(name, at, version)
         else:
             self.unknown = True
         return supported
@@ -214,13 +254,33 @@ class Children:
             return
         value = row.get('toolUseResult')
         child = value.get('agentId') if isinstance(value, dict) else None
-        if (row.get('version') == VERSION and isinstance(value, dict) and value.get('isAsync') is True
+        if (row.get('version') == agent.version and isinstance(value, dict) and value.get('isAsync') is True
                 and value.get('status') == 'async_launched' and isinstance(child, str)
                 and re.fullmatch(r'[A-Za-z0-9_-]+', child) is not None and not block.get('is_error', False)
                 and at is not None and at >= agent.started and agent.child is None):
-            agent.child = child
+            if agent.version == LINKED_VERSION:
+                output = value.get('outputFile')
+                if (not linked_root(row, self.record.stem) or not isinstance(output, str) or not 0 < len(output) <= 4096
+                        or any(other.child == child for other in self.agents.values())):
+                    agent.invalid = True
+                    return
+                agent.output = output  # equality with native notice only
+            agent.child, agent.acknowledged = child, at
         else:
             agent.invalid = True
+
+    def notice(self, notice, at):
+        candidates = [(call, agent) for call, agent in self.agents.items() if agent.child == notice.task]
+        if len(candidates) != 1:
+            self.unknown = True
+            return
+        call, agent = candidates[0]
+        if (agent.version != LINKED_VERSION or agent.compacted or agent.output != notice.output
+                or notice.call not in (None, call) or at < agent.acknowledged
+                or agent.finished_at is not None and at < agent.finished_at):
+            self.unknown = True
+            return
+        agent.finished_at = at if notice.kind == 'finished' else None
 
     def project(self, state, background, ignored, title_valid, *, launched_at=None):
         """A fresh view: never mutate the root reader's cached tasks or buffered notices."""
@@ -253,7 +313,7 @@ class Children:
                     view.notice(task, *early)
                 # The background evidence rule: anything seen of the command after the launch, or not dated at
                 # all, holds it; only a command whose evidence all precedes the launch ended with it.
-                if (task.phase == 'pending' and not task.invalid and relaunched is not None
+                if (task.version == VERSION and task.phase == 'pending' and not task.invalid and relaunched is not None
                         and leaf.call_times.get(call) is not None and leaf.call_times[call] < relaunched
                         and not task.undated_evidence
                         and task.other_evidence_at is not None and task.other_evidence_at < relaunched):
@@ -270,6 +330,12 @@ class Children:
             leaf = leaves.get(agent.child)
             settled = (leaf is not None and leaf.known and leaf.open is False and not leaf.live
                        and not leaf.queued and leaf.ended_at is not None and leaf.ended_at >= agent.started)
+            if agent.version == LINKED_VERSION:
+                settled = (settled and leaf.version == agent.version and leaf.started is not None
+                           and leaf.started >= agent.started and agent.finished_at is not None
+                           and agent.finished_at >= max(leaf.ended_at, agent.acknowledged))
+            elif leaf is not None and leaf.version == LINKED_VERSION:
+                settled = False
             if leaf is not None:
                 tasks = [task for key, task in view.tasks.items() if ownership.get(key) == agent.child]
                 settled = settled and all(task.phase in FINISHED and not task.invalid for task in tasks)
@@ -280,6 +346,8 @@ class Children:
                 extra.append(ActiveTool(agent.name, agent.started))
         for identity, leaf in leaves.items():
             extra.extend(leaf.live.values())
+            if leaf.version == LINKED_VERSION and identity not in associated:
+                unknown = True
             if identity not in associated and (leaf.open is not False or leaf.queued):
                 extra.append(ActiveTool('Agent', leaf.started))
         projected = view.state(state, launched_at=launched_at)

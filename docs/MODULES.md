@@ -224,8 +224,8 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | `fake.py` | the fake harness adapter, the reference implementation of the interface; the fake program writes back the launch's startup token once the program has drawn a first screen, which ends a live launch's survival wait early, while a real program's launch keeps the whole wait |
 | `antigravity_models.py` | exact Antigravity scope facts; a model's name alone establishes no quota membership |
 | `check_evidence.py` | bounded tool evidence from a check's own pinned record, never a receipt |
-| `claude_background.py` | Claude Code's root Bash background tasks, apart from turn accounting |
-| `claude_children.py` | Claude Code 2.1.325's subagent records joined to their root: a child's own background commands and its Agent call's lifetime |
+| `claude_background.py` | Claude Code's Bash background tasks and private task-notification queue, apart from turn accounting |
+| `claude_children.py` | Claude Code's measured subagent records and task notices joined to their root Agent call |
 | `claude_held_box.py` | Claude's exact-edge word wraps in the Door's held composer comparison |
 | `claude_limits.py` | Claude's native allowance fields, model families and safe shape diagnostics |
 | `claude_extra_usage.py` | timestamped refusal metadata, status and doctor wording, and durable private Desk notices |

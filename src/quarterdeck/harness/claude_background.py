@@ -11,22 +11,26 @@ from datetime import datetime
 from pathlib import Path
 import re
 
+from .json_record import when
 from .types import ActiveTool
 from ..seat_command import qd_command
 
 
 VERSION = '2.1.317'  # the first version measured for every form below
+LINKED_VERSION = '2.1.331'
 MEASURED = frozenset({VERSION, '2.1.322'})  # 2.1.322 measured the same, form for form, where it appears below
-CALL_VERSIONS = MEASURED | {'2.1.325'}  # root Bash call/result measured on 2.1.325 too
+CALL_VERSIONS = MEASURED | {'2.1.325', LINKED_VERSION}
 STATUS_VERSIONS = MEASURED | {'2.1.325'}  # running local_bash restoration measured on 2.1.325 too
 ERROR_VERSIONS = frozenset({VERSION})  # native failed background invocation with a string result
 EXIT_VERSIONS = frozenset({VERSION, '2.1.325'})  # own root/child process death measured across program exit
-STOP_VERSIONS = frozenset({VERSION, '2.1.325'})  # matching local_bash TaskStop call/result; no 2.1.322 instance measured
+STOP_VERSIONS = frozenset({VERSION, '2.1.325', LINKED_VERSION})
+CHILD_COMPLETION = ('queue-operation', 'delivered_to_agent')
 NOTICE_VERSIONS = {  # a task notification, by its carrier
     ('queue-operation', 'enqueue'): MEASURED | {'2.1.325'},
     ('queue-operation', 'remove'): frozenset({VERSION, '2.1.325'}),  # no 2.1.322 remove carrier measured
     ('user', 'task-notification'): MEASURED | {'2.1.325'},
     ('attachment', 'queued_command'): frozenset({VERSION, '2.1.325'}),  # no 2.1.322 attachment carrier measured
+    CHILD_COMPLETION: frozenset({LINKED_VERSION}),
 }
 TERMINAL = frozenset({'completed', 'failed', 'killed'})
 # The Monitor tool's own notices, measured on 2.1.317 only, on every notice carrier: its call, its result
@@ -141,12 +145,149 @@ def notification(text):
     return fields['tool-use-id'], fields['task-id'], fields['status'], fields.get('note')
 
 
+INTERIM = ('This agent stopped with background work of its own still running. It may resume on its own when that '
+           'work completes or reports, and the same task-id notifies again if it does; the result below may be interim.')
+FINISHED = ('A task-notification fires each time this agent stops with no live background children of its own. '
+            'The user can send it another message and resume it, so the same task-id may notify more than once.')
+AGENT_BODY = re.compile(r'\s*<note>([^<>]*)</note>\s*<result>.*?</result>\s*'
+                        r'<usage><subagent_tokens>\d+</subagent_tokens><tool_uses>\d+</tool_uses>'
+                        r'<duration_ms>\d+</duration_ms></usage>\s*', re.S)
+NOTICE_ENVELOPE = re.compile(r'\s*<task-notification>(.*?)<summary>.*?</summary>(.*)</task-notification>\s*', re.S)
+
+
+@dataclass(frozen=True)
+class TaskNotice:
+    kind: str
+    task: str
+    call: str | None
+    output: str
+
+
+def linked_notice(text):
+    """Only the measured completion envelopes. Descriptions and result text supply no evidence."""
+    envelope = NOTICE_ENVELOPE.fullmatch(text) if isinstance(text, str) else None
+    if envelope is None:
+        return None
+    fields = _header(envelope[1])
+    if not fields or fields.get('status') != 'completed' or not fields.get('task-id') or not fields.get('output-file'):
+        return None
+    base = {'task-id', 'status', 'output-file'}
+    call = fields.get('tool-use-id')
+    if not envelope[2].strip() and set(fields) == base | {'tool-use-id'} and call:
+        return TaskNotice('bash', fields['task-id'], call, fields['output-file'])
+    body = AGENT_BODY.fullmatch(envelope[2])
+    if body is not None:
+        if body[1] == INTERIM and set(fields) == base | {'tool-use-id'} and call:
+            return TaskNotice('interim', fields['task-id'], call, fields['output-file'])
+        if body[1] == FINISHED and set(fields) == base:
+            return TaskNotice('finished', fields['task-id'], None, fields['output-file'])
+    return None
+
+
+def linked_root(entry, session):
+    return entry.get('isSidechain') is False and entry.get('sessionId') == session
+
+
+def native_task_id(value):
+    return isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]+', value) is not None
+
+
+def linked_notice_origin(entry):
+    origin = entry.get('origin')
+    return (entry.get('version') == LINKED_VERSION and entry.get('type') == 'user'
+            and not entry.get('isSidechain') and isinstance(origin, dict) and origin.get('kind') == 'task-notification')
+
+
+def linked_user_notice(entry):
+    if not linked_notice_origin(entry) or entry.get('isSidechain') is not False:
+        return None
+    origin, message, prompt = entry['origin'], entry.get('message'), entry.get('promptId')
+    if (set(origin) != {'kind', 'producer', 'runId'} or origin['producer'] != 'session-task'
+            or not isinstance(origin['runId'], str) or not origin['runId']
+            or entry.get('promptSource') != 'system' or entry.get('rowSource') != 'recorded'
+            or entry.get('turnOrigin') != 'task_notification' or entry.get('queueSkipAttachments') is not True
+            or not isinstance(prompt, str) or not prompt or entry.get('turnPromptId') != prompt
+            or not isinstance(message, dict) or message.get('role') != 'user'):
+        return None
+    notice = linked_notice(message.get('content'))
+    return notice if notice is not None and notice.kind != 'bash' else None
+
+
+@dataclass
+class PendingNotice:
+    notice: TaskNotice
+    text: str
+    at: datetime
+    dequeued_at: datetime | None = None
+
+
+class TaskNoticeQueue:
+    """Read the two private task-notification routes without guessing a human queue slot."""
+
+    def __init__(self, session):
+        self.session = session
+        self.version = None
+        self.pending = None
+        self.unknown = False
+
+    def take(self, entry, at):
+        """Return (private carrier, bound notice). A candidate alone cannot settle anything."""
+        kind = entry.get('type')
+        if entry.get('isSidechain'):
+            return False, None
+        if 'version' in entry:
+            self.version = entry['version']
+        pending = self.pending
+        if linked_notice_origin(entry):
+            notice = linked_user_notice(entry)
+            if (pending is not None and pending.dequeued_at is not None and notice == pending.notice
+                    and linked_root(entry, self.session) and at is not None and at > pending.dequeued_at
+                    and entry['message']['content'] == pending.text):
+                self.pending = None
+                return True, (notice, pending.at)
+            self.pending, self.unknown = None, True
+            return True, None
+        if kind in ('user', 'assistant') or entry.get('subtype') == 'compact_boundary':
+            # A different actual turn or compaction breaks the measured carrier sequence.
+            if pending is not None:
+                self.pending, self.unknown = None, True
+        if kind != 'queue-operation' or self.version != LINKED_VERSION:
+            return False, None
+        text = entry.get('content')
+        keys = {'type', 'operation', 'timestamp', 'sessionId'}
+        operation = entry.get('operation')
+        own = entry.get('sessionId') == self.session
+        if operation == 'enqueue' and (notice := linked_notice(text)) is not None:
+            if own and at is not None and set(entry) == keys | {'content'} and pending is None:
+                self.pending = PendingNotice(notice, text, at)
+            else:
+                self.pending, self.unknown = None, True
+            return True, None
+        if pending is None:
+            return False, None
+        timed = own and at is not None and at > pending.at
+        if (timed and operation == 'dequeue' and set(entry) == keys
+                and pending.notice.kind != 'bash' and pending.dequeued_at is None):
+            pending.dequeued_at = at
+            return True, None
+        if (timed and operation == 'remove' and set(entry) == keys | {'content', 'reason'}
+                and entry.get('reason') == 'delivered_to_agent' and pending.notice.kind == 'bash'
+                and pending.text == text):
+            self.pending = None
+            return True, (pending.notice, pending.at)
+        self.pending, self.unknown = None, True
+        # A different queue operation stays with the ordinary queue reader.
+        return False, None
+
+
 def user_notice(entry):
     """A measured native notice is program input, separate from its task's execution evidence.
 
     Only the known user-row carrier is set aside. Text alone, an unfamiliar origin,
     version, status or payload remains ordinary/unclassified input, never an idle proof.
     """
+    if entry.get('version') == LINKED_VERSION:
+        return linked_user_notice(entry) is not None
     origin = entry.get('origin')
     known_origin = origin == {'kind': 'task-notification'}
     if entry.get('version') == '2.1.325' and isinstance(origin, dict):
@@ -222,11 +363,14 @@ class BackgroundBash:
         self.early = {}
         self.version = None  # queue carriers inherit the nearest preceding explicit record version
 
-    def call(self, call, name, arguments, at, version):
+    def call(self, call, name, arguments, at, version, *, linked=True):
         if name == 'Monitor' and isinstance(call, str) and call and version in MONITOR_VERSIONS:
             self.monitor_calls.add(call)
             return
         if name not in ('Bash', 'TaskStop'):
+            return
+        if version == LINKED_VERSION and not linked:
+            self.unbound = True
             return
         if not isinstance(call, str) or not call or not isinstance(arguments, dict):
             self.unbound = True
@@ -240,7 +384,7 @@ class BackgroundBash:
         if name == 'Bash' and (not isinstance(wanted, bool) or wanted and version not in CALL_VERSIONS):
             self.unknown_calls.add(call)
 
-    def result(self, call, entry, block, at):
+    def result(self, call, entry, block, at, *, linked=True):
         if call in self.monitor_calls:
             result = entry.get('toolUseResult')
             task = result.get('taskId') if isinstance(result, dict) else None
@@ -255,6 +399,8 @@ class BackgroundBash:
         result = entry.get('toolUseResult')
         allowed = CALL_VERSIONS if name == 'Bash' else STOP_VERSIONS
         supported = version in allowed and entry.get('version') == version
+        if version == LINKED_VERSION:
+            supported = supported and linked
         if name == 'Bash':
             if (version in ERROR_VERSIONS and supported and wanted is True
                     and block.get('is_error') is True and isinstance(result, str)
@@ -266,6 +412,7 @@ class BackgroundBash:
             if not advertised and not wanted:
                 return  # ordinary foreground completion remains the ordinary reader's evidence
             if (not supported or not isinstance(task, str) or not task or block.get('is_error', False)
+                    or version == LINKED_VERSION and (wanted is not True or not native_task_id(task))
                     or at is None or called_at is None or at < called_at
                     or call in self.tasks or task in self.task_calls):
                 self.unknown_calls.add(call)
@@ -285,6 +432,10 @@ class BackgroundBash:
                 or result.get('task_id') != wanted or at is None or called_at is None or at < called_at):
             self.unbound = True
             return
+        if version == LINKED_VERSION and (not isinstance(wanted, str) or not wanted or re.fullmatch(
+                rf'Successfully stopped task: {re.escape(wanted)} \(.+\)', result['message'], re.S) is None):
+            self.unbound = True
+            return
         target = self.task_calls.get(wanted) if isinstance(wanted, str) else None
         if target is None:
             if wanted in self.monitor_tasks:
@@ -292,7 +443,16 @@ class BackgroundBash:
                 return  # the known Monitor owns this local_bash success, never a Bash task
             self.unbound = True
             return
-        self.end(self.tasks[target], 'task-stop', at)
+        task = self.tasks[target]
+        if LINKED_VERSION in (version, task.version) and (task.version != version or called_at < task.started):
+            self.invalidate(task, 'unmeasured-or-conflicting-task-stop')
+            return
+        self.end(task, 'task-stop', at)
+
+    def delivered_to_child(self, notice, at, compacted_at):
+        # Only the child projection can bind a delivered_to_agent carrier to its own Bash start.
+        self.early.setdefault(notice.call, []).append((notice.task, 'completed', None, at,
+                                                       LINKED_VERSION, CHILD_COMPLETION, compacted_at))
 
     def invalidate(self, task, reason):
         task.phase, task.invalid = 'unknown', True
@@ -386,11 +546,15 @@ class BackgroundBash:
                 self.seen(self.tasks[target], at)
                 self.invalidate(self.tasks[target], 'unparsed-task-notification')
 
-    def notice(self, task, identity, status, note, at, version, carrier):
+    def notice(self, task, identity, status, note, at, version, carrier, compacted_at=None):
         resumed = (status == 'stopped' and note in RESUME_NOTES
                    and version in RESUME_VERSIONS.get(carrier, ()))
         supported = (task.task == identity and version in NOTICE_VERSIONS.get(carrier, ())
                      and at is not None and task.called_at is not None and at >= task.called_at)
+        if version == LINKED_VERSION or task.version == LINKED_VERSION:
+            supported = (supported and version == task.version == LINKED_VERSION
+                         and at >= task.acknowledged_at
+                         and (compacted_at is None or task.called_at > compacted_at))
         terminal = (status in TERMINAL and (note is None or (
                     status == 'killed' and note == REAPED and version in REAPED_VERSIONS.get(carrier, ()))))
         if supported and terminal and task.phase == 'ended' and not task.invalid and task.terminal == status:

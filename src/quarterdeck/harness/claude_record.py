@@ -49,7 +49,7 @@ MIRROR = 'toolUseResult'
 # These top-level fields are read by the task, monitor and child interpreters.
 # An unexpected type is evidence too, including any values nested inside it.
 MIRROR_EVIDENCE = frozenset(('taskId', 'agentId', 'isAsync', 'status', 'backgroundTaskId',
-                             'task_type', 'message', 'task_id'))
+                             'task_type', 'message', 'task_id', 'outputFile'))
 IMAGE_FIELDS = frozenset(('data', 'base64'))
 IMAGE_FORMATS = IMAGE_TYPES | {'png', 'jpeg', 'jpg', 'webp', 'gif'}
 SCHEMA_KEYS = MIRROR_EVIDENCE | IMAGE_FIELDS | frozenset((
