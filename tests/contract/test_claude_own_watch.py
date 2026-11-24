@@ -3,14 +3,17 @@
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import io
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import door, human_wake, idle, inbox_watch, input_receipt, post, recovery, relaunch_intent, resting_failover
-from quarterdeck.harness import claude
-from quarterdeck.seat_command import qd_command
+from quarterdeck import door, human_wake, idle, inbox_watch, input_receipt, post, post_retirement, presentation
+from quarterdeck import recovery, relaunch_intent, resting_failover, watch, watch_absorption
+from quarterdeck.harness import claude, claude_background, claude_watch
+from quarterdeck.seat_command import qd_command, watch_instruction
 from quarterdeck.service import Service
 
 AT = datetime(2034, 1, 2, tzinfo=timezone.utc)
@@ -66,7 +69,12 @@ def typed(seconds, prompt, text):
 def started_watch():
     first = origin(NEW)
     first[0] = typed(0, 'prompt-first', 'Arm the inbox watch.')
-    first[2]['promptId'] = 'prompt-first'
+    first[1]['uuid'] = 'watch-call'
+    first[2].update(promptId='prompt-first', sourceToolAssistantUUID='watch-call', parentUuid='watch-call')
+    first[2]['toolUseResult'].update(stdout='', stderr='', interrupted=False, isImage=False, noOutputExpected=False)
+    first[2]['message']['content'][0]['content'] = (
+        f'Command running in background with ID: {TASK}. Output is being written to: {OUT}. '
+        + claude_background.BASH_ACK_GUIDANCE)
     return first
 
 
@@ -394,6 +402,7 @@ def test_an_immediate_watch_completion_starts_its_real_callback_turn(tmp_path):
     assert len(ended) == 1
     state, turns = claude.read(record(tmp_path, rows))
     assert state.turn_open is False and idle.check(state) is None
+    assert getattr(state, 'absorbed_watch', None) is None
     assert [turn.input for turn in turns] == ['Arm the inbox watch.', '']
     assert [entry.text for entry in claude.inputs(path)] == ['Arm the inbox watch.']
     assert not claude.inputs(path).skipped
@@ -453,6 +462,182 @@ def absorbed():
     ]
 
 
+@pytest.fixture
+def absorbed_batch(tmp_path, monkeypatch):
+    cwd, runtime = tmp_path / 'workspace', tmp_path / 'runtime'
+    slug = str(cwd).replace('/', '-')
+    tmp = tmp_path / 'native-tasks'
+    monkeypatch.setattr(claude_watch, 'TASKS_TMP', tmp)
+    root = tmp / f'claude-{os.getuid()}'
+    root.mkdir(mode=0o700, parents=True)
+    artifact = root / slug / SESSION / 'tasks' / f'{TASK}.output'
+    artifact.parent.mkdir(parents=True)
+    path = record_path(tmp_path).parent.with_name(slug) / f'{SESSION}.jsonl'
+    path.parent.mkdir(parents=True)
+    first = started_watch()
+    first[2]['cwd'] = str(cwd)
+    transcript = [json.dumps(r).replace(OUT, str(artifact)) for r in first + absorbed()]
+    path.write_text('\n'.join(transcript) + '\n')
+    launched = SimpleNamespace(version=NEW, when=AT - timedelta(seconds=1), pane='%1', pid=123)
+    ship = SimpleNamespace(runtime=runtime, cwd_of=lambda _: cwd)
+    seat = SimpleNamespace(name='quill', session=SimpleNamespace(human=True), ship=ship, spec=object(),
+                           launched=lambda: launched, pane=lambda: SimpleNamespace(dead=False, in_mode=False),
+                           lookup_record=lambda: path, harness=claude.ClaudeHarness())
+    store, attempts = post.Store(runtime), post.Attempts(runtime)
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=4.5))
+    posts = [store.new('order', 'captain', seat.name, 'first private body', subject='private subject'),
+             store.new('question', 'captain', seat.name, 'second private body')]
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=5))
+    messages, opened = post.wait_batch(runtime, seat.name, stop_after=0)
+    rendering = post.typed(messages) + watch_instruction(qd_command(tmp_path, 'inbox', '--wait')) + '\n'
+    proof = inbox_watch.print_proof(runtime, opened, rendering, io.StringIO())
+    post.printed(runtime, opened, proof=proof)
+    artifact.write_bytes(rendering.encode() + b'[exited with code 0]\n')
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=25))
+    return SimpleNamespace(seat=seat, path=path, launched=launched, runtime=runtime, artifact=artifact,
+                           root=root, rendering=rendering, store=store, attempts=attempts, posts=posts)
+
+
+def absorption_lines(batch):
+    return watch_absorption.alerts({batch.seat.name: batch.seat}, batch.store, batch.attempts.all())
+
+
+def test_a_complete_absorbed_batch_publishes_through_post_refresh(absorbed_batch, monkeypatch):
+    batch = absorbed_batch
+    first, second = batch.posts
+    seat = batch.seat
+    ship = seat.ship
+    ship.file = batch.runtime.parent / 'ship.toml'
+    ship.file.touch()
+    collection = watch.Collection(ship, None, [seat], [], {}, {}, {}, {}, {})
+    monkeypatch.setattr(watch, 'service_state', lambda _: 'ok')
+    monkeypatch.setattr(presentation.servicectl, 'read_heartbeat', lambda _: (os.getpid(), 0))
+    monkeypatch.setattr(presentation.servicectl, 'alive', lambda _: True)
+
+    def publish():
+        assert presentation.publish_collected(ship, None, ['synthetic'], batch.store, batch.attempts,
+                                              kept=collection)[0] is True
+        return (ship.runtime / presentation.NAME).read_text()
+
+    initial = publish()
+    line = json.loads(initial)['line']
+    assert all(f'quill: {message.short} absorbed mid-turn, not taken up' in line for message in batch.posts)
+    assert 'private body' not in initial and 'private subject' not in initial
+    batch.store.new('ack', seat.name, 'captain', 'taken up', re=first.id)
+    after_ack = publish()
+    assert first.short not in after_ack and second.short in after_ack
+    assert batch.store.is_open(first)
+    batch.store.new('answer', seat.name, 'captain', 'answered', re=second.id)
+    assert 'absorbed mid-turn' not in publish()
+    assert batch.attempts.latest() == {message.id: 'watch' for message in batch.posts}
+
+
+def test_a_retired_batch_member_still_proves_the_other_open_post(absorbed_batch):
+    batch = absorbed_batch
+    first, second = batch.posts
+    batch.store.new('report', batch.seat.name, 'captain', 'done', re=first.id)
+    attempt, = batch.attempts.for_message(first.id)
+    generation = post.watch_reading(batch.runtime, batch.seat.name).generation
+    companion = inbox_watch._evidence_folder(batch.runtime, generation) / attempt.path.name
+    evidence = companion.read_bytes()
+    service = SimpleNamespace(runtime=batch.runtime)
+    post_retirement._batch(service, batch.seat.name, {attempt.path.name: attempt}, [], lambda: None,
+                           dict(attempts=0, journals=0), {})
+    assert not attempt.path.exists()
+    assert batch.attempts.for_message(first.id)[0].result == 'watch'
+    assert companion.read_bytes() == evidence
+    assert json.loads(evidence)['print']['size'] == len(batch.rendering.encode())
+    assert absorption_lines(batch) == [f'quill: {second.short} absorbed mid-turn, not taken up']
+
+
+def test_another_sender_or_sibling_reply_cannot_clear_a_linked_post(absorbed_batch):
+    batch = absorbed_batch
+    first, second = batch.posts
+    batch.store.new('ack', 'someone-else', 'captain', 'claimed elsewhere', re=first.id)
+    batch.store.new('answer', batch.seat.name, 'captain', 'answered', re=second.id)
+    assert absorption_lines(batch) == [f'quill: {first.short} absorbed mid-turn, not taken up']
+
+
+def test_an_earlier_ack_does_not_cover_the_printed_attempt(absorbed_batch, monkeypatch):
+    batch = absorbed_batch
+    first, second = batch.posts
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=4.8))
+    batch.store.new('ack', batch.seat.name, 'captain', 'earlier acknowledgment', re=first.id)
+    assert absorption_lines(batch) == [f'quill: {message.short} absorbed mid-turn, not taken up'
+                                       for message in (first, second)]
+
+
+@pytest.mark.parametrize('fault', [
+    'busy', 'down', 'armed', 'rearmed-then-stopped', 'crew', 'old-launch', 'older-release', 'missing-owned-record',
+    'missing-receipt', 'missing-companion', 'incomplete-companion', 'wrong-companion-generation',
+    'wrong-companion-identity', 'wrong-companion-digest', 'missing-artifact', 'bad-prefix',
+    'missing-final-newline', 'extra-native-newline',
+    'wrong-task-path', 'wrong-cwd', 'wide-root', 'short-artifact', 'wrong-exit-code', 'unlinked-ack',
+])
+def test_incomplete_watch_absorption_evidence_is_unasserted(absorbed_batch, fault):
+    batch = absorbed_batch
+    watch_path = post.watch_file(batch.runtime, batch.seat.name)
+    if fault == 'busy':
+        with batch.path.open('a') as stream:
+            stream.write(json.dumps(typed(25, 'new-turn', 'Still working.')) + '\n')
+    elif fault == 'down':
+        batch.seat.pane = lambda: None
+    elif fault == 'armed':
+        watch_path.write_text(f'{os.getpid()} {stamp(25)}\n')
+    elif fault == 'rearmed-then-stopped':
+        watch_path.with_name('watch-generation').write_text('f' * 32 + '\n')
+    elif fault == 'crew':
+        batch.seat.session.human = False
+    elif fault == 'old-launch':
+        batch.launched.when = AT + timedelta(seconds=3)
+    elif fault == 'older-release':
+        batch.launched.version = OLD
+    elif fault == 'missing-owned-record':
+        batch.seat.lookup_record = lambda: None
+    elif fault == 'missing-receipt':
+        batch.attempts.all()[0].path.unlink()
+    elif 'companion' in fault:
+        generation = post.watch_reading(batch.runtime, batch.seat.name).generation
+        first = batch.attempts.all()[0]
+        companion = inbox_watch._evidence_folder(batch.runtime, generation) / first.path.name
+        data = json.loads(companion.read_text())
+        if fault == 'missing-companion':
+            companion.unlink()
+        elif fault == 'incomplete-companion':
+            data['print'] = None
+        elif fault == 'wrong-companion-generation':
+            data['generation'] = 'f' * 32
+        elif fault == 'wrong-companion-identity':
+            data['at'] = stamp(4)
+        elif fault == 'wrong-companion-digest':
+            data['print']['sha256'] = 'f' * 64
+        if companion.exists():
+            companion.write_text(json.dumps(data))
+        assert batch.attempts.latest() == {message.id: 'watch' for message in batch.posts}
+    elif fault == 'missing-artifact':
+        batch.artifact.unlink()
+    elif fault == 'wrong-task-path':
+        batch.path.write_text(batch.path.read_text().replace('/tasks/', '/elsewhere/'))
+    elif fault == 'wrong-cwd':
+        batch.seat.ship.cwd_of = lambda _: batch.root
+    elif fault == 'wide-root':
+        batch.root.chmod(0o755)
+    elif fault == 'unlinked-ack':
+        batch.path.write_text(batch.path.read_text().replace('"sourceToolAssistantUUID": "watch-call"',
+                                                              '"sourceToolAssistantUUID": "other-call"'))
+    elif fault == 'bad-prefix':
+        batch.artifact.write_bytes(b'!' + batch.artifact.read_bytes()[1:])
+    elif fault == 'missing-final-newline':
+        batch.artifact.write_bytes(batch.rendering.removesuffix('\n').encode() + claude_watch.NATIVE_TAIL)
+    elif fault == 'extra-native-newline':
+        batch.artifact.write_bytes(batch.rendering.encode() + b'\n' + claude_watch.NATIVE_TAIL)
+    elif fault == 'wrong-exit-code':
+        batch.artifact.write_bytes(batch.rendering.encode() + b'[exited with code 1]\n')
+    else:
+        batch.artifact.write_bytes(batch.artifact.read_bytes()[:-1])
+    assert absorption_lines(batch) == []
+
+
 @pytest.mark.parametrize('enqueue_written_first', [False, True])
 def test_a_busy_watch_outlives_the_remove_until_the_same_turn_has_a_timed_end(tmp_path, enqueue_written_first):
     busy = absorbed()
@@ -472,6 +657,8 @@ def test_a_busy_watch_outlives_the_remove_until_the_same_turn_has_a_timed_end(tm
     state = harness.state(path)
     assert [(task.phase, task.terminal) for task in reader.background.task_states()] == [('ended', 'completed')]
     assert state.turn_open is False and state.turns == 2
+    assert (state.absorbed_watch.task, state.absorbed_watch.output, state.absorbed_watch.enqueued_at) == (
+        TASK, OUT, AT + timedelta(seconds=6))
     assert state.queued == state.consumed == state.pending_tools == state.active_tools == ()
     assert [entry.text for entry in harness.inputs(path)] == ['Arm the inbox watch.', 'Run foreground work.']
     assert not harness.inputs(path).skipped

@@ -611,6 +611,7 @@ class Facts:
     unsettled: int = 0  # typed into a turn that ended in a recorded error: unacted or uncertain
     needs_human: list[str] = field(default_factory=list)
     unarmed: list[str] = field(default_factory=list)
+    watch_absorptions: list[str] = field(default_factory=list)
     walls: list[str] = field(default_factory=list)
     disks: list[tuple[str, int]] = field(default_factory=list)
     login: list[tuple[str, str]] = field(default_factory=list)
@@ -1156,8 +1157,9 @@ def _replay(reading: Collection) -> dict:
 
 @resting_failover.reading_pass()
 def _post_fields(ship, store, attempts, post_held, records, latest, waiting, reading: Collection) -> dict:
-    """Every Facts field read from the post alone, beside the seats' replayed appends."""
+    """Post-dependent facts, beside the seats' replayed appends."""
     from . import cascade_runtime, group_post, relaunch_intent, structure_outcome, fleet_post
+    from . import watch_absorption
     now = post.now()
     oldest = min(waiting, key=lambda message: message.at, default=None)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
@@ -1171,6 +1173,7 @@ def _post_fields(ship, store, attempts, post_held, records, latest, waiting, rea
         oldest=int((now - oldest.at).total_seconds() // 60) if oldest else 0,
         oldest_waiting_seat=oldest.to if oldest else None,
         blind=sum(result == 'blind' for result in latest.values()),
+        watch_absorptions=watch_absorption.alerts(resolved, store, records),
         unsettled=_unsettled(store, latest),
         queued=len(queued),
         oldest_queued=int(max(((now - a.when).total_seconds() for a in queued), default=0) // 60),

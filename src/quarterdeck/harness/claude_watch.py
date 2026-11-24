@@ -1,14 +1,20 @@
-"""Recorded watch output consumed by a tool, for attribution only, never a receipt.
+"""Claude's watch output evidence for attribution and passive status.
 
 A background inbox command names its output file. Only an exact read of that file
 with one recorded origin supplies a candidate envelope; the caller verifies the
-whole envelope against immutable posts. No output file is opened here.
+whole envelope against immutable posts. Passive status reads only the task's
+owned output artifact, after the adapter proves its measured absorption.
 """
 
+import hashlib
+import os
+from pathlib import Path
 import re
+import stat
 import shlex
 from collections import defaultdict
 
+from . import record_file
 from .claude_record import BACKGROUND_HEADER, WATCH_HEADER, inspect_entries
 from .json_record import when
 from .types import Input
@@ -99,3 +105,66 @@ def inputs(record):
         if raw.startswith(WATCH_HEADER):
             found.append(Input(raw, at, 'watch'))
     return found
+
+
+TASKS_TMP = Path('/tmp')
+NATIVE_TAIL = b'[exited with code 0]\n'
+DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def artifact_matches(cwd, record, absorbed, proof):
+    """Read just the path the launch, owned record, Bash result and notice agree on."""
+    from .claude_background import native_task_id
+
+    slug = str(cwd).replace('/', '-')
+    if (str(cwd) != absorbed.cwd or not cwd.is_absolute() or record.parent.name != slug
+            or not native_task_id(record.stem) or not native_task_id(absorbed.task)):
+        return False
+    uid = os.getuid()
+    root = TASKS_TMP / f'claude-{uid}'
+    parts = (slug, record.stem, 'tasks')
+    path = root.joinpath(*parts, f'{absorbed.task}.output')
+    if str(path) != absorbed.output:
+        return False
+    size = proof['size']
+    raw = _read_artifact(root, parts, path, uid, size + len(NATIVE_TAIL))
+    return (raw is not None and raw[size:] == NATIVE_TAIL
+            and hashlib.sha256(raw[:size]).hexdigest() == proof['sha256'])
+
+
+def _read_artifact(root, parts, path, uid, size):
+    folder = os.open(root, DIRECTORY)
+    try:
+        info = os.fstat(folder)
+        if info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700:
+            return None
+        for part in parts:
+            child = os.open(part, DIRECTORY, dir_fd=folder)
+            os.close(folder)
+            folder = child
+            if os.fstat(folder).st_uid != uid:
+                return None
+        named = os.stat(path.name, dir_fd=folder, follow_symlinks=False)
+        if (named.st_uid != uid or not stat.S_ISREG(named.st_mode) or named.st_nlink != 1
+                or named.st_size != size):
+            return None
+        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+        descriptor = os.open(path.name, flags, dir_fd=folder)
+        try:
+            opened = os.fstat(descriptor)
+            if _stamp(opened) != _stamp(named):
+                return None
+            raw = record_file.read_from(descriptor, opened, path, size)
+            current = os.stat(path.name, dir_fd=folder, follow_symlinks=False)
+            if len(raw) == size and _stamp(opened) == _stamp(os.fstat(descriptor)) == _stamp(current):
+                return raw
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(folder)
+    return None
+
+
+def _stamp(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mode, info.st_uid, info.st_nlink,
+            info.st_mtime_ns, info.st_ctime_ns)

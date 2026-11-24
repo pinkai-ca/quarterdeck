@@ -35,7 +35,7 @@ from .claude_record import input_rows, inspect_entries
 from .types import AUTHENTICATION, Inputs, State, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_limits import ExtraUsage, extra_usage_at_refusal, limit_wall, rejected_limit_info
 from .claude_background import (notification as background_notification, BackgroundBash, BRIDGE_EVENT_ID, LINKED_VERSION,
-                                BashRelaunchQueue, TaskNoticeQueue, WatchCompletionQueue,
+                                AbsorbedWatch, BashRelaunchQueue, TaskNoticeQueue, WatchCompletionQueue,
                                 bridge_link_event, bridge_pointer, bridge_status, linked_notice_origin,
                                 linked_root, native_task_id, user_notice)
 from .claude_children import Children, fingerprint as children_fingerprint
@@ -851,6 +851,7 @@ def _wall_clock() -> datetime:
 @dataclass(frozen=True)
 class _ClaudeState(State):
     extra_usage: tuple[ExtraUsage, ...] = ()
+    absorbed_watch: AbsorbedWatch | None = None
 
 
 class _Reader(JsonLinesReader):
@@ -909,8 +910,9 @@ class _Reader(JsonLinesReader):
             state = replace(state, turn_open=None)
         if self.open is None and self.orphan_auth:
             state = replace(state, failure=self.orphan_auth)
-        if self.extra_usage:
-            return _ClaudeState(**vars(state), extra_usage=tuple(self.extra_usage))
+        absorbed = None if self.unterminated is not None else self.watch_completion.absorbed_watch()
+        if self.extra_usage or absorbed is not None:
+            return _ClaudeState(**vars(state), extra_usage=tuple(self.extra_usage), absorbed_watch=absorbed)
         return state
 
     def answering_notice(self) -> bool:
@@ -2060,6 +2062,14 @@ class ClaudeHarness(Harness):
     def attribution_inputs(self, record: Path) -> list[Input]:
         from .claude_watch import inputs as watch_inputs
         return self.inputs(record) + watch_inputs(record)
+
+    def inbox_watch_absorption(self, record, cwd, launch, state, proof, attempted_at):
+        from .claude_watch import artifact_matches
+
+        absorption = getattr(state, 'absorbed_watch', None)
+        return (launch.version == LINKED_VERSION and absorption is not None and launch.when <= absorption.called_at
+                and all(absorption.acknowledged_at <= at <= absorption.enqueued_at for at in attempted_at)
+                and artifact_matches(cwd, record, absorption, proof))
 
     @staticmethod
     def _access_expiry(value: int | float) -> float:

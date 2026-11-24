@@ -314,6 +314,8 @@ class WatchOrigin:
     description: str
     output: str
     prompt: str | None
+    exact_acknowledgement: bool = False
+    cwd: str | None = None
 
 
 @dataclass(frozen=True)
@@ -491,7 +493,11 @@ class BackgroundBash:
             if (watch and own_call and linked and wanted is True and native_task_id(call) and native_task_id(task)
                     and isinstance(description, str) and description
                     and (output := watch_output(block, task)) is not None):
-                origin = WatchOrigin(command, description, output, entry.get('promptId'))
+                exact = (version == LINKED_VERSION and called_at < at
+                         and bash_acknowledgement(entry, block, task, call, call_row, command, description) is not None)
+                cwd = entry.get('cwd')
+                origin = WatchOrigin(command, description, output, entry.get('promptId'), exact,
+                                     cwd if isinstance(cwd, str) else None)
             ack = None
             if version == LINKED_VERSION and not watch and own_call and linked and called_at < at:
                 ack = bash_acknowledgement(entry, block, task, call, call_row, command, description)
@@ -1196,6 +1202,16 @@ class WatchCompletion:
     parent_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class AbsorbedWatch:
+    task: str
+    output: str
+    called_at: datetime
+    acknowledged_at: datetime
+    enqueued_at: datetime
+    cwd: str | None
+
+
 class WatchCompletionQueue:
     """Only the two measured dispositions for a completed root inbox watch."""
 
@@ -1207,6 +1223,16 @@ class WatchCompletionQueue:
         self.foreground = None
         self.pending = None
         self.unknown = False
+        self.absorbed = None
+
+    def absorbed_watch(self):
+        if self.absorbed is None:
+            return None
+        task, at = self.absorbed
+        if (task.invalid or task.undated_evidence or task.call in self.background.unknown_calls
+                or not task.watch.exact_acknowledgement):
+            return None
+        return AbsorbedWatch(task.task, task.watch.output, task.called_at, task.acknowledged_at, at, task.watch.cwd)
 
     def take(self, row, at, *, queue_empty, task_queue_empty):
         """Return ordinary, private, or the start of a native callback turn."""
@@ -1397,6 +1423,8 @@ class WatchCompletionQueue:
 
     def end(self, pending):
         self.background.end(pending.task, 'completed', pending.enqueued_at)
+        if pending.phase == 'finish':
+            self.absorbed = pending.task, pending.enqueued_at
         self.pending = None
 
 

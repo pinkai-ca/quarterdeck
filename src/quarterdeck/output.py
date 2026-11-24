@@ -53,12 +53,14 @@ def with_default_ship(result: Any, name: str) -> Any:
     return Reading({**shape, "default_ship": name}, lambda _: first(result))
 
 
-def emit(result: Any, *, json_output: bool = False, completed_act: bool = False) -> bool:
+def emit(result: Any, *, json_output: bool = False, completed_act: bool = False,
+         emitted: Callable[[str], None] | None = None) -> bool:
     """Render, write and flush; receipt-bearing callers keep the strict default.
 
     Only a caller whose act already has its outcome may tolerate a broken output
     pipe. Return true only for complete output (including no document), false for
     a tolerated broken pipe. Rendering and other output failures still raise.
+    The optional observer receives the complete document after a successful flush.
     """
     if result is None:
         return True
@@ -81,4 +83,6 @@ def emit(result: Any, *, json_output: bool = False, completed_act: bool = False)
             raise
         closed_pipe.silence('stdout')
         return False
+    if emitted is not None:
+        emitted(document)
     return True

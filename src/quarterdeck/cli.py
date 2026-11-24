@@ -119,10 +119,10 @@ def handoff(args: argparse.Namespace, argv: list[str]) -> None:
         os.environ.pop(HANDED, None)  # reached only when this qd runs the verb itself
 
 
-def emit(args: argparse.Namespace, result: Any, *, completed_act: bool = False) -> bool:
+def emit(args: argparse.Namespace, result: Any, *, completed_act: bool = False, emitted=None) -> bool:
     if getattr(args, "default_ship", None) and result is not None:
         result = output.with_default_ship(result, args.default_ship)
-    return output.emit(result, json_output=args.json, completed_act=completed_act)
+    return output.emit(result, json_output=args.json, completed_act=completed_act, emitted=emitted)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1185,10 +1185,17 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     batch = Reading(data, lambda data: (data.get("standing_orders_changed", "")
                                         + post.typed(data["messages"], second=second)
                                         + instruction))
-    emit(args, batch)  # serialization, output and flush must all succeed before the receipt
+    from . import inbox_watch
+    proof = None
+
+    def emitted(document):
+        nonlocal proof
+        proof = inbox_watch.print_proof(ship.runtime, opened, document, sys.stdout)
+
+    emit(args, batch, emitted=None if args.json else emitted)  # output and flush precede the receipt
     if validate is not None:
         validate()
-    post.printed(ship.runtime, opened)
+    post.printed(ship.runtime, opened, proof=proof)
     if changed:
         try:
             brief_change.mark(ship.runtime, seat, changed[1])

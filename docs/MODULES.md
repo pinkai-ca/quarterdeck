@@ -145,7 +145,7 @@ The modules that the framework table does not list, the module of each part amon
 | `group_post.py` | declared groups: a fixed fanout to the members, and one terminal notice |
 | `human_wake.py` | the one fixed waking line for a human seat, through the door, once per watch |
 | `idle.py` | the one live idle proof that relaunch, failover and selection share |
-| `inbox_watch.py` | a seat's own inbox watch: its registration and its live generation |
+| `inbox_watch.py` | a seat's own inbox watch, its live generation and its retained attempt and print evidence |
 | `jail_end.py` | a seat's sandbox ends whole: its tree and orphans at the stop, a hold where they do not end, and the sweep of a stray sandbox |
 | `jail_environment.py` | what an environment may hold, named once: the jail's allowlist, the unjailed panes' and the service's declared lists, the pattern of names that look secret, and the launcher that starts each jail from bwrap's `--clearenv` |
 | `key_launch.py` | the launcher that puts a pool's key into its program, on no process's command line |
@@ -207,6 +207,7 @@ The modules that the framework table does not list, the module of each part amon
 | `tmux_socket.py` | creator evidence and serialization for the ship's private tmux endpoints |
 | `unconfirmed_alert.py` | the alarm for a seat whose earlier launch left a delivery unconfirmed, raised through the common alarms |
 | `watch.py` | the Watch: a seat's activity and door, and the status line |
+| `watch_absorption.py` | joins accepted inbox watch output to its completed native task for a passive status alert |
 | `watch_broker.py` | a jailed seat's inbox watch, kept by the service on the seat's behalf, so that nothing under `runtime/post` is writable inside the jail |
 | `write_bound.py` | the write-bound alarm: a jailed seat whose writable folders pass their bound, walked by descriptors in a thread of the service's own, has its jail killed and is held down until a person's word for it |
 
@@ -233,7 +234,7 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | `claude_screen_forms.py` | Claude Code's measured startup and transcript stops and empty retry hint for the door and launch check |
 | `claude_statusline.py` | Claude Code's default footer, run as a standalone standard-library script |
 | `claude_record.py` | guarded streaming Claude JSON lines, bounded retained native evidence and raw prefix proof |
-| `claude_watch.py` | recorded watch output that a tool consumed, for attribution only, never a receipt |
+| `claude_watch.py` | recorded watch output for attribution and the exact native task artifact for passive status |
 | `closed_record.py` | whether a payload is absent from a closed launch's record |
 | `codex_usage.py` | Codex usage windows, from one snapshot dated by its record event |
 | `compactions.py` | a complete snapshot of the current record and its work frontier, for fresh readiness |

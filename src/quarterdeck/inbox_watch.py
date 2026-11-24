@@ -15,9 +15,106 @@ import secrets
 import signal
 import stat
 
-from . import trusted_files
-from . import durable, post
+from . import durable, post, post_dir, trusted_files
 from .procstat import EXITED
+from .ship import ShipError
+
+
+PRINT_BOUND = 1 << 20
+EVIDENCE_BOUND = 4096
+
+
+def batch_digest(names):
+    """Bind a print to the exact set of immutable attempt filenames."""
+    return hashlib.sha256(json.dumps(sorted(names), separators=(',', ':')).encode('ascii')).hexdigest()
+
+
+def print_proof(runtime, attempts, document, stream):
+    """Remember the emitted document's digest and size after stdout flushes."""
+    if not attempts or len(document) > PRINT_BOUND:
+        return None
+    try:
+        token = generation(runtime, attempts[0].seat)
+        raw = document.encode(stream.encoding or 'utf-8', stream.errors or 'strict')
+    except (OSError, ValueError, LookupError):
+        return None
+    if not 0 < len(raw) <= PRINT_BOUND:
+        return None
+    return dict(generation=token, batch=batch_digest(a.path.name for a in attempts), size=len(raw),
+                sha256=hashlib.sha256(raw).hexdigest())
+
+
+def _hex(value, width):
+    return isinstance(value, str) and len(value) == width and all(c in '0123456789abcdef' for c in value)
+
+
+def valid_print(proof, generation):
+    return (isinstance(proof, dict) and proof.keys() == {'generation', 'batch', 'size', 'sha256'}
+            and _hex(generation, 32) and proof['generation'] == generation
+            and type(proof['size']) is int and 0 < proof['size'] <= PRINT_BOUND
+            and _hex(proof['batch'], 64) and _hex(proof['sha256'], 64))
+
+
+def _evidence_folder(runtime, generation):
+    # Independent of the attempt's active or retired location. Only the trusted
+    # post writer can publish here, including for an offer made by the broker.
+    return runtime / 'post' / 'watch-evidence' / generation
+
+
+def _evidence(attempt, generation, proof=None):
+    return dict(attempt=attempt.path.name, seat=attempt.seat, message=attempt.message, at=attempt.at,
+                generation=generation, print=proof)
+
+
+def _read_evidence(path):
+    return json.loads(post_dir.read_text(path, limit=EVIDENCE_BOUND))
+
+
+def retain_open(runtime, attempt, generation):
+    """Publish optional evidence before the open attempt leaves the writer's lock."""
+    if not _hex(generation, 32):
+        return
+    try:
+        path = _evidence_folder(runtime, generation) / attempt.path.name
+        durable.replace_file(path, json.dumps(_evidence(attempt, generation)) + '\n')
+    except (OSError, ShipError):
+        pass  # this evidence serves only the passive status alert
+
+
+def retain_print(runtime, attempt, proof):
+    """Bind a flushed print to the original opened attempt, before accepting it."""
+    token = proof.get('generation') if isinstance(proof, dict) else None
+    if not valid_print(proof, token):
+        return
+    try:
+        path = _evidence_folder(runtime, token) / attempt.path.name
+        if _read_evidence(path) == _evidence(attempt, token):
+            durable.replace_file(path, json.dumps(_evidence(attempt, token, proof)) + '\n')
+    except (OSError, ShipError, ValueError, RecursionError):
+        pass  # acceptance belongs to the ordinary attempt and receipt
+
+
+def accepted_batch(runtime, generation, attempts):
+    """Find every accepted member of this generation and verify its exact print proof."""
+    if not _hex(generation, 32):
+        return [], None
+    batch, proof = [], None
+    try:
+        for path in post_dir.json_paths(_evidence_folder(runtime, generation)):
+            attempt = attempts.get(path.name)
+            evidence = _read_evidence(path)
+            candidate = evidence.get('print') if isinstance(evidence, dict) else None
+            if (attempt is None or attempt.result != 'watch' or not valid_print(candidate, generation)
+                    or evidence != _evidence(attempt, generation, candidate)
+                    or (proof is not None and candidate != proof)):
+                return [], None
+            batch.append(attempt)
+            proof = candidate
+    except (OSError, ShipError, ValueError, RecursionError):
+        return [], None
+    if proof is None or proof['batch'] != batch_digest(a.path.name for a in batch):
+        return [], None
+    return sorted(batch, key=lambda a: (a.at, a.path.name)), proof
 
 
 def process(pid):

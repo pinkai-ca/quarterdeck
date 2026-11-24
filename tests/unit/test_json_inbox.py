@@ -2,6 +2,7 @@
 
 import io
 import json
+import hashlib
 
 import pytest
 
@@ -99,10 +100,11 @@ def test_wait_batch_receipts_follow_successful_output_only(inbox, monkeypatch, j
     target = Destination()
     original_printed = post.printed
 
-    def printed(runtime, opened):
+    def printed(runtime, opened, *, proof):
         assert events[-1] == "flush"
         # The complete document is available before any receipt is accepted.
         if json_output:
+            assert proof is None
             data = json.loads(target.getvalue())
             assert [m["id"] for m in data["messages"]] == [m.id for m in messages]
             assert [m["body"] for m in data["messages"]] == [m.body for m in messages]
@@ -114,8 +116,11 @@ def test_wait_batch_receipts_follow_successful_output_only(inbox, monkeypatch, j
             assert text.endswith('To re-arm your inbox watch, run this command in the background.\n'
                                  + qd_command(folder, 'inbox', '--wait') + '\n')
             assert 'Finish your current task, then read and act on the delivered messages.' in text
+            raw = text.encode()
+            assert proof['size'] == len(raw) and proof['sha256'] == hashlib.sha256(raw).hexdigest()
+            assert proof['generation'] == post.watch_reading(runtime, 'desk').generation
         events.append("receipt")
-        original_printed(runtime, opened)
+        original_printed(runtime, opened, proof=proof)
 
     monkeypatch.setattr(post, "printed", printed)
     # Failure before writing can arise from JSON serialization or a text renderer.

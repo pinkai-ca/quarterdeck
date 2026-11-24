@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import io
 import json
 import os
+import subprocess
+import sys
+import tarfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from quarterdeck import post, ship_locks, watch_broker
+import pytest
+
+from quarterdeck import inbox_watch, post, post_retirement, ship_locks, watch_broker
 
 
 def service(runtime: Path):
@@ -82,6 +88,109 @@ def test_a_held_attempts_lock_skips_the_seat_without_an_attempt(tmp_path: Path):
     finally:
         os.close(held)
     assert svc.attempts.for_message(message.id) == [], 'no attempt was opened'
+
+
+@pytest.mark.parametrize('fault', [None, 'missing-receipt-print', 'wrong-message', 'wrong-batch', 'wrong-generation'])
+def test_the_broker_preserves_a_flushed_print_proof_only_for_its_exact_offer(tmp_path: Path, fault):
+    runtime = tmp_path / 'runtime'
+    svc = service(runtime)
+    generation, lease = armed(runtime, 'desk')
+    seat = SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime))
+    try:
+        for body in ('first synthetic post', 'second synthetic post'):
+            svc.store.new('order', 'captain', seat.name, body)
+        watch_broker.run(svc, seat)
+        opened = svc.attempts.all()
+        assert len(opened) == 2 and all(a.result is None for a in opened)
+        proof = inbox_watch.print_proof(runtime, opened, 'synthetic printed batch\n', io.StringIO())
+        watch_broker.receipt(runtime, opened, proof=proof)
+        receipt = post.watch_file(runtime, seat.name).parent / watch_broker.RECEIPTS / opened[0].path.name
+        data = json.loads(receipt.read_text())
+        if fault == 'missing-receipt-print':
+            data.pop('print')
+        elif fault == 'wrong-message':
+            data['message'] = opened[1].message
+        elif fault == 'wrong-batch':
+            data['print']['batch'] = inbox_watch.batch_digest([opened[0].path.name])
+        elif fault == 'wrong-generation':
+            data['print']['generation'] = 'f' * 32
+        receipt.write_text(json.dumps(data))
+        watch_broker.run(svc, seat)
+        accepted = {a.path.name: a for a in svc.attempts.all()}
+        assert [a.result for a in accepted.values()] == ['watch'] * 2
+        assert inbox_watch.accepted_batch(runtime, generation, accepted) == (
+            ([], None) if fault else (list(accepted.values()), proof))
+    finally:
+        os.close(lease)
+
+
+ROLLBACK_BASE = '5b999ce8236f01ae9c04f854204c46c4719564b3'
+OLDER_WATCH_READERS = '''
+import sys
+from pathlib import Path
+from quarterdeck import post, watch_broker
+
+runtime, phase = Path(sys.argv[1]), sys.argv[2]
+assert Path(post.__file__).is_relative_to(Path(sys.argv[3]))
+service = watch_broker.CheckHost(runtime)
+brokered, direct = (service.attempts.for_message(identifier)[0] for identifier in sys.argv[4:6])
+assert direct.result == 'watch'
+if phase == 'offered':
+    assert brokered.result is None
+    offer = watch_broker.read_offer(runtime, brokered.seat)
+    assert watch_broker._attempt(runtime, brokered.path.name) == brokered
+    watch_broker._settle(service, brokered.seat, offer)
+    brokered, = service.attempts.for_message(brokered.message)
+    assert brokered.result == 'watch'
+    assert not (watch_broker.seat_folder(runtime, brokered.seat) / watch_broker.RECEIPTS / brokered.path.name).exists()
+else:
+    for attempt in (brokered, direct):
+        assert attempt.path.parent == runtime / 'post' / 'retired' / 'attempts'
+        assert watch_broker._attempt(runtime, attempt.path.name) == attempt
+assert service.attempts.latest() == {direct.message: 'watch', brokered.message: 'watch'}
+'''
+
+
+def test_new_watch_attempts_and_receipts_can_be_read_and_settled_after_rollback(tmp_path):
+    # Archive the actual preceding package, rather than restating its schema in a test double.
+    older = tmp_path / 'older'
+    source = subprocess.check_output(['git', 'archive', ROLLBACK_BASE, 'src/quarterdeck'],
+                                     cwd=Path(__file__).parents[2])
+    with tarfile.open(fileobj=io.BytesIO(source)) as archive:
+        archive.extractall(older, filter='data')
+    older_source = older / 'src'
+    runtime = tmp_path / 'runtime'
+    svc = service(runtime)
+    brokered = svc.store.new('order', 'captain', 'reader', 'synthetic brokered rollback post')
+    direct = svc.store.new('order', 'captain', 'direct', 'synthetic direct rollback post')
+    generation, lease = armed(runtime, brokered.to)
+    try:
+        watch_broker.run(svc, SimpleNamespace(name=brokered.to, ship=SimpleNamespace(runtime=runtime)))
+        opened = svc.attempts.for_message(brokered.id)
+        proof = inbox_watch.print_proof(runtime, opened, 'synthetic broker output\n', io.StringIO())
+        assert proof['generation'] == generation
+        watch_broker.receipt(runtime, opened, proof=proof)
+    finally:
+        os.close(lease)
+    messages, opened = post.wait_batch(runtime, direct.to, stop_after=0)
+    proof = inbox_watch.print_proof(runtime, opened, post.typed(messages), io.StringIO())
+    post.printed(runtime, opened, proof=proof)
+
+    env = {**os.environ, 'PYTHONPATH': str(older_source), 'PYTHONDONTWRITEBYTECODE': '1'}
+
+    def old(phase):
+        result = subprocess.run([sys.executable, '-c', OLDER_WATCH_READERS, str(runtime), phase,
+                                 str(older_source), brokered.id, direct.id], cwd=older, env=env,
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr + result.stdout
+
+    old('offered')
+    for attempt in svc.attempts.all():
+        assert attempt.result == 'watch'
+        post_retirement._batch(svc, attempt.seat, {attempt.path.name: attempt}, [], lambda: None,
+                               dict(attempts=0, journals=0), {})
+        assert not attempt.path.exists()
+    old('retired')
 
 
 def test_only_an_offered_open_attempt_of_this_seat_is_closed_by_a_receipt(tmp_path: Path):

@@ -253,13 +253,15 @@ def wait(runtime: Path, seat: str, interval: float, stop_after: float | None, va
             lease.close()
 
 
-def receipt(runtime: Path, attempts: list[post.Attempt]) -> None:
+def receipt(runtime: Path, attempts: list[post.Attempt], *, proof=None) -> None:
     """After the print: one receipt per attempt, in the seat's own folder, for the service to close."""
     for attempt in attempts:
         folder = seat_folder(runtime, attempt.seat) / RECEIPTS
         folder.mkdir(parents=True, exist_ok=True)
-        durable.replace_file(folder / attempt.path.name,
-                             json.dumps(dict(format=1, attempt=attempt.path.name, message=attempt.message)) + '\n')
+        data = dict(format=1, attempt=attempt.path.name, message=attempt.message)
+        if proof is not None:
+            data['print'] = proof
+        durable.replace_file(folder / attempt.path.name, json.dumps(data) + '\n')
 
 
 # -- the service's side --------------------------------------------------------------------------------------------
@@ -370,7 +372,8 @@ def _run(service, seat) -> None:
             waiting = service.attempts.undelivered(service.store, name)  # one listing per check, as a waiting watch's
         if not waiting:
             return
-        opened = [service.attempts.open(message, name, None, None, None, wait=WAIT) for message in waiting]  # law: one-door
+        opened = [service.attempts.open(message, name, None, None, None, wait=WAIT,
+                                        watch_generation=data['generation']) for message in waiting]  # law: one-door
         durable.replace_file(offer_path(runtime, name), json.dumps(dict(
             format=1, seat=name, generation=data['generation'], messages=[m.id for m in waiting],
             attempts=[a.path.name for a in opened])) + '\n')
@@ -396,8 +399,11 @@ def _settle(service, name: str, offer: dict | None) -> None:
 
 
 def _settle_in(service, name: str, offer: dict | None, folder: int) -> None:
+    from . import inbox_watch
+
     where = seat_folder(service.store.dir.parent.parent, name) / RECEIPTS
     offered = set(offer['attempts']) if offer is not None else set()
+    batch = inbox_watch.batch_digest(offered) if offered else None
     with os.scandir(folder) as entries:
         names = [(entry.name, entry.is_file(follow_symlinks=False)) for entry in entries]
     for entry, regular in names:
@@ -413,7 +419,11 @@ def _settle_in(service, name: str, offer: dict | None, folder: int) -> None:
                 and entry in offered):
             attempt = _attempt(service.store.dir.parent.parent, entry)
         if attempt is not None and attempt.seat == name and attempt.result is None:
-            service.attempts.close(attempt, 'watch', 'printed by qd inbox --wait', wait=WAIT)
+            proof = data.get('print')
+            if (data.get('message') != attempt.message or not inbox_watch.valid_print(proof, offer['generation'])
+                    or proof['batch'] != batch):
+                proof = None
+            service.attempts.close(attempt, 'watch', 'printed by qd inbox --wait', wait=WAIT, watch_print=proof)
             service.log('watch-receipt', seat=name, message=attempt.message)
         elif attempt is None or attempt.result is not None:
             service.log('watch-receipt-ignored', seat=name, receipt=entry)

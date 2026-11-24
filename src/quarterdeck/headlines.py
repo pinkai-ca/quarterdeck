@@ -125,6 +125,7 @@ def sections(facts, *, detailed=False) -> Headline:
         _count(facts.blind, 'blind'),
         _count(facts.unsettled, 'unsettled', f'{facts.unsettled} unsettled after an error'),
         _named(facts.unarmed, 'unarmed', lambda name: f'{name}: no watch armed'),
+        _named(facts.watch_absorptions, 'absorbed inbox messages', singular='absorbed inbox message'),
         _named(facts.pending, 'pending'),
         _named(facts.post_held, 'post holds', singular='post hold'),
         _named(facts.post_waits, 'post waits', singular='post wait'),

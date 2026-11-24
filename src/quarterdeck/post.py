@@ -1600,7 +1600,7 @@ class Attempts:
             yield
 
     def open(self, message: Message, seat: str, pane: str | None, pid: int | None, launched_at: str | None, *,
-             wait: float | None = None) -> Attempt:
+             wait: float | None = None, watch_generation: str | None = None) -> Attempt:
         with self._locked(wait):
             at = now()
             prefix = f'{message.id}-'
@@ -1615,9 +1615,13 @@ class Attempts:
             durable._replace_law_record(attempt.path, json.dumps(data, indent=2) + "\n")
             from . import shutdown
             shutdown.opened(self.dir.parent.parent, attempt)
+            if watch_generation is not None:
+                from . import inbox_watch
+                inbox_watch.retain_open(self.dir.parent.parent, attempt, watch_generation)
         return attempt
 
-    def close(self, attempt: Attempt, result: str, detail: str = "", *, wait: float | None = None) -> Attempt:
+    def close(self, attempt: Attempt, result: str, detail: str = "", *, wait: float | None = None,
+              watch_print: dict | None = None) -> Attempt:
         with self._locked(wait):
             source = attempt_path(self.dir.parent.parent, attempt.path.name)
             current = Attempt(**json.loads(post_dir.read_text(source)), path=source)
@@ -1628,6 +1632,9 @@ class Attempts:
             done = replace(attempt, result=result, detail=detail)
             if done == current:
                 return current  # current disk data only; no durability/repair assertion
+            if watch_print is not None and result == 'watch' and current.result is None and attempt == current:
+                from . import inbox_watch
+                inbox_watch.retain_print(self.dir.parent.parent, current, watch_print)
             self._write(done)
             return done
 
@@ -2131,7 +2138,8 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
                 with reading_pass(store=store, attempts=attempts):
                     waiting = attempts.undelivered(store, seat, results=look.latest())
                 if waiting:
-                    opened = [attempts.open(message, seat, None, None, None) for message in waiting]
+                    opened = [attempts.open(message, seat, None, None, None,
+                                            watch_generation=registration['generation']) for message in waiting]
                     return waiting, opened
             if deadline is not None and datetime.now().timestamp() > deadline:
                 return None
@@ -2150,15 +2158,15 @@ def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | No
     return (typed(batch[0]), batch[1]) if batch is not None else None
 
 
-def printed(runtime: Path, opened: list[Attempt]) -> None:
+def printed(runtime: Path, opened: list[Attempt], *, proof=None) -> None:
     """Close a watch's attempts once their text has reached the seat.
 
     A jailed watch cannot write them: its receipts go in its own seat folder, and the service closes them.
     """
     from . import watch_broker
     if watch_broker.needed(runtime):
-        watch_broker.receipt(runtime, opened)
+        watch_broker.receipt(runtime, opened, proof=proof)
         return
     attempts = Attempts(runtime)
     for attempt in opened:
-        attempts.close(attempt, "watch", "printed by qd inbox --wait")
+        attempts.close(attempt, "watch", "printed by qd inbox --wait", watch_print=proof)
