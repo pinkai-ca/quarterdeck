@@ -47,6 +47,8 @@ def inputs(ship):
         resting_failover.FILE,
         operational_notices.DIRECTORY,
     )]
+    if getattr(ship, "release_sources", ()):
+        paths.extend(runtime / "program-releases" / source / "state.json" for source in ship.release_sources)
     from . import trusted_files
     for name in sorted(ship.seats):
         paths += [runtime / 'post/pending' / name, runtime / 'post/drop' / name]

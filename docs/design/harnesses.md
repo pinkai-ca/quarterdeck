@@ -61,6 +61,46 @@ Launch controls apply when starting. In-session controls leave their visible com
 
 Claude Code 2.1.317's model answer is Enter on the highlighted, exact-display Yes option, at the measured 120×40 styled frame with hidden composer/cursor. Expected display comes from the fresh exact home catalog, without picker overrides. Confirmation requires the linked caveat, exact command and successful result after the saved complete-row byte boundary in the same unchanged-prefix record. Display alone, old results, unsupported geometry/style or missing command linkage cannot confirm it. The synthetic adapter uses its own linked command/result form; an initially unjoined synthetic control may observe a joined result but grants no dialog key. On any other Claude Code version the model control answers nothing, so a change to a seat's model holds untyped, its request waiting on the status line. Measure the model control on a new version, and admit it in the adapter, before the crew runs that version.
 
+### Claude Code native publisher provenance
+
+The stager follows the native installer for the `latest` version pointer
+and the uncompressed native executable path. Anthropic documents the
+detached `manifest.json.sig`, the release key, and the SHA-256 in each
+platform entry. [Native installer](https://claude.ai/install.sh)
+[Binary integrity and code signing](https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing)
+
+The source is `https://downloads.claude.ai`. For the selected version, the
+stager reads the signed manifest, its detached signature, and
+`/keys/claude-code.asc`. The downloaded public key and GnuPG's valid-signature
+status must both name the documented fingerprint
+`31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`. GnuPG uses an empty private
+keyring and verifies the manifest's original bytes.
+
+Requests use system curl and the system TLS trust store, conditional GET for
+`latest`, and HTTPS redirects within that origin. The subprocess environment
+contains only its private home, the system path, and a fixed locale. Header
+blocks share a 64 KiB budget per request, including any interim responses.
+The stager stops curl if the header stream exceeds that budget. Each request
+is recorded in `runtime/program-releases/claude/requests.jsonl` with
+its URL, HTTP status, received byte count and SHA-256. A process interrupted
+during a transfer may leave only the durable attempt reservation and receipts
+from preceding requests.
+
+The stager supports glibc Linux x86-64 and arm64 with system curl, GnuPG, and a
+filesystem that supports Linux atomic no-replace rename. The signed manifest
+must match the requested version and platform and name a `claude` executable
+with a size and SHA-256. Each metadata response is bounded, an executable is
+limited to 1 GiB, and requests share a five-minute transfer budget. The
+download checks free space against the ship's disk floor and reads back the
+synchronized executable to recompute the digest. The private
+`runtime/programs/.claude-stage` directory holds incomplete attempts. The
+published release directory and executable both have mode `0500`.
+
+The `latest` pointer relies on HTTPS for delivery and freshness. The
+OpenPGP signature covers the named release and its platform digest. Linux
+code integrity relies on that signature and digest. Key rotation, a different
+release channel or new origins require review. [Candidate record and adoption](ship-file.md#publisher-release-staging)
+
 ### Selections and explicit defaults
 
 `harness/capabilities.py` owns pure effort/default metadata. Capabilities distinguish levels, none, unknown and synthetic unrestricted text; complete vocabulary and exact-version measurement are separate. Pi's complete vocabulary is off/minimal/low/medium/high/xhigh, measured on 0.74.2; OpenCode has no seat effort control. Other CLI vocabularies remain unmeasured until established. Catalog/model support cannot be inferred from a level.

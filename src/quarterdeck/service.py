@@ -304,6 +304,19 @@ class Service:
             self.loop_stamp('pass_end')
             self.structure_passes.finish()
             self.log_parse_cache()
+        if getattr(self.ship, 'release_sources', ()):
+            self.loop_stamp('program_releases')
+            try:
+                self.stage_program_releases()
+            except Exception as error:
+                self.log('error', step='program_releases', error=watch_cause(error))
+
+    def stage_program_releases(self) -> None:
+        from .harness.claude_release import Schedule
+
+        if getattr(self, 'release_schedule', None) is None:
+            self.release_schedule = Schedule()
+        self.release_schedule.tick(self.ship)
 
     def log_parse_cache(self) -> None:
         """The record cache's size, read once a pass, so its bound is seen live (harness/json_record). It is written

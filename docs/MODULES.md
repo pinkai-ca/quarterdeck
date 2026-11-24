@@ -63,6 +63,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `antigravity_quota.py` | the Antigravity record's quota facts |
 | `antigravity_record.py` | the Antigravity record decoded from its snapshot |
 | `antigravity_wire.py` | the Antigravity record's wire format |
+| `claude_release.py` | Claude Code native publisher discovery, signed manifest verification and immutable candidate staging in private ship runtime |
 | `capabilities.py` | what each adapter declares of its harness's efforts and defaults, the checks of a seat's `model` and `effort` against that, and the words for a program's own default |
 | `composer_frames.py` | a program's own composer frame, as its adapter's screen reader names it, so the systems seat's guard never takes it for a dialog's frame and reads the question above it |
 | `costs.py` | an endpoint program's step costs: what its record states, what stated rates prove, and what stays unpriced |

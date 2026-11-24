@@ -18,6 +18,41 @@ sha256 = "<64 hexadecimal digits>"
 
 Quarterdeck verifies the copy before each launch and refuses a missing or changed pin. With the table omitted, Claude Code uses the executable on PATH. `qd doctor` reports the declared copy and `qd check claude` runs it in temporary seats. To adopt a new release, stage another copy under a different filename, update the path and digest together in `ship.toml`, then run `qd check claude`. When a seat is ready, `qd restart <seat>` starts the selected copy with its saved conversation.
 
+### Publisher release staging
+
+A ship can opt in to staging releases published through the Claude Code native
+`latest` channel.
+
+```toml
+[ship]
+release_sources = ["claude"]
+```
+
+The declaration can name only this source. An omitted or empty list leaves
+discovery off. A configured source requires a versioned active pin, for example
+`runtime/programs/claude-2.1.317`, to decide which releases are newer. The
+service schedules one independent background job at a time. An attempt reserves
+its next discovery time on disk before any request. The minimum interval is
+one hour, with failure delays doubling to at most 24 hours. The reservation
+uses elapsed time across service restarts within the same Linux boot and the
+system wall clock across reboots. Disabled sources start no new work.
+
+The ship reads `runtime/program-releases/claude/state.json` for this source.
+After a successful staging or deduplication, `pending` identifies one candidate
+by `version`, `platform`, `path`, `sha256`, `size`, `manifest_sha256`,
+`origin` and `signing_fingerprint`. The path is relative to the ship and has
+the form `runtime/programs/claude-<version>-<platform>-<sha256>/claude`.
+Qualification takes the exact path and digest together from a state whose
+`result` is `staged`, `duplicate` or `unchanged`. A held state may still
+carry the last verified candidate. A later staging can update the pending
+pointer while earlier release directories retain their bytes. Persistent
+attempt results and origins are in this private runtime folder. Repeated
+failures and verification holds appear in status.
+
+Staging leaves the active declaration and running seats as they are.
+Qualification and adoption are separate operations. The pin declaration above
+continues to accept a direct child of `runtime/programs`.
+
 ### Example ship
 
 The example declares a captain, an engineer and Maeve as desk:

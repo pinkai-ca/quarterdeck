@@ -142,6 +142,7 @@ def sections(facts, *, detailed=False) -> Headline:
         _named(facts.output_limits, 'at output limit'),
         _named((facts.startup_delivery,) if facts.startup_delivery else (), 'startup holds', singular='startup hold'),
         _named(facts.ledger_recovery, 'ledger recovery alerts', singular='ledger recovery alert'),
+        _named(facts.release_failures, 'release discovery holds', singular='release discovery hold'),
         _named((facts.accounting,) if facts.accounting else (), 'accounting alerts', singular='accounting alert'),
         _named((facts.retirement,) if facts.retirement else (), 'retirement alerts', singular='retirement alert'),
         _named(barriers, 'service stop barriers', singular='service stop barrier'),
