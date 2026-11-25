@@ -1035,6 +1035,7 @@ def cmd_post(args: argparse.Namespace) -> str:
     if seat_here and args.sender and args.sender != seat_here:
         raise ShipError(f"this shell is seat {seat_here}, which posts as itself; --from names a sender only from a shell that is no seat")
     sender = seat_here or args.sender or ship.operator.lower()  # a seat's identity is the one its launch set, never a flag
+    office_seat = ship.kind == 'office' and seat_here in ship.seats
     # Resolve the reply and reserve its id from one read-only post view. The
     # repeat guard must read drops, then a fresh store view, after this ends.
     remote = False
@@ -1044,7 +1045,7 @@ def cmd_post(args: argparse.Namespace) -> str:
             raise ShipError(f"a {args.kind} needs --to <seat>" + (" or --re <message>" if args.kind != "order" else ""))
         if '@' in to:
             from . import fleet_post
-            recipient, destination = fleet_post.validate_target(ship, to)
+            recipient, destination = fleet_post.validate_target(ship, to, explain=office_seat)
             if destination == ship.folder.name:
                 to = recipient
             else:
@@ -1056,8 +1057,13 @@ def cmd_post(args: argparse.Namespace) -> str:
                 if args.kind != 'order':
                     raise ShipError(f'group {to}: {args.kind} is unsupported; groups accept orders only for now')
             elif to not in ship.seats and to not in getattr(ship, 'forward', {}) and to not in (ship.operator.lower(), post.SHIP):
-                raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
-                                f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
+                reason = (f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
+                          f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
+                if office_seat:
+                    from .fleet_post import project_address_lines
+
+                    reason += '\nProject ship addresses\n' + '\n'.join(project_address_lines(ship, role=to))
+                raise ShipError(reason)
         message = (None if not remote and to in ship.groups else
                    store.prepare(args.kind, sender, to, body, re=args.re, subject=args.subject,
                                  due=args.due, speed=args.speed))

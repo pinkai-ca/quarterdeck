@@ -1,11 +1,12 @@
 """Office creation and the first setup step, with synthetic launch operations."""
 import argparse
 import os
+import shlex
 from pathlib import Path
 
 import pytest
 
-from quarterdeck import cli, install, setup, ship, standing
+from quarterdeck import cli, fleet_post, install, post, setup, ship, standing
 
 
 @pytest.fixture
@@ -189,6 +190,88 @@ def test_first_setup_cli_has_no_project_workspace_question(office_project, monke
     assert len(calls) == 1
     assert "Office ready" in capsys.readouterr().out
     assert not (project / "ships").exists()
+
+
+def test_desk_brief_and_post_use_the_current_project_seat_addresses(office_project, monkeypatch, capsys):
+    project, _ = office_project
+    assert cli.main(["setup", "--accept", "yes", "--start", "yes"]) == 0
+    capsys.readouterr()
+    office = ship.load(project / "office")
+    monkeypatch.setenv("QD_SHIP", str(office.folder))
+    monkeypatch.setenv("QD_SEAT", "desk")
+
+    def brief():
+        assert cli.main(["brief", "desk"]) == 0
+        return capsys.readouterr().out
+
+    def crew(folder, captain, other, other_role):
+        return ship.create(project / "ships" / folder, f'''[ship]
+name = "Display name"
+[pools.fake]
+provider = "fake"
+[sessions.crew]
+[seats.{captain}]
+role = "captain"
+session = "crew"
+harness = "fake"
+pool = "fake"
+[seats.{other}]
+role = "{other_role}"
+session = "crew"
+harness = "fake"
+pool = "fake"
+''', "Synthetic crew")
+
+    def reject(address, reason):
+        assert cli.main(["post", "order", "--to", address, "Review the README."]) == 2
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert reason in output.err
+        return output.err
+
+    assert "No project ships found." in brief()
+    (project / "ships").mkdir()
+    alpha = crew("alpha", "pike", "captain", "worker")
+    listed_alpha = "- alpha — captain@alpha, pike@alpha (captain)"
+    current_brief = brief()
+    assert listed_alpha in current_brief
+    command = shlex.quote(str(office.runtime / "bin" / "qd"))
+    assert f"Replace `ADDRESS` with a listed address in `{command} post order --to ADDRESS 'Your order.'`." in current_brief
+    assert "Project ship addresses" not in standing.brief(alpha, alpha.seat("pike")).text
+    assert not alpha.runtime.exists()
+    error = reject("captain", "no seat 'captain' to address")
+    assert listed_alpha in error
+    assert "Use --to pike@alpha for the declared captain role." in error
+    assert listed_alpha in reject("seat-name@ship-folder", "no ship 'ship-folder' in this project")
+
+    beta = crew("beta", "sulu", "geordi", "engineering")
+    listed_beta = "- beta — geordi@beta, sulu@beta (captain)"
+    current_brief = brief()
+    assert listed_alpha in current_brief and listed_beta in current_brief
+    error = reject("captain", "no seat 'captain' to address")
+    assert listed_alpha in error and listed_beta in error and "Use --to" not in error
+    error = reject("captain@missing", "no ship 'missing' in this project")
+    assert listed_alpha in error and listed_beta in error and "Use --to" not in error
+    error = reject("captain@beta", "no seat 'captain' in ship beta")
+    assert "Use --to sulu@beta for the declared captain role." in error
+    error = reject("engineering@alpha", "no seat 'engineering' in ship alpha")
+    assert "Use --to geordi@beta for the declared engineering role." in error
+    assert "Use --to" not in reject("unknown@beta", "no seat 'unknown' in ship beta")
+    assert not list((office.runtime / "post").rglob("*.json"))
+    assert not beta.runtime.exists()
+
+    # A qualified seat named captain still goes to that seat, regardless of its role.
+    assert cli.main(["post", "order", "--to", "captain@alpha", "Review the README."]) == 0
+    assert "waiting for the addressee ship to fetch" in capsys.readouterr().out
+    origin = post.Store(office.runtime)
+    destination = post.Store(alpha.runtime)
+    assert post.file_drops(origin, office) == []
+    assert fleet_post.run(office, origin) == []
+    assert fleet_post.run(alpha, destination) == []
+    received, = destination.for_seat("captain")
+    assert received.sender == "desk@office"
+    assert received.body == "Review the README."
+    assert destination.for_seat("pike") == []
 
 
 def test_first_setup_keeps_explicit_save_without_launch_consent(office_project):

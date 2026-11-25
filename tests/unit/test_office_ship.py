@@ -1,10 +1,9 @@
 """Ordinary office declarations; every written ship is a throwaway folder."""
 from pathlib import Path
-import re
 
 import pytest
 
-from quarterdeck import fleet_post, ship, standing
+from quarterdeck import ship, standing
 
 
 TEMPLATE = Path(__file__).resolve().parents[2] / "ships" / "office"
@@ -22,25 +21,16 @@ def test_office_template_is_only_a_desk_with_its_own_local_card():
     assert "fleet" in card
 
 
-def test_office_desk_cross_ship_example_is_a_valid_cli_target(tmp_path):
-    office_folder = tmp_path / "office"
-    office_folder.mkdir()
-    (office_folder / "ship.toml").write_text(office_text())
-    destination = tmp_path / "ships" / "endeavour"
-    destination.mkdir(parents=True)
-    (destination / "ship.toml").write_text(
-        (TEMPLATE.parent / "shuttle" / "ship.toml").read_text()
-    )
-    card, _ = standing.card(ship.load(TEMPLATE), "roles", "desk")
-    example = re.search(r'`qd post order --to ([^ ]+@[^ ]+) "[^"]+"`', card)
-    assert example is not None, "desk card must show a concrete cross-ship order"
-    assert fleet_post.validate_target(ship.load(office_folder), example[1]) == (
-        "captain", "endeavour"
-    )
-    assert "`seat@ship`" in card
-    assert "same file" in card
-    assert "own inbox" in card
-    assert "`qd thread <id>`" in card
+@pytest.mark.parametrize("name", ["roles/desk.md", "orders.md"])
+def test_office_template_labels_the_example_and_points_to_the_current_addresses(name):
+    text = (TEMPLATE / name).read_text()
+    assert 'placeholder example' in text
+    assert '`qd post order --to seat-name@ship-folder "Review the README."`' in text
+    assert "`qd brief desk`" in text
+    assert "`seat@ship`" in text
+    assert "same file" in text
+    assert "own inbox" in text
+    assert "`qd thread <id>`" in text
 
 
 def office_text():

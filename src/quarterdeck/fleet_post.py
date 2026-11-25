@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import stat
 import time
 
@@ -281,15 +282,47 @@ def context_only(runtime, identifier):
     return False
 
 
-def validate_target(ship, value):
+def project_address_lines(ship, *, role=None, target=None, fleet=None):
+    """List declared seat addresses that use the fleet's destination rules."""
+    if fleet is None:
+        try:
+            fleet = peers(ship)
+        except (ShipError, OSError, ValueError, TypeError, KeyError, AttributeError):
+            return ['- Project ship addresses are unavailable.']
+    lines = []
+    matches = []
+    for name, destination in sorted(fleet.items()):
+        if name == ship.folder.name:
+            continue
+        entries = []
+        for seat, spec in sorted(destination.seats.items()):
+            if not component(seat):
+                continue
+            value = f'{seat}@{name}'
+            entries.append(f'{value} (captain)' if spec.role == 'captain' else value)
+            if spec.role == role:
+                matches.append((name, value))
+        lines.append(f'- {name} — ' + (', '.join(entries) or 'no declared seat addresses'))
+    choices = [value for name, value in matches if name == target] or [value for _, value in matches]
+    if len(choices) == 1:
+        lines.append(f'Use --to {shlex.quote(choices[0])} for the declared {role} role.')
+    return lines or ['- No project ships found.']
+
+
+def validate_target(ship, value, *, explain=False):
     seat, target = address(value, ship.folder.name)
     fleet = peers(ship)
-    if target not in fleet:
-        raise ShipError(f'no ship {target!r} in this project')
-    destination = fleet[target]
-    if seat not in destination.seats and seat not in getattr(destination, 'forward', {}) and seat not in (destination.operator.lower(), 'ship'):
-        raise ShipError(f'no seat {seat!r} in ship {target}')
-    return seat, target
+    destination = fleet.get(target)
+    if destination is None:
+        reason = f'no ship {target!r} in this project'
+    elif seat not in destination.seats and seat not in getattr(destination, 'forward', {}) and seat not in (destination.operator.lower(), 'ship'):
+        reason = f'no seat {seat!r} in ship {target}'
+    else:
+        return seat, target
+    if explain:
+        lines = project_address_lines(ship, role=seat, target=target, fleet=fleet)
+        reason += '\nProject ship addresses\n' + '\n'.join(lines)
+    raise ShipError(reason)
 
 
 def wire_parties(runtime, sender, to):

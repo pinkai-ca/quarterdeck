@@ -103,6 +103,13 @@ def brief(ship: Ship, seat: SeatSpec) -> Brief:
         found = card(ship, kind, name)
         parts.append((label, found[0] if found else f"(no {label} for {name})", found[1] if found else None))
     parts.append(("your seat", seat_section(ship, seat, session.human), None))
+    if ship.kind == "office" and seat.role == "desk":
+        from .fleet_post import project_address_lines
+
+        addresses = "\n".join(project_address_lines(ship))
+        example = qd_command(ship.folder, "post", "order", "--to", "ADDRESS", "Your order.")
+        parts.append(("project ship addresses", "## Project ship addresses\n\n"
+                      f"Replace `ADDRESS` with a listed address in `{example}`.\n\n" + addresses, None))
     text = "\n\n".join(f"<!-- {name} -->\n{body}" for name, body, _ in parts)
     header = f"# Standing orders for {seat.display}: {seat.name}, {seat.role}, on {ship.name}\n\n"
     return Brief(header + text + "\n", [(name, path) for name, _, path in parts])

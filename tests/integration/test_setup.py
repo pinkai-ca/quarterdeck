@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, harness, install, setup, ship
+from quarterdeck import cli, harness, install, setup, ship, standing
 from quarterdeck.drill import Check
 from quarterdeck.output import Reading
 
@@ -92,6 +92,8 @@ def test_setup_cli_prepares_copy_only_after_check_and_start_consent(
     assert result == (2 if install_fails else 0)
     assert set(ship.load(folder).seats) == {"captain", "engineering"}
     assert ship._git(folder, "status", "--porcelain") == ""
+    office = ship.load(tmp_path / "office")
+    assert "- crew — captain@crew (captain), engineering@crew" in standing.brief(office, office.seat("desk")).text
     expected = ["readiness"]
     if check == "yes":
         expected.append("check")
