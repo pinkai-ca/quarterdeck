@@ -4,13 +4,17 @@ from dataclasses import replace
 from datetime import timedelta
 import json
 
-from quarterdeck import cli, post, quota, record_owner, watch
+import pytest
+
+from quarterdeck import cli, keyfile, post, quota, record_owner, watch
+from quarterdeck.harness import resume_target
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
+from quarterdeck.ship import Pool, SeatSpec, Session, Ship
 from tests.unit.test_pool_choices import declaration
 from .waiting import wait_for
 
@@ -89,4 +93,108 @@ def test_private_process_moves_fresh_with_full_messages_and_destination_program(
         assert current.launched() == previous
     finally:
         Seat(ship, ship.seat('worker'), tmux).down()
+        svc.ledger.close()
+
+
+class StandInKeyPool(Pool):
+    kind = 'key'
+    paid_by_key = True
+
+
+@pytest.mark.parametrize('case', ['fresh', 'same-route', 'human', 'explicit'])
+def test_provider_key_round_trip_with_stand_in(case, tmp_path, tmux, monkeypatch):
+    from .waiting import start_with_conversation
+
+    spec = SeatSpec('worker', 'crew', 'worker', 'fake', ('subscription', 'key'), settings={'step_seconds': '0.05'})
+    ship = Ship(tmp_path / 'ship', 'synthetic', 'operator', tmp_path,
+                {'subscription': Pool('subscription', 'synthetic'), 'key': StandInKeyPool('key', 'synthetic')},
+                {'crew': Session('crew', 'Synthetic')}, {'worker': spec})
+    monkeypatch.setattr(keyfile, 'problem', lambda pool: None)
+    monkeypatch.setattr(keyfile, 'route', lambda *args: None)
+    monkeypatch.setattr(keyfile, 'value', lambda pool: pytest.fail('this stand-in uses no key'))
+    real_resume = Seat._require_resume
+    probes = []
+
+    def resume(seat, spec=None, *, pool=None, expected=None):
+        if pool is not None:
+            probes.append((seat.pool.name, pool))
+            if case in ('fresh', 'human'):
+                raise resume_target.Unproved(seat.name, 'the synthetic conversation has a different route',
+                                             launch=seat.launched(), pool=pool)
+        return real_resume(seat, spec, pool=pool, expected=expected)
+
+    monkeypatch.setattr(Seat, '_require_resume', resume)
+    seat = Seat(ship, spec, tmux)
+    svc = Service(ship, tmux)
+
+    def usage(used):
+        now = post.now()
+        svc.ledger.record_usage('subscription', Usage((Window('5h', used, now + timedelta(hours=1)),), now))
+
+    def idle_seat():
+        current = Seat(ship, spec, tmux)
+        return current if current.is_up and svc.not_idle_at_wall(current) is None else None
+
+    try:
+        if case == 'explicit':
+            seat.up(resume=False, pool='key')
+            assert seat.launched().pool_selected == 'key'
+            usage(0)
+            for _ in range(5):
+                svc.failover()
+            assert Seat(ship, spec, tmux).launched() == seat.launched() and not probes
+            assert watch.service_holds(ship.runtime) == []
+            return
+
+        start_with_conversation(seat)
+        source = wait_for(idle_seat)
+        original_record, original_launch = source.record(), source.launched()
+        handoff = svc.store.new('order', spec.name, spec.name, 'Keep the complete synthetic handoff.')
+        work = svc.store.new('order', 'issuer', spec.name, 'Synthetic unfinished work')
+        usage(1)
+        svc.failover()
+        away = wait_for(idle_seat)
+        away_launch = away.launched()
+        assert away.pool.name == 'key' and away_launch.at != original_launch.at
+        assert probes == [('subscription', 'key')]
+        if case == 'same-route':
+            assert away_launch.resume and away.record() == original_record
+        else:
+            assert away_launch.resume is None and away.record() != original_record
+            opening = away_launch.argv[away_launch.argv.index('--first') + 1]
+            assert handoff.body in opening and work.id in opening
+
+        if case == 'human':
+            ship.sessions['crew'] = replace(ship.sessions['crew'], human=True)
+        usage(0)
+        for _ in range(5):
+            svc.failover()
+        assert probes == [('subscription', 'key'), ('key', 'subscription')]
+        current = Seat(ship, spec, tmux)
+        reports = [m.body for m in svc.store.for_seat('worker') if m.kind == 'report']
+        if case == 'human':
+            assert current.launched() == away_launch and current.pool.name == 'key'
+            assert not any('moved back to pool' in report for report in reports)
+            line = watch.facts(ship, tmux, walls=[], login=[]).line()
+            assert 'worker: return to subscription held: conversation resume unproved; needs the desk' in line
+            usage(1)
+            svc.failover()
+            assert watch.service_holds(ship.runtime) == []
+            return
+
+        assert current.pool.name == 'subscription' and current.launched().at != away_launch.at
+        assert sum('moved back to pool subscription from its key key: the subscription has room' in report
+                   for report in reports) == 1
+        assert sum('moved to pool key from subscription at its wall' in report for report in reports) == 1
+        if case == 'same-route':
+            assert current.launched().resume and current.record() == original_record
+        else:
+            assert current.launched().resume is None
+            opening = current.launched().argv[current.launched().argv.index('--first') + 1]
+            assert handoff.body in opening and work.id in opening
+            assert sum('started a new conversation because the synthetic conversation has a different route.'
+                       in report for report in reports) == 2
+        assert watch.service_holds(ship.runtime) == []
+    finally:
+        Seat(ship, spec, tmux).down()
         svc.ledger.close()

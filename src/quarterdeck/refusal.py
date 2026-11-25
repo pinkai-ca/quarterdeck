@@ -19,8 +19,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import trusted_files
-from . import durable, input_receipt, post, resting_failover
+from . import durable, input_receipt, post, recovery, relaunch_intent, resting_failover
 from .ship import ShipError
+from .tmux import TmuxError
 from .turn_failure import REFUSAL, current, describe
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
 FILE = 'refusal.json'
 FORMAT = 1
 STAGES = ('claimed', 'launched', 'held')
+FRESH_STEP = 'refusal fresh start'
 
 
 class JournalError(ValueError):
@@ -243,23 +245,23 @@ def step(service: Service, seat: Seat) -> None:
     for event in events:
         if event['stage'] == 'held':
             _tell(service, seat, event)  # completes a notice a crash left between the durable hold and its publication
-    for event in events:
-        if event['stage'] != 'claimed':
-            continue
-        if launch is not None and launch != event['launch']:
-            event['stage'], event['successor'] = 'launched', launch['at']  # a later launch is adopted, never repeated
+    claim = next((event for event in events if event['stage'] == 'claimed'), None)
+    if claim is not None and launch == claim['launch']:
+        relaunch(service, seat, events, claim)
+        return
+    service._clear_relaunch_retry(seat, FRESH_STEP)
+    if claim is not None:
+        if launch is not None:
+            claim['stage'], claim['successor'] = 'launched', launch['at']  # a later launch is adopted, never repeated
             save(runtime, seat.name, events)
             service.log('refusal', seat=seat.name, stage='launched', successor=launch['at'])
-        elif launch is None:
-            _tell(service, seat, event)
-            if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
-                return
-            event['stage'], event['reason'] = 'held', 'the automatic fresh start was interrupted; qd up'
-            save(runtime, seat.name, events)
-            from . import relaunch_intent  # the hold keeps the seat down until a person acts
-            relaunch_intent.clear(runtime, seat.name, 'its refusal hold', keep_resting=True)
         else:
-            relaunch(service, seat, events, event)
+            _tell(service, seat, claim)
+            if (relaunch_intent.pending(seat)
+                    or resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR):
+                return
+            claim['stage'], claim['reason'] = 'held', 'the automatic fresh start was interrupted; qd up'
+            save(runtime, seat.name, events)
         return
     if launch is None or not seat.is_up:
         return
@@ -360,19 +362,31 @@ def _tell(service: Service, seat: Seat, event: dict) -> None:
 
 def relaunch(service: Service, seat: Seat, events: list[dict], event: dict) -> None:
     _tell(service, seat, event)
-    try:
-        from . import relaunch_intent
-        with relaunch_intent.section(service, seat, 'refusal', resume=False):
-            proof = seat.fresh()  # law: context-is-cache -- every open message but the refused one, in full
-    except resting_failover.Held:
-        return  # leave the notified refusal claimed until the resting hold clears
-    except ShipError as error:
-        # Held, never retried: the quarantine and the notice stand, and a person or the systems seat starts it fresh.
-        event['stage'], event['reason'] = 'held', f'the automatic fresh start failed: {error}'
-        save(service.runtime, seat.name, events)
-        relaunch_intent.clear(service.runtime, seat.name, 'its refusal hold', keep_resting=True)
-        service.log('error', step='refusals', seat=seat.name, error=str(error), stage='held')
+    if recovery.held(seat):
+        service._clear_relaunch_retry(seat, FRESH_STEP)
         return
-    event['stage'], event['successor'] = 'launched', (launch_key(seat) or {}).get('at')
+    service._automatic_transition(seat, FRESH_STEP, lambda: _fresh(service, seat, events, event))
+
+
+def _fresh(service: Service, seat: Seat, events: list[dict], event: dict) -> None:
+    try:
+        with relaunch_intent.section(service, seat, 'refusal', resume=False, automatic=True):
+            proof = seat.fresh()  # law: context-is-cache -- every open message but the refused one, in full
+    except (resting_failover.Held, relaunch_intent.Pending):
+        raise  # the other lifecycle hold owns the outcome
+    except ShipError as error:
+        reason = f'the automatic fresh start failed: {error}'
+    except OSError:
+        reason = 'the automatic fresh start failed (filesystem error)'
+    except TmuxError:
+        reason = 'the automatic fresh start failed (tmux error)'
+    else:
+        event['stage'], event['successor'] = 'launched', (launch_key(seat) or {}).get('at')
+        save(service.runtime, seat.name, events)
+        service.log('fresh', seat=seat.name, proof=proof, reason='provider refusal')
+        return
+
+    # The quarantine and notice stand. An uncertain relaunch keeps its own intent.
+    event['stage'], event['reason'] = 'held', reason
     save(service.runtime, seat.name, events)
-    service.log('fresh', seat=seat.name, proof=proof, reason='provider refusal')
+    service.log('error', step='refusals', seat=seat.name, error=reason, stage='held')

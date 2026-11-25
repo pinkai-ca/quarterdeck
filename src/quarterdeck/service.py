@@ -23,7 +23,7 @@ import threading
 from copy import deepcopy
 from contextlib import ExitStack, contextmanager
 from typing import Iterator
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -53,8 +53,24 @@ TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its
 STATUS_INTERVAL = 0.7  # cheap change checks; deadlines start after the check/collection finishes
 FULL_STATUS_INTERVAL = 5.0  # a non-post change collects in full at most this often; post traffic refreshes post facts
 ACCOUNT_RETRY = 60.0  # unchanged transient source failures, never provider pacing
+RELAUNCH_RETRY = 30.0  # transient automatic lifecycle failures, per seat and decision
 QUICK_REQUEST_SECONDS = 0.02
 QUICK_REQUEST_OPERATIONS = 128
+
+
+@dataclass(frozen=True)
+class RelaunchRetry:
+    inputs: tuple
+    after: float
+    down: bool
+
+
+class FreshMoveHeld(ShipError):
+    """The shared handoff stopped before attempting a fresh start."""
+
+
+class FreshMoveFailed(ShipError):
+    """The shared handoff could not confirm that the fresh start succeeded."""
 
 
 def empty_record(fingerprint: tuple) -> bool:
@@ -702,14 +718,14 @@ class Service:
         else:
             Service.seat_hold(self, step, seat, None)
 
-    def seat_hold(self, step: str, seat, error: Exception | None) -> None:
+    def seat_hold(self, step: str, seat, error: Exception | str | None) -> None:
         """Record (or, with None, clear) one seat's hold in one step: logged once, published for the line."""
         holds = self.__dict__.setdefault('seat_holds', {})
         key = (seat.name, step)
         if error is None:
             holds.pop(key, None)
         else:
-            text = f'{type(error).__name__}: {str(error)[:200]}'
+            text = error if isinstance(error, str) else f'{type(error).__name__}: {str(error)[:200]}'
             if holds.get(key) != text:
                 holds[key] = text
                 self.log('error', step=step, seat=seat.name, error=text, held='this seat alone')
@@ -729,6 +745,77 @@ class Service:
             self.log('error', step='seat-holds', error=repr(error))
             return
         self.seat_holds_written = dict(holds)
+
+    @staticmethod
+    def _relaunch_inputs(seat):
+        launch = seat.launched()
+        identity = (launch.at, launch.pane, launch.pid) if launch is not None else None
+        return identity, seat.pool, getattr(seat, 'declaration', seat.spec), seat.session.human
+
+    def _clear_relaunch_retry(self, seat, step, *, keep_down=False):
+        retries = self.__dict__.get('relaunch_retries', {})
+        key = seat.name, step
+        retry = retries.get(key)
+        if (keep_down and retry is not None and retry.down and retry.inputs[0] == Service._relaunch_inputs(seat)
+                and not seat.is_up):
+            return
+        retries.pop(key, None)
+        Service.seat_hold(self, step, seat, None)
+
+    def _automatic_transition(self, seat, step, action, *, target=None, returning=False):
+        """Pace failures of one decision on one seat after the caller's recovery check."""
+        from . import relaunch_intent
+        from .harness import resume_target
+
+        if relaunch_intent.pending(seat):
+            Service._clear_relaunch_retry(self, seat, step)
+            return
+        retries = self.__dict__.setdefault('relaunch_retries', {})
+        key = seat.name, step
+        destination = seat.ship.pools.get(target) if target is not None else None
+        inputs = (Service._relaunch_inputs(seat), destination, returning)
+        retry = retries.get(key)
+        if retry is not None and not retry.down and retry.inputs == inputs and time.monotonic() < retry.after:
+            return
+        name = (f'return to {target}' if returning else f'move to {target}') if target else step
+        category = None
+        try:
+            action()
+        except (resting_failover.Held, relaunch_intent.Pending):
+            pass  # their own status records the hold
+        except resume_target.Unproved:
+            category = 'resume-unproved'
+            if seat.session.human:
+                reason, wait = 'conversation resume unproved; needs the desk', float('inf')
+            else:
+                reason, wait = 'conversation resume unproved; retry delayed', RELAUNCH_RETRY
+        except FreshMoveHeld:
+            category = 'fresh-handoff-held'
+            reason, wait = 'conversation handoff held; retry delayed', RELAUNCH_RETRY
+        except FreshMoveFailed:
+            category = 'outcome-unknown'
+            reason, wait = 'new conversation launch outcome unknown; retry delayed', RELAUNCH_RETRY
+        except lifecycle.Busy:
+            category = 'lifecycle-busy'
+            reason, wait = 'another lifecycle transition is in progress; retry delayed', RELAUNCH_RETRY
+        except (OSError, ShipError, TmuxError, sqlite3.DatabaseError) as error:
+            category = 'outcome-unknown'
+            reason, wait = f'could not finish ({type(error).__name__}); retry delayed', RELAUNCH_RETRY
+        # A failing action may have left a durable hold since the decision was read.
+        if category is None or relaunch_intent.pending(seat) or recovery.held(seat):
+            Service._clear_relaunch_retry(self, seat, step)
+            return
+        try:
+            down = not seat.is_up
+        except (OSError, ShipError, TmuxError):
+            down = False  # unreadable is not proof that the seat is down
+        if down:
+            reason, wait = 'seat is down after the failed transition; needs a human', float('inf')
+            inputs = (Service._relaunch_inputs(seat), destination, returning)
+        retries[key] = RelaunchRetry(inputs, time.monotonic() + wait, down)
+        Service.seat_hold(self, step, seat, f'{name} held: {reason}')
+        if target is not None and not returning:
+            move_hold.publish_wall(seat, move_hold.generation(seat), seat.pool.name, category, target=target)
 
     def resolved_seats(self, *, retry_changing: str | None = None) -> list[Seat]:
         found = []
@@ -2244,11 +2331,17 @@ class Service:
             with Service.seat_guard(self, 'fresh_after_order', seat):
                 with post.reading_pass(store=self.store, attempts=getattr(self, 'attempts', None)):
                     ready = Service._fresh_after_order_ready(self, seat)
-                if ready:
-                    from . import relaunch_intent
-                    with relaunch_intent.section(self, seat, 'after-order', resume=False):
-                        proof = seat.fresh()  # law: context-is-cache
-                    self.log("fresh", seat=seat.name, proof=proof)
+                if not ready:
+                    Service._clear_relaunch_retry(self, seat, 'after-order fresh start', keep_down=True)
+                    continue
+                Service._automatic_transition(self, seat, 'after-order fresh start',
+                                              lambda: Service._fresh_closed_order(self, seat))
+
+    def _fresh_closed_order(self, seat):
+        from . import relaunch_intent
+        with relaunch_intent.section(self, seat, 'after-order', resume=False, automatic=True):
+            proof = seat.fresh()  # law: context-is-cache
+        self.log('fresh', seat=seat.name, proof=proof)
 
     def _fresh_after_order_ready(self, seat) -> bool:
         """The current orders, recovery and recorded completion; never a lifecycle action."""
@@ -2659,19 +2752,6 @@ class Service:
         """A hold that means the joined conversation itself cannot be read."""
         return reason in (idle.REASONS['record'], 'its record is unreadable', 'it has no joined record')
 
-    def _name_unproved_hold(self, seat: Seat, binding, source: str, pool: str) -> None:
-        """A fresh start that was held or failed still names the seat on the status line."""
-        from . import fresh_handoff
-        phase = None
-        try:
-            data = fresh_handoff.load(seat.ship.runtime, seat.name)
-        except ShipError:
-            data = None
-        if isinstance(data, dict):
-            phase = data.get('phase')
-        category = 'outcome-unknown' if phase == 'failed' else 'resume-unproved'
-        move_hold.publish_wall(seat, binding, source, category, target=pool)
-
     def _stage_unproved_select(self, seat: Seat, error, pool: str) -> str:
         """The current pool can still take a turn, so the chosen pool waits on the shared handoff."""
         from . import fresh_handoff
@@ -2679,126 +2759,140 @@ class Service:
                                        restart=True, pool=pool, immediate=False)
         return result.proof
 
-    def _fresh_unproved_move(self, seat: Seat, error, pool: str, came_from: str, *, kind: str, binding,
-                             ready=None) -> str | None:
-        """The shared fresh handoff, at once, on the pool this move already chose. The caller holds its section.
-
-        ``binding`` is the seat's generation before the move, so a start that does not run can still publish its hold.
-        """
+    def _fresh_unproved_move(self, seat: Seat, error, pool: str, *, ready=None):
+        """Start with the ordinary fresh carriage on the pool the relaunch section already chose."""
         from . import fresh_handoff
-        result = fresh_handoff.request(seat, reason=error.reason, expected_launch=error.launch, service=self,
-                                       restart=True, pool=pool, enclosed=True, ready=ready)
+        return fresh_handoff.request(seat, reason=error.reason, expected_launch=error.launch, service=self,
+                                     restart=True, pool=pool, enclosed=True, ready=ready)
+
+    def _fresh_unproved_select(self, seat: Seat, error, pool: str, source: str, *, binding, ready=None) -> str | None:
+        result = self._fresh_unproved_move(seat, error, pool, ready=ready)
         if result.disposition == 'waiting-idle':
             return None
         if result.disposition != 'started':
-            self._name_unproved_hold(seat, binding, came_from, pool)
-            self.log(kind, seat=seat.name, pool=pool, skipped=result.proof)
-            return result.proof if kind == 'select' else None
-        notice = (f"moved to pool {pool} from {came_from} at its wall" if kind == 'failover'
-                  else f"moved to pool {pool} from {came_from} by qd set")
-        self.report_pool_move(seat, notice)
-        self.log(kind, seat=seat.name, pool=pool, came_from=came_from, proof=result.proof)
-        if kind == 'select':
-            return f"{seat.name} moved to {pool} from {came_from}\n{result.proof}"
-        return None
+            category = 'outcome-unknown' if result.disposition == 'start-failed' else 'fresh-handoff-held'
+            move_hold.publish_wall(seat, binding, source, category, target=pool)
+            self.log('select', seat=seat.name, pool=pool, skipped=result.proof)
+            return result.proof
+        self.report_pool_move(seat, f'moved to pool {pool} from {source} by qd set')
+        self.log('select', seat=seat.name, pool=pool, came_from=source, proof=result.proof)
+        return f'{seat.name} moved to {pool} from {source}\n{result.proof}'
 
     @resting_failover.reading_pass()
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""
-        from . import relaunch_intent
-
-        runtime = getattr(self, 'runtime', None)
         for seat in self.resolved_seats():
-            if getattr(seat, 'withdrawn_pool', None) is not None:
-                continue  # the running launch can receive post while its move is held
-            held = resting_failover.hold_state(seat)
-            attempt = resting_failover.current_attempt(seat)
-            if held is not resting_failover.Hold.CLEAR:
-                if (attempt is not None and attempt.phase == 'launched' and seat.is_up
-                        and (started := seat.launched()) is not None and started.at == attempt.destination):
-                    resting_failover.observe_screen(seat, attempt, Door(seat).screen(), started)
-                # The authentication pass resolves first use from the record before routing resumes.
-                continue
-            if getattr(seat.pool, 'paid_by_key', False) and seat.is_up:
-                try:
-                    with self.ledger.record_pass() as book:
-                        quota.observe_key_refusal(book, seat, commit=False)
-                except (OSError, ValueError) as error:
-                    self.log("failover", seat=seat.name, skipped=f"key refusal unread: {type(error).__name__}")
-            if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up:
-                continue
-            if (getattr(seat.harness, 'screen_walls', False) and self.ledger.catching_up()
-                    and not quota.current_walled(seat, self.ledger)):
-                screen = Door(seat).screen()
-                if screen is not None and screen.quota:
-                    with self.ledger.record_pass() as book:
-                        quota.observe_screen(book, seat, screen, seat.launched(), commit=False)
-            if not quota.current_walled(seat, self.ledger):
-                self._back_from_key(seat)
-                continue
-            binding, came_from = move_hold.generation(seat), seat.pool.name
-            unproved = None
-            if hold := self._wall_idle_hold(seat):
-                if seat.session.human or not self._record_identity_hold(hold.reason):
-                    category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
-                    move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
-                    continue
-                from .harness import resume_target
+            with Service.seat_guard(self, 'failover', seat):
+                Service._failover_seat(self, seat)
+
+    def _failover_seat(self, seat: Seat) -> None:
+        from . import relaunch_intent
+        from .harness import resume_target
+
+        if getattr(seat, 'withdrawn_pool', None) is not None:
+            Service._clear_relaunch_retry(self, seat, 'pool move')
+            return  # the running launch can receive post while its move is held
+        held = resting_failover.hold_state(seat)
+        attempt = resting_failover.current_attempt(seat)
+        if held is not resting_failover.Hold.CLEAR:
+            Service._clear_relaunch_retry(self, seat, 'pool move')
+            if (attempt is not None and attempt.phase == 'launched' and seat.is_up
+                    and (started := seat.launched()) is not None and started.at == attempt.destination):
+                resting_failover.observe_screen(seat, attempt, Door(seat).screen(), started)
+            return  # authentication resolves first use from the record before routing resumes
+        if getattr(seat.pool, 'paid_by_key', False) and seat.is_up:
+            try:
+                with self.ledger.record_pass() as book:
+                    quota.observe_key_refusal(book, seat, commit=False)
+            except (OSError, ValueError) as error:
+                self.log('failover', seat=seat.name, skipped=f'key refusal unread: {type(error).__name__}')
+        if len(seat.spec.pools) < 2 or recovery.held(seat) or relaunch_intent.pending(seat):
+            Service._clear_relaunch_retry(self, seat, 'pool move')
+            return
+        if not seat.is_up:
+            Service._clear_relaunch_retry(self, seat, 'pool move', keep_down=True)
+            return
+        retry = self.__dict__.get('relaunch_retries', {}).get((seat.name, 'pool move'))
+        if retry is not None and (retry.down or retry.inputs[0] != Service._relaunch_inputs(seat)):
+            Service._clear_relaunch_retry(self, seat, 'pool move')
+        if (getattr(seat.harness, 'screen_walls', False) and self.ledger.catching_up()
+                and not quota.current_walled(seat, self.ledger)):
+            screen = Door(seat).screen()
+            if screen is not None and screen.quota:
+                with self.ledger.record_pass() as book:
+                    quota.observe_screen(book, seat, screen, seat.launched(), commit=False)
+        if not quota.current_walled(seat, self.ledger):
+            self._back_from_key(seat)
+            return
+
+        binding, came_from = move_hold.generation(seat), seat.pool.name
+        unproved = None
+        if hold := self._wall_idle_hold(seat):
+            if not seat.session.human and self._record_identity_hold(hold.reason):
                 try:
                     # A conversation that can be named keeps the idle hold. No destination is weighed first.
                     seat._require_resume(seat.spec)
                 except resume_target.Unproved as error:
                     unproved = error
-                else:
-                    category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
-                    move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
-                    continue
-            ordered = quota.candidate_pools(seat)
-            target = next((p for p in ordered if self.known_open(seat, p)), None)
-            if target is None:
-                move_hold.publish_wall(seat, binding, came_from)
-                if (unproved is None and binding is not None and runtime is not None
-                        and (attempt is None or not attempt.matches(seat.launched()))
-                        and resting_failover.eligible_source(seat)
-                        and resting_failover.snapshot(runtime).problem is None):
-                    self._try_resting_failover(seat, ordered, binding, came_from)
-                continue
-            from .harness import resume_target
-            if unproved is not None:
-                if not self.resumes_on(seat, target):
-                    category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
-                    move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
-                    continue
-                with contextlib.suppress(resting_failover.Held):
-                    with relaunch_intent.section(self, seat, 'failover', resume=False):
-                        self._fresh_unproved_move(seat, unproved, target, came_from, kind='failover', binding=binding)
-                continue
+            if unproved is None:
+                category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
+                move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
+                return
+        ordered = quota.candidate_pools(seat)
+        target = next((p for p in ordered if self.known_open(seat, p)), None)
+        if target is None:
+            move_hold.publish_wall(seat, binding, came_from)
+            runtime = getattr(self, 'runtime', None)
+            if (unproved is None and binding is not None and runtime is not None
+                    and (attempt is None or not attempt.matches(seat.launched()))
+                    and resting_failover.eligible_source(seat)
+                    and resting_failover.snapshot(runtime).problem is None):
+                self._try_resting_failover(seat, ordered, binding, came_from)
+            else:
+                Service._clear_relaunch_retry(self, seat, 'pool move')
+            return
+        if unproved is not None and not self.resumes_on(seat, target):
+            category = 'record-missing' if hold.reason == 'it has no joined record' else hold.dimension
+            move_hold.publish_wall(seat, binding, came_from, category, detail=hold.reason)
+            return
+        Service._automatic_transition(self, seat, 'pool move',
+                                      lambda: self._move_at_break(seat, target, unproved=unproved),
+                                      target=target)
+
+    def _move_at_break(self, seat, pool, *, returning=False, unproved=None):
+        from . import relaunch_intent
+        from .harness import resume_target
+
+        source = seat.pool.name
+        with relaunch_intent.section(self, seat, 'failover',
+                                     resume=lambda: unproved is None and self.resumes_on(seat, pool),
+                                     automatic=True):
             try:
-                with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
-                    try:
-                        proof = seat.failover_to(target)
-                    except resume_target.Unproved as error:
-                        if seat.session.human:
-                            raise
-                        self._fresh_unproved_move(seat, error, target, came_from, kind='failover', binding=binding)
-                        proof = None
-            except resting_failover.Held:
-                continue
+                if unproved is not None:
+                    raise unproved
+                if returning and not self.resumes_on(seat, pool):
+                    reason = ('the subscription uses a different program'
+                              if seat.declaration.for_pool(pool).harness != seat.spec.harness
+                              else 'the existing conversation could not be identified')
+                    raise resume_target.Unproved(seat.name, reason, launch=seat.launched(), pool=pool)
+                proof = seat.failover_to(pool)
             except resume_target.Unproved as error:
-                move_hold.publish_wall(seat, binding, came_from, 'resume-unproved', target=target)
-                self.log("failover", seat=seat.name, pool=target, skipped=str(error))
-                continue
-            except lifecycle.Busy:
-                move_hold.publish_wall(seat, binding, came_from, 'lifecycle-busy', target=target)
-                raise
-            except (OSError, ShipError):
-                move_hold.publish_wall(seat, binding, came_from, 'outcome-unknown', target=target)
-                raise
-            if proof is None:
-                continue
-            notice = f"moved to pool {target} from {came_from} at its wall"
+                if relaunch_intent.destination_recorded(seat):
+                    raise ShipError(f'{seat.name}: resume became unproved after the move began') from error
+                if seat.session.human:
+                    raise
+                result = self._fresh_unproved_move(seat, error, pool)
+                if result.disposition != 'started':
+                    self.log('failover', seat=seat.name, pool=pool, skipped=result.disposition)
+                    if result.disposition == 'start-failed':
+                        raise FreshMoveFailed()
+                    raise FreshMoveHeld()
+                proof = result.proof
+        if proof is not None:
+            notice = (f'moved back to pool {pool} from its key {source}: the subscription has room'
+                      if returning else f'moved to pool {pool} from {source} at its wall')
             self.report_pool_move(seat, notice)
-            self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
+            self.log('failover', seat=seat.name, pool=pool, came_from=source, proof=proof)
 
     def _try_resting_failover(self, seat, ordered, binding, came_from):
         """One reserved trial of an eligible resting subscription.
@@ -2808,9 +2902,6 @@ class Service:
         reservation. A same-route conversation resumes. A crew conversation that cannot be proved starts new on
         the same reservation, carrying its open work; a person's conversation holds for their choice.
         """
-        from . import relaunch_intent, unit_hold
-        from .harness import resume_target
-
         def first_candidate():
             now = post.now()
             return next((choice for name in ordered
@@ -2818,7 +2909,16 @@ class Service:
 
         choice = first_candidate()
         if choice is None:
+            Service._clear_relaunch_retry(self, seat, 'pool move')
             return
+        Service._automatic_transition(
+            self, seat, 'pool move',
+            lambda: self._move_to_resting_pool(seat, ordered, binding, came_from, choice, first_candidate),
+            target=choice.pool)
+
+    def _move_to_resting_pool(self, seat, ordered, binding, came_from, choice, first_candidate):
+        from . import relaunch_intent, unit_hold
+
         attempt = unproved = None
 
         def admitted():
@@ -2865,7 +2965,8 @@ class Service:
 
         launch_error = None
         try:
-            with seat._lifecycle(automatic=True, resting_clear=True), relaunch_intent.section(self, seat, relaunch_intent.RESTING, resume=True):
+            with (seat._lifecycle(automatic=True, resting_clear=True),
+                  relaunch_intent.section(self, seat, relaunch_intent.RESTING, resume=True, automatic=True)):
                 if not admitted():
                     return
                 try:
@@ -2887,15 +2988,9 @@ class Service:
                         raise ShipError('the resting subscription launch outcome could not be recorded')
         except (OSError, ShipError, TmuxError, sqlite3.DatabaseError) as error:
             launch_error = error
-        if isinstance(launch_error, resting_failover.Held):
-            return
-        if isinstance(launch_error, lifecycle.Busy):
-            move_hold.publish_wall(seat, binding, came_from, 'lifecycle-busy', target=choice.pool)
-            return
-        if isinstance(launch_error, resume_target.Unproved):
-            move_hold.publish_wall(seat, binding, came_from, 'resume-unproved', target=choice.pool)
-            return
         if launch_error is not None:
+            if attempt is None:
+                raise launch_error  # admission failed; the service may reevaluate after a delay
             move_hold.publish_wall(seat, binding, came_from, 'outcome-unknown', target=choice.pool)
             self.log(relaunch_intent.RESTING, seat=seat.name, pool=choice.pool, outcome='held')
             return
@@ -2913,28 +3008,19 @@ class Service:
     def _back_from_key(self, seat: Seat) -> None:
         """A seat on a key that is not spent goes back, when idle, to the first subscription before it in its list that
         has room: a key pays only while the subscriptions are spent."""
-        if not getattr(seat.pool, 'paid_by_key', False) or seat.pool.name not in seat.spec.pools:
-            return
-        if getattr(seat.launched(), 'pool_selected', None) == seat.pool.name:
-            return  # the operator chose this key for the current launch
+        if (not getattr(seat.pool, 'paid_by_key', False) or seat.pool.name not in seat.spec.pools
+                or getattr(seat.launched(), 'pool_selected', None) == seat.pool.name):
+            Service._clear_relaunch_retry(self, seat, 'pool move')
+            return  # an explicit key choice remains in effect for the current launch
         earlier = seat.spec.pools[:seat.spec.pools.index(seat.pool.name)]
         target = next((name for name in earlier if self.ship.pools[name].kind == 'subscription'
                        and self.known_open(seat, name)), None)
-        if target is None or self._wall_idle_hold(seat) is not None:
-            return
-        from . import relaunch_intent
-        from .harness import resume_target
-        came_from = seat.pool.name
-        try:
-            with relaunch_intent.section(self, seat, 'failover', resume=lambda: self.resumes_on(seat, target)):
-                proof = seat.failover_to(target)
-        except resting_failover.Held:
-            return
-        except resume_target.Unproved as error:
-            self.log("failover", seat=seat.name, pool=target, skipped=str(error))  # it stays on its key, which still works
-            return
-        self.report_pool_move(seat, f"moved back to pool {target} from its key {came_from}: the subscription has room")
-        self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
+        if target is None:
+            Service._clear_relaunch_retry(self, seat, 'pool move')
+        elif self._wall_idle_hold(seat) is None:
+            Service._automatic_transition(self, seat, 'pool move',
+                                          lambda: self._move_at_break(seat, target, returning=True),
+                                          target=target, returning=True)
 
     def not_idle(self, seat: Seat) -> str | None:
         """The ordinary live proof shared by failover, select and relaunch."""
@@ -3051,8 +3137,7 @@ class Service:
                     binding = move_hold.generation(seat)
                     from . import relaunch_intent
                     with relaunch_intent.section(self, seat, 'select', resume=False, selected_pool=pool):
-                        return self._fresh_unproved_move(seat, error, pool, came_from, kind='select',
-                                                        binding=binding)
+                        return self._fresh_unproved_select(seat, error, pool, came_from, binding=binding)
             return f"{seat.name} not moved: {reason}; ask again when its turn has ended"
         refused, unknown = self.select_destination(seat, pool)
         if refused:
@@ -3078,8 +3163,7 @@ class Service:
             except resume_target.Unproved as error:
                 if seat.session.human:
                     raise
-                return self._fresh_unproved_move(seat, error, pool, came_from, kind='select', binding=binding,
-                                                 ready=ready)
+                return self._fresh_unproved_select(seat, error, pool, came_from, binding=binding, ready=ready)
         if proof is None:
             return None
         self.report_pool_move(seat, f"moved to pool {pool} from {came_from} by qd set")

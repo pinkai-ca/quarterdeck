@@ -492,42 +492,64 @@ def _staged_before_wall(r):
 
 
 def test_held_fresh_move_names_the_seat_and_keeps_the_staged_handoff(running, monkeypatch):
-    from quarterdeck import watch
+    from quarterdeck import lifecycle, watch
     r = running
     order, other, notes = _staged_before_wall(r)
     before = r.seat.launched()
+    staged = fresh_handoff.load(r.svc.runtime, r.seat.name)
+    assert staged['phase'] == 'waiting'
 
     def held(*_args, **_kwargs):
-        return fresh_handoff.FreshHandoffResult('held', 'worker: synthetic hold before a start')
+        raise lifecycle.Busy('synthetic hold before a start')
 
-    monkeypatch.setattr(fresh_handoff, 'request', held)
+    monkeypatch.setattr(r.seat, '_lifecycle', held)
     launches = len(r.launches)
     r.svc.failover()
     assert r.seat.pool.name == 'second' and r.seat.launched() == before and len(r.launches) == launches
     assert r.svc.store.is_open(order) and r.svc.store.is_open(other) and r.svc.store.is_open(notes)
-    assert fresh_handoff.load(r.svc.runtime, r.seat.name)['phase'] == 'waiting'
+    assert fresh_handoff.load(r.svc.runtime, r.seat.name) == staged
+    assert r.svc.store.get(notes.id) == notes
     named = watch.facts(r.seat.ship, r.seat.tmux, login=[]).move_holds
-    assert any('move held for third: its conversation could not be identified' in line for line in named), named
+    assert any('move held for third: conversation handoff held' in line for line in named), named
+    assert all('move outcome unknown' not in line for line in named), named
 
 
 def test_failed_fresh_move_names_the_outcome_and_keeps_open_orders(running, monkeypatch):
-    from quarterdeck import watch
+    from types import SimpleNamespace
+    from quarterdeck import service, watch
     from quarterdeck.ship import ShipError
     r = running
     order, other, notes = _staged_before_wall(r)
     before = r.seat.launched()
+    staged = fresh_handoff.load(r.svc.runtime, r.seat.name)
+    clock = [100.0]
+    starts = []
+    monkeypatch.setattr(service, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
 
-    def refuse(_pool):
+    def refuse(pool):
+        starts.append(pool)
         raise ShipError('synthetic start refused before a move')
 
     monkeypatch.setattr(r.seat, '_fresh_on_pool', refuse)
     launches = len(r.launches)
     r.svc.failover()
     assert r.seat.pool.name == 'second' and r.seat.launched() == before and len(r.launches) == launches
-    assert fresh_handoff.load(r.svc.runtime, r.seat.name)['phase'] == 'failed'
+    failed = fresh_handoff.load(r.svc.runtime, r.seat.name)
+    assert failed['phase'] == 'failed' and failed['pool'] == 'third'
+    assert {key: failed[key] for key in ('order', 'launch', 'record', 'reason')} == {
+        key: staged[key] for key in ('order', 'launch', 'record', 'reason')
+    }
     assert r.svc.store.is_open(order) and r.svc.store.is_open(other) and r.svc.store.is_open(notes)
+    assert r.svc.store.get(notes.id) == notes
+
     named = watch.facts(r.seat.ship, r.seat.tmux, login=[]).move_holds
     assert any('third was chosen: move outcome unknown' in line for line in named), named
+    assert all('conversation handoff held' not in line for line in named), named
+
+    clock[0] += service.RELAUNCH_RETRY
+    r.svc.failover()
+    assert starts == ['third'] and fresh_handoff.load(r.svc.runtime, r.seat.name) == failed
+    assert watch.facts(r.seat.ship, r.seat.tmux, login=[]).move_holds == named
 
 
 def test_immediate_fresh_settles_a_carried_handoff_after_the_replacement_starts(running):

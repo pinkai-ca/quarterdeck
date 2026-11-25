@@ -6,6 +6,7 @@ Real launches on the drydock, on a private tmux server, through Seat._up as ever
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -250,7 +251,7 @@ def routed(ship, tmux):
         svc.ledger.close()
 
 
-def cut_after_down(svc, seat, action, monkeypatch):
+def cut_after_down(svc, seat, action, monkeypatch, *, automatic=False):
     target = relaunch_intent.path(svc.runtime, seat.name)
 
     def cut(current, *args, **kwargs):
@@ -260,7 +261,6 @@ def cut_after_down(svc, seat, action, monkeypatch):
                 pytest.fail('retirement lost the relaunch claim')
         raise ServiceEnded
 
-    # A process exit would skip the section's cleanup. Keep its actual bytes at the cut.
     with monkeypatch.context() as interrupted:
         interrupted.setattr(seatmod.Seat, '_up', cut)
         move = seatmod.Seat.move_to
@@ -271,12 +271,25 @@ def cut_after_down(svc, seat, action, monkeypatch):
             return move(current, pool, **kwargs)
 
         interrupted.setattr(seatmod.Seat, 'move_to', before_move)
-        interrupted.setattr(relaunch_intent, '_remove', lambda *_: None)
+        if not automatic:
+            # A hard stop in an explicit move skips its normal section cleanup.
+            interrupted.setattr(relaunch_intent, '_remove', lambda *_: None)
         with shutdown.Stop(svc.runtime).installed(), pytest.raises(ServiceEnded):
             action()
     data = json.loads(target.read_bytes())
+    assert data['phase'] == relaunch_intent.RELAUNCHING and 'error' not in data
     monkeypatch.setattr(relaunch_intent, '_gone', lambda owner: owner == data['owner'])
     return target, data
+
+
+@contextmanager
+def replacement(svc):
+    with shutdown.Stop(svc.runtime).installed():
+        successor = Service(svc.ship, svc.tmux)
+        try:
+            yield successor
+        finally:
+            successor.ledger.close()
 
 
 def wall(svc, pool):
@@ -294,7 +307,7 @@ def test_service_move_recovers_only_its_recorded_destination(routed, monkeypatch
         action = svc.failover
     else:
         action = lambda: svc.select(seat, 'second')
-    journal, data = cut_after_down(svc, seat, action, monkeypatch)
+    journal, data = cut_after_down(svc, seat, action, monkeypatch, automatic=kind == 'failover')
     assert data['kind'] == kind and data['resume'] is True
     assert data['destination'] == {'pool': 'second', 'harness': 'fake'}
     assert svc.seat(seat.name).pool.name == 'fake'
@@ -306,18 +319,19 @@ def test_service_move_recovers_only_its_recorded_destination(routed, monkeypatch
         del data['destination']
         journal.write_text(json.dumps(data))
 
-    svc.relaunch_intents()
-    recovered = svc.seat(seat.name)
-    if recorded:
-        assert recovered.is_up and recovered.launched().pool == 'second'
-        assert recovered.launched().resume == target_id and recovered.record() == record
-        assert not journal.exists()
-        launch = recovered.launched()
-        svc.relaunch_intents()
-        assert svc.seat(seat.name).launched() == launch
-    else:
-        assert not recovered.is_up and recovered.pool.name == 'third'
-        assert json.loads(journal.read_bytes())['error'] == 'its destination pool was not recorded'
+    with replacement(svc) as successor:
+        successor.relaunch_intents()
+        recovered = successor.seat(seat.name)
+        if recorded:
+            assert recovered.is_up and recovered.launched().pool == 'second'
+            assert recovered.launched().resume == target_id and recovered.record() == record
+            assert not journal.exists()
+            launch = recovered.launched()
+            successor.relaunch_intents()
+            assert successor.seat(seat.name).launched() == launch
+        else:
+            assert not recovered.is_up and recovered.pool.name == 'third'
+            assert json.loads(journal.read_bytes())['error'] == 'its destination pool was not recorded'
 
 
 @pytest.mark.parametrize(('kind', 'resume', 'route', 'target_present'), [
@@ -334,10 +348,15 @@ def test_service_relaunch_recovers_its_pool_and_effective_resume(routed, monkeyp
         monkeypatch.setattr(Service, '_fresh_after_order_ready', lambda _, candidate: candidate.name == seat.name)
         action = svc.fresh_after_order
     elif kind == 'refusal':
-        action = lambda: refusal.relaunch(svc, seat, [], {'quarantined': []})
+        refused = svc.store.new('order', 'issuer', seat.name, 'Synthetic refused work')
+        refusal.save(svc.runtime, seat.name, [{
+            'stage': 'claimed', 'launch': refusal.launch_key(seat), 'turn': None, 'notices': [],
+            'quarantined': [{'message': refused.id, 'sender': refused.sender, 'kind': refused.kind}],
+        }])
+        action = lambda: refusal.step(svc, seat)
     else:
         action = lambda: svc.relaunch(seat, resume)
-    journal, data = cut_after_down(svc, seat, action, monkeypatch)
+    journal, data = cut_after_down(svc, seat, action, monkeypatch, automatic=kind in ('after-order', 'refusal'))
     assert data['kind'] == kind
     target_pool = 'second' if route else 'fake'
     assert data['destination'] == {'pool': target_pool, 'harness': 'fake'}
@@ -347,15 +366,28 @@ def test_service_relaunch_recovers_its_pool_and_effective_resume(routed, monkeyp
         for row in rows:
             row.pop('sessionId', None)
         record.write_text(''.join(json.dumps(row) + '\n' for row in rows))
-    svc.relaunch_intents()
-    recovered = svc.seat(seat.name)
-    if resume and not target_present:
-        assert not recovered.is_up and recovered.pool.name == 'fake'
-        assert 'Use qd fresh worker-1' in json.loads(journal.read_bytes())['error']
-    else:
-        assert recovered.is_up and recovered.launched().pool == target_pool
-        assert recovered.launched().resume == target_id
-        assert not journal.exists()
+    with replacement(svc) as successor:
+        if kind == 'refusal':
+            refusal.step(successor, successor.seat(seat.name))
+            [claim] = refusal.load(svc.runtime, seat.name)
+            assert claim['stage'] == 'claimed' and journal.exists()
+        successor.relaunch_intents()
+        recovered = successor.seat(seat.name)
+        if resume and not target_present:
+            assert not recovered.is_up and recovered.pool.name == 'fake'
+            assert 'Use qd fresh worker-1' in json.loads(journal.read_bytes())['error']
+        else:
+            assert recovered.is_up and recovered.launched().pool == target_pool
+            assert recovered.launched().resume == target_id
+            assert not journal.exists()
+            launch = recovered.launched()
+            if kind == 'refusal':
+                refusal.step(successor, recovered)
+                [claim] = refusal.load(svc.runtime, seat.name)
+                assert claim['stage'] == 'launched' and claim['successor'] == launch.at
+                assert refusal.excluded(svc.runtime, seat.name) == {refused.id}
+            successor.relaunch_intents()
+            assert successor.seat(seat.name).launched() == launch
 
 
 def test_credentials_skips_lifecycle_contention_and_logs_a_retirement_failure(routed, monkeypatch):

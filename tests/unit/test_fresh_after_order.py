@@ -330,3 +330,33 @@ def test_ready_after_order_waits_for_an_intentless_resting_move(worker, phase):
     assert not w.fresh
     settle(w.seat, attempt)
     released_once(w)
+
+
+def test_failed_automatic_fresh_after_order_waits_before_retrying(worker, monkeypatch):
+    from quarterdeck import watch
+
+    w = worker
+    w.record.begin()
+    w.record.finish()
+    clock = [100.0]
+    monkeypatch.setattr(service, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    fresh = w.seat.fresh
+    calls = []
+
+    def relaunch():
+        calls.append(w.seat.launched().at)
+        if len(calls) == 1:
+            raise OSError('synthetic relaunch refused before retirement')
+        return fresh()
+
+    monkeypatch.setattr(w.seat, 'fresh', relaunch)
+    for _ in range(5):
+        w.svc.fresh_after_order()
+    assert len(calls) == 1
+    assert watch.service_holds(w.svc.runtime) == [
+        'worker: after-order fresh start held: could not finish (OSError); retry delayed']
+    clock[0] += service.RELAUNCH_RETRY
+    w.svc.fresh_after_order()
+    w.svc.fresh_after_order()
+    assert len(calls) == 2 and w.fresh == [True]
+    assert watch.service_holds(w.svc.runtime) == []

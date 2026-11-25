@@ -93,3 +93,32 @@ def test_pure_guards_preserve_the_restart_decision(worker, monkeypatch, case):
     w.svc.fresh_after_order()
     assert bool(w.fresh) == (case == 'eligible')
     assert reads == (['worker'] if case in ('recovery', 'eligible') else [])
+
+
+def test_failed_action_checks_for_a_new_recovery_hold_before_retrying(worker, monkeypatch):
+    from quarterdeck import watch
+
+    w = worker
+    w.record.begin()
+    w.record.finish()
+    reads = []
+    new_hold = None
+
+    def held(seat):
+        reads.append(seat.name)
+        return new_hold
+
+    def fail():
+        nonlocal new_hold
+        new_hold = 'synthetic recovery hold recorded during the action'
+        raise OSError('synthetic fresh start failure')
+
+    monkeypatch.setattr(recovery, 'held', held)
+    monkeypatch.setattr(w.seat, 'fresh', fail)
+    w.svc.fresh_after_order()
+
+    assert reads == ['worker', 'worker']
+    assert w.svc.relaunch_retries == {}
+    assert watch.service_holds(w.svc.runtime) == []
+    w.svc.fresh_after_order()
+    assert reads == ['worker', 'worker', 'worker']

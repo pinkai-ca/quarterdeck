@@ -1382,7 +1382,8 @@ def service_holds(runtime) -> list[str]:
         return [f"seat holds unreadable: {type(error).__name__}"]
     if not isinstance(data, dict):
         return ["seat holds unreadable: not an object"]
-    return [f"{name}: {step} held for this seat alone: {str(text)[:160]}"
+    return [(f"{name}: {str(text)[:160]}" if step in ('pool move', 'after-order fresh start')
+             else f"{name}: {step} held for this seat alone: {str(text)[:160]}")
             for name, steps in sorted(data.items()) if isinstance(steps, dict)
             for step, text in sorted(steps.items())]
 

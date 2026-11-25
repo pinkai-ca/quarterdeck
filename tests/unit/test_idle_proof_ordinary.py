@@ -55,7 +55,7 @@ def service_case(tmp_path, monkeypatch, state):
     launch = SimpleNamespace(pane='%pane-fern', pid=101001, at=AT.isoformat(), harness='fake')
     seat = SimpleNamespace(
         name='seat-fern', folder=tmp_path / 'seats' / 'seat-fern', trusted=tmp_path / 'seats' / 'seat-fern',
-        ship=SimpleNamespace(runtime=tmp_path), session=SimpleNamespace(human=False),
+        ship=SimpleNamespace(runtime=tmp_path, pools={'pool-oak': SimpleNamespace(name='pool-oak')}), session=SimpleNamespace(human=False),
         spec=SimpleNamespace(pools=('pool-willow', 'pool-oak'), pool_choices=True),
         pool=SimpleNamespace(name='pool-willow'), is_up=True,
         launched=lambda: launch, record=lambda: tmp_path / 'record-fern.jsonl',

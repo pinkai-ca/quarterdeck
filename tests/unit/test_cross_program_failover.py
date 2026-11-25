@@ -293,15 +293,18 @@ def test_failed_destination_launch_keeps_its_selected_program_without_a_retry_lo
         def fail(*args):
             raise OSError('synthetic launch failure')
         patch.setattr(r.seat, '_open_window', fail)
-        with pytest.raises(OSError):
-            r.svc.failover()
+        r.svc.failover()
     restored = Seat(r.seat.ship, r.seat.ship.seat('worker'), r.seat.tmux)
     assert restored.pool.name == 'second' and restored.harness.name == 'claude'
     for _ in range(3):
         r.svc.failover()
     assert not r.launches and restored.launched() is None
+    assert watch.service_holds(r.svc.runtime) == [
+        'worker: move to second held: seat is down after the failed transition; needs a human']
     r.seat.up(resume=True)
     assert r.seat.launched().resume is None and r.seat.launched().harness == 'claude'
+    r.svc.failover()
+    assert watch.service_holds(r.svc.runtime) == []
 
 
 @pytest.mark.parametrize('evidence', ['terminal', 'working', 'unknown', 'queued', 'unreadable', 'missing'])

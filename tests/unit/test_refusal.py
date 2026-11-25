@@ -5,11 +5,15 @@ here by a stand-in that takes the launch's first message exactly as ``Seat.first
 """
 from __future__ import annotations
 
+from datetime import datetime
+from types import SimpleNamespace
+
 import pytest
 
-from quarterdeck import post, refusal, turn_failure
+from quarterdeck import post, refusal, relaunch_intent, service, shutdown, turn_failure, watch
 from quarterdeck.seat import Seat
 from quarterdeck.ship import ShipError
+from quarterdeck.tmux import TmuxError
 from tests.unit.refusal_ship import OTHER, REFUSED, World
 from tests.unit.thread_reading import index_rows, thread_text
 from .resting_attempts import UNSETTLED, save_attempt, settle
@@ -177,6 +181,96 @@ def test_a_failed_relaunch_is_held_once_shown_and_never_retried(world, monkeypat
     world.svc.refusals()
     assert tried == ['worker'] and len(failures()) == 1, 'no retry and no second log on later ticks'
     assert refusal.load(world.svc.runtime, 'worker') == events and len(notices(world, 'tester')) == 1
+
+
+@pytest.fixture
+def claimed_fresh(world, monkeypatch):
+    seat = world.launch('worker')
+    refused = world.order(seat.name)
+    notice = world.svc.store.prepare('report', post.SHIP, refused.sender, '', re=refused.id)
+    launch = refusal.launch_key(seat)
+    refusal.save(world.svc.runtime, seat.name, [{
+        'launch': launch, 'turn': launch['at'], 'code': None, 'stage': 'claimed', 'reason': None,
+        'quarantined': [{'message': refused.id, 'sender': refused.sender, 'kind': refused.kind}],
+        'notices': [{'message': refused.id, 'id': notice.id, 'at': notice.at.isoformat()}],
+    }])
+    failure = SimpleNamespace(kind=refusal.REFUSAL, at=datetime.fromisoformat(launch['at']))
+    monkeypatch.setattr(refusal, 'current', lambda member: failure if member.name == seat.name else None)
+    return seat, refused, notice
+
+
+@pytest.mark.parametrize(('error_type', 'cause'), [(OSError, 'filesystem error'), (TmuxError, 'tmux error')])
+@pytest.mark.parametrize('uncertain', [False, True])
+def test_refusal_fresh_lifecycle_failure_keeps_its_hold(world, claimed_fresh, monkeypatch, error_type, cause, uncertain):
+    seat, refused, notice = claimed_fresh
+    runtime = world.svc.runtime
+    controller = shutdown.Stop(runtime)
+    controller.owner = {'pid': 101, 'start': 'synthetic service start'}
+    monkeypatch.setattr(shutdown, '_controller', controller)
+    attempts = []
+
+    def failing(seat):
+        attempts.append(seat.name)
+        if uncertain:
+            relaunch_intent.record_destination(seat, False)
+        raise error_type('synthetic adapter detail')
+
+    monkeypatch.setattr(Seat, 'fresh', failing)
+    original_launch = seat.launched()
+    for _ in range(4):
+        world.svc.refusals()
+    assert attempts == [seat.name] and seat.launched() == original_launch
+    [event] = refusal.load(runtime, seat.name)
+    reason = f'the automatic fresh start failed ({cause})'
+    assert (event['stage'], event['reason']) == ('held', reason)
+    assert f'held: {reason};' in refusal.state_note(seat)
+    assert refusal.excluded(runtime, seat.name) == {refused.id}
+    assert [m.id for m in notices(world, refused.sender)] == [notice.id]
+    assert watch.service_holds(runtime) == []
+    intent_path = relaunch_intent.path(runtime, seat.name)
+    if uncertain:
+        intent = relaunch_intent.read(runtime, intent_path.name, {seat.name})
+        assert (intent['kind'], intent['phase'], intent['error']) == (
+            'refusal', relaunch_intent.FAILED, relaunch_intent.AUTOMATIC_OUTCOME_UNKNOWN,
+        )
+        assert intent['destination'] == {'pool': seat.pool.name, 'harness': seat.harness.name}
+    else:
+        assert not intent_path.exists()
+
+
+def test_refusal_fresh_lifecycle_failure_is_paced_when_its_hold_cannot_be_saved(world, claimed_fresh, monkeypatch):
+    seat, _, _ = claimed_fresh
+    runtime = world.svc.runtime
+    attempts = []
+    clock = [100.0]
+    monkeypatch.setattr(service, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def failing(seat):
+        attempts.append(seat.name)
+        raise OSError('synthetic launch failure')
+
+    save = refusal.save
+
+    def unavailable(runtime, name, events):
+        raise OSError('synthetic write failure')
+
+    monkeypatch.setattr(Seat, 'fresh', failing)
+    monkeypatch.setattr(refusal, 'save', unavailable)
+    for _ in range(4):
+        world.svc.refusals()
+    assert attempts == [seat.name]
+    assert refusal.load(runtime, seat.name)[0]['stage'] == 'claimed'
+    [status] = watch.service_holds(runtime)
+    assert status.startswith('worker: refusal fresh start held')
+    assert status.endswith('could not finish (OSError); retry delayed')
+
+    monkeypatch.setattr(refusal, 'save', save)
+    clock[0] += service.RELAUNCH_RETRY
+    for _ in range(4):
+        world.svc.refusals()
+    assert attempts == [seat.name, seat.name]
+    assert refusal.load(runtime, seat.name)[0]['stage'] == 'held'
+    assert watch.service_holds(runtime) == []
 
 
 def test_an_unreadable_journal_holds_every_launch(world):

@@ -133,6 +133,7 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
     if immediate is None:
         immediate = pool is not None
     store = service.store if service is not None else post.Store(runtime)
+    starting = False
     try:
         with seat._lifecycle(automatic=True):
             resting_failover.require_clear(seat)
@@ -153,6 +154,8 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                 data = load(runtime, name)
                 current = data is not None and data.get('launch') == launch
                 if current and data['phase'] != 'waiting':
+                    if data['phase'] in ('starting', 'failed'):
+                        return FreshHandoffResult('start-failed', f'{name}: the previous fresh start is unconfirmed.')
                     return FreshHandoffResult('held', f'{name}: a handoff for this launch was already handled.')
                 if not current:
                     data = dict(version=1, seat=name, launch=launch, record=_current_record(seat),
@@ -190,11 +193,14 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                         if spec.role == 'systems' and spec.name != name and spec.name not in data['callers']:
                             data['callers'].append(spec.name)
                 save(runtime, name, data)
+            starting = True
             return FreshHandoffResult('started', _start(service, seat, store, data, unable=not immediate,
                                                         pool=pool, enclosed=enclosed))
     except (OSError, ShipError) as error:
         if ready is not None and isinstance(error, lifecycle.Busy):
             raise
+        if starting:
+            return FreshHandoffResult('start-failed', f'{name}: the fresh start could not be confirmed. {error}')
         return FreshHandoffResult('held', f'{name}: the conversation handoff is held. {error}')
 
 
