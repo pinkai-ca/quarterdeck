@@ -776,12 +776,16 @@ def choose_for_launch(seat: seatmod.Seat, pool: str) -> str:
 
 
 def adopt(ship: shipmod.Ship, seat: seatmod.Seat) -> list[str]:
-    """Write what the seat is running, model and effort as its record and screen report them, into the ship file."""
+    """Write launch-ready settings for the model and effort the seat is running."""
     if seat.spec.pool_choices:
         raise ShipError("inline pool choices: --adopt is unavailable; edit each choice's model and effort in ship.toml")
-    running = watch.running_settings(seat)
-    # Model and effort alone: the reading also carries what the program says on screen (a selection warning).
-    settings = [(key, running[key]) for key in ("model", "effort") if running.get(key)]
+    from .harness.model_adoption import launch_model
+
+    record = seat.record()
+    state, screen = watch.setting_sources(seat, record)
+    model = launch_model(seat, record, state, screen)
+    effort = (state.effort if state else None) or (screen.shows.get("effort") if screen else None)
+    settings = [(key, value) for key, value in (("model", model), ("effort", effort)) if value]
     if not settings:
         raise ShipError(f"{seat.name}: nothing to adopt; its record and screen show no model or effort yet")
     edits = []

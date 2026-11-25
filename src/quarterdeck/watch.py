@@ -327,16 +327,21 @@ def unaccounted_records(book, seat):
         return None  # missing/changed/malformed evidence keeps the ordinary reading path
 
 
+def setting_sources(seat: Seat, record, *, screen=None):
+    """Read the record before the screen, keeping the two observations available to callers."""
+    try:
+        state = seat.harness.state(record) if record else None
+    except OSError:
+        state = None
+    return state, screen if screen is not None else Door(seat).screen()
+
+
 def running_settings(seat: Seat, *, screen=None, record=...) -> dict[str, str]:
     """The model and effort the program reports, from its record first and its screen second (law: record-first)."""
     found: dict[str, str] = {}
     if record is ...:
         record = seat.record()
-    try:
-        state = seat.harness.state(record) if record else None
-    except OSError:
-        state = None
-    screen = screen if screen is not None else Door(seat).screen()
+    state, screen = setting_sources(seat, record, screen=screen)
     for key in ("model", "effort"):
         value = (getattr(state, key, None) if state else None) or (screen.shows.get(key) if screen else None)  # law: record-first
         if value:
