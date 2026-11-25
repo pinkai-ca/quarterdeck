@@ -41,7 +41,7 @@ A harness runs on a pool, one way of paying:
 - **An endpoint**: a model served at an OpenAI-compatible URL, local or remote, such as a local model, or OpenRouter with an API key. The open harnesses, OpenCode and pi, take compatible endpoints, with an optional key from the same file.
   At `https://api.openai.com/v1`, OpenCode and pi use the Responses API by default, with function tools and the pool's output allowance for model turns. OpenCode defaults title generation to the selected model, and pi loads a bundled output-limit hook with extension discovery off. Other endpoints default to Chat Completions. Both clients still select a model from the endpoint's `/models` listing.
 
-  On a `google` pool at `https://generativelanguage.googleapis.com/v1beta/openai`, an explicitly requested bare model ID can match a `models/<id>` listing entry. OpenCode and pi send the bare ID and use the matching entry's metadata.
+  On a `google` pool at `https://generativelanguage.googleapis.com/v1beta/openai`, an explicitly requested bare model ID can match a `models/<id>` listing entry. OpenCode and pi send the bare ID and use the matching entry's metadata. Pi uses a `system` message for its brief and omits `store` on this endpoint. Pi on this endpoint is unavailable pending a successful live retry.
 
 ## In the ship's file
 
@@ -82,7 +82,9 @@ Live, with a real key, on 21 November 2026:
 - **OpenCode 1.19.5 and pi 0.79.0** on an OpenAI API key through `https://api.openai.com/v1` each made one live call on `gpt-6-luna` in its jail.
 - A live Codex seat moved from an OpenAI API key to a Codex subscription and back using `qd down` and `qd up` with a pool choice. It resumed the same conversation after each move and remembered the earlier task.
 
-xAI and Google API keys are still awaiting live proof.
+On 24 November 2026, **OpenCode 1.19.5** made one live call in its jail on `gemini-3.5-flash-lite` through Google's OpenAI-compatible endpoint. **pi 0.79.0** completed one live turn with a Google API key through the same endpoint, `https://generativelanguage.googleapis.com/v1beta/openai`. The pi retry used both `supportsDeveloperRole=false` and `supportsStore=false`. The cause of the earlier HTTP 400 remains undetermined because the retry tested both flags together.
+
+xAI API keys are still awaiting live proof.
 
 The default crew raised with `qd setup` carried one small change from its order to its landing in each of two runs on 21 November 2026. In one run the desk, captain and engineer all used Claude Code on an Anthropic key with `claude-sonnet-5-5`. In the other they all used Codex on a Codex subscription with `gpt-6.2-sol`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
 

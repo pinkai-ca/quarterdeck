@@ -143,7 +143,8 @@ def test_google_launch_uses_bare_id_and_listed_metadata(tmp_path, monkeypatch, n
     pool = Pool('gemini', 'google', endpoint=address, api_key='keys:unused')
     home = tmp_path / 'runtime/seats/synthetic/home'
     harness = {'opencode': OpenCodeHarness, 'pi': PiHarness}[name]()
-    seat = SeatSpec('synthetic', 'Synthetic', 'worker', name, (pool.name,), model=model_id)
+    seat = SeatSpec('synthetic', 'Synthetic', 'worker', name, (pool.name,), model=model_id,
+                    effort='off' if name == 'pi' else None)
     harness.build_home(home, seat, pool, None)
     assert endpoint.Choice.read(home) == endpoint.Choice(pool.name, model_id, 98304, 8192)
     launch = harness.launch(seat, pool, home, tmp_path / 'brief.md', None, None)
@@ -159,6 +160,36 @@ def test_google_launch_uses_bare_id_and_listed_metadata(tmp_path, monkeypatch, n
         model, = config['providers'][pool.name]['models']
         assert model['id'] == launched_model == model_id
         assert model['contextWindow'] == 98304
+        assert model['reasoning'] is True
+        assert model['maxTokens'] == endpoint.DEFAULT_OUTPUT
+        assert model['compat'] == {'supportsDeveloperRole': False, 'supportsStore': False}
+        assert launch.argv[launch.argv.index('--thinking') + 1] == 'off'
+
+
+@pytest.mark.parametrize('provider_name,address,provider_layer,model_layer,applies', [
+    ('google', endpoint.GOOGLE_OPENAI_BASE, {}, {}, True),
+    ('local', endpoint.GOOGLE_OPENAI_BASE, {}, {}, False),
+    ('google', endpoint.GOOGLE_OPENAI_BASE + '//', {}, {}, False),
+    ('google', 'https://example.invalid/v1', {'baseUrl': endpoint.GOOGLE_OPENAI_BASE}, {}, False),
+    ('google', endpoint.GOOGLE_OPENAI_BASE, {'baseUrl': 'https://example.invalid/v1'}, {}, False),
+    ('google', endpoint.GOOGLE_OPENAI_BASE, {}, {'baseUrl': 'https://example.invalid/v1'}, False),
+    ('google', endpoint.GOOGLE_OPENAI_BASE, {}, {'api': 'openai-responses'}, False),
+])
+def test_pi_google_chat_compatibility_follows_the_declared_and_effective_route(
+        tmp_path, monkeypatch, provider_name, address, provider_layer, model_layer, applies):
+    monkeypatch.setattr(endpoint, 'models', lambda *a, **k: [endpoint.Served('selected')])
+    pool = Pool('custom', provider_name, endpoint=address)
+    seat = SeatSpec('synthetic', 'Synthetic', 'worker', 'pi', (pool.name,), model='selected')
+    compat = {'supportsReasoningEffort': True}
+    layers = {**provider_layer, 'models': [{'id': 'selected', 'compat': compat, **model_layer}]}
+    (tmp_path / 'models.json').write_text(json.dumps({'providers': {pool.name: layers}}))
+    home = tmp_path / 'runtime/seats/synthetic/home'
+    PiHarness().build_home(home, seat, pool, tmp_path)
+    config = json.loads((home / 'agent/models.json').read_text())
+    model, = config['providers'][pool.name]['models']
+    if applies:
+        compat.update(supportsDeveloperRole=False, supportsStore=False)
+    assert model['compat'] == compat
 
 
 @pytest.mark.parametrize('name', ['opencode', 'pi'])

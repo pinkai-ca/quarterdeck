@@ -35,6 +35,10 @@ def openai_responses(url: str | None) -> bool:
     return isinstance(url, str) and url.removesuffix("/") == OPENAI_RESPONSES_BASE
 
 
+def google_openai(url: str | None) -> bool:
+    return isinstance(url, str) and url.removesuffix("/") == GOOGLE_OPENAI_BASE
+
+
 @dataclass(frozen=True)
 class Served:
     """One model an endpoint lists, with the context length it states, where it states one."""
@@ -127,7 +131,7 @@ def choose(pool: Pool, wanted: str | None) -> Choice:
     else:
         model = next((m for m in served if m.id == wanted), None)
         if (model is None and wanted and "/" not in wanted and pool.provider == "google"
-                and pool.endpoint.removesuffix("/") == GOOGLE_OPENAI_BASE):
+                and google_openai(pool.endpoint)):
             # Gemini's compatible endpoint can list resource names but expects a bare ID in requests.
             model = next((replace(m, id=wanted) for m in served if m.id == f"models/{wanted}"), None)
         if model is None:

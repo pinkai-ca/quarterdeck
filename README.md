@@ -136,7 +136,9 @@ Proved live with API keys on 21 November 2026:
 - OpenCode 1.19.5 and pi 0.79.0 on an OpenAI API key through `https://api.openai.com/v1` each made one live call on `gpt-6-luna` in its jail.
 - A live Codex seat moved from an OpenAI API key to a Codex subscription and back using `qd down` and `qd up` with a pool choice. It resumed the same conversation after each move and remembered the earlier task.
 
-xAI and Google API keys are still awaiting live proof.
+On 24 November 2026, OpenCode 1.19.5 made one live call in its jail on `gemini-3.5-flash-lite` through Google's OpenAI-compatible endpoint. Pi 0.79.0 completed one live turn with a Google API key through the same endpoint, `https://generativelanguage.googleapis.com/v1beta/openai`. The pi retry used both `supportsDeveloperRole=false` and `supportsStore=false`. The cause of the earlier HTTP 400 remains undetermined because the retry tested both flags together.
+
+xAI API keys are still awaiting live proof.
 
 The default crew raised with `qd setup` carried one small change from its order to its landing in each of two runs on 21 November 2026. In one run the desk, captain and engineer all used Claude Code on an Anthropic key with `claude-sonnet-5-5`. In the other they all used Codex on a Codex subscription with `gpt-6.2-sol`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
 

@@ -497,14 +497,20 @@ class PiHarness(EndpointHarness):
         selected = [m for m in provider["models"] if m["id"] == choice.model]
         if len(selected) != 1:
             raise ShipError(f"pool {pool.name}: generated model does not identify one price target")
-        reject_default_overrides(seat, selected[0], scope=f"selected model in template models.json.providers.{pool.name}",
+        model = selected[0]
+        reject_default_overrides(seat, model, scope=f"selected model in template models.json.providers.{pool.name}",
                                  model_keys=(), effort_keys=("reasoning",))
+        if (pool.provider == "google" and endpoint.google_openai(pool.endpoint)
+                and endpoint.google_openai(model.get("baseUrl", provider.get("baseUrl")))
+                and model.get("api", provider.get("api")) == "openai-completions"):
+            # Google's Chat Completions examples use system, and the endpoint rejects store.
+            model.setdefault("compat", {}).update(supportsDeveloperRole=False, supportsStore=False)
         if pool.output is not None:
-            selected[0]['maxTokens'] = pool.output
-        selected[0].pop("cost", None)  # omission is supported; null rates are not
+            model['maxTokens'] = pool.output
+        model.pop("cost", None)  # omission is supported; null rates are not
         if price:
-            selected[0]["cost"] = {"input": price.input, "output": price.output,
-                                    "cacheRead": price.cache_read, "cacheWrite": price.cache_write}
+            model["cost"] = {"input": price.input, "output": price.output,
+                             "cacheRead": price.cache_read, "cacheWrite": price.cache_write}
         settings = merged(SETTINGS, ship_template(ship_home, "settings.json"))
         settings = merged(settings, seat.settings)
         durable.replace_file(agent / "models.json", json.dumps(models, indent=2) + "\n")
