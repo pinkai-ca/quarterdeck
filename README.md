@@ -233,7 +233,7 @@ qd sync --all          # the same for each of your ships under ships/, one after
 qd --ship office sync  # the same for your office, which --all leaves out
 ```
 
-- An order from your own shell goes out in your name, unchecked: the machine is yours.
+- An order from your own shell goes out in your name, unchecked: the machine is yours. A command an agent runs never does: where `qd post` runs inside an agent's session of this ship or another of your ships, even after a script cleared the agent's name from it, it posts nothing in your name and says how to post as that agent.
 - Address an agent on another ship as `seat@ship`, using the seat's declared name and the ship's folder name. For instance, the office desk is `desk@office`. Run `qd --ship office brief desk` to see the current project ships and their seat addresses. The brief marks each seat with the captain role, which can be assigned to a seat with any declared name. A bare seat name addresses the current ship.
 - With no ship named, `qd` acts on your default ship, the crew's ship that setup made, and says which. Name another with `--ship <folder>` straight after `qd`, or make another the default with `qd default <ship>`.
 - Every command says what it did, and every refusal says why and what would lift it.

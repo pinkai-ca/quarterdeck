@@ -1034,6 +1034,10 @@ def cmd_post(args: argparse.Namespace) -> str:
     seat_here = os.environ.get("QD_SEAT")
     if seat_here and args.sender and args.sender != seat_here:
         raise ShipError(f"this shell is seat {seat_here}, which posts as itself; --from names a sender only from a shell that is no seat")
+    if not seat_here:
+        from . import post_sender
+        if (session := post_sender.seat_session(ship)) is not None:  # law: identity
+            raise ShipError(session.refusal(ship.folder, args.sender))
     sender = seat_here or args.sender or ship.operator.lower()  # a seat's identity is the one its launch set, never a flag
     office_seat = ship.kind == 'office' and seat_here in ship.seats
     # Resolve the reply and reserve its id from one read-only post view. The

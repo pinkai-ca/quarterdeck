@@ -29,6 +29,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `closed_pipe.py` | a completed command keeps its own status when a standard output pipe closes; only the broken stream is retired |
 | `paste_refusal.py` | proved owned-unsubmitted paste cleanup, and refusal evidence scoped by payload, version and geometry |
 | `pending.py`, `delivery_record.py` | saved paste evidence and historical receipts; the service schedules each message |
+| `post_sender.py` | whether a post with no seat named may sign as the operator or `--from`: refused when this process runs in a seat's session of the ship posted to or a fleet peer: by its ancestry, or a program's measured process marker, joined to a launch record by process id and start time; or, apart from that, by a program's measured marker beside a declared seat's own home, every link resolved; or, inside a jail, which hides the pane, by the jail's own first process with HOME in a declared seat's own folder |
 | `post_notices.py` | derived settlement of exact informational notices; never a read receipt |
 | `post_view.py` | a jailed seat's view of the post: copies of what it sent or received, a refused message only as its notice, its own inbox, the shorts taken; kept by the service, bound in the post's place |
 | `pr_screen.py` | a pull request from outside screened by a program before any seat reads it: fetched under made-up names, searched, read by its hand (or two hands, one on each model) with a planted check whose posts are held, judged by the answer's shape, and the desk or the First Officer told without quoting it |
@@ -85,6 +86,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `opencode_record.py` | the OpenCode database read session by session: the latest root session is the seat's, and a task's child sessions are accounted on their own |
 | `pi_responses.ts` | Pi's packaged launch hook that caps OpenAI Responses requests for the selected endpoint pool |
 | `resume_target.py` | launch-only conversation identity from an already joined record, including bounded identity reads of oversized records |
+| `session_markers.py` | what each program sets on every command it runs, measured names only: the markers of the program, its home variables and its process marker, for `post_sender.py`; in no reader's stamp set |
 | `simulator.py` | the fake program the drill runs |
 | `sqlite_snapshot.py` | a SQLite record read from a snapshot of its bytes and its log, shared by the Antigravity and OpenCode readers |
 | `synthetic_control.py` | the rendezvous a test holds the fake program at |
