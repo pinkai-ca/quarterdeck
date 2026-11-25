@@ -163,3 +163,13 @@ def reject_unclassified_overrides(spec, config, *, scope) -> None:
         field = f"{scope}.{next(iter(config))}" if isinstance(config, dict) else scope
         raise ShipError(f"seat {spec.name}: {field} is unclassified for program-default; "
                         "remove that override or choose an explicit named value")
+
+
+def named_record_holds(harness: str | None) -> tuple[str, ...]:
+    """The exact record-hold reasons a program's adapter establishes from measured rows, which a status summary may
+    say by name. Presentation only: no gate reads this, and every other unknown stays unnamed."""
+    if harness == 'claude':
+        from .claude import MIXED_REMOTE_INPUT
+        from .claude_background import STOPPED_RESUME
+        return (MIXED_REMOTE_INPUT, STOPPED_RESUME)
+    return ()

@@ -382,3 +382,37 @@ def test_the_measured_resume_stopped_notice_is_a_named_queue_hold(tmp_path, note
     expected = STOPPED_RESUME if note is None else 'task notification queue unresolved'
     assert state.queue_error == expected
     assert idle.check(state) == idle.Hold('queue-unknown', f'queue unknown: {expected}')
+
+
+@pytest.mark.parametrize('note', [None, 'Another note.'])
+def test_the_stopped_notice_name_reaches_wake_status_and_the_move_proof(tmp_path, monkeypatch, note):
+    from quarterdeck import human_wake, record_follow
+    from quarterdeck.harness.base import Join
+    from quarterdeck.harness.claude_background import STOPPED_RESUME
+    from quarterdeck.harness.types import Screen
+    record = fixture(tmp_path, [*shell_rows(SHELL), duration(3), *stopped_notice(5, note), duration(6)])
+    harness = claude.ClaudeHarness()
+    seat = SimpleNamespace(name='person', launched=lambda: object(), harness=harness, join=lambda: Join(record),
+                           pane=lambda: SimpleNamespace(dead=False, in_mode=False))
+    monkeypatch.setattr(human_wake, 'candidate_hold', lambda *args: None)
+    monkeypatch.setattr('quarterdeck.turn_failure.identity', lambda seat: {'seat': seat.name})
+    assert record_follow.reader_class(harness) is not None  # the incremental follower qd status reads through
+    wake = human_wake.eligible(seat, Screen(text='Synthetic composer', box='', working=False))
+    followed = record_follow.state(seat, record)
+    hold = idle.check(harness.state(record))
+    if note is None:
+        assert wake == f'human wake held: record activity unknown (tools, queue); {STOPPED_RESUME}'
+        assert followed.queue_error == STOPPED_RESUME
+        assert hold == idle.Hold('queue-unknown', f'queue unknown: {STOPPED_RESUME}')
+    else:  # any other unresolved notice stays unnamed
+        assert wake == 'human wake held: record activity unknown (tools, queue)'
+        assert followed.queue_error == 'task notification queue unresolved'
+        assert hold.reason == 'queue unknown: task notification queue unresolved'
+
+
+def test_only_the_adapters_measured_reasons_are_declared_for_naming():
+    from quarterdeck.harness.capabilities import named_record_holds
+    from quarterdeck.harness.claude_background import STOPPED_RESUME
+    assert named_record_holds('claude') == (claude.MIXED_REMOTE_INPUT, STOPPED_RESUME)
+    assert named_record_holds('codex') == named_record_holds(None) == ()
+    assert 'task notification queue unresolved' not in named_record_holds('claude')

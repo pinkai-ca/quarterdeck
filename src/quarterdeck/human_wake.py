@@ -423,7 +423,12 @@ def eligible(seat, screen=NO_SCREEN, proof=None) -> str | None:
         if not isinstance(state.queued, tuple) or state.queue_error is not None:
             unknown.append('queue')
         if unknown:
-            return 'human wake held: record activity unknown (' + ', '.join(unknown) + ')'
+            # A hold the adapter names from measured rows is said by its name; any other unknown stays unnamed.
+            from .harness.capabilities import named_record_holds
+            declared = named_record_holds(getattr(seat.harness, 'name', None))
+            named = [fact for fact in (state.queue_error, getattr(state, 'input_hold', None)) if fact in declared]
+            return ('human wake held: record activity unknown (' + ', '.join(unknown) + ')'
+                    + ''.join(f'; {fact}' for fact in named))
         if state.turn_open is not False or state.pending_tools != () or state.queued != ():
             return 'human wake waiting for recorded work to end'
         if state.failure:
