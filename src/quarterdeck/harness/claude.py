@@ -108,14 +108,14 @@ def _data_flow_event(entry, names) -> bool:
             and isinstance(entry['event_id'], str) and BRIDGE_EVENT_ID.fullmatch(entry['event_id']) is not None)
 
 
-def _data_flow_memory_write(entry) -> bool:
+def _data_flow_memory_write(entry, *, id_pattern=MEMORY_WRITE_ID) -> bool:
     """The program's own memory write, measured on 2.1.331: an event naming what it touched, never input."""
     touched = entry.get('touched') if isinstance(entry, dict) else None
     return (isinstance(entry, dict) and entry.keys() == {'event_id', 'touched'}
             and isinstance(entry['event_id'], str) and BRIDGE_EVENT_ID.fullmatch(entry['event_id']) is not None
             and isinstance(touched, dict) and touched.keys() == {'action', 'id', 'kind'}
             and touched['action'] == 'write' and touched['kind'] == 'memory'
-            and isinstance(touched['id'], str) and MEMORY_WRITE_ID.fullmatch(touched['id']) is not None)
+            and isinstance(touched['id'], str) and id_pattern.fullmatch(touched['id']) is not None)
 
 
 MIXED_REMOTE_INPUT = 'a Remote Control input of unknown time, unbound in its data-flow row'
@@ -372,23 +372,37 @@ def _accepted_input(row: dict, text: str, stamp: datetime | None) -> Input:
 
 
 def _reactive_auto_boundary(row: dict, metadata: dict) -> bool:
-    """The interactive 2.1.331 auto writer's saved form shared with the witnessed /compact."""
-    if (row.keys() != {'type', 'subtype', 'content', 'level', 'parentUuid', 'logicalParentUuid', 'isSidechain',
-                       'uuid', 'timestamp', 'userType', 'entrypoint', 'cwd', 'sessionId', 'version',
-                       'gitBranch', 'slug', 'dataFlowOn', 'compactMetadata'}
+    """The three measured automatic boundary forms saved by the interactive 2.1.331 writer."""
+    row_fields = {'type', 'subtype', 'content', 'level', 'parentUuid', 'logicalParentUuid', 'isSidechain',
+                  'uuid', 'timestamp', 'userType', 'entrypoint', 'cwd', 'sessionId', 'version',
+                  'gitBranch', 'slug', 'dataFlowOn', 'compactMetadata'}
+    if ((row.keys() != row_fields and (row.keys() != row_fields | {'isMeta'} or row['isMeta'] is not False))
             or row['version'] != '2.1.331' or row['content'] != 'Conversation compacted' or row['level'] != 'info'
             or row['parentUuid'] is not None or row['isSidechain'] is not False or row['dataFlowOn'] is not True
             or row['userType'] != 'external' or row['entrypoint'] != 'cli' or when(row['timestamp']) is None
             or not all(isinstance(row[field], str) and row[field]
                        for field in ('uuid', 'logicalParentUuid', 'cwd', 'gitBranch', 'slug'))):
         return False
-    if (metadata.keys() != {'trigger', 'preTokens', 'postTokens', 'cumulativeDroppedTokens', 'durationMs',
-                            'preservedSegment', 'preservedMessages', 'preCompactOrganizations',
-                            'preCompactOrganizationsCoverStart'}
-            or not all(type(metadata[field]) is int and metadata[field] >= 0
+
+    metadata_fields = {'trigger', 'preTokens', 'postTokens', 'cumulativeDroppedTokens', 'durationMs',
+                       'preservedSegment', 'preservedMessages', 'preCompactOrganizations'}
+    discovered_tools = {'preCompactDiscoveredTools'}
+    if 'isMeta' in row:
+        if metadata.keys() != metadata_fields | discovered_tools:
+            return False
+    elif metadata.keys() == metadata_fields | {'preCompactOrganizationsCoverStart'}:
+        if type(metadata['preCompactOrganizationsCoverStart']) is not bool:
+            return False
+    elif metadata.keys() != metadata_fields | discovered_tools | {'precomputed'} or metadata['precomputed'] is not True:
+        return False
+
+    if 'preCompactDiscoveredTools' in metadata:
+        tools = metadata['preCompactDiscoveredTools']
+        if not isinstance(tools, list) or not tools or not all(isinstance(tool, str) for tool in tools):
+            return False
+    if (not all(type(metadata[field]) is int and metadata[field] >= 0
                        for field in ('preTokens', 'postTokens', 'cumulativeDroppedTokens', 'durationMs'))
             or metadata['cumulativeDroppedTokens'] < max(0, metadata['preTokens'] - metadata['postTokens'])
-            or type(metadata['preCompactOrganizationsCoverStart']) is not bool
             or not _compaction_ids(metadata['preCompactOrganizations'])):
         return False
     segment, messages = metadata['preservedSegment'], metadata['preservedMessages']
@@ -407,6 +421,36 @@ def _compaction_ids(values) -> bool:
     return (isinstance(values, list) and bool(values)
             and all(isinstance(value, str) and value for value in values)
             and len(set(values)) == len(values))
+
+
+_SHORT_MEMORY_WRITE_ID = re.compile(r'[-0-9_a-z]{42}')
+_DATA_FLOW_SOURCE_ID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
+
+
+def _compaction_data_flow_update(row) -> bool:
+    """Measured .331 updates that contain no compaction boundary, even when other readers hold them."""
+    if (row.keys() != {'type', 'v', 'sessionId', 'records'} or row['type'] != 'data-flow-records'
+            or type(row['v']) is not int or row['v'] != 1):
+        return False
+    items = row['records']
+    if not isinstance(items, list) or not 1 <= len(items) <= 2:
+        return False
+    events = [item for item in items if not (_data_flow_response(item) and item.keys() == {'listed', 'response_id'})]
+    if len(events) != 1:
+        return False
+    event = events[0]
+    if _data_flow_memory_write(event, id_pattern=_SHORT_MEMORY_WRITE_ID):
+        return True
+    if (not isinstance(event, dict) or event.keys() != {'event_id', 'source'}
+            or not isinstance(event['event_id'], str) or BRIDGE_EVENT_ID.fullmatch(event['event_id']) is None):
+        return False
+    source = event['source']
+    if not isinstance(source, dict) or source.keys() != {'type', 'id'}:
+        return False
+    source_id = source['id']
+    return ((source['type'] == 'claude_code_session' and isinstance(source_id, str)
+             and _DATA_FLOW_SOURCE_ID.fullmatch(source_id) is not None)
+            or (source['type'] == 'unknown' and source_id is None and len(items) == 2))
 
 
 def compactions(record: Path):
@@ -433,9 +477,11 @@ def compactions(record: Path):
             for row in rows:
                 kind = row.get('type')
                 if kind in DATA_FLOW_ROWS:
-                    if not data_flow_metadata(row):
+                    if not (data_flow_metadata(row) or _compaction_data_flow_update(row)):
                         raise ValueError('unknown native data-flow metadata')
                     session = row['sessionId']
+                    if not isinstance(session, str) or not session:
+                        raise ValueError('native metadata identity missing')
                     if (self.history.conversation or self.metadata_session) not in (None, session):
                         raise ValueError('mixed native conversation')
                     self.metadata_session = session

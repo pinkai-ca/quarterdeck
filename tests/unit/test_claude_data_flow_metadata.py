@@ -4,8 +4,9 @@ import json
 
 import pytest
 
-from quarterdeck.harness import claude, claude_record
+from quarterdeck.harness import claude, claude_record, json_record
 from tests.compaction_shapes import Native
+from .test_compactions_incremental import candidate_boundary
 
 
 def metadata(native, kind, **fields):
@@ -308,6 +309,7 @@ def test_measured_331_metadata_carries_no_input(tmp_path, fields):
     found = claude.inputs(native.path)
     assert [item.text for item in found] == ['Synthetic task'] and not found.skipped
     assert claude.state(native.path).pending_tools == ()
+    assert claude.compactions(native.path).count == 0
     assert len(claude.person_inputs(native.path, ())) == 1
 
 
@@ -319,9 +321,91 @@ def memory(event=EVENT.format(5), **touched):
     return {'event_id': event, 'touched': {'action': 'write', 'id': MEMORY, 'kind': 'memory', **touched}}
 
 
+SHORT_MEMORY = memory(id=MEMORY[:42])
+SOURCE_SESSION = dict(type='claude_code_session', id=EVENT.format(8).removeprefix('event_'))
+SESSION_EVENT = dict(event_id=EVENT.format(6), source=SOURCE_SESSION)
+UNKNOWN_EVENT = dict(event_id=EVENT.format(7), source=dict(type='unknown', id=None))
+LISTED_RESPONSE = dict(listed=['msg_SyntheticOld'], response_id='msg_SyntheticNew')
+
+
+@pytest.mark.parametrize('with_response', [False, True], ids=['alone', 'paired'])
+@pytest.mark.parametrize('damage', [
+    dict(sessionId='foreign-session'),
+    dict(records=[dict(SESSION_EVENT, source=dict(SOURCE_SESSION, type='unmeasured'))]),
+    dict(extra=True),
+], ids=['foreign-session', 'unknown-source-type', 'extra-key'])
+def test_two_automatic_boundaries_across_measured_data_flow_updates(tmp_path, monkeypatch, with_response, damage):
+    monkeypatch.setattr(json_record, '_KEEP_ROWS', False)
+    native = Native(tmp_path / 'record.jsonl', 'claude')
+    native.finish()
+
+    def summary(anchor):
+        row = native.add('user', isCompactSummary=True, message=dict(role='user', content='Synthetic summary'))
+        row['uuid'] = native.previous = anchor
+        native.flush()
+
+    native.compact()
+    native.rows[-1]['version'] = '2.1.317'
+    summary('synthetic-first-summary')
+    before = claude.compactions(native.path)
+    assert before.count == 1
+    reader = claude._Reader
+    interpreter = claude_record.parse(native.path).interpreters[reader][0]
+
+    response = [LISTED_RESPONSE] if with_response else []
+    notes = [metadata(native, 'data-flow-records', records=items) for items in (
+        [SHORT_MEMORY, *response], [SESSION_EVENT, *response], [UNKNOWN_EVENT, LISTED_RESPONSE],
+    )]
+    first_note_line = len(native.rows) + 1
+    native.rows.extend(notes)
+    with native.path.open('a') as stream:
+        for note in notes:
+            stream.write(json.dumps(note) + '\n')
+    after = claude.compactions(native.path)
+    assert claude_record.parse(native.path).interpreters[reader][0] is interpreter
+    assert after.count == 1 and after.frontier == before.frontier
+    assert after.state.pending_tools is None
+    assert claude.inputs(native.path).skipped == [
+        dict(line=line, kind='data-flow-records', reason='unknown native data-flow metadata')
+        for line in range(first_note_line, first_note_line + len(notes))
+    ]
+
+    native.begin('Synthetic work after the first compaction')
+    native.finish()
+    candidate_boundary(native, 'auto', anchor='synthetic-second-summary', form='precomputed')
+    summary('synthetic-second-summary')
+    warm = claude.compactions(native.path)
+    assert warm.count == 2 and warm.matches_prefix(before.extent, before.digest)
+    assert claude_record.parse(native.path).interpreters[reader][0] is interpreter
+    json_record._snapshots.clear()
+    assert claude.compactions(native.path) == warm
+
+    notes[1].update(damage)
+    native.flush()
+    assert claude.compactions(native.path).count is None
+    json_record._snapshots.clear()
+    assert claude.compactions(native.path).count is None
+
+
+@pytest.mark.parametrize('raw', ['{"type":"unmeasured-native-row"}\n', '{broken}\n', '[]\n', '{"type":'])
+def test_damaged_or_unknown_append_leaves_cold_and_carried_counts_unknown(tmp_path, raw):
+    native = Native(tmp_path / 'record.jsonl', 'claude')
+    native.finish()
+    native.compact()
+    assert claude.compactions(native.path).count == 1
+    with native.path.open('a') as stream:
+        stream.write(raw)
+    assert claude.compactions(native.path).count is None
+    json_record._snapshots.clear()
+    assert claude.compactions(native.path).count is None
+
+
 @pytest.mark.parametrize(('records', 'snapshot'), [
     # E stays with its joins until measured: a person's Remote Control input is never plain metadata.
     ([REMOTE_INPUT, RESPONSE, {'tool_name': 'Write', 'tool_use_id': 'toolu_Synthetic'}], True),
+    ([{'event_id': EVENT.format(1), 'tool_name': 'RemoteControlLinked', 'no_message': True}], False),
+    ([{'event_id': EVENT.format(1), 'tool_name': 'RemoteControlLinked'}], False),
+    ([{'event_id': EVENT.format(1), 'tool_name': 'RemoteControlLinked'}], True),
     ([REMOTE_INPUT, REMOTE_INPUT, RESPONSE], False),  # not the measured mixed form: two inputs
     ([REMOTE_INPUT, RESPONSE, {'tool_name': 'Write', 'tool_use_id': 'toolu_Synthetic'}], False),
     ([{'event_id': EVENT.format(4), 'tool_name': 'Read'}], False),  # a tool event outside a snapshot
@@ -331,6 +415,16 @@ def memory(event=EVENT.format(5), **touched):
     ([memory(id=MEMORY.upper())], False),
     ([memory(kind='other')], False),
     ([memory(event='event_other')], False),
+    ([SHORT_MEMORY], True),
+    ([memory(id=MEMORY[:41])], False),
+    ([dict(SESSION_EVENT, source=dict(SOURCE_SESSION, extra=True))], False),
+    ([dict(SESSION_EVENT, source=dict(SOURCE_SESSION, id='not-a-uuid'))], False),
+    ([dict(SESSION_EVENT, event_id='event_other')], False),
+    ([UNKNOWN_EVENT], False),
+    ([dict(UNKNOWN_EVENT, source=dict(type='unknown', id='unexpected')), LISTED_RESPONSE], False),
+    ([SESSION_EVENT, RESPONSE], False),
+    ([SESSION_EVENT, LISTED_RESPONSE, LISTED_RESPONSE], False),
+    ([SHORT_MEMORY, SESSION_EVENT], False),
 ])
 def test_331_remote_and_unmeasured_entries_stay_unknown(tmp_path, records, snapshot):
     native = Native(tmp_path / 'record.jsonl', 'claude')
@@ -340,6 +434,7 @@ def test_331_remote_and_unmeasured_entries_stay_unknown(tmp_path, records, snaps
     native.flush()
     found = claude.inputs(native.path)
     assert found.skipped == [dict(line=4, kind='data-flow-records', reason='unknown native data-flow metadata')]
+    assert claude.compactions(native.path).count is None
     with pytest.raises(ValueError, match='unknown native data-flow metadata'):
         claude.person_inputs(native.path, ())
 
@@ -356,6 +451,7 @@ def test_the_measured_mixed_remote_input_holds_quiet_time_under_its_own_name(tmp
     # The typed root keeps its own proved time; the unbound event is neither dated nor dismissed.
     assert [item.text for item in found] == ['Synthetic task']
     assert found.skipped == [dict(line=4, kind='data-flow-records', reason=claude.MIXED_REMOTE_INPUT)]
+    assert claude.compactions(native.path).count is None
     with pytest.raises(ValueError, match='Remote Control input of unknown time'):
         claude.person_inputs(native.path, ())
     from datetime import datetime, timezone

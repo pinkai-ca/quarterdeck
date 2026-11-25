@@ -88,10 +88,9 @@ def test_a_refused_history_stays_refused_across_appends_and_a_rewrite_reads_whol
     assert claude.compactions(native.path).reason is None
 
 
-def candidate_boundary(native, trigger):
-    # The interactive saved form from the stripped manual witness, with synthetic values.
+def candidate_boundary(native, trigger, anchor='synthetic-summary', *, form='witnessed'):
+    # The interactive saved forms with synthetic values.
     kept = [row['uuid'] for row in native.rows[-2:]]
-    anchor = 'synthetic-summary'
     native.compact()
     row = native.rows[-1]
     row.update(content='Conversation compacted', level='info', userType='external', entrypoint='cli',
@@ -104,16 +103,26 @@ def candidate_boundary(native, trigger):
                    'preCompactOrganizations': ['synthetic-org'],
                    'preCompactOrganizationsCoverStart': True,
                })
+    if form != 'witnessed':
+        metadata = row['compactMetadata']
+        del metadata['preCompactOrganizationsCoverStart']
+        metadata['preCompactDiscoveredTools'] = ['SyntheticTool']
+        if form == 'precomputed':
+            metadata['precomputed'] = True
+        elif form == 'is-meta':
+            row['isMeta'] = False
     return row
 
 
-@pytest.mark.parametrize('trigger', ['manual', 'auto'])
+@pytest.mark.parametrize('trigger,form', [
+    ('manual', 'witnessed'), ('auto', 'witnessed'), ('auto', 'precomputed'), ('auto', 'is-meta'),
+])
 @pytest.mark.parametrize('compatibility', [False, True], ids=['streaming', 'full'])
-def test_interactive_candidate_boundary_counts_once_and_preserves_the_turn(tmp_path, monkeypatch, trigger,
+def test_interactive_candidate_boundary_counts_once_and_preserves_the_turn(tmp_path, monkeypatch, trigger, form,
                                                                       compatibility):
     native = history(tmp_path, 'claude')
     before = claude.compactions(native.path)
-    candidate_boundary(native, trigger)
+    candidate_boundary(native, trigger, form=form)
     native.add('user', isCompactSummary=True, message=dict(role='user', content='Synthetic summary'))
     native.rows[-1]['uuid'] = 'synthetic-summary'
     if compatibility:
@@ -164,6 +173,34 @@ def test_distinct_or_malformed_candidate_auto_boundary_leaves_the_count_unknown(
     native.begin('Synthetic later task')
     native.finish()
     assert claude.compactions(native.path).count is None
+
+
+@pytest.mark.parametrize('form,row_changes,metadata_changes', [
+    ('precomputed', {}, dict(precomputed=False)),
+    ('precomputed', {}, dict(precomputed=1)),
+    ('precomputed', {}, dict(unmeasured=True)),
+    ('precomputed', {}, dict(preCompactDiscoveredTools=[])),
+    ('precomputed', {}, dict(preCompactDiscoveredTools='SyntheticTool')),
+    ('precomputed', {}, dict(preCompactDiscoveredTools=['SyntheticTool', None])),
+    ('precomputed', dict(isMeta=False), {}),
+    ('precomputed', {}, dict(preCompactOrganizationsCoverStart=True)),
+    ('is-meta', dict(isMeta=True), {}),
+    ('is-meta', dict(isMeta=0), {}),
+    ('is-meta', dict(unmeasured=True), {}),
+    ('is-meta', {}, dict(preCompactOrganizationsCoverStart=True)),
+    ('is-meta', {}, dict(preCompactOrganizations=[])),
+    ('is-meta', {}, dict(preCompactDiscoveredTools=[None])),
+])
+def test_unmeasured_variants_of_the_new_auto_boundaries_leave_the_count_unknown(
+        tmp_path, form, row_changes, metadata_changes):
+    native = history(tmp_path, 'claude')
+    row = candidate_boundary(native, 'auto', form=form)
+    row.update(row_changes)
+    row['compactMetadata'].update(metadata_changes)
+    native.flush()
+
+    reading = claude.compactions(native.path)
+    assert reading.count is None and reading.reason is not None
 
 
 @pytest.mark.parametrize('version', [None, '2.1.317', '2.1.325'])
