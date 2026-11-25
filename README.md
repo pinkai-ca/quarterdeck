@@ -138,6 +138,8 @@ Proved live with API keys on 21 November 2026:
 
 On 24 November 2026, OpenCode 1.19.5 made one live call in its jail on `gemini-3.5-flash-lite` through Google's OpenAI-compatible endpoint. Pi 0.79.0 completed one live turn with a Google API key through the same endpoint, `https://generativelanguage.googleapis.com/v1beta/openai`. The pi retry used both `supportsDeveloperRole=false` and `supportsStore=false`. The cause of the earlier HTTP 400 remains undetermined because the retry tested both flags together.
 
+For a pi or OpenCode seat on a Google API key, declare `provider = "google"` and keep `endpoint = "https://generativelanguage.googleapis.com/v1beta/openai"` alongside the existing key reference. Model discovery and `qd doctor` use that address. Both programs use Google's native Gemini API at `https://generativelanguage.googleapis.com/v1beta` for inference with the same key. In an offline test, pi 0.79.0 and OpenCode 1.19.5 each returned the model's thought signature with the function result. Live confirmation of the native tool turn is pending.
+
 xAI API keys are still awaiting live proof.
 
 For a Z.ai Standard API key, use `provider = "zai"` and `api_key = "keys:glm"`.

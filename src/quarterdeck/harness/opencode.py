@@ -107,6 +107,27 @@ def require_zai_config(config, pool, model) -> None:
         raise ShipError('Z.ai OpenCode settings contain a substitution marker outside the generated key field')
 
 
+def configure_google_key(seat: SeatSpec, provider: dict, model: dict, model_id: str) -> None:
+    """Use OpenCode's bundled Google SDK and keep the declaration's model selector."""
+    native = '@ai-sdk/google'
+    base = endpoint.GOOGLE_GENERATIVE_BASE
+    addresses = (base, base + '/', endpoint.GOOGLE_OPENAI_BASE, endpoint.GOOGLE_OPENAI_BASE + '/')
+    upstream_id = model_id.removeprefix('models/')
+    options = provider.get('options')
+    if (provider.get('npm') not in (native, '@ai-sdk/openai-compatible')
+            or provider.get('api', base) not in addresses
+            or not isinstance(options, dict) or options.get('baseURL') not in addresses
+            or options.get('apiKey') != f'{{env:{endpoint.KEY_VARIABLE}}}'
+            or {'headers', 'fetch'} & options.keys()
+            or {'headers', 'provider'} & model.keys()
+            or model.get('id', upstream_id) not in (model_id, upstream_id)):
+        raise ShipError(f"seat {seat.name}: OpenCode on Google's native API needs the declared Google address and key; "
+                        "remove routing and authentication overrides from its opencode.json provider and selected model")
+    provider['npm'] = native
+    options['baseURL'] = base
+    model['id'] = upstream_id
+
+
 # -- the adapter --------------------------------------------------------------------------------
 
 BAR_TEXT = re.compile(r"^\s*┃  (.*)$")
@@ -236,7 +257,15 @@ class OpenCodeHarness(EndpointHarness):
     human_tools = ('question',)
     human_tool_policy = "The native question tool is denied for every configured agent."
 
+    def accepts(self, pool: Pool) -> str | None:
+        if pool.provider == 'google' and pool.paid_by_key and not endpoint.google_openai(pool.endpoint):
+            return (f'pool {pool.name}: OpenCode needs endpoint = "{endpoint.GOOGLE_OPENAI_BASE}" '
+                    'for a Google API key')
+        return super().accepts(pool)
+
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        if reason := self.accepts(pool):
+            raise ShipError(f"seat {seat.name}: {reason}")
         self.check_defaults(seat, ship_home)
         zai = pool.provider == 'zai' and pool.paid_by_key
         if not seat.human_session or zai:
@@ -273,7 +302,11 @@ class OpenCodeHarness(EndpointHarness):
                 if isinstance(scope.get('tools'), dict) and 'question' in scope['tools']:
                     scope['tools'].pop('question')  # native Object.assign would insert this key before wildcard rules
         price = Price.parse(pool.price) if pool.price is not None else None
-        model = config["provider"][pool.name]["models"][choice.model]
+        provider = config["provider"][pool.name]
+        model = provider["models"][choice.model]
+        if pool.provider == 'google' and pool.paid_by_key:
+            configure_google_key(seat, provider, model, choice.model)
+            config.setdefault('small_model', f'{pool.name}/{choice.model}')
         from .opencode_thinking import prepare
         prepare(config, pool, choice.model, seat.human_session)
         model.pop("cost", None)

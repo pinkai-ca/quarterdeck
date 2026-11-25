@@ -395,6 +395,25 @@ QUEUED_HINT = "Alt+Up to edit all queued messages"
 STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
 
 
+def configure_google_key(seat: SeatSpec, provider: dict, model: dict) -> None:
+    """Use the native Google API for a key on Google's declared compatible endpoint."""
+    native = "google-generative-ai"
+    base = endpoint.GOOGLE_GENERATIVE_BASE
+    api_key = f"${endpoint.KEY_VARIABLE}"
+    addresses = (base, base + "/", endpoint.GOOGLE_OPENAI_BASE, endpoint.GOOGLE_OPENAI_BASE + "/")
+    apis = (native, "openai-completions")
+    if (provider.get("baseUrl") not in addresses or provider.get("api") not in apis
+            or provider.get("apiKey") not in (api_key, endpoint.KEY_VARIABLE)
+            or provider.get("authHeader") or "headers" in provider
+            or model.get("baseUrl", base) not in addresses or model.get("api", native) not in apis
+            or "headers" in model):
+        raise ShipError(f"seat {seat.name}: pi on Google's native API needs the declared Google address and key; "
+                        "remove routing and authentication overrides from its models.json provider and selected model")
+    provider.update(baseUrl=base, api=native, apiKey=api_key)
+    model.pop("baseUrl", None)
+    model.pop("api", None)
+
+
 class PiHarness(EndpointHarness):
     """Read Pi session JSONL and the terminal editor."""
 
@@ -416,6 +435,12 @@ class PiHarness(EndpointHarness):
     program = "pi"
     home_variable = "PI_CODING_AGENT_DIR"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape")
+
+    def accepts(self, pool: Pool) -> str | None:
+        if pool.provider == "google" and pool.paid_by_key and not endpoint.google_openai(pool.endpoint):
+            return (f'pool {pool.name}: pi needs endpoint = "{endpoint.GOOGLE_OPENAI_BASE}" '
+                    'for a Google API key')
+        return super().accepts(pool)
 
     def check_defaults(self, seat: SeatSpec, ship_home: Path | None = None) -> None:
         super().check_defaults(seat, ship_home)
@@ -463,6 +488,8 @@ class PiHarness(EndpointHarness):
                         reject_unclassified_overrides(seat, {key: None}, scope=f'{selected}.cost')
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        if reason := self.accepts(pool):
+            raise ShipError(f"seat {seat.name}: {reason}")
         self.check_defaults(seat, ship_home)
         agent, sessions = home / "agent", home / "sessions"
         seat_files.make_folder(agent)  # never through a link its jail planted
@@ -500,7 +527,9 @@ class PiHarness(EndpointHarness):
         model = selected[0]
         reject_default_overrides(seat, model, scope=f"selected model in template models.json.providers.{pool.name}",
                                  model_keys=(), effort_keys=("reasoning",))
-        if (pool.provider == "google" and endpoint.google_openai(pool.endpoint)
+        if pool.paid_by_key and pool.provider == "google":
+            configure_google_key(seat, provider, model)
+        elif (pool.provider == "google" and endpoint.google_openai(pool.endpoint)
                 and endpoint.google_openai(model.get("baseUrl", provider.get("baseUrl")))
                 and model.get("api", provider.get("api")) == "openai-completions"):
             # Google's Chat Completions examples use system, and the endpoint rejects store.

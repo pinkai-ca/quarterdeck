@@ -25,7 +25,8 @@ from .pricing import save_price, saved_price
 
 KEY_VARIABLE = "QD_ENDPOINT_KEY"  # the variable a keyed endpoint's program reads; the key itself is never written
 OPENAI_RESPONSES_BASE = "https://api.openai.com/v1"
-GOOGLE_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+GOOGLE_GENERATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta"
+GOOGLE_OPENAI_BASE = f"{GOOGLE_GENERATIVE_BASE}/openai"
 DEFAULT_CONTEXT = 32768
 DEFAULT_OUTPUT = 8192
 TIMEOUT = 5.0

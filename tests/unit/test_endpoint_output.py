@@ -152,18 +152,102 @@ def test_google_launch_uses_bare_id_and_listed_metadata(tmp_path, monkeypatch, n
     if name == 'opencode':
         config = json.loads((home / 'config/opencode/opencode.json').read_text())
         provider = config['provider'][pool.name]
-        assert config['model'] == launched_model == f'{pool.name}/{model_id}'
+        assert config['model'] == config['small_model'] == launched_model == f'{pool.name}/{model_id}'
+        assert provider['npm'] == '@ai-sdk/google'
+        assert provider['options'] == {'baseURL': endpoint.GOOGLE_GENERATIVE_BASE, 'apiKey': '{env:QD_ENDPOINT_KEY}'}
         assert list(provider['models']) == [model_id]
         assert provider['models'][model_id]['limit']['context'] == 98304
     else:
         config = json.loads((home / 'agent/models.json').read_text())
-        model, = config['providers'][pool.name]['models']
+        provider = config['providers'][pool.name]
+        assert provider['baseUrl'] == endpoint.GOOGLE_GENERATIVE_BASE
+        assert provider['api'] == 'google-generative-ai'
+        assert provider['apiKey'] == '$QD_ENDPOINT_KEY'
+        model, = provider['models']
         assert model['id'] == launched_model == model_id
         assert model['contextWindow'] == 98304
         assert model['reasoning'] is True
         assert model['maxTokens'] == endpoint.DEFAULT_OUTPUT
-        assert model['compat'] == {'supportsDeveloperRole': False, 'supportsStore': False}
+        assert 'compat' not in model
         assert launch.argv[launch.argv.index('--thinking') + 1] == 'off'
+
+
+@pytest.mark.parametrize('adapter', [PiHarness, OpenCodeHarness])
+@pytest.mark.parametrize('address', [None, endpoint.GOOGLE_GENERATIVE_BASE,
+                                    endpoint.GOOGLE_OPENAI_BASE + '//', 'https://example.invalid/v1'])
+def test_google_key_addresses_outside_the_supported_route_are_refused_before_discovery(tmp_path, adapter, address):
+    harness = adapter()
+    pool = Pool('custom', 'google', endpoint=address, api_key='keys:unused')
+    seat = SeatSpec('synthetic', 'Synthetic', 'worker', harness.name, (pool.name,), model='selected')
+    with pytest.raises(ShipError, match=r'seat synthetic: pool custom: .* needs endpoint .*v1beta/openai'):
+        harness.build_home(tmp_path / 'home', seat, pool, None)
+
+
+@pytest.mark.parametrize('provider_layer,model_layer,accepted', [
+    ({'baseUrl': endpoint.GOOGLE_OPENAI_BASE + '/', 'apiKey': 'QD_ENDPOINT_KEY'},
+     {'baseUrl': endpoint.GOOGLE_OPENAI_BASE, 'api': 'openai-completions'}, True),
+    ({'baseUrl': endpoint.GOOGLE_GENERATIVE_BASE, 'api': 'google-generative-ai', 'apiKey': '$QD_ENDPOINT_KEY'},
+     {'baseUrl': endpoint.GOOGLE_GENERATIVE_BASE + '/', 'api': 'google-generative-ai'}, True),
+    ({'baseUrl': 'https://example.invalid/v1'}, {}, False),
+    ({'apiKey': '$UNRELATED_KEY'}, {}, False),
+    ({'authHeader': True}, {}, False),
+    ({}, {'baseUrl': 'https://example.invalid/v1'}, False),
+    ({}, {'api': 'openai-responses'}, False),
+])
+def test_pi_google_key_uses_the_declared_route_with_template_layers(
+        tmp_path, monkeypatch, provider_layer, model_layer, accepted):
+    monkeypatch.setattr(endpoint, 'models', lambda *a, **k: [endpoint.Served('selected')])
+    monkeypatch.setattr(endpoint, '_secret', lambda pool: 'synthetic-key')
+    pool = Pool('custom', 'google', endpoint=endpoint.GOOGLE_OPENAI_BASE, api_key='keys:unused')
+    seat = SeatSpec('synthetic', 'Synthetic', 'worker', 'pi', (pool.name,), model='selected')
+    template = {'providers': {pool.name: {**provider_layer, 'models': [{'id': 'selected', **model_layer}]}}}
+    (tmp_path / 'models.json').write_text(json.dumps(template))
+    home = tmp_path / 'home'
+    if not accepted:
+        with pytest.raises(ShipError, match='seat synthetic: pi on Google.*needs the declared Google address and key'):
+            PiHarness().build_home(home, seat, pool, tmp_path)
+        return
+    PiHarness().build_home(home, seat, pool, tmp_path)
+    provider = json.loads((home / 'agent/models.json').read_text())['providers'][pool.name]
+    assert (provider['baseUrl'], provider['api'], provider['apiKey']) == (
+        endpoint.GOOGLE_GENERATIVE_BASE, 'google-generative-ai', '$QD_ENDPOINT_KEY')
+    model, = provider['models']
+    assert 'baseUrl' not in model and 'api' not in model
+
+
+@pytest.mark.parametrize('provider_layer,model_layer,accepted', [
+    ({'options': {'baseURL': endpoint.GOOGLE_OPENAI_BASE + '/'}}, {'id': 'models/gemini-test'}, True),
+    ({'npm': '@ai-sdk/google', 'options': {'baseURL': endpoint.GOOGLE_GENERATIVE_BASE}}, {}, True),
+    ({'api': 'https://example.invalid/v1'}, {}, False),
+    ({'options': {'baseURL': 'https://example.invalid/v1'}}, {}, False),
+    ({'options': {'apiKey': '{env:UNRELATED_KEY}'}}, {}, False),
+    ({}, {'provider': {'npm': '@ai-sdk/openai'}}, False),
+    ({}, {'id': 'another-model'}, False),
+])
+def test_opencode_google_key_keeps_the_resource_name_selector_with_template_layers(
+        tmp_path, monkeypatch, provider_layer, model_layer, accepted):
+    model_id = 'models/gemini-test'
+    monkeypatch.setattr(endpoint, 'models', lambda *a, **k: [endpoint.Served(model_id)])
+    monkeypatch.setattr(endpoint, '_secret', lambda pool: 'synthetic-key')
+    pool = Pool('custom', 'google', endpoint=endpoint.GOOGLE_OPENAI_BASE, api_key='keys:unused')
+    seat = SeatSpec('synthetic', 'Synthetic', 'worker', 'opencode', (pool.name,), model=model_id)
+    template = {'provider': {pool.name: {**provider_layer, 'models': {model_id: model_layer}}}}
+    (tmp_path / 'opencode.json').write_text(json.dumps(template))
+    home = tmp_path / 'runtime/seats/synthetic/home'
+    harness = OpenCodeHarness()
+    if not accepted:
+        with pytest.raises(ShipError, match='seat synthetic: OpenCode on Google.*needs the declared Google address and key'):
+            harness.build_home(home, seat, pool, tmp_path)
+        return
+    harness.build_home(home, seat, pool, tmp_path)
+    config = json.loads((home / 'config/opencode/opencode.json').read_text())
+    provider = config['provider'][pool.name]
+    assert provider['npm'] == '@ai-sdk/google'
+    assert provider['options'] == {'baseURL': endpoint.GOOGLE_GENERATIVE_BASE, 'apiKey': '{env:QD_ENDPOINT_KEY}'}
+    assert provider['models'][model_id]['id'] == 'gemini-test'
+    assert endpoint.Choice.read(home).model == model_id
+    launch = harness.launch(seat, pool, home, tmp_path / 'brief.md', None, None)
+    assert launch.argv[launch.argv.index('--model') + 1] == f'{pool.name}/{model_id}'
 
 
 @pytest.mark.parametrize('provider_name,address,provider_layer,model_layer,applies', [
