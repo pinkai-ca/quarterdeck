@@ -17,7 +17,11 @@ FIXTURES = Path(__file__).parents[1] / "fixtures/grok/1.0.77"
 def fixture(name):
     if name == "draft-wrapped-payload":
         return (FIXTURES / f"{name}.txt").read_text()
-    return "\n".join(json.loads((FIXTURES / f"{name}.json").read_text())["lines"]) + "\n"
+    return "\n".join(fixture_data(name)["lines"]) + "\n"
+
+
+def fixture_data(name):
+    return json.loads((FIXTURES / f"{name}.json").read_text())
 
 
 @pytest.mark.parametrize("name", ["idle-color", "idle-mono"])
@@ -55,6 +59,189 @@ def test_xai_key_short_draft_reads_the_exact_text(style, width):
     assert adapter.empty_cell(screen) is None
     assert screen.shows == {"model": "grok-4.20-0309-non-reasoning"}
     assert screen.working is False and screen.unknown is None and screen.interruption is None
+
+
+KEYED_MULTILINE = "xai-key-multiline-draft-80-plain"
+KEYED_STYLED = "xai-key-composer-78-styled"
+
+
+def test_xai_key_multiline_draft_preserves_wrapping_and_final_lf():
+    adapter = GrokHarness()
+    capture = fixture_data(KEYED_MULTILINE)
+    payload = capture["payload"]
+    screen = adapter.screen(fixture(KEYED_MULTILINE))
+    columns = adapter.box_columns(capture["width"])
+
+    assert screen.working is False and screen.unknown is None and screen.interruption is None
+    assert screen.shows == {"model": "grok-4.20-0309-non-reasoning"}
+    assert len(screen.box.split("\n")) == 9
+    assert screen.box.split("\n")[-1] == " " * 71
+    assert adapter.box(payload).matches(screen.box, columns)
+    assert not adapter.box(payload.removesuffix("\n")).matches(screen.box, columns)
+    assert not adapter.box(payload + "\n").matches(screen.box, columns)
+    assert not adapter.box(payload.replace("placeholder", "stand-in")).matches(screen.box, columns)
+
+
+@pytest.mark.parametrize("change", ["extra blank", "interior blank", "changed prefix", "unknown style", "uneven width"])
+def test_unmeasured_xai_key_multiline_draft_remains_held(change):
+    rows = fixture_data(KEYED_MULTILINE)["lines"]
+    first = next(i for i, row in enumerate(rows) if row.startswith("  │ ❯ "))
+    footer = next(i for i, row in enumerate(rows) if row.startswith("  ╰"))
+    blank = rows[footer - 1]
+    if change == "extra blank":
+        rows.insert(footer, blank)
+    elif change == "interior blank":
+        rows[first + 1] = blank
+    elif change == "changed prefix":
+        rows[first + 1] = rows[first + 1].replace("  │   ", "  │ ❯ ", 1)
+    elif change == "unknown style":
+        rows[first + 1] = "\x1b[2m" + rows[first + 1] + "\x1b[22m"
+    else:
+        rows[first + 1] = rows[first + 1][:-1] + " │"
+
+    screen = GrokHarness().screen("\n".join(rows) + "\n")
+
+    assert screen.box is None and screen.working is None and screen.unknown
+
+
+@pytest.mark.parametrize("form", ["wrapped", "wrapped-no-lf", "folded"])
+def test_xai_key_styled_draft_matches_its_payload(form):
+    adapter = GrokHarness()
+    capture = fixture_data(KEYED_STYLED)
+    screen = adapter.screen("\n".join(capture["frames"][form]) + "\n")
+    payload = capture["payloads"][form]
+    columns = adapter.box_columns(capture["width"])
+
+    assert screen.unknown is None and screen.working is False
+    assert adapter.box(payload).matches(screen.box, columns)
+    if form == "folded":
+        assert screen.box.rstrip(" ") == "[Pasted: 9 lines]"
+        other = payload + "An additional line.\n"
+    else:
+        other = capture["payloads"]["wrapped-no-lf" if form == "wrapped" else "wrapped"]
+    assert not adapter.box(other).matches(screen.box, columns)
+
+
+@pytest.mark.parametrize("old,new", [
+    ("Pasted: 9 lines", "Pasted: 8 lines"),
+    ("⋮ (3 more lines)", "⋮ (2 more lines)"),
+    ("double-click", "triple-click"),
+    ("\x1b[38;2;65;65;65m\x1b[48;2;17;17;17m╭", "\x1b[38;2;66;66;66m\x1b[48;2;17;17;17m╭"),
+    ("\x1b[38;2;200;200;200mPasted:", "\x1b[38;2;201;201;201mPasted:"),
+])
+def test_keyed_fold_requires_its_measured_chip_and_preview(old, new):
+    capture = fixture_data(KEYED_STYLED)
+    text = "\n".join(capture["frames"]["folded"]) + "\n"
+    assert old in text
+
+    screen = GrokHarness().screen(text.replace(old, new, 1))
+
+    assert screen.box is None and screen.unknown == "unmeasured folded Grok API-key draft"
+
+
+@pytest.mark.parametrize("count,marker", [
+    (4, ""), (6, ""), (7, "⋮ (1 more lines)"), (30, "⋮ (24 more lines)"),
+])
+def test_keyed_fold_panel_grows_then_omits_the_middle(count, marker):
+    adapter = GrokHarness()
+    rows = fixture_data(KEYED_STYLED)["frames"]["folded"]
+    lines = [f"Synthetic line {number}." for number in range(1, count + 1)]
+    border = "\x1b[38;2;65;65;65m"
+    label = "\x1b[38;2;200;200;200m"
+    background = "\x1b[48;2;17;17;17m"
+    visible = lines if not marker else [*lines[:3], marker, *lines[-3:]]
+    panel = [f'{" " * 11}{border}{background}│{border if line == marker else label}'
+             f'{line.ljust(53)}{border}│\x1b[0m' for line in visible]
+    rows[8:17] = [""] * (7 - len(panel)) + [rows[8], *panel, rows[16]]
+    assert len(rows) == 24
+    # Keep the right border at its measured edge across one- and two-digit chips.
+    old = "Pasted: 9 lines"
+    new = f"Pasted: {count} lines"
+    rows[19] = rows[19].replace(old, new)
+    if len(new) > len(old):
+        pad_at = rows[19].index(" " * 5, rows[19].index(new) + len(new))
+        rows[19] = rows[19][:pad_at] + rows[19][pad_at + 1:]
+
+    screen = adapter.screen("\n".join(rows) + "\n")
+    payload = "\n".join(lines) + "\n"
+    columns = adapter.box_columns(78)
+
+    assert screen.box.rstrip(" ") == f"[Pasted: {count} lines]"
+    assert screen.draft_evidence.matches(adapter.box(payload), columns, 0, 24)
+    wrong_payload = "\n".join([*lines[:-1], "A different last line."]) + "\n"
+    assert not screen.draft_evidence.matches(adapter.box(wrong_payload), columns, 0, 24)
+
+
+def test_keyed_overflow_requires_the_measured_scrollbar_track():
+    capture = fixture_data("xai-key-draft-sizes-80")["drafts"]["scrolled-wrap"]
+    text = "\n".join(capture["lines"]) + "\n"
+    thumb = "\x1b[38;2;60;60;65m▆\x1b[38;2;225;225;225m"
+    assert thumb + " " in text
+    screen = GrokHarness().screen(text.replace(thumb + " ", " " + thumb, 1))
+
+    assert screen.box is None and screen.working is None and screen.unknown
+    assert not hasattr(screen, "draft_evidence")
+
+
+def test_keyed_chip_without_the_preview_is_held():
+    rows = fixture_data(KEYED_STYLED)["frames"]["folded"]
+    rows[8:17] = [""] * 9
+
+    screen = GrokHarness().screen("\n".join(rows) + "\n")
+
+    assert screen.box is None and screen.unknown == "unmeasured folded Grok API-key draft"
+
+
+def widen_frame(rows, *, preview=True):
+    """Add two cells to the measured composer and, when present, the attached preview."""
+    borders = [("  ", "\x1b[38;2;80;80;88m")]
+    if preview:
+        borders.append((" " * 11, "\x1b[38;2;65;65;65m"))
+    widened = rows.copy()
+    for index, row in enumerate(rows):
+        for indent, style in borders:
+            if not row.startswith(indent + style):
+                continue
+            if "╮" in row:
+                widened[index] = row.replace("╮", "──╮", 1)
+            elif "╯" in row:
+                widened[index] = (row.replace("╰", "╰──", 1) if "always-approve" in row
+                                  else row.replace("╯", "──╯", 1))
+            else:
+                left, edge, tail = row.rpartition(style + "│")
+                assert edge
+                widened[index] = left + "  " + edge + tail
+    return "\n".join(widened) + "\n"
+
+
+@pytest.mark.parametrize("form,working", [("wrapped", False), ("folded", False),
+                                         ("working", True), ("idle", False)])
+def test_keyed_composer_uses_its_displayed_width(form, working):
+    adapter = GrokHarness()
+    capture = fixture_data(KEYED_STYLED)
+    rows = capture["frames"][form]
+    screen = adapter.screen(widen_frame(rows))
+
+    assert screen.working is working and screen.unknown is None
+    if form == "folded":
+        assert adapter.box(capture["payloads"][form]).matches(screen.box, adapter.box_columns(80))
+        misaligned = adapter.screen(widen_frame(rows, preview=False))
+        assert misaligned.box is None and misaligned.unknown == "unmeasured folded Grok API-key draft"
+
+
+@pytest.mark.parametrize("form", ["startup", "working", "idle"])
+def test_xai_key_styled_empty_states(form):
+    adapter = GrokHarness()
+    capture = fixture_data(KEYED_STYLED)
+    screen = adapter.screen("\n".join(capture["frames"][form]) + "\n")
+
+    assert screen.unknown is None and screen.interruption is None
+    assert screen.working is (form == "working")
+    if form == "working":
+        assert screen.box is None and adapter.empty_cell(screen) is None
+    else:
+        assert screen.box == " " * (capture["width"] - 9)
+        assert adapter.empty_cell(screen) == tuple(capture["empty_cursor"])
 
 
 @pytest.mark.parametrize("old,new", [

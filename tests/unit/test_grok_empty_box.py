@@ -164,6 +164,179 @@ def test_xai_key_startup_and_short_draft_go_through_the_ordinary_door(ordinary, 
     assert d.seat.harness.inputs(d.record)[-1].text == payload
 
 
+@pytest.mark.parametrize("receipt, result", [("exact", "delivered"), ("trimmed", "delivered"), ("changed", "blind")])
+def test_xai_key_multiline_draft_submits_once_and_uses_ordinary_receipts(ordinary, monkeypatch, receipt, result):
+    draft_name = "xai-key-multiline-draft-80-plain"
+    capture = measured(draft_name)
+    draft, payload = frame(draft_name), capture["payload"]
+    width, height = capture["width"], capture["height"]
+    # Use the measured startup composer at the same width, retaining its
+    # bottom rows in the stand-in's shorter pane.
+    startup_info = measured("xai-key-startup-80-plain")
+    startup = "\n".join(startup_info["lines"][-height:]) + "\n"
+    x, y = startup_info["cursor"]
+    d = ordinary(startup, (x, y - (startup_info["height"] - height)), width=width, height=height)
+    monkeypatch.setattr(d.tmux, "frame", lambda: draft if d.tmux.box else startup)
+    door = Door(d.seat)
+    recorded = {"exact": payload, "trimmed": payload.removesuffix("\n"),
+                "changed": payload.replace("placeholder", "stand-in")}[receipt]
+    keys, confirm = d.tmux.keys, door.confirm
+
+    def record_input(ident, *pressed):
+        d.tmux.box = recorded
+        keys(ident, *pressed)
+
+    monkeypatch.setattr(d.tmux, "keys", record_input)
+    monkeypatch.setattr(door, "confirm", lambda text: confirm(text, seconds=0))
+    delivery = door.deliver(payload)
+
+    assert d.tmux.sent == [("paste", payload), ("keys", ("Enter",))]
+    assert d.seat.harness.inputs(d.record)[-1].text == recorded
+    assert delivery.result == result
+
+
+@pytest.mark.parametrize("first", ["wrapped", "wrapped-no-lf", "folded"])
+def test_xai_key_styled_delivery_resumes_only_after_the_turn_settles(ordinary, monkeypatch, first):
+    capture = measured("xai-key-composer-78-styled")
+    frames = {name: "\n".join(lines) + "\n" for name, lines in capture["frames"].items()}
+    payloads = capture["payloads"]
+    phase, draft = "startup", first
+    d = ordinary(frames[phase], tuple(capture["empty_cursor"]), width=capture["width"], height=capture["height"])
+    monkeypatch.setattr(d.tmux, "frame", lambda: frames[draft if d.tmux.box else phase])
+    keys = d.tmux.keys
+
+    def enter(ident, *pressed):
+        nonlocal phase
+        keys(ident, *pressed)
+        phase = "working"
+
+    monkeypatch.setattr(d.tmux, "keys", enter)
+    first_payload = payloads[first]
+
+    assert Door(d.seat).deliver(first_payload).result == "delivered"
+    working = Door(d.seat).screen()
+    assert working.working is True and working.box is None
+
+    draft = "wrapped" if first == "folded" else "folded"
+    second_payload = payloads[draft]
+    assert Door(d.seat).deliver(second_payload).result == "withheld"
+    assert d.tmux.sent == [("paste", first_payload), ("keys", ("Enter",))]
+
+    phase = "idle"
+    assert Door(d.seat).screen().box == ""
+    assert Door(d.seat).deliver(second_payload).result == "delivered"
+    assert d.tmux.sent == [("paste", first_payload), ("keys", ("Enter",)),
+                           ("paste", second_payload), ("keys", ("Enter",))]
+    assert [item.text for item in d.seat.harness.inputs(d.record)[-2:]] == [first_payload, second_payload]
+
+
+@pytest.fixture
+def keyed_draft(ordinary, monkeypatch):
+    capture = measured("xai-key-draft-sizes-80")
+    startup = measured("xai-key-startup-80-plain")
+    height, width = capture["height"], capture["width"]
+    empty = "\n".join(startup["lines"][-height:]) + "\n"
+    cursor_x, cursor_y = startup["cursor"]
+    cursor = cursor_x, cursor_y - startup["height"] + height
+
+    def make(form):
+        draft = capture["drafts"][form]
+        text = "\n".join(draft["lines"]) + "\n"
+        d = ordinary(empty, cursor, width=width, height=height)
+        monkeypatch.setattr(d.tmux, "frame", lambda: d.tmux.override or text if d.tmux.box else empty)
+        door = Door(d.seat)
+        door.observation_seconds = 0
+        return d, door, draft["payload"], text
+
+    return make
+
+
+@pytest.mark.parametrize("form,changed", [
+    ("mixed", None),
+    ("mixed", ("alpha", "omega")),
+    ("submitted-fold", None),
+    ("submitted-fold", ("fixture-03", "fixture-04")),
+    ("submitted-fold", ("--re fixture-03", "--re fixture-04")),
+    ("submitted-fold", ("marker", "[Pasted: 8 lines]")),
+    ("complete-wrap", None),
+    ("complete-wrap", ("final LF", "")),
+])
+def test_keyed_draft_compares_visible_payload_before_one_enter(keyed_draft, form, changed):
+    d, door, payload, frame = keyed_draft(form)
+    if changed is not None:
+        old, new = changed
+        if old == "marker":
+            payload = new
+        elif old == "final LF":
+            payload = payload.removesuffix("\n")
+        else:
+            payload = payload.replace(old, new, 1)
+    shown = d.seat.harness.screen(frame)
+    box = d.seat.harness.box(payload)
+    matches = changed is None
+
+    assert door.matches(box, shown) is matches
+    assert door.held_matches(box, shown) is matches
+
+    delivery = door.deliver(payload)
+
+    assert d.tmux.sent == ([("paste", payload), ("keys", ("Enter",))] if matches else [("paste", payload)])
+    assert delivery.result == ("delivered" if matches else "blind")
+    if matches:
+        assert d.seat.harness.inputs(d.record)[-1].text == payload
+
+
+@pytest.mark.parametrize("change", [None, "visible word", "final LF", "absent thumb", "pane height", "receipt"])
+def test_keyed_scroll_checks_bottom_view_before_enter(keyed_draft, monkeypatch, change):
+    d, door, payload, frame = keyed_draft("scrolled-wrap")
+    if change == "visible word":
+        payload = payload.replace("w209", "X209")
+    elif change == "final LF":
+        payload = payload.removesuffix("\n")
+    elif change == "absent thumb":
+        frame = d.tmux.override = frame.replace("▆", " ").replace("█", " ")
+    elif change == "pane height":
+        original = d.tmux.panes["%1"].height
+        d.tmux.panes["%1"].height = original + 1
+    elif change == "receipt":
+        keys, confirm = d.tmux.keys, door.confirm
+
+        def record_different_input(ident, *pressed):
+            d.tmux.box = d.tmux.box.replace("w209", "X209")
+            keys(ident, *pressed)
+
+        monkeypatch.setattr(d.tmux, "keys", record_different_input)
+        monkeypatch.setattr(door, "confirm", lambda text: confirm(text, seconds=0))
+    shown = d.seat.harness.screen(frame)
+    box = d.seat.harness.box(payload)
+    matches = change in (None, "receipt")
+
+    assert door.matches(box, shown) is matches
+    assert door.held_matches(box, shown) is matches
+
+    delivery = door.deliver(payload)
+
+    assert delivery.result == ("delivered" if change is None else "blind")
+    assert d.tmux.sent == ([("paste", payload), ("keys", ("Enter",))] if matches else [("paste", payload)])
+    if change is None:
+        assert d.seat.harness.inputs(d.record)[-1].text == payload
+
+
+def test_keyed_fold_rechecks_the_preview_before_enter(keyed_draft, monkeypatch):
+    d, door, payload, frame = keyed_draft("submitted-fold")
+    activity_screen = door.activity_screen
+
+    def redraw(*args, **kwargs):
+        d.tmux.override = frame.replace("Synthetic body line six.", "Different body line six.")
+        return activity_screen(*args, **kwargs)
+
+    monkeypatch.setattr(door, "activity_screen", redraw)
+    delivery = door.deliver(payload)
+
+    assert delivery.result == "blind" and "composer changed before submit" in delivery.detail
+    assert d.tmux.sent == [("paste", payload)]
+
+
 def test_the_empty_composer_at_112_columns_reads_empty(ordinary):
     d = ordinary(IDLE_112, (6, 30), width=112, height=35)
     screen = Door(d.seat).screen()

@@ -1,0 +1,31 @@
+{
+  "width": 80,
+  "height": 24,
+  "payload": "qd > Synthetic multiline delivery check\nReview the sample project notes and confirm that every placeholder matches the expected result. Then use the prepared demo checklist to verify each of the ordinary workflow steps before the sample report is ready. Keep the complete synthetic result in the temporary test record for the next verification step. Read the final row and make sure that the final line break is preserved.\nqd > End of the synthetic delivery example\n",
+  "lines": [
+    "",
+    "  /synthetic/workspace                               1.0K / 256K │ [Dashboard]",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "  ╭──────────────────────────────────────────────────────────────────────────╮",
+    "  │ ❯ qd > Synthetic multiline delivery check                                │",
+    "  │   Review the sample project notes and confirm that every placeholder     │",
+    "  │   matches the expected result. Then use the prepared demo checklist to   │",
+    "  │   verify each of the ordinary workflow steps before the sample report is │",
+    "  │   ready. Keep the complete synthetic result in the temporary test record │",
+    "  │   for the next verification step. Read the final row and make sure that  │",
+    "  │   the final line break is preserved.                                     │",
+    "  │   qd > End of the synthetic delivery example                             │",
+    "  │                                                                          │",
+    "  ╰────────────────────────── grok-4.20-0309-non-reasoning · always-approve ─╯",
+    "",
+    "  Enter:send  │  Alt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+x:shortcuts",
+    ""
+  ]
+}

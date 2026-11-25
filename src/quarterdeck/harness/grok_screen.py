@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .types import Interruption, Screen, _cells
+from .types import Box, Interruption, Screen, _cells
 
 SGR = re.compile(r"\x1b\[([0-9;]*)m")
 FOOTER = re.compile(
@@ -23,6 +23,8 @@ XAI_KEY_FOOTER = re.compile(r"  ╰─+ (grok-4\.20-0309-non-reasoning) · alway
 XAI_KEY_BANNER = "Logged in with API key"
 XAI_KEY_VERSION = "Grok Build  1.0.77"
 XAI_KEY_DRAFT_HINT = re.compile(r"  Enter:send  │  Alt\+Enter:newline  │  Shift\+Tab:mode  │  Ctrl\+x:shortcuts *")
+XAI_KEY_IDLE_HINT = "  Shift+Tab:mode  │  Ctrl+x:shortcuts"
+XAI_KEY_WORKING_HINT = "  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts"
 MODEL_HINT = "<model> [window] [effort]"
 COMMANDS = Interruption("commands", r"┌─ Commands ─.*\[✗\].*┐", "Escape")
 MODEL_PICKER = Interruption("model picker", r"Grok [0-9.]+ \(current\)", "C-c")
@@ -45,6 +47,9 @@ TRAINING_ALTERED = Interruption(
 FRESH = "Grok composer with no hint row: idle only after this launch answered its training question"
 TRAINING_NEAR = 8  # rows above the composer's top border in which an altered question is looked for
 PASTE_FOLD_LINES = 4
+PASTE_LABEL = re.compile(r"\[Pasted: ([1-9][0-9]*) lines\]")
+XAI_KEY_PANE_ROWS = 24
+XAI_KEY_BODY_ROWS = 10  # 1.0.77 at 80 × 24, including the final blank row
 # A queued response without the foreground-tool shortcut, measured at 256 columns.
 RESPONSE_QUEUE_HINT = ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+;:queue", "Ctrl+x:shortcuts")
 UNKNOWN_HINT = "unmeasured Grok composer hint"
@@ -283,29 +288,91 @@ def characters(text: str) -> tuple[str, list[Style]] | None:
 SCROLLED = "Grok composer is scrolled; the full draft is not visible"
 
 
-def scrolled_composer(body: list[tuple[str, list[Style]]], right: int) -> bool:
-    """Only the captured 112/256-column, fifteen-row scrollbar, never draft text."""
-    if right not in (109, 253) or len(body) != 15:
-        return False
-    marked = False
+def preview_line(line: str, columns: int) -> str | None:
+    """The panel leaves short lines whole and cuts long lines with an ellipsis."""
+    width = _cells(line)
+    if width is None:
+        return None
+    if width <= columns:
+        return line.rstrip(" ")
+    cells = 0
+    for index, char in enumerate(line):
+        cells += _cells(char)
+        if cells >= columns:
+            return line[:index] + "…"
+    return None
+
+
+@dataclass(frozen=True)
+class FoldPreview:
+    columns: int
+    preview_columns: int
+    count: int
+    rows: tuple[str, ...]
+
+    def matches(self, box: Box, columns: int | None, slack: int, _height: int | None) -> bool:
+        if (columns != self.columns or paste_lines(box.text) != self.count
+                or not box.matches(f"[Pasted: {self.count} lines]", columns, slack)):
+            return False
+        lines = box.text.removesuffix("\n").split("\n")
+        visible = lines if self.count <= 6 else lines[:3] + lines[-3:]
+        return tuple(preview_line(line, self.preview_columns) for line in visible) == self.rows
+
+
+@dataclass(frozen=True)
+class ScrolledDraft:
+    columns: int
+    tail: tuple[str, ...]
+
+    def matches(self, box: Box, columns: int | None, slack: int, height: int | None) -> bool:
+        if (columns != self.columns or height != XAI_KEY_PANE_ROWS
+                or not lf_layout(box.text) or paste_lines(box.text) >= PASTE_FOLD_LINES):
+            return False
+        # The overflow renderer gives two additional cells to the scrollbar and its space.
+        payload = box.text.rstrip("\n")
+        expected = Box(payload, textwrap_ascii=box.textwrap_ascii).wrapped_rows(self.columns - 2, slack)
+        if expected is None:
+            return False
+        expected.extend([""] * (len(box.text) - len(payload)))
+        return len(expected) > len(self.tail) and tuple(expected[-len(self.tail):]) == self.tail
+
+
+@dataclass(frozen=True, kw_only=True)
+class KeyedDraft(Screen):
+    draft_evidence: FoldPreview | ScrolledDraft
+
+
+def scrolled_composer(body: list[tuple[str, list[Style]]], right: int, *, keyed: bool) -> bool:
+    """The captured scrollbar occupies its own track two cells inside the right border."""
+    if keyed:
+        if len(body) != XAI_KEY_BODY_ROWS:
+            return False
+        thumb = "▁▂▆█"
+    else:
+        if right not in (109, 253) or len(body) != 15:
+            return False
+        thumb = "▀▂▃▄█🮂🮃"
+    track = []
     for content, attributes in body:
         if len(content) < 2 or not content.endswith(" ") or _cells(content[:-2]) != right - 8:
             return False
         index = len(content) - 2  # two cells inside the right border
         char, style = content[index], attributes[index]
+        track.append(char)
         if char == " ":
             if style != Style((225, 225, 225), (20, 20, 20), False):
                 return False
-        elif char in "▀▂▃▄█🮂🮃" and style == Style((60, 60, 65), (20, 20, 20), False):
-            marked = True
-        else:
+        elif char not in thumb or style != Style((60, 60, 65), (20, 20, 20), False):
             return False
         for position, (char, style) in enumerate(zip(content, attributes)):
             if position != index and not char.isspace() and (
                     style.faint or style.foreground != (225, 225, 225)
                     or style.background != (20, 20, 20)):
                 return False
-    return marked
+    if keyed:
+        # In the measured bottom viewport the thumb reaches the last row.
+        return re.fullmatch(r" *[▁▂▆]?█+", "".join(track)) is not None
+    return any(char != " " for char in track)
 
 
 COMPOSER_TOP = re.compile(r"  ╭─+╮ *")  # the top of Grok's own composer frame, as read() finds it
@@ -321,8 +388,8 @@ def composer_rows(rows: list[str]) -> tuple[int, int] | None:
     return None if top is None else (top, footer_at)
 
 
-def xai_key_composer(rows: list[str]) -> tuple[int, str, bool] | None:
-    """Find the measured footer and whether the row below it shows a draft."""
+def xai_key_composer(rows: list[str]) -> tuple[int, str, str] | None:
+    """Find the measured footer and the state named by the row below it."""
     last = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].strip(" ")), -1)
     if last < 2 or rows[last - 1].strip(" "):
         return None
@@ -331,15 +398,19 @@ def xai_key_composer(rows: list[str]) -> tuple[int, str, bool] | None:
     if footer is None:
         return None
     if XAI_KEY_DRAFT_HINT.fullmatch(rows[last]):
-        return footer_at, footer[1], True
+        return footer_at, footer[1], "draft"
     banner = rows[last].rstrip(" ")
+    if banner == XAI_KEY_IDLE_HINT:
+        return footer_at, footer[1], "idle"
+    if banner == XAI_KEY_WORKING_HINT:
+        return footer_at, footer[1], "working"
     edge = len(rows[footer_at].rstrip(" "))
     if len(banner) != edge:
         return None
     label = banner.lstrip(" ")
     if (label == f"{XAI_KEY_BANNER}  │  {XAI_KEY_VERSION}"
             or label == XAI_KEY_BANNER and xai_version_box(rows[:footer_at], edge + 2)):
-        return footer_at, footer[1], False
+        return footer_at, footer[1], "idle"
     return None
 
 
@@ -362,6 +433,49 @@ def xai_version_box(rows: list[str], width: int) -> bool:
     return False
 
 
+def xai_key_fold_preview(rows: list[str], style: list[Style], offsets: list[int],
+                         top: int, right: int, count_text: str) -> FoldPreview | None:
+    """The native panel has all lines up to six, then three on each side of the omission."""
+    try:
+        count = int(count_text)
+    except ValueError:
+        return None
+    if count < PASTE_FOLD_LINES:
+        return None
+    start = top - min(count, 7) - 3
+    if start < 1 or rows[start - 1].strip(" ") or rows[top - 1].strip(" "):
+        return None
+    panel = [row.rstrip(" ") for row in rows[start:top - 1]]
+    # The native panel sits nine cells inside the composer on the left and ten on the right.
+    left, width = 2 + 9, right + 1 - 10
+    indent = " " * left
+    bottom = indent + "╰─ paste again or double-click to expand "
+    if (width <= len(bottom) + 1 or panel[0] != indent + "╭" + "─" * (width - left - 2) + "╮"
+            or panel[-1] != bottom + "─" * (width - len(bottom) - 1) + "╯"):
+        return None
+    border, label = FOLDED_CHIP_STYLES[0]  # the keyed panel was measured in truecolor
+    preview = []
+    for index, row in enumerate(panel, start):
+        body = start < index < top - 2
+        if body and (not row.startswith(indent + "│") or not row.endswith("│") or _cells(row) != width):
+            return None
+        offset = offsets[index]
+        if style[offset + left] != border or style[offset + len(row) - 1] != border:
+            return None
+        if not body:
+            continue
+        text = row[left + 1:-1].rstrip(" ")
+        omitted = count > 6 and index == start + 4
+        if omitted and text != f"⋮ ({count - 6} more lines)":
+            return None
+        expected = border if omitted else label
+        if any(attribute != expected for attribute in style[offset + left + 1:offset + left + 1 + len(text)]):
+            return None
+        if not omitted:
+            preview.append(text)
+    return FoldPreview(right - 7, width - left - 2, count, tuple(preview))
+
+
 def read(text: str) -> Screen:
     decoded = characters(text)
     if decoded is None:
@@ -380,7 +494,7 @@ def read(text: str) -> Screen:
         keyed = xai_key_composer(rows)
         if keyed is None:
             return Screen(plain, box=None, unknown="no fullscreen composer drawn as Grok 1.0.77 draws it")
-        footer_at, model, draft = keyed
+        footer_at, model, keyed_state = keyed
         shows = dict(model=model)
     else:
         footer = FOOTER.fullmatch(rows[footer_at])
@@ -412,7 +526,15 @@ def read(text: str) -> Screen:
         content = row[len(prefix):end]
         begin = offsets[index] + len(prefix)
         body.append((content, style[begin:begin + len(content)]))
-    if scrolled_composer(body, right):
+    if scrolled_composer(body, right, keyed=keyed is not None):
+        height = len(rows) - plain.endswith("\n")
+        if (keyed is not None and keyed_state == "draft"
+                and height == XAI_KEY_PANE_ROWS and footer_at == height - 4
+                and top > 0 and not rows[top - 1].strip(" ") and not training_altered(rows, top)):
+            tail = tuple(content[:-2].rstrip(" ") for content, _ in body)
+            box = "\n".join(content for content, _ in body)
+            evidence = ScrolledDraft(right - 7, tail)
+            return KeyedDraft(plain, box=box, working=False, shows=shows, draft_evidence=evidence)
         return Screen(plain, box=None, unknown=SCROLLED, shows=shows)
     picker = (keyed is None and len(body) == 1 and body[0][0].startswith("/model ")
               and MODEL_PICKER.seen_in(plain)
@@ -427,18 +549,24 @@ def read(text: str) -> Screen:
         # bright copy stays content, including when it spells the hint exactly.
         box = "/model " if hint else content
         return Screen(plain, box=box, interruption=MODEL_PICKER, shows=shows)
+    fold_preview = None
     for content, attributes in body:
         token = content.rstrip(" ")
-        folded_label = len(body) == 1 and re.fullmatch(r"\[Pasted: [1-9][0-9]* lines\]", token)
-        if folded_label and keyed is not None:
-            return Screen(plain, box=None, unknown="unmeasured folded Grok API-key draft", shows=shows)
-        if (folded_label and len(attributes) >= len(token)
-                and any(attributes[0] == bracket and attributes[len(token) - 1] == bracket
-                        and all(attribute == label for attribute in attributes[1:len(token) - 1])
-                        for bracket, label in FOLDED_CHIP_STYLES)):
-            # Keep the native chip for the payload-derived Box comparison.
-            # It proves only the visual submission contract, never delivery.
-            continue
+        folded_label = PASTE_LABEL.fullmatch(token) if len(body) == 1 else None
+        if folded_label:
+            palettes = FOLDED_CHIP_STYLES if keyed is None else FOLDED_CHIP_STYLES[:1]
+            styled_chip = any(attributes[0] == bracket and attributes[len(token) - 1] == bracket
+                              and all(attribute == label for attribute in attributes[1:len(token) - 1])
+                              for bracket, label in palettes)
+            if keyed is not None:
+                if keyed_state == "draft" and styled_chip:
+                    fold_preview = xai_key_fold_preview(rows, style, offsets, top, right, folded_label[1])
+                if fold_preview is None:
+                    return Screen(plain, box=None, unknown="unmeasured folded Grok API-key draft", shows=shows)
+            if styled_chip:
+                # The native chip participates in the payload-derived Box
+                # comparison. Delivery still requires the record receipt.
+                continue
         for char, attribute in zip(content, attributes):
             if (not char.isspace() and attribute != INDEXED_DRAFT_STYLE
                     and (attribute.faint or attribute.foreground not in (None, (225, 225, 225), (122, 162, 247))
@@ -446,8 +574,19 @@ def read(text: str) -> Screen:
                 return Screen(plain, box=None, unknown="unmeasured Grok composer text styling", shows=shows)
     box = "\n".join(content for content, _ in body)
     if keyed is not None:
-        if (len(body) == 1 and bool(box.strip(" ")) == draft and top > 0
-                and not rows[top - 1].strip(" ") and not training_altered(rows, top)):
+        draft = keyed_state == "draft"
+        single = len(body) == 1 and bool(box.strip(" ")) == draft
+        # A complete wrapped draft keeps its text rows and at most one
+        # final blank for the established wrap and LF check.
+        text_rows = body if body[-1][0].strip(" ") else body[:-1]
+        multiline = (draft and len(body) <= XAI_KEY_BODY_ROWS and len(text_rows) >= 2
+                     and all(content.strip(" ") for content, _ in text_rows))
+        if ((single or multiline) and top > 0 and not rows[top - 1].strip(" ")
+                and not training_altered(rows, top)):
+            if keyed_state == "working":
+                return Screen(plain, box=None, working=True, shows=shows)
+            if fold_preview is not None:
+                return KeyedDraft(plain, box=box, working=False, shows=shows, draft_evidence=fold_preview)
             return Screen(plain, box=box, working=False, shows=shows)
         return Screen(plain, box=None, unknown="unmeasured Grok API-key composer", shows=shows)
     if training_question(rows, top):

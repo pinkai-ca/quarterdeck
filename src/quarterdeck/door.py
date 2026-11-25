@@ -947,9 +947,11 @@ class Door:
     def matches(self, box, screen: Screen) -> bool:
         pane = self.seat.pane()
         columns = self.harness.box_columns_for_screen(pane.width, screen) if pane else None
-        shown = self.harness.box_comparison(screen, pane.width) if pane else screen.box
         if screen.working is None:
             return False
+        if (evidence := getattr(screen, "draft_evidence", None)) is not None:
+            return evidence.matches(box, columns, self.harness.wrap_slack, getattr(pane, 'height', None))
+        shown = self.harness.box_comparison(screen, pane.width) if pane else screen.box
         if box.matches(shown, columns, self.harness.wrap_slack):
             return True
         scroll = getattr(self.harness, 'box_scroll', None)
@@ -962,7 +964,7 @@ class Door:
         """qd submit and the second look compare the whole composer, allowing supported soft wraps."""
         if self.matches(box, screen):
             return True
-        if getattr(self.harness, 'exact_input_text', False):
+        if getattr(screen, "draft_evidence", None) is not None or getattr(self.harness, 'exact_input_text', False):
             return False
         pane = self.seat.pane()
         if pane is None or screen.box is None:
@@ -1044,6 +1046,7 @@ class Door:
             return "working, program does not queue; no submit key sent"
         before = self.before_submit
         if before is not None and (current.box != before.box
+                or getattr(current, "draft_evidence", None) != getattr(before, "draft_evidence", None)
                 or getattr(current.box, 'columns', None) != getattr(before.box, 'columns', None)
                 or getattr(current.box, 'folded', False) != getattr(before.box, 'folded', False)):
             return "composer changed before submit; draft not submitted or cleared"
