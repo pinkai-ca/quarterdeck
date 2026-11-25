@@ -119,6 +119,7 @@ class Jail:
     seat: str = ''  # the seat's name, set inside as QD_SEAT
     path: str = ''  # the PATH qd launches with, set inside as PATH
     launch: str = ''  # this launch's own token, drawn at plan: it names the launch's relay folder (relay_folder)
+    pinned_program: Path | None = None  # the verified executable selected by this launch, bound at its own path
 
 
 def git_identity(workspace: Path) -> tuple[tuple[str, str], ...]:
@@ -253,7 +254,8 @@ def endpoint_parts(endpoint: str) -> tuple[str, int, str | None]:
 
 
 def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspace: Path, program: str, path: str,
-         home: Path | None = None, endpoint: str | None = None, pool=None, synthetic: bool = False) -> Jail:
+         home: Path | None = None, endpoint: str | None = None, pool=None, synthetic: bool = False, *,
+         pinned_program: Path | None = None) -> Jail:
     """The jail for one seat, or a refusal naming what would lift it."""
     if not available():
         raise ShipError(f"{seat_name}: sandboxed, and {PROGRAM} is not on the PATH; install bubblewrap, or set sandbox = false on the seat")
@@ -332,7 +334,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
         endpoint_parts(endpoint)  # refused here, before anything starts, when the jail could not reach it
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
                 (drop, proof), git_identity(workspace), declarations, view, foreign, endpoint, seat_name, path,
-                launch=secrets.token_hex(8))
+                launch=secrets.token_hex(8), pinned_program=pinned_program)
     ssh = Path(os.path.realpath(home / '.ssh'))
     if os.path.lexists(home / '.ssh') and not ssh.is_relative_to(Path(os.path.realpath(home))):
         # The home's hiding covers ~/.ssh only where it lies: a link out of the home would leave its keys and sockets
@@ -903,6 +905,8 @@ def jail_mounts(jail: Jail) -> list[tuple[str, Path]]:
                ("--private-tmpfs", trusted_files.root(jail.runtime)), ("--bind", jail.seat_folder)]
     mounts += [("--ro-bind-try", jail.runtime / name) for name in RUNTIME_SHOWN]
     mounts += [("--ro-bind-try", jail.runtime / "brief" / f"{jail.seat_folder.name}.md")]
+    if jail.pinned_program is not None:
+        mounts.append(("--ro-bind", jail.pinned_program))
     # The post: the seat's own view of it in the post's place, read-only, with its real drop writable over it.
     # A jail made without a view (only by hand, never by plan) is shown no post at all.
     if jail.post_view is not None:

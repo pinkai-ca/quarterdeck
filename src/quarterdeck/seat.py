@@ -1251,8 +1251,11 @@ class Seat:
                 from . import sandbox  # the sandbox reads the ship and the standing orders, so it is imported here, not above
 
                 endpoint = pool.endpoint if pool.kind == 'endpoint' else None  # its one way out, relayed in
+                pin = getattr(self.harness, 'program_pin', None)
+                # The adapter verifies its pin when it selects the executable for this launch.
+                pinned_program = pin.path if pin is not None and launch.argv[0] == str(pin.path) else None
                 jail = sandbox.plan(self.ship, self.name, self.folder, self.home, self.ship.cwd_of(self.spec), launch.argv[0], path,
-                                    endpoint=endpoint, pool=pool, synthetic=self.harness.synthetic)
+                                    endpoint=endpoint, pool=pool, synthetic=self.harness.synthetic, pinned_program=pinned_program)
                 argv = sandbox.command(jail, argv, launch.env)  # the jail starts from nothing but these
             else:
                 refuse_secret_names(self.name, launch.env, pool)

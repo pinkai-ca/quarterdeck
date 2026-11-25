@@ -18,6 +18,8 @@ sha256 = "<64 hexadecimal digits>"
 
 Quarterdeck verifies the copy before each launch and refuses a missing or changed pin. With the table omitted, Claude Code uses the executable on PATH. `qd doctor` reports the declared copy and `qd check claude` runs it in temporary seats. To adopt a new release, stage another copy under a different filename, update the path and digest together in `ship.toml`, then run `qd check claude`. When a seat is ready, `qd restart <seat>` starts the selected copy with its saved conversation.
 
+A jailed launch mounts only its verified executable from `runtime/programs/`, read-only at its declared path.
+
 ### Publisher release staging
 
 A ship can opt in to staging releases published through the Claude Code native
