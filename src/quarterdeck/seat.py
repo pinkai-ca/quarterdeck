@@ -1278,9 +1278,12 @@ class Seat:
                 raise ShipError(f"{self.name}: {launch.argv[0]} is not on the PATH qd runs with; install it, or put it on that PATH")
             if key_route is not None:  # the launcher fills it: a launch's environment reaches tmux's and bwrap's arguments
                 from .harness import key_prices
+                price = launch.price or key_prices.snapshot(self.harness.name, pool)
+                recorded_cost = getattr(self.harness, 'recorded_cost_snapshot', None)
+                if recorded_cost is not None and (evidence := recorded_cost(pool, version)):
+                    price = {**(price or {}), **evidence}
                 launch = replace(launch, env={name: value for name, value in launch.env.items()
-                                              if name != key_route.variable},
-                                 price=launch.price or key_prices.snapshot(self.harness.name, pool))
+                                              if name != key_route.variable}, price=price)
             argv = list(launch.argv)
             if jailed:
                 from . import sandbox  # the sandbox reads the ship and the standing orders, so it is imported here, not above

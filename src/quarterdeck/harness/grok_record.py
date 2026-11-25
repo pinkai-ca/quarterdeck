@@ -12,6 +12,7 @@ from .json_record import JsonLinesReader, RecordError, entries, input_reader, ob
 from .types import Input, Inputs, Tokens, ToolCall, Turn
 
 METHODS = ("session/update", "_x.ai/session/update")
+USD_TICKS = 10**10
 
 
 def timestamp(value) -> datetime | None:
@@ -99,6 +100,37 @@ def usage_tokens(usage: object) -> Tokens:
     return replace(measured, read_uncached=measured.read_uncached - measured.read_cached)
 
 
+def cost_complete(usage: object) -> bool:
+    return (isinstance(usage, dict) and usage.get("costIsPartial", False) is False
+            and usage.get("usageIsIncomplete", False) is False)
+
+
+def positive_ticks(value: object) -> bool:
+    return type(value) is int and 0 < value < 2**63
+
+
+def completion_ticks(row: dict, event: dict, at: datetime | None) -> int | None:
+    """A durable ACP PromptUsage total. False completeness flags are omitted on the wire."""
+    if (row.get("method") != "_x.ai/session/update" or at is None
+            or event.get("stop_reason") != "end_turn" or event.get("error_kind") is not None):
+        return None
+    usage = event.get("usage")
+    if not cost_complete(usage):
+        return None
+    ticks = usage.get("costUsdTicks")
+    if not positive_ticks(ticks):
+        return None  # zero can stand for an unreported cost
+    models = usage.get("modelUsage", {})
+    if not isinstance(models, dict) or not all(cost_complete(model) for model in models.values()):
+        return None
+    # Older rows can omit every model cost. If the breakdown does state costs,
+    # require it to account for the total. It cannot substitute for the total.
+    stated = [model["costUsdTicks"] for model in models.values() if "costUsdTicks" in model]
+    if stated and (len(stated) != len(models) or not all(map(positive_ticks, stated)) or sum(stated) != ticks):
+        return None
+    return ticks
+
+
 def usage_model(usage: object) -> str | None:
     models = usage.get("modelUsage") if isinstance(usage, dict) else None
     if isinstance(models, dict) and len(models) == 1:
@@ -127,7 +159,7 @@ class Reader(JsonLinesReader):
     def __init__(self, record: Path, snapshot=None):
         self.execution_seen = False
         self.calls: dict[str, Call] = {}
-        self.completed_prompts: set[str] = set()
+        self.completed_prompts: dict[str, tuple[int, int | None]] = {}
         super().__init__(record, snapshot)
 
     def start_turn(self, turn: dict) -> None:
@@ -187,12 +219,20 @@ class Reader(JsonLinesReader):
                 self.finish_call(event.get("toolCallId"), at, event["status"] == "failed")
         elif kind == "turn_completed":
             prompt = event.get("prompt_id")
+            ticks = None
             if isinstance(prompt, str) and prompt:
-                if prompt in self.completed_prompts:
+                if prompt.strip():
+                    ticks = completion_ticks(row, event, at)
+                previous = self.completed_prompts.get(prompt)
+                if previous is not None:
+                    index, prior_ticks = previous
+                    if prior_ticks is not None and prior_ticks != ticks:
+                        self.completed_prompts[prompt] = index, None
+                        self.revise_turn(index, recorded_cost=None)
                     return
-                self.completed_prompts.add(prompt)
+                self.completed_prompts[prompt] = len(self.turns), ticks
             self.ensure_turn()
-            self.end(at, event)
+            self.end(at, event, ticks=ticks)
         elif kind == "retry_state":
             # A rate-limited retry names no window and no reset, and the program retries it: it does
             # not prove the subscription spent, so it is no wall. Grok's spent allowance is its meter.
@@ -225,11 +265,14 @@ class Reader(JsonLinesReader):
             previous = self.turns[item.turn]
             tools = list(previous.tools)
             tools[item.slot] = item.result
-            revised = replace(previous, tools=tuple(tools))
-            self.turns[item.turn] = revised
-            self.completed_turns = [revised if turn.index == item.turn else turn for turn in self.completed_turns]
+            self.revise_turn(item.turn, tools=tuple(tools))
 
-    def end(self, at, event=None):
+    def revise_turn(self, index, **changes):
+        revised = replace(self.turns[index], **changes)
+        self.turns[index] = revised
+        self.completed_turns = [revised if turn.index == index else turn for turn in self.completed_turns]
+
+    def end(self, at, event=None, *, ticks=None):
         if self.open is None:
             return
         value = self.close_turn()
@@ -242,7 +285,7 @@ class Reader(JsonLinesReader):
         self.record_turn(Turn(
             len(self.turns), value["started"], at, value["input"], value["reply"], model,
             usage_tokens(event.get("usage")), tuple(item.result for item in calls), subagent_turns=None,
-            timed=at is not None,
+            timed=at is not None, recorded_cost=ticks / USD_TICKS if ticks is not None else None,
         ), at)
 
     def state(self):

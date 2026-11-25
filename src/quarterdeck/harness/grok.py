@@ -22,7 +22,7 @@ from .base import Harness, program_version
 from .home import credential, key_environment, merged, ship_template
 from .json_record import when
 from .limits import Usage
-from .types import Box, Control, Credential, Interruption, Keys, Launch, Screen, _line_class
+from .types import Box, Control, Credential, Interruption, Keys, Launch, Screen, Turn, _line_class
 from . import grok_models, grok_notice, grok_record, grok_screen, grok_usage, grok_workspace
 
 VENDORS = ("claude", "cursor", "codex")
@@ -379,6 +379,21 @@ class GrokHarness(Harness):
     first_timestamp = staticmethod(grok_record.first_timestamp)
     session_id = staticmethod(grok_record.session_id)
     inputs = staticmethod(grok_record.inputs)
+
+    def recorded_cost_snapshot(self, pool: Pool, version: str | None) -> dict | None:
+        if pool.kind == "key" and pool.provider == self.native_provider and version == "1.0.77":
+            return {"grok_xai_cost_version": version}
+        return None
+
+    def price_turn(self, turn: Turn, snapshot: dict | None) -> Turn:
+        # A native total is a single aggregate. Import it only for a turn within
+        # a proved xAI key launch; an older launch can still use its saved rates.
+        cost = None
+        if (isinstance(snapshot, dict) and snapshot.get("grok_xai_cost_version") == "1.0.77"
+                and turn.started is not None and turn.ended is not None and turn.started <= turn.ended):
+            cost = turn.recorded_cost
+        # An explicit aggregate reading can also revoke a price on reread.
+        return replace(turn, cost=cost, cost_basis="record" if cost is not None else None, cost_steps=())
 
     def queued_waiting(self, text: str, screen: Screen, *, record: Path | None = None,
                        now: datetime | None = None) -> bool:

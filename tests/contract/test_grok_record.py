@@ -32,7 +32,9 @@ def test_consumed_followup_and_cancelled_invocation_are_retained_once():
     assert all((turn.tokens.read_cached, turn.tokens.read_uncached, turn.tokens.written) == (20, 60, 12)
                for turn in turns)
     assert all(turn.subagent_turns is None for turn in turns)  # numTurns is not a child count
-    assert all(turn.cost is None and turn.recorded_cost is None for turn in turns)
+    assert all(turn.cost is None for turn in turns)  # launch provenance decides admission
+    assert turns[0].recorded_cost == pytest.approx(0.0000123456)
+    assert turns[1].recorded_cost is None
 
 
 @pytest.mark.parametrize("terminal,failed", [("completed", False), ("failed", True)])
@@ -133,3 +135,43 @@ def test_known_call_without_a_name_still_counts_as_an_unknown_invocation(tmp_pat
     assert turns[1].tools[0].name == "?"
     assert turns[1].tools[0].seconds is None and turns[1].tools[0].failed is None
     assert state.pending_tools is None
+
+
+@pytest.mark.parametrize("changes", [
+    {},
+    {"costUsdTicks": 0},
+    {"costUsdTicks": -1},
+    {"costUsdTicks": True},
+    {"costUsdTicks": "123456"},
+    {"costUsdTicks": 123456.0},
+    {"costUsdTicks": 2**63},
+    {"costUsdTicks": None},
+    {"costUsdTicks": 123456, "costIsPartial": True},
+    {"costUsdTicks": 123456, "usageIsIncomplete": True},
+    {"costUsdTicks": 123456, "usageIsIncomplete": "false"},
+    {"modelUsage": {"a": {"costUsdTicks": 123456}}},
+    {"costUsdTicks": 123456, "modelUsage": {"a": {"costUsdTicks": 123455}}},
+    {"costUsdTicks": 123456, "modelUsage": {"a": {"costUsdTicks": 123456}, "b": {}}},
+    {"costUsdTicks": 123456, "modelUsage": {"a": {"costUsdTicks": 123456, "costIsPartial": True}}},
+])
+def test_unproved_native_costs_remain_unknown(tmp_path, changes):
+    rows = [json.loads(line) for line in FIXTURE.read_text().splitlines()][:8]
+    usage = rows[-1]["params"]["update"]["usage"]
+    del usage["costUsdTicks"]
+    usage.update(changes)
+    turn, = Reader.read(synthetic_record(tmp_path, rows))[1]
+    assert turn.recorded_cost is None and turn.cost is None
+    assert turn.tokens.complete
+
+
+def test_native_completion_total_is_per_prompt_and_replays_agree(tmp_path):
+    rows = [json.loads(line) for line in FIXTURE.read_text().splitlines()]
+    for row in rows[-2:]:
+        event = row["params"]["update"]
+        event["stop_reason"] = "end_turn"
+        event["usage"].update(costUsdTicks=3_000_000_001, costIsPartial=False, usageIsIncomplete=False,
+                              modelUsage={"a": {"costUsdTicks": 3_000_000_000}, "b": {"costUsdTicks": 1}})
+    state, turns = Reader.read(synthetic_record(tmp_path, rows))
+    assert state.completed_turns == tuple(turns)
+    assert [turn.recorded_cost for turn in turns] == pytest.approx([0.0000123456, 0.3000000001])
+    assert turns[1].model is None
