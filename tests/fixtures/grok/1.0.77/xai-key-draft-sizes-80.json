@@ -3,6 +3,35 @@
   "width": 80,
   "height": 24,
   "drafts": {
+    "fold-with-transcript": {
+      "payload": "Fixture dispatch begins with a short synthetic notice\nSynthetic details for the folded preview extend beyond its right border.\n\nFixture middle line one.\nFixture middle line two.\nFixture middle line three.\nOK\n\nFixture reminder confirms delivery from the synthetic record only.\n",
+      "lines": [
+        "\u001b[48;2;20;20;20m",
+        "  \u001b[38;2;88;88;88mxxxx\u001b[39m \u001b[38;2;200;200;200mxxxxxxxxxxxxxxxxxxxxxxxx\u001b[39m                       \u001b[38;2;221;221;221mxxx x xxxx\u001b[38;2;65;65;65m │ \u001b[38;2;108;108;108mxxxxxxxxxxx\u001b[39m",
+        "",
+        "  \u001b[48;2;36;36;36m                                                                            \u001b[48;2;20;20;20m \u001b[48;2;17;17;17m",
+        "\u001b[48;2;20;20;20m  \u001b[48;2;36;36;36m   \u001b[38;2;200;200;200m❯ \u001b[38;2;225;225;225mxx x xxxxx xxxx xxxxxxxxxxx · xxxxxxxxxx\u001b[39m                   \u001b[38;2;108;108;108m  xxxxx xx\u001b[39m  \u001b[48;2;20;20;20m \u001b[48;2;17;17;17m",
+        "\u001b[48;2;20;20;20m  \u001b[48;2;36;36;36m   \u001b[38;2;200;200;200m  \u001b[38;2;225;225;225mxxxxxx xxxxxxxxxxxxxxxxxxxxx xx xxxxxxxxx xx xx xxxxxxx xxx\u001b[39m            \u001b[48;2;20;20;20m \u001b[48;2;17;17;17m",
+        "\u001b[48;2;20;20;20m  \u001b[48;2;36;36;36m   \u001b[38;2;200;200;200m  \u001b[38;2;225;225;225mxxxx xxxx xxxxxxxxxxx xxxxxxxxxx xxxxxxxx xxx xxxxxxxxxxx …\u001b[39m            \u001b[48;2;20;20;20m \u001b[48;2;17;17;17m",
+        "\u001b[48;2;20;20;20m  \u001b[48;2;36;36;36m                                                                            \u001b[48;2;20;20;20m \u001b[48;2;17;17;17m",
+        "\u001b[48;2;20;20;20m           \u001b[38;2;65;65;65m\u001b[48;2;17;17;17m╭───────────────────────────────────────────────────────╮\u001b[39m\u001b[48;2;20;20;20m           \u001b[48;2;17;17;17m",
+        "\u001b[48;2;20;20;20m     \u001b[1m\u001b[38;2;58;149;171msample\u001b[0m\u001b[38;2;65;65;65m\u001b[48;2;17;17;17m│\u001b[38;2;200;200;200mFixture dispatch begins with a short synthetic notice\u001b[39m  \u001b[38;2;65;65;65m│\u001b[39m\u001b[48;2;20;20;20m           \u001b[48;2;17;17;17m",
+        "\u001b[48;2;20;20;20m     \u001b[38;2;200;200;200msee me\u001b[38;2;65;65;65m\u001b[48;2;17;17;17m│\u001b[38;2;200;200;200mSynthetic details for the folded preview extend beyond…\u001b[38;2;65;65;65m│\u001b[39m\u001b[48;2;20;20;20m           \u001b[48;2;17;17;17m",
+        "\u001b[48;2;20;20;20m           \u001b[38;2;65;65;65m\u001b[48;2;17;17;17m│\u001b[39m                                                       \u001b[38;2;65;65;65m│\u001b[39m\u001b[48;2;20;20;20m           \u001b[38;2;25;25;25m\u001b[48;2;25;25;25m█",
+        "\u001b[39m\u001b[48;2;20;20;20m     \u001b[38;2;200;200;200mold tx\u001b[38;2;65;65;65m\u001b[48;2;17;17;17m│⋮ (3 more lines)\u001b[39m                                       \u001b[38;2;65;65;65m│\u001b[39m\u001b[48;2;20;20;20m           \u001b[38;2;25;25;25m\u001b[48;2;25;25;25m█",
+        "\u001b[39m\u001b[48;2;20;20;20m     \u001b[38;2;200;200;200mprior \u001b[38;2;65;65;65m\u001b[48;2;17;17;17m│\u001b[38;2;200;200;200mOK\u001b[39m                                                     \u001b[38;2;65;65;65m│\u001b[39m\u001b[48;2;20;20;20m           \u001b[38;2;25;25;25m\u001b[48;2;25;25;25m█",
+        "\u001b[39m\u001b[48;2;20;20;20m           \u001b[38;2;65;65;65m\u001b[48;2;17;17;17m│\u001b[39m                                                       \u001b[38;2;65;65;65m│\u001b[39m\u001b[48;2;20;20;20m           \u001b[38;2;25;25;25m\u001b[48;2;25;25;25m█",
+        "\u001b[39m\u001b[48;2;20;20;20m     \u001b[38;2;108;108;108mmemory\u001b[38;2;65;65;65m\u001b[48;2;17;17;17m│\u001b[38;2;200;200;200mFixture reminder confirms delivery from the synthetic …\u001b[38;2;65;65;65m│\u001b[39m\u001b[48;2;20;20;20m           \u001b[38;2;25;25;25m\u001b[48;2;25;25;25m█",
+        "\u001b[39m\u001b[48;2;20;20;20m           \u001b[38;2;65;65;65m\u001b[48;2;17;17;17m╰─ \u001b[1m\u001b[38;2;122;162;247mpaste again\u001b[0m\u001b[38;2;108;108;108m\u001b[48;2;17;17;17m or \u001b[1m\u001b[38;2;122;162;247mdouble-click\u001b[0m\u001b[38;2;108;108;108m\u001b[48;2;17;17;17m to expand\u001b[38;2;65;65;65m ───────────────╯\u001b[39m\u001b[48;2;20;20;20m           \u001b[38;2;25;25;25m\u001b[48;2;25;25;25m█",
+        "\u001b[39m\u001b[48;2;20;20;20m",
+        "  \u001b[38;2;80;80;88m╭──────────────────────────────────────────────────────────────────────────╮\u001b[39m",
+        "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m \u001b[38;2;200;200;200m❯ \u001b[38;2;65;65;65m\u001b[48;2;17;17;17m[\u001b[38;2;200;200;200mPasted: 9 lines\u001b[38;2;65;65;65m]\u001b[38;2;225;225;225m\u001b[48;2;20;20;20m                                                      \u001b[38;2;80;80;88m│\u001b[39m",
+        "  \u001b[38;2;80;80;88m╰────────────────────────── \u001b[38;2;128;128;128mgrok-4.20-0309-non-reasoning\u001b[38;2;88;88;88m · \u001b[38;2;108;108;108malways-approve\u001b[38;2;80;80;88m ─╯\u001b[39m",
+        "",
+        "  \u001b[1m\u001b[38;2;200;200;200mEnter\u001b[0m\u001b[38;2;108;108;108m\u001b[48;2;20;20;20m:send\u001b[2m  │  \u001b[0;1m\u001b[38;2;200;200;200m\u001b[48;2;20;20;20mAlt+Enter\u001b[0m\u001b[38;2;108;108;108m\u001b[48;2;20;20;20m:newline\u001b[2m  │  \u001b[0;1m\u001b[38;2;200;200;200m\u001b[48;2;20;20;20mShift+Tab\u001b[0m\u001b[38;2;108;108;108m\u001b[48;2;20;20;20m:mode\u001b[2m  │  \u001b[0;1m\u001b[38;2;200;200;200m\u001b[48;2;20;20;20mCtrl+x\u001b[0m\u001b[38;2;108;108;108m\u001b[48;2;20;20;20m:shortcuts    \u001b[39m",
+        ""
+      ]
+    },
     "mixed": {
       "payload": "qd > order from synthetic · fixture-02 · Synthetic mixed shape\nalpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu alpha beta gamma delta\n\nalpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu alpha beta gamma delta epsilon zeta eta theta iota\nqd > reply: qd post report --re fixture-02\n",
       "lines": [

@@ -433,6 +433,30 @@ def xai_version_box(rows: list[str], width: int) -> bool:
     return False
 
 
+def panel_span(row: str, left: int, end: int) -> tuple[int, int] | None:
+    """Return character indices for the panel's terminal cells, including both borders."""
+    column, begin = 0, None
+    for index, char in enumerate(row):
+        if column >= end:
+            break
+        if column == left:
+            begin = index
+        width = _cells(char)
+        if width is None:
+            return None
+        column += width
+    else:
+        index = len(row)
+    if begin is not None and column == end:
+        return begin, index
+    return None
+
+
+TRANSCRIPT_TEXT = tuple(Style(rgb, (20, 20, 20)) for rgb in
+                        ((58, 149, 171), (200, 200, 200), (108, 108, 108)))
+TRANSCRIPT_THUMB = Style((25, 25, 25), (25, 25, 25))
+
+
 def xai_key_fold_preview(rows: list[str], style: list[Style], offsets: list[int],
                          top: int, right: int, count_text: str) -> FoldPreview | None:
     """The native panel has all lines up to six, then three on each side of the omission."""
@@ -445,35 +469,66 @@ def xai_key_fold_preview(rows: list[str], style: list[Style], offsets: list[int]
     start = top - min(count, 7) - 3
     if start < 1 or rows[start - 1].strip(" ") or rows[top - 1].strip(" "):
         return None
-    panel = [row.rstrip(" ") for row in rows[start:top - 1]]
     # The native panel sits nine cells inside the composer on the left and ten on the right.
-    left, width = 2 + 9, right + 1 - 10
-    indent = " " * left
-    bottom = indent + "╰─ paste again or double-click to expand "
-    if (width <= len(bottom) + 1 or panel[0] != indent + "╭" + "─" * (width - left - 2) + "╮"
-            or panel[-1] != bottom + "─" * (width - len(bottom) - 1) + "╯"):
-        return None
+    left, end = 2 + 9, right + 1 - 10
+    width = end - left
     border, label = FOLDED_CHIP_STYLES[0]  # the keyed panel was measured in truecolor
+    link = Style((122, 162, 247), border.background)
+    hint = Style((108, 108, 108), border.background)
+    fill = Style(background=border.background)
+    caption = [("╰─ ", border), ("paste again", link), (" or ", hint),
+               ("double-click", link), (" to expand", hint)]
+    rule = width - sum(len(text) for text, _ in caption) - 2
+    if rule < 1:
+        return None
+    caption.append((" " + "─" * rule + "╯", border))
+    bottom = "".join(text for text, _ in caption)
+    bottom_style = [attribute for text, attribute in caption for _ in text]
     preview = []
-    for index, row in enumerate(panel, start):
-        body = start < index < top - 2
-        if body and (not row.startswith(indent + "│") or not row.endswith("│") or _cells(row) != width):
+    thumb_started = False
+    for index in range(start, top - 1):
+        row = rows[index]
+        span = panel_span(row, left, end)
+        if span is None:
             return None
         offset = offsets[index]
-        if style[offset + left] != border or style[offset + len(row) - 1] != border:
+        begin, stop = span
+        prefix, suffix = row[:begin], row[stop:]
+        # The transcript can show through from column 5 on the left. Its dark
+        # scrollbar is across the blank right gutter, in the pane's final cell.
+        if not prefix.startswith(" " * 5) or any(
+                char != " " and attribute not in TRANSCRIPT_TEXT
+                for char, attribute in zip(prefix, style[offset:offset + begin])):
             return None
-        if not body:
+        if suffix.strip(" "):
+            if suffix != " " * (right + 2 - end) + "█" or style[offset + len(row) - 1] != TRANSCRIPT_THUMB:
+                return None
+            thumb_started = True
+        elif thumb_started:
+            return None  # the visible thumb is contiguous through the panel's bottom
+        panel = row[begin:stop]
+        attributes = style[offset + begin:offset + stop]
+        if index == start:
+            if panel != "╭" + "─" * (width - 2) + "╮" or any(s != border for s in attributes):
+                return None
             continue
-        text = row[left + 1:-1].rstrip(" ")
+        if index == top - 2:
+            if panel != bottom or attributes != bottom_style:
+                return None
+            continue
+        if panel[0] != "│" or panel[-1] != "│" or attributes[0] != border or attributes[-1] != border:
+            return None
+        text = panel[1:-1].rstrip(" ")
         omitted = count > 6 and index == start + 4
         if omitted and text != f"⋮ ({count - 6} more lines)":
             return None
         expected = border if omitted else label
-        if any(attribute != expected for attribute in style[offset + left + 1:offset + left + 1 + len(text)]):
+        if (any(attribute != expected for attribute in attributes[1:len(text) + 1])
+                or any(attribute not in (fill, expected) for attribute in attributes[len(text) + 1:-1])):
             return None
         if not omitted:
             preview.append(text)
-    return FoldPreview(right - 7, width - left - 2, count, tuple(preview))
+    return FoldPreview(right - 7, width - 2, count, tuple(preview))
 
 
 def read(text: str) -> Screen:

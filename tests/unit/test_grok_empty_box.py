@@ -337,6 +337,79 @@ def test_keyed_fold_rechecks_the_preview_before_enter(keyed_draft, monkeypatch):
     assert d.tmux.sent == [("paste", payload)]
 
 
+@pytest.mark.parametrize("wide_transcript", [False, True])
+@pytest.mark.parametrize("receipt", ["exact", "changed"])
+def test_fold_with_transcript_submits_once_and_requires_a_record(keyed_draft, monkeypatch, wide_transcript, receipt):
+    d, door, payload, shown = keyed_draft("fold-with-transcript")
+    if wide_transcript:
+        # Six cells still fit to the left of the panel even though the prefix has one fewer character.
+        shown = d.tmux.override = shown.replace("sample", "界mple")
+    if receipt == "changed":
+        keys, confirm = d.tmux.keys, door.confirm
+
+        def record_different_input(ident, *pressed):
+            d.tmux.box = d.tmux.box.replace("middle line two", "different hidden line")
+            keys(ident, *pressed)
+
+        monkeypatch.setattr(d.tmux, "keys", record_different_input)
+        monkeypatch.setattr(door, "confirm", lambda text: confirm(text, seconds=0))
+
+    screen = d.seat.harness.screen(shown)
+    evidence = screen.draft_evidence
+    assert evidence.rows[2] == evidence.rows[4] == ""
+    assert evidence.rows[1].endswith("…") and evidence.rows[5].endswith("…")
+    assert door.matches(d.seat.harness.box(payload), screen)
+    assert door.held_matches(d.seat.harness.box(payload), screen)
+    before = len(d.seat.harness.inputs(d.record))
+
+    delivery = door.deliver(payload)
+
+    assert d.tmux.sent == [("paste", payload), ("keys", ("Enter",))]
+    recorded = d.seat.harness.inputs(d.record)[before:]
+    assert len(recorded) == 1 and (recorded[0].text == payload) is (receipt == "exact")
+    assert delivery.result == ("delivered" if receipt == "exact" else "blind")
+
+
+@pytest.mark.parametrize("old,new,structural", [
+    ("sample", "sampl界", True),
+    ("sample", "\x1b[38;2;201;201;201msample", True),
+    ("│⋮ (3 more lines)", "│⋮ (2 more lines)", True),
+    ("│⋮ (3 more lines)", "X⋮ (3 more lines)", True),
+    ("\x1b[38;2;200;200;200mFixture dispatch", "\x1b[38;2;201;201;201mFixture dispatch", True),
+    ("           \x1b[38;2;25;25;25m", "       \x1b[38;2;25;25;25m", True),
+    ("\x1b[38;2;25;25;25m", "\x1b[38;2;26;26;26m", True),
+    ("\x1b[39m" + " " * 55 + "\x1b[38;2;65;65;65m│",
+     "\x1b[48;2;20;20;20m" + " " * 55 + "\x1b[48;2;17;17;17m\x1b[38;2;65;65;65m│", True),
+    ("Pasted: 9 lines", "Pasted: 8 lines", True),
+    ("❯ \x1b[38;2;65;65;65m", "❮ \x1b[38;2;65;65;65m", True),
+    ("Fixture dispatch", "Changed dispatch", False),
+    ("extend beyond…", "extend within…", False),
+])
+def test_fold_with_transcript_holds_changed_panel_evidence_or_composer(keyed_draft, old, new, structural):
+    d, door, payload, shown = keyed_draft("fold-with-transcript")
+    assert old in shown
+    d.tmux.override = shown.replace(old, new, 1)
+    screen = d.seat.harness.screen(d.tmux.override)
+    if structural:
+        assert screen.box is None and screen.unknown
+    else:
+        assert isinstance(screen, grok_screen.KeyedDraft)
+    box = d.seat.harness.box(payload)
+    assert not door.matches(box, screen)
+    assert not door.held_matches(box, screen)
+
+    assert door.deliver(payload).result == "blind"
+    assert d.tmux.sent == [("paste", payload)]
+
+
+def test_fold_with_transcript_requires_the_visible_blank_payload_rows(keyed_draft):
+    d, door, payload, _ = keyed_draft("fold-with-transcript")
+    changed = payload.replace("\n\n", "\nUnexpected line.\n", 1)
+
+    assert door.deliver(changed).result == "blind"
+    assert d.tmux.sent == [("paste", changed)]
+
+
 def test_the_empty_composer_at_112_columns_reads_empty(ordinary):
     d = ordinary(IDLE_112, (6, 30), width=112, height=35)
     screen = Door(d.seat).screen()

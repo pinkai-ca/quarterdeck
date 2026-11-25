@@ -23,7 +23,12 @@ counted chip. The attached panel shows all lines through six. From seven
 onward it shows the first and last three with a count of the omitted lines
 between them. Blank lines count, and long preview lines end in an ellipsis.
 The door checks the aligned panel, its count and its visible lines against
-the payload. Native 78×24 and 80×24 proofs recorded each submitted draft
+the payload. In a populated 80×24 pane, the panel also appears over the
+transcript. The reader checks the panel between its terminal-column borders.
+Transcript text can appear in the left margin, and the transcript scrollbar
+can appear at the pane's right edge across the blank gutter. An empty preview
+line still has both panel borders and a blank interior.
+Native 78×24 and 80×24 proofs recorded each submitted draft
 once and preserved the final LF. The empty working hint holds delivery.
 The cursor-confirmed settled empty hint admits the next delivery.
 
