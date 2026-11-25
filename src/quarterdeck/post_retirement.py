@@ -8,8 +8,9 @@ Power-loss persistence is left to the operating system; retirement forces no syn
 
 from __future__ import annotations
 
+from bisect import bisect_right
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
-from contextlib import contextmanager
 import json
 import hashlib
 from pathlib import Path
@@ -97,6 +98,7 @@ def _files(runtime, data):
 def _resume(service, path, data, progress, counts):
     """Replay a prepublished batch; a done marker follows its whole-file moves."""
     runtime = service.runtime
+    moved = getattr(progress, 'moved_attempts', None)
     progress.phase = 'moves'
     for source, digest in _files(runtime, data):
         progress()
@@ -110,6 +112,8 @@ def _resume(service, path, data, progress, counts):
                     raise ShipError('retirement attempt changed; original retained')
             if move(source, destination):
                 counts['journals' if digest is not None else 'attempts'] += 1
+                if digest is None and moved is not None:
+                    moved.add(source.name)
         elif not post_dir.exists(destination):
             raise ShipError('retirement evidence missing; batch remains unfinished')
     done = runtime / 'post' / 'retired' / 'completed' / path.name
@@ -118,7 +122,90 @@ def _resume(service, path, data, progress, counts):
     return counts
 
 
-def _recover(service, progress, counts):
+def _watch_candidates(folder, attempts, archive, progress):
+    """Read the whole generation before removing a member of any printed batch."""
+    from . import inbox_watch
+
+    generation = folder.name
+    candidates, held_batches = [], set()
+    for path in post_dir.json_paths(folder):
+        progress()
+        evidence = inbox_watch._read_evidence(path)
+        if not isinstance(evidence, dict):
+            continue
+        proof = evidence.get('print')
+        if proof is not None and not inbox_watch.valid_print(proof, generation):
+            continue
+        attempt = attempts.get(path.name)
+        if (attempt is not None and (path.name in progress.moved_attempts or attempt.path.parent == archive)
+                and attempt.result in FINISHED
+                and evidence == inbox_watch._evidence(attempt, generation, proof)):
+            candidates.append((path, attempt, proof))
+        elif proof is not None:
+            held_batches.add(proof['batch'])
+    return [(path, attempt) for path, attempt, proof in candidates
+            if proof is None or proof['batch'] not in held_batches]
+
+
+def _prune_watch_evidence(service, counts, progress, limit, *, records=None):
+    """Use the mover's locked inventory or take a fresh one under the same lock."""
+    from . import inbox_watch
+
+    root = service.runtime / 'post' / 'watch-evidence'
+    try:
+        generations = sorted(name for name, mode in post_dir.list_children(root)
+                             if stat.S_ISDIR(mode) and inbox_watch._hex(name, 32))
+    except (OSError, ShipError):
+        return counts
+    if not generations or limit <= 0:
+        return counts
+    cursor = bisect_right(generations, getattr(service, 'post_watch_evidence_cursor', '')) % len(generations)
+    if len(generations) > BATCH:
+        progress.watch_pending = cursor + BATCH < len(generations)
+        generations = generations[cursor:cursor + BATCH]
+    else:
+        generations = generations[cursor:] + generations[:cursor]
+    archive = root.parent / 'retired' / 'attempts'
+    phase = progress.phase
+    try:
+        with service.attempts._locked() if records is None else nullcontext():
+            if records is None:
+                records = progress.read('attempts read', service.attempts.all, progress=progress)
+            attempts = {a.path.name: a for a in records}
+            for generation in generations:
+                progress()
+                service.post_watch_evidence_cursor = generation
+                folder = root / generation
+                try:
+                    candidates = progress.read('watch evidence', _watch_candidates, folder, attempts, archive, progress)
+                except (OSError, ShipError, ValueError, RecursionError):
+                    continue  # partial evidence cannot rule out a shared batch
+                for path, attempt in candidates:
+                    progress()
+                    if counts.get('watch_evidence', 0) >= limit:
+                        raise SliceEnded()
+                    try:
+                        # An index precedes the rename. Confirm earlier moves
+                        # against the named archived original and its contents.
+                        if (path.name not in progress.moved_attempts
+                                and json.loads(post_dir.read_text(attempt.path)) != row(attempt)):
+                            continue
+                        post_dir.remove(path)
+                    except (OSError, ShipError, ValueError, RecursionError):
+                        continue
+                    counts['watch_evidence'] = counts.get('watch_evidence', 0) + 1
+                try:
+                    post_dir.remove_empty_directory(folder)
+                except (OSError, ShipError):
+                    pass  # missing or shared generation, including non-companion files
+    except SliceEnded:
+        progress.watch_pending = True
+    finally:
+        progress.phase = phase
+    return counts
+
+
+def _recover(service, progress, counts, limit):
     """Finish one published intent before authorizing another batch."""
     from . import lifecycle, post
     root = service.runtime / 'post' / 'retired'
@@ -139,10 +226,12 @@ def _recover(service, progress, counts):
             raise ShipError('retirement batch seat invalid; originals retained')
         try:
             with lifecycle.claim(service.runtime, name), post.admission(service.runtime, name), service.attempts._locked():
-                messages = _settled(service.store, progress.read('attempts read', service.attempts.all, progress=progress), progress)
+                records = progress.read('attempts read', service.attempts.all, progress=progress)
+                messages = _settled(service.store, records, progress)
                 if any(message not in messages for message in data['messages']):
                     return {**counts, 'held': 'batch delivery unsettled'}
-                return _resume(service, path, data, progress, counts)
+                _resume(service, path, data, progress, counts)
+                return _prune_watch_evidence(service, counts, progress, limit, records=records)
         except lifecycle.Busy:
             progress.blocked = True
             continue
@@ -234,6 +323,8 @@ class _Progress:
         self.names = None
         self.visited = set()
         self.prior_names = frozenset(prior_names)
+        self.moved_attempts = set()
+        self.watch_pending = False
 
     @contextmanager
     def examining(self, name):
@@ -295,7 +386,7 @@ def _run(service, limit, counts, progress):
         progress.phase = 'ledger catch-up'
         return {**counts, 'held': 'ledger catch-up'}
     progress.phase = 'recovery'
-    recovered = _recover(service, progress, counts)
+    recovered = _recover(service, progress, counts, limit)
     if recovered is not None:
         return recovered
     records = progress.read('attempts read', service.attempts.all, progress=progress)
@@ -393,7 +484,8 @@ def _run(service, limit, counts, progress):
                     if mine or selected:
                         progress.retirable += len(mine) + len(selected)
                         progress.phase = 'batch'
-                        return _batch(service, name, mine, selected, progress, counts, all_names)
+                        _batch(service, name, mine, selected, progress, counts, all_names)
+                        return _prune_watch_evidence(service, counts, progress, limit, records=current)
         except lifecycle.Busy:
             progress.blocked = True
             continue
@@ -403,7 +495,7 @@ def _run(service, limit, counts, progress):
             service.post_retirement_cursor = names[(position + 1) % len(names)]
     if not progress.blocked:
         progress.candidates = 0  # a complete examination found no movable candidate
-    return counts
+    return _prune_watch_evidence(service, counts, progress, limit)
 
 
 def reading(runtime):

@@ -596,6 +596,19 @@ def remove(path) -> None:
         os.close(parent)
 
 
+def remove_empty_directory(path) -> None:
+    """Remove one empty directory without following links in its post path."""
+    path = Path(path)
+    if not under_post(path):
+        path.rmdir()
+        return
+    parent, name = _open_parent(path, create=False)
+    try:
+        os.rmdir(name, dir_fd=parent)
+    finally:
+        os.close(parent)
+
+
 def rename(source, destination) -> None:
     """Rename one real file onto an absent name. A link at either name is a hold.
 

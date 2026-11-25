@@ -141,7 +141,7 @@ class Gate:
         if (self.before is None or after != self.before or reversed_clock
                 or self.sweep is None or progress is None
                 or progress.blocked or result.get('held') or result.get('failed')
-                or result['attempts'] or result['journals']):
+                or result['attempts'] or result['journals'] or result.get('watch_evidence')):
             self.reject()
             return
         if progress.names is None:
@@ -150,7 +150,8 @@ class Gate:
             self.sweep = Sweep(after)
         self.sweep.names = progress.names
         self.sweep.visited.update(progress.visited)
-        if not result.get('paused') and self.sweep.visited >= self.sweep.names:
+        if (not result.get('paused') and not getattr(progress, 'watch_pending', False)
+                and self.sweep.visited >= self.sweep.names):
             self.certificate = after
             self.until = finished + interval
             self.sweep = None

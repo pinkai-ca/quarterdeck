@@ -1,11 +1,12 @@
 """Finished evidence remains usable after its unchanged files leave the hot folders."""
 
+from collections import Counter
 from types import SimpleNamespace
 import json
 
 import pytest
 
-from quarterdeck import pending, post, post_retirement as retirement
+from quarterdeck import inbox_watch, pending, post, post_dir, post_retirement as retirement
 
 
 def service(runtime):
@@ -27,6 +28,179 @@ def delivery(s, *, closed=True, result='delivered', phase='delivered', name='bui
     if closed:
         s.store.new('report', name, 'lead', 'Done', re=message.id)
     return message, attempt, path
+
+
+def watch_batch(s, count, *, generation='a' * 32, printed=True):
+    messages = [s.store.new('order', 'lead', 'builder', 'Synthetic watch task') for _ in range(count)]
+    attempts = [s.attempts.open(message, message.to, None, None, None,
+                                watch_generation=generation) for message in messages]
+    if printed:
+        proof = dict(generation=generation, batch=inbox_watch.batch_digest(a.path.name for a in attempts),
+                     size=10, sha256='a' * 64)
+        attempts = [s.attempts.close(attempt, 'watch', watch_print=proof) for attempt in attempts]
+    folder = inbox_watch._evidence_folder(s.runtime, generation)
+    return messages, attempts, [folder / a.path.name for a in attempts]
+
+
+def report_watch(s, message):
+    s.store.new('report', message.to, message.sender, 'Done', re=message.id)
+
+
+def test_watch_companions_leave_with_their_finished_attempts(tmp_path, monkeypatch):
+    s = service(tmp_path / 'runtime')
+    messages, attempts, companions = watch_batch(s, 4)
+    for message in messages:
+        report_watch(s, message)
+    originals = {a.path.name: a.path.read_bytes() for a in attempts}
+    reads, listings = Counter(), Counter()
+    read, list_children = post_dir.read_text, post_dir.list_children
+
+    def observed_read(path, *args, **kwargs):
+        if path.parent.name == 'attempts':
+            reads[path.name] += 1
+        return read(path, *args, **kwargs)
+
+    def observed_listing(folder, *args, **kwargs):
+        listings[folder] += 1
+        return list_children(folder, *args, **kwargs)
+
+    monkeypatch.setattr(post_dir, 'read_text', observed_read)
+    monkeypatch.setattr(post_dir, 'list_children', observed_listing)
+    assert retirement.run(s) == dict(attempts=4, journals=0, watch_evidence=4)
+    assert not companions[0].parent.exists()
+    assert listings[companions[0].parent] == listings[companions[0].parent.parent] == 1
+    assert reads == dict.fromkeys(originals, 2)
+    assert {a.path.name: a.path.read_bytes() for a in s.attempts.all()} == originals
+
+
+def test_watch_pruning_keeps_a_printed_batch_until_its_other_post_retires(tmp_path, monkeypatch):
+    s = service(tmp_path / 'runtime')
+    (first, second), attempts, companions = watch_batch(s, 2)
+    report_watch(s, first)
+    originals = [p.read_bytes() for p in companions]
+    read = inbox_watch._read_evidence
+
+    def end_slice(path):
+        if path == max(companions):
+            raise retirement.SliceEnded()
+        return read(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(inbox_watch, '_read_evidence', end_slice)
+        assert retirement.run(s) == dict(attempts=1, journals=0)
+        assert s._post_retirement_progress.watch_pending
+    assert [p.read_bytes() for p in companions] == originals
+    assert not attempts[0].path.exists() and attempts[1].path.is_file()
+    assert retirement.run(s) == dict(attempts=0, journals=0)
+    indexed = {a.path.name: a for a in s.attempts.all()}
+    joined, _ = inbox_watch.accepted_batch(s.runtime, companions[0].parent.name, indexed)
+    assert {a.message for a in joined} == {first.id, second.id}
+
+    report_watch(s, second)
+    assert retirement.run(s, limit=1) == dict(attempts=1, journals=0, watch_evidence=1)
+    assert sum(p.exists() for p in companions) == 1
+    assert retirement.run(s, limit=1) == dict(attempts=0, journals=0, watch_evidence=1)
+    assert not companions[0].parent.exists()
+
+
+@pytest.mark.parametrize('field', ['at', 'attempt', 'seat', 'message', 'generation', 'print'])
+def test_watch_pruning_keeps_mismatched_and_active_companions_in_a_shared_folder(tmp_path, field):
+    s = service(tmp_path / 'runtime')
+    (matched, mismatched), attempts, (remove, altered) = watch_batch(s, 2, printed=False)
+    _, _, (active,) = watch_batch(s, 1, printed=False)
+    for message, attempt in zip((matched, mismatched), attempts, strict=True):
+        s.attempts.close(attempt, 'watch')
+        report_watch(s, message)
+    altered.write_text(json.dumps(json.loads(altered.read_text()) | {field: 'other'}))
+    unrelated = remove.with_name('unrelated.json')
+    unrelated.write_text(remove.read_text())
+    retained = {p: p.read_bytes() for p in (altered, active, unrelated)}
+
+    assert retirement.run(s) == dict(attempts=2, journals=0, watch_evidence=1)
+    assert not remove.exists()
+    assert {p: p.read_bytes() for p in remove.parent.iterdir()} == retained
+
+
+def test_service_retirement_catches_up_companions_left_by_an_earlier_release(tmp_path, monkeypatch):
+    from quarterdeck.service import Service
+
+    s = service(tmp_path / 'runtime')
+    messages, attempts, (matching, missing, changed) = watch_batch(s, 3, printed=False)
+    for message, attempt in zip(messages, attempts, strict=True):
+        s.attempts.close(attempt, 'watch')
+        report_watch(s, message)
+    with monkeypatch.context() as patch:
+        patch.setattr(retirement, '_prune_watch_evidence', lambda _s, counts, *_a, **_kw: counts)
+        assert retirement.run(s) == dict(attempts=3, journals=0)
+    retirement.retired(attempts[1].path, s.runtime).unlink()
+    archived = retirement.retired(attempts[2].path, s.runtime)
+    archived.write_text(json.dumps(json.loads(archived.read_text()) | {'detail': 'different archive row'}))
+
+    fresh = service(s.runtime)
+    declaration = tmp_path / 'ship.toml'
+    declaration.write_text('# Synthetic declaration\n')
+    fresh.ship = SimpleNamespace(file=declaration, seats={'builder': None})
+    events = []
+    fresh.log = lambda event, **fields: events.append((event, fields))
+    fresh.ledger.catching_up = lambda: True
+    Service.retire_post(fresh)
+    assert all(p.is_file() for p in (matching, missing, changed))
+    fresh.ledger.catching_up = lambda: False
+    Service.retire_post(fresh)
+    assert not matching.exists()
+    assert missing.is_file() and changed.is_file()
+    assert events[-1][0] == 'post-retired' and events[-1][1]['watch_evidence'] == 1
+
+
+def test_watch_catchup_rotates_its_bounded_generation_scan(tmp_path, monkeypatch):
+    s = service(tmp_path / 'runtime')
+    _, _, (active,) = watch_batch(s, 1, generation='a' * 32)
+    (message,), (attempt,), (companion,) = watch_batch(s, 1, generation='b' * 32)
+    report_watch(s, message)
+    retirement._batch(s, message.to, {attempt.path.name: attempt}, [], lambda: None,
+                      dict(attempts=0, journals=0), {})
+    monkeypatch.setattr(retirement, 'BATCH', 1)
+    assert retirement.run(s) == dict(attempts=0, journals=0)
+    assert s._post_retirement_progress.watch_pending
+    assert companion.is_file() and active.is_file()
+    assert retirement.run(s) == dict(attempts=0, journals=0, watch_evidence=1)
+    assert not companion.parent.exists() and active.is_file()
+
+
+@pytest.mark.parametrize('interrupt', ['attempt moved', 'companion unlinked'])
+def test_watch_pruning_replays_an_interrupted_retirement(tmp_path, monkeypatch, interrupt):
+    s = service(tmp_path / 'runtime')
+    (message,), (attempt,), (companion,) = watch_batch(s, 1)
+    report_watch(s, message)
+    original = attempt.path.read_bytes()
+    move, remove = retirement.move, post_dir.remove
+
+    def interrupted_move(source, target):
+        move(source, target)
+        raise KeyboardInterrupt
+
+    def interrupted_unlink(path):
+        remove(path)
+        if path == companion:
+            raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        if interrupt == 'attempt moved':
+            patch.setattr(retirement, 'move', interrupted_move)
+        else:
+            patch.setattr(post_dir, 'remove', interrupted_unlink)
+        with pytest.raises(KeyboardInterrupt):
+            retirement.run(s)
+    assert not attempt.path.exists()
+    assert companion.parent.is_dir()
+    assert companion.exists() == (interrupt == 'attempt moved')
+
+    fresh = service(s.runtime)
+    result = retirement.run(fresh)
+    assert result.get('watch_evidence', 0) == (interrupt == 'attempt moved')
+    assert not companion.parent.exists()
+    assert retirement.retired(attempt.path, s.runtime).read_bytes() == original
+    assert retirement.run(fresh) == dict(attempts=0, journals=0)
 
 
 def test_finished_settled_files_move_unchanged_and_history_still_delivers_once(tmp_path):
