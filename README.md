@@ -124,7 +124,17 @@ From any other folder, run setup's Desk access line, which names the office's fu
 
 ### On an API key
 
-Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one line each, such as `anthropic = "<your key>"`. Keep it private to you (`chmod 600`). A pool in the ship's file names the key, never holds it: `api_key = "keys:anthropic"`. List a key after a subscription and an agent falls back to it when the subscription is spent, and returns when the subscription has room. A `budget` limits what the key may spend. A key beside an `endpoint` travels only over https, or over http to your own machine, and an endpoint's address holds no credentials, query or fragment.
+Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one line each, such as `anthropic = "<your key>"`. Keep it private to you (`chmod 600`). A pool in the ship's file names the key, never holds it: `api_key = "keys:anthropic"`. A key beside an `endpoint` travels only over https, or over http to your own machine, and an endpoint's address holds no credentials, query or fragment.
+
+To use a key as a fallback, list its pool after the subscription pool in the seat's pool list, for example `pool = ["claude", "anthropic-api"]`. With `qd setup`, answer `key_fallback.<program>` with the key's name in `keys.toml`. For Claude Code, include `"key_fallback": {"claude": "anthropic"}` in the JSON file you pass to `--answers`.
+
+When the subscription reads as spent, a seat can move to a key from the same provider at its next idle moment and return automatically after the subscription resets.
+
+On 25 November 2026, a live test with Claude Code 2.1.331 used disposable seats and synthetic prompts. The move to an Anthropic key with Sonnet 5.5 followed a 100% usage reading for the subscription model. The seat kept the same conversation when it moved to the key and when it returned after reset. It recalled a word from before the first move on both pools. The key spend was $0.16.
+
+In a separate test, the automatic move from the Claude subscription to a Z.ai key with `glm-5.3` started a new conversation with the handoff. The return failed in that test, and a fix is in progress. See the [automatic failover tests](docs/HARNESSES.md#automatic-failover-tests).
+
+Quarterdeck checks a pool's `budget` against spend it can price from completed turns. Unpriced usage can still incur charges. A budget such as `"200 USD/month"` is a local limit based on the ledger. Pools that share a key share the tally. The ledger counts spend by pool name, so reusing a pool name for a different key can carry prior spend into the current budget period. See [pool prices](docs/HARNESSES.md#in-the-ships-file).
 
 Use `qd set SEAT pool=NAME` to select a pool already declared for the seat. A running seat moves after its turn and queued input have cleared, and resumes the same conversation when the program can prove it. The pending move appears in `qd status` and `qd watch SEAT`. A key chosen this way stays selected for that launch while it can pay. For a down seat, the choice applies to its next `qd up`. To edit a simple pool list, use `qd set SEAT pool=FIRST,SECOND` or `qd set --declare SEAT pool=ONLY`. Edit inline choices in the ship file.
 
@@ -134,21 +144,24 @@ Proved live with API keys on 21 November 2026:
 - OpenCode 1.19.5 and pi 0.79.0 on an Anthropic key, through Anthropic's OpenAI-compatible address: one live call each, on `claude-haiku-5-5`, each in its jail.
 - Codex 0.166.0 on an OpenAI API key made one live call on `gpt-6-luna`.
 - OpenCode 1.19.5 and pi 0.79.0 on an OpenAI API key through `https://api.openai.com/v1` each made one live call on `gpt-6-luna` in its jail.
-- A live Codex seat moved from an OpenAI API key to a Codex subscription and back using `qd down` and `qd up` with a pool choice. It resumed the same conversation after each move and remembered the earlier task.
 
-On 24 November 2026, OpenCode 1.19.5 made one live call in its jail on `gemini-3.5-flash-lite` through Google's OpenAI-compatible endpoint. Pi 0.79.0 completed one live turn with a Google API key through the same endpoint, `https://generativelanguage.googleapis.com/v1beta/openai`. The pi retry used both `supportsDeveloperRole=false` and `supportsStore=false`. The cause of the earlier HTTP 400 remains undetermined because the retry tested both flags together.
+In a separate live test on 21 November 2026, a Codex seat switched from an OpenAI API key to a Codex subscription and back using `qd down` and `qd up` with a pool choice. It resumed the same conversation after each move and remembered the earlier task. Moving to or from a key with `qd set` was tested on a stand-in program.
 
-For a pi or OpenCode seat on a Google API key, declare `provider = "google"` and keep `endpoint = "https://generativelanguage.googleapis.com/v1beta/openai"` alongside the existing key reference. Model discovery and `qd doctor` use that address. Both programs use Google's native Gemini API at `https://generativelanguage.googleapis.com/v1beta` for inference with the same key. In an offline test, pi 0.79.0 and OpenCode 1.19.5 each returned the model's thought signature with the function result. Live confirmation of the native tool turn is pending.
+In a compatibility test on 24 November 2026, OpenCode 1.19.5 made one live call in its jail on `gemini-3.5-flash-lite` through Google's OpenAI-compatible endpoint. Pi 0.79.0 completed one live turn with a Google API key through the same endpoint, `https://generativelanguage.googleapis.com/v1beta/openai`. The pi retry used both `supportsDeveloperRole=false` and `supportsStore=false`. The cause of the earlier HTTP 400 remains undetermined because the retry tested both flags together.
 
-xAI API keys are still awaiting live proof.
+On 24 November 2026, Grok Build 1.0.77, OpenCode 1.19.5 and pi 0.79.0 each made one live call on an xAI API key.
+
+For a pi or OpenCode seat on a Google API key, declare `provider = "google"` and keep `endpoint = "https://generativelanguage.googleapis.com/v1beta/openai"` alongside the existing key reference. Model discovery and `qd doctor` use that address. Both programs use Google's native Gemini API at `https://generativelanguage.googleapis.com/v1beta` for inference with the same key. On 25 November 2026, pi 0.79.0 and OpenCode 1.19.5 each completed a live read-tool turn on `gemini-3.5-flash-lite` on the native API and returned Gemini's thought signature with the tool result. Earlier tool-turn attempts on the compatibility route failed.
 
 For a Z.ai Standard API key, use `provider = "zai"` and `api_key = "keys:glm"`.
 Claude Code takes `endpoint = "https://api.z.ai/api/anthropic"` and an explicit model ID available to the account.
 Quarterdeck uses the ship's Claude program pin and the existing key helper.
 OpenCode and pi use `endpoint = "https://api.z.ai/api/paas/v4/"` and require an explicit model ID from its authenticated listing.
 Their generated model choice notes the newest model by the listing's creation time when the listing establishes one. The seat runs the explicitly selected model.
-Codex requires the Responses wire protocol and Quarterdeck's current Codex key route uses native OpenAI login. The Z.ai Responses address would need its own route and compatibility proof.
+Quarterdeck has no supported Z.ai route for Codex. Codex requires the Responses wire protocol and its current key route uses native OpenAI login.
 A named key can be shared by pools for a single provider. Declaring a key does not add it to any seat's pool list. A Z.ai conversation resumes only where its record proves the same provider address and pool name.
+
+On 24 November 2026, Claude Code 2.1.331 on Z.ai's Messages address and OpenCode 1.19.5 and pi 0.79.0 on its Chat Completions address each completed one live tool turn on a synthetic task with `glm-5.3` and a Z.ai Standard key.
 
 A Z.ai launch keeps each program on its declared route, and other pools keep their settings.
 OpenCode's final configuration, after the ship template and seat settings, is checked when it is written and again at launch. It names only the pool's provider and the declared model, including for the small model, every agent and every mode. Sharing is disabled, updates are off, MCP servers, plugins and enterprise settings are empty, and the generated key field is the only `{env:…}` or `{file:…}` substitution. Project configuration, the model catalog fetch, external and default plugins, language-server downloads and the npm dependency installer stay off.
@@ -158,11 +171,19 @@ pi starts with `PI_OFFLINE=1`.
 A refusal names the setting, never its value.
 
 Z.ai Standard API keys use account balance or usage bundles. Quarterdeck shows account balance as unknown.
-The doctor makes one model-list request on the standard Chat Completions address for either Z.ai pool. Inference needs a separate proof.
+The doctor makes one model-list request on the standard Chat Completions address for either Z.ai pool. The model-list check tests discovery only.
 HTTP 429 with Z.ai code 1113 reports exhausted balance or bundle. An owning OpenCode turn that records both fields holds the pool for one hour locally. The provider's reset time is unknown. The first accepted request after that interval clears the old refusal, and a new proved refusal starts a new interval. Restart, fresh start, and model discovery leave the hold in place. Claude Code and pi do not retain enough evidence to establish this native balance refusal.
 See the [Z.ai key guide](https://docs.z.ai/devpack/notice/api-key-management) and [API errors](https://docs.z.ai/api-reference/api-code).
 
-The default crew raised with `qd setup` carried one small change from its order to its landing in each of two runs on 21 November 2026. In one run the desk, captain and engineer all used Claude Code on an Anthropic key with `claude-sonnet-5-5`. In the other they all used Codex on a Codex subscription with `gpt-6.2-sol`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
+#### Single-provider crew tests
+
+The default crew raised with `qd setup` carried one small change from its order to its landing in each of two runs on 21 November 2026. In one run the desk, captain and engineer all used Claude Code on an Anthropic key with `claude-sonnet-5-5`. In the other they all used Codex on a Codex subscription with `gpt-6.2-sol`.
+
+On 25 November 2026, two more default crews raised with `qd setup --answers` each landed a small change.
+
+- **Grok Build 1.0.77 with an xAI key and `grok-4.20-0309-non-reasoning`.** In two earlier attempts the crew could not be reached: first the desk could not find the captain's address, then its orders could not be delivered to the Grok seats; in the second, the desk made and landed the change itself, against its instruction. Both causes have since been fixed. In the successful rerun, the crew proceeded while one folded report was held for delivery. The issue that held the report has since been fixed.
+- **pi 0.79.0 and OpenCode 1.19.5 with a Google key and `gemini-3.5-flash-lite`.** The desk polled within one turn and attempted to merge. It reached the call cap shortly after the landing report.
+- **Claude Code with `claude-haiku-5-5` in the 21 November test.** The desk did the work itself and never ordered the crew.
 
 ## How to use it
 
