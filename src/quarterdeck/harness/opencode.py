@@ -41,6 +41,67 @@ CONFIG = {
 }
 
 
+# A Z.ai key launch: the generated key field is the one place native substitution may run.
+_ZAI_KEY_FIELD = ('options', 'apiKey')
+_ZAI_KEY_MARKER = f'{{env:{endpoint.KEY_VARIABLE}}}'
+_ZAI_SUBSTITUTION = re.compile(r'\{(?:env|file):', re.IGNORECASE)
+
+
+def zai_route_matches(config, pool) -> bool:
+    providers = config.get('provider') if isinstance(config, dict) else None
+    provider = providers.get(pool.name) if isinstance(providers, dict) else None
+    if not isinstance(provider, dict) or provider.get('npm') != '@ai-sdk/openai-compatible':
+        return False
+    options, models = provider.get('options'), provider.get('models')
+    if (not isinstance(options, dict) or not isinstance(models, dict)
+            or options.get('baseURL') != pool.endpoint or options.get('apiKey') != _ZAI_KEY_MARKER
+            or {'headers', 'fetch'} & options.keys()):
+        return False
+    routing = {'api', 'apiKey', 'baseURL', 'baseUrl', 'fetch', 'headers', 'id', 'provider', 'npm'}
+    return all(isinstance(model, dict) and isinstance(model.get('options', {}), dict)
+               and not routing & model.keys() and not routing & model.get('options', {}).keys()
+               for model in models.values())
+
+
+def _zai_substitution(value, key_field: tuple) -> bool:
+    """Native substitution scans the JSON text, including keys, before parsing it."""
+    if isinstance(value, dict):
+        return any(_ZAI_SUBSTITUTION.search(key) or
+                   _zai_substitution(child, key_field[1:] if key_field and key == key_field[0] else ())
+                   for key, child in value.items()
+                   if not (key_field == (key,) and child == _ZAI_KEY_MARKER))
+    if isinstance(value, list):
+        return any(_zai_substitution(child, ()) for child in value)
+    return isinstance(value, str) and _ZAI_SUBSTITUTION.search(value) is not None
+
+
+def require_zai_config(config, pool, model) -> None:
+    """Apply the keyed route constraints to the merged native configuration."""
+    if not zai_route_matches(config, pool):
+        raise ShipError('Z.ai OpenCode settings contain authentication or routing overrides')
+    providers = config['provider']
+    if set(providers) != {pool.name} or config.get('enabled_providers') != [pool.name]:
+        raise ShipError('Z.ai OpenCode requires only the selected pool provider')
+    if set(providers[pool.name]['models']) != {model}:
+        raise ShipError('Z.ai OpenCode requires only the selected model')
+    qualified = f'{pool.name}/{model}'
+    if config.get('model') != qualified or config.get('small_model') != qualified:
+        raise ShipError('Z.ai OpenCode requires the selected model for both model settings')
+    for group in ('agent', 'mode'):
+        scopes = config.get(group, {})
+        if not isinstance(scopes, dict) or any(
+                not isinstance(scope, dict) or any(scope.get(key, qualified) != qualified for key in ('model', 'small_model'))
+                for scope in scopes.values()):
+            raise ShipError('Z.ai OpenCode agents and modes must use the selected model')
+    if (config.get('share') != 'disabled' or config.get('autoshare', False) is not False
+            or config.get('autoupdate') is not False):
+        raise ShipError('Z.ai OpenCode requires disabled sharing and updates')
+    if any(config.get(option, empty) != empty for option, empty in (('mcp', {}), ('plugin', []), ('enterprise', {}))):
+        raise ShipError('Z.ai OpenCode requires empty MCP, plugin and enterprise settings')
+    if _zai_substitution(config, ('provider', pool.name, *_ZAI_KEY_FIELD)):
+        raise ShipError('Z.ai OpenCode settings contain a substitution marker outside the generated key field')
+
+
 # -- the adapter --------------------------------------------------------------------------------
 
 BAR_TEXT = re.compile(r"^\s*┃  (.*)$")
@@ -172,7 +233,8 @@ class OpenCodeHarness(EndpointHarness):
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         self.check_defaults(seat, ship_home)
-        if not seat.human_session:
+        zai = pool.provider == 'zai' and pool.paid_by_key
+        if not seat.human_session or zai:
             guard_question_configuration(home)
         seat_files.make_folder(home)  # never through a link its jail planted
         runtime = home.parents[2]  # runtime/seats/<seat>/home
@@ -185,8 +247,12 @@ class OpenCodeHarness(EndpointHarness):
         }
         config = {**CONFIG, "model": f"{pool.name}/{choice.model}", "provider": {pool.name: provider},
                   "instructions": [str(runtime / "brief" / f"{seat.name}.md")]}  # the brief, and no instruction file of the user's
+        if zai:
+            config.update(small_model=config['model'], enabled_providers=[pool.name])
         layered = ship_template(ship_home, "opencode.json")
         config = copy.deepcopy(merged(merged(config, layered), seat.settings))
+        if zai:  # before the crew's own edits read the merged agents and modes
+            require_zai_config(config, pool, choice.model)
         if not seat.human_session:
             # V1 evaluates the last matching rule. Agent rules follow root rules.
             modes = config.get('mode', {})
@@ -209,6 +275,8 @@ class OpenCodeHarness(EndpointHarness):
         if price:
             model["cost"] = {"input": price.input, "output": price.output,
                              "cache_read": price.cache_read, "cache_write": price.cache_write}
+        if zai:  # and again on the file as it will be written, after every addition
+            require_zai_config(config, pool, choice.model)
         folder = home / "config" / "opencode"
         seat_files.make_folder(folder)  # never through a link its jail planted
         durable.replace_file(folder / "opencode.json", json.dumps(config, indent=2) + "\n")
@@ -232,10 +300,19 @@ class OpenCodeHarness(EndpointHarness):
         self._data_dir(home, resume, seat.name, working_folder=folder)
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
-        if not seat.human_session:
+        zai = pool.provider == 'zai' and pool.paid_by_key
+        if not seat.human_session or zai:
             guard_question_configuration(home)
         folder = self._working_folder(seat, home)
         choice = endpoint.Choice.read(home)
+        if zai:
+            if choice.model != seat.model:
+                raise ShipError('Z.ai OpenCode model choice differs from the declaration')
+            try:
+                config = json.loads(seat_files.read_text(home / 'config/opencode/opencode.json') or '')
+            except (OSError, ValueError, RecursionError):
+                raise ShipError('Z.ai OpenCode launch configuration is unreadable') from None
+            require_zai_config(config, pool, choice.model)
         data = self._data_dir(home, resume, seat.name, working_folder=folder)
         if resume and not seat.human_session:
             rows = _Rows(data / RECORD, resume_metadata=True)
@@ -249,13 +326,19 @@ class OpenCodeHarness(EndpointHarness):
             argv += ["--prompt", first]
         env = {"XDG_CONFIG_HOME": str(home / "config"), self.home_variable: str(data), "XDG_CACHE_HOME": str(home / "cache"),
                "XDG_STATE_HOME": str(home / "state"), "OPENCODE_DISABLE_AUTOUPDATE": "1", **endpoint.key(pool)}
-        if not seat.human_session:
-            # V1 loads project/config-env rules after its global config. Keep native
-            # policy on the generated ship config rather than inheriting another scope.
+        if not seat.human_session or zai:
+            # V1 loads project/config-env rules after its global config.
             env.update(HOME=str(home), OPENCODE_DISABLE_PROJECT_CONFIG='1',
                        OPENCODE_CONFIG=str(home / 'config/opencode/opencode.json'),
                        OPENCODE_CONFIG_DIR=str(home / 'config/opencode'),
-                       OPENCODE_CONFIG_CONTENT='{}', OPENCODE_PERMISSION='{"question":"deny"}')
+                       OPENCODE_CONFIG_CONTENT='{}')
+        if not seat.human_session:
+            env['OPENCODE_PERMISSION'] = '{"question":"deny"}'
+        if zai:
+            # The compatible SDK is bundled. The catalog, external plugins and the
+            # unconditional config-directory dependency installer each have a separate switch.
+            env.update(OPENCODE_DISABLE_MODELS_FETCH='1', OPENCODE_PURE='1', npm_config_offline='true',
+                       OPENCODE_DISABLE_LSP_DOWNLOAD='1', OPENCODE_DISABLE_DEFAULT_PLUGINS='1')
         if folder is not None:
             try:
                 if seat_files.under_seat(folder):

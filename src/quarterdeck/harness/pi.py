@@ -547,6 +547,8 @@ class PiHarness(EndpointHarness):
                 raise ShipError(f"{seat.name}: conversation is retired; use qd fresh {seat.name}")
             argv += ["--session", str(record)]
         env = {self.home_variable: str(home / "agent"), "PI_SKIP_VERSION_CHECK": "1", **endpoint.key(pool)}
+        if pool.provider == 'zai' and pool.paid_by_key:
+            env['PI_OFFLINE'] = '1'
         if endpoint.openai_responses(pool.endpoint):
             argv += ["--extension", str(Path(__file__).with_name("pi_responses.ts"))]
             env.update(QD_PI_RESPONSES_PROVIDER=pool.name, QD_PI_RESPONSES_BASE_URL=endpoint.OPENAI_RESPONSES_BASE)

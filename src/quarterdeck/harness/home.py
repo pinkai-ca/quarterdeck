@@ -25,14 +25,14 @@ def credential_review_adapter(name: str | None):
     return get(name or "muse")
 
 
-def credential(pool: Pool, link: Path, variable: str, *, copy: bool = False) -> Credential | None:
+def credential(pool: Pool, link: Path, variable: str, *, copy: bool = False, adapter=None) -> Credential | None:
     """How a pool's credential reaches a seat home: a key by environment, a subscription by one link, or by one copy
     for a program that writes its refresh through the link into the pool's own file (``copy``).
 
     A refreshed file in the link's place is left alone: the service reseeds the pool from it.
     """
     if pool.api_key:
-        if _newer(pool, link, None):
+        if _newer(pool, link, None, adapter=adapter):
             raise ShipError(f"{link} holds a detached subscription credential and is not deleted: it may hold the only "
                             f"live token. Pool {pool.name} uses an API key and has no shared credential file; "
                             "move it aside before trying again")
@@ -78,13 +78,13 @@ def put_copy(source: Path, path: Path) -> None:
     seat_files.copy(source, path, mode=0o600)  # a temporary renamed over the name: a planted link is never followed
 
 
-def _newer(pool: Pool, link: Path, source: Path | None) -> bool:
+def _newer(pool: Pool, link: Path, source: Path | None, *, adapter=None) -> bool:
     """A readable detached refresh: newer than the pool's own, or with no shared file to compare."""
     if link.is_symlink() or not link.exists():
         return False
     from . import native_for  # the adapters import this module
 
-    reader = native_for(pool.provider)
+    reader = adapter if adapter is not None else native_for(pool.provider)
     detached = reader.freshness(link)
     current = reader.freshness(source) if source is not None and source.exists() else None
     return detached is not None and (current is None or detached > current)

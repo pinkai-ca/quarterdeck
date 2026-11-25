@@ -40,7 +40,8 @@ ANTHROPIC_HOST = 'api.anthropic.com'  # an endpoint program on this exact host i
 def snapshot(harness_name: str, pool) -> dict | None:
     """The rates a launch on this key pool is priced at, kept with the launch; None where there are none."""
     listed = {'key_rates': LISTED, 'long_rates': LISTED_LONG, 'basis': f'Anthropic list of {LISTED_ON}'}
-    if pool.endpoint:  # a declared price is the endpoint program's own launch price
+    from .key_routes import ZAI_MESSAGES, zai_route
+    if pool.endpoint and zai_route(pool) != ZAI_MESSAGES:  # these adapters capture the declared rate themselves
         return listed if not pool.price and urlsplit(pool.endpoint).hostname == ANTHROPIC_HOST else None
     if pool.price:
         return {'key_rates': {'*': pool.price}, 'basis': 'declared pool price'}

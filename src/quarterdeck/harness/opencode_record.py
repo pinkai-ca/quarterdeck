@@ -220,6 +220,7 @@ class _Session:
         self.inputs: list[Input] = []
         self.ended_at: datetime | None = None
         self.completed_turns: list[Turn] = []
+        self.finished_request = None
         self.model = self.last_input = self.last_input_at = self.open_tool = self.open_tool_since = None
         for pos, (index, mid, data, own) in enumerate(users):
             moved_on = any(answers.get(later[1]) for later in users[pos + 1:])
@@ -301,6 +302,7 @@ class _Session:
                                           end_reason=_text(last.get("finish")) if completed else None)))
             if completed:
                 self.completed_turns.append(self.turns[-1])
+                self.finished_request = (data, last, steps[-1][1], ended)
         else:
             self.open = True
             self.open_tool, self.open_tool_since = running or (None, None)
@@ -457,3 +459,28 @@ read = _Reader.read
 def inputs(record: Path) -> list[Input]:
     """The active root's inputs, with the same session-aware queue boundaries as its state."""
     return _Reader(record).active.inputs
+
+
+def last_request(record: Path, pool: str, launched: datetime):
+    """The latest completed owning request on this launch's provider, if its record proves one."""
+    active = _Reader(record).active
+    if active.open or active.finished_request is None:
+        return None
+    user, assistant, parts, ended = active.finished_request
+    created = _ms(_object(assistant.get('time')).get('created'))
+    user_model = _object(user.get('model'))
+    if (created is None or not launched <= created <= ended
+            or assistant.get('providerID') != pool or user_model.get('providerID') != pool
+            or assistant.get('summary') or not isinstance(user.get('agent'), str)
+            or not user['agent'] or assistant.get('agent') != user['agent']):
+        return None
+    error = _object(assistant.get('error'))
+    if error.get('name') == 'APIError':
+        data = _object(error.get('data'))
+        if type(data.get('statusCode')) is int and isinstance(data.get('responseBody'), str):
+            return ended, data['statusCode'], data['responseBody']
+    finish = assistant.get('finish')
+    if ('error' not in assistant and finish in ENDS_TURN
+            and any(part.get('type') == 'step-finish' and part.get('reason') == finish for part in parts)):
+        return ended, None, None
+    return None

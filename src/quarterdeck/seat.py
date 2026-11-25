@@ -1123,7 +1123,7 @@ class Seat:
         if paid.name not in selected.pools:
             raise ShipError(self.pool_move_hold or f"{self.name}: pool {paid.name!r} is no longer declared")
         reader = self._adapter_for(selected)
-        if reason := keyfile.accepts(reader, paid):
+        if reason := keyfile.accepts(reader, paid, selected):
             raise ShipError(f"{self.name}: {reason}")
         if found := keyfile.problem(paid):  # every launch door passes here, before anything of a launch is made
             raise shipmod.KeyRefused(f"{self.name}: its pool {paid.name}: {found}; nothing was started")
@@ -1247,6 +1247,8 @@ class Seat:
         key_file = None
         if key_route is not None:
             try:
+                from .harness.key_routes import prepare_zai
+                prepare_zai(self.harness.name, pool, self.home)
                 keyfile.prepare_home(key_route, self.home)
                 key_file = keyfile.path(self.ship.folder)
             except keyfile.KeyProblem as problem:

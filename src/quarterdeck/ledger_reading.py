@@ -97,6 +97,8 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
             item.update(budget=budget, spent=spent, unpriced=unpriced, since=since, wall=f"{pool.name} budget" in walls)
         elif pool.kind == "endpoint":
             item.update(endpoint=pool.endpoint)
+            if pool.provider == 'zai' and pool.paid_by_key:
+                item.update(paid_by_key=True, account_balance=None)
         if unread := sum(1 for span in data["unread_spans"] if span["pool"] == pool.name):
             item["unread_spans"] = unread  # only where there is one: a pool's ordinary reading is unchanged
         pools.append(item)
@@ -197,6 +199,8 @@ def key_spends(ship, book, now: datetime) -> list[str]:
                 line += ", ended"
         if unpriced:
             line += f" ({unpriced} turns with no price)"
+        if any(pool.provider == 'zai' for pool in pools):
+            line += ' · account balance unknown'
         lines.append(line)
     return lines
 
@@ -221,7 +225,8 @@ def render_pools(data: dict) -> list[str]:
         lines.append(f"{pool['name']:<20} {'spend':<8} {stated}{limit}{note}{wall}")
     for pool in data["pools"]:
         if pool["kind"] == "endpoint":
-            lines.append(f"{pool['name']:<20} {'endpoint':<8} {pool['endpoint']} · no quota, no wall")
+            note = ' · pay as you go' if pool['provider_id'] == 'zai' and pool.get('paid_by_key') else ' · no quota, no wall'
+            lines.append(f"{pool['name']:<20} {'endpoint':<8} {pool['endpoint']}{note}")
     lines += data.get("key_spends", [])
     if data["usage_absent_reason"]:
         lines.append(data["usage_absent_reason"])

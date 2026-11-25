@@ -42,7 +42,7 @@ from .claude_background import (notification as background_notification, Backgro
 from .claude_children import Children, fingerprint as children_fingerprint
 
 from .. import durable, seat_files
-from ..ship import Pool, ProgramPin, SeatSpec
+from ..ship import Pool, ProgramPin, SeatSpec, ShipError
 from .base import (Box, ship_template, trimmed, record_fingerprint, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
                    Turn, Usage, Window, credential, key_environment, merged, program_version, when)
 
@@ -1796,6 +1796,16 @@ TRUST_QUESTION = Interruption("trust dialog", r"Do you trust the files in this f
 PERMISSION_QUESTION = Interruption("permission prompt", r"Do you want to proceed\?|Allow once|Allow always", key=None)
 
 
+def zai_settings(template, settings) -> dict:
+    """WebFetch's domain lookup stays off, and no session is mirrored to claude.ai (2.1.331 user settings)."""
+    for layer in (template, settings):
+        if layer.get('skipWebFetchPreflight', True) is not True:
+            raise ShipError('Z.ai Claude requires skipWebFetchPreflight to be true')
+        if layer.get('autoUploadSessions', False) is not False:
+            raise ShipError('Z.ai Claude refuses autoUploadSessions')
+    return dict(skipWebFetchPreflight=True)
+
+
 class ClaudeHarness(Harness):
     def __init__(self, program_pin: ProgramPin | None = None):
         self.program_pin = program_pin
@@ -2201,6 +2211,8 @@ class ClaudeHarness(Harness):
         }})
         settings = merged(merged(defaults, template), seat.settings)
         settings = copy.deepcopy(merged(settings, {"env": SETTINGS["env"]}))  # the updater stays off
+        if pool.provider == 'zai' and pool.paid_by_key:
+            settings.update(zai_settings(template, seat.settings))
         if not seat.human_session:
             permissions = settings.setdefault('permissions', {})
             permissions['deny'] = list(dict.fromkeys([*permissions.get('deny', []), 'AskUserQuestion']))
@@ -2221,7 +2233,7 @@ class ClaudeHarness(Harness):
         if cwd:
             state.setdefault("projects", {}).setdefault(cwd, {})["hasTrustDialogAccepted"] = True
         durable.replace_file(state_file, json.dumps(state, indent=2) + "\n")
-        return credential(pool, home / self.credential_file, "ANTHROPIC_API_KEY")
+        return credential(pool, home / self.credential_file, "ANTHROPIC_API_KEY", adapter=self)
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         program = self.selected_program() or self.program
@@ -2237,6 +2249,9 @@ class ClaudeHarness(Harness):
         if first:
             argv.append(first)
         env = {self.home_variable: str(home), "DISABLE_AUTOUPDATER": "1", **key_environment(pool, "ANTHROPIC_API_KEY")}
+        if pool.provider == 'zai' and pool.paid_by_key:
+            env.update(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',
+                       CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL='1')
         return Launch(tuple(argv), env)
 
     inputs = staticmethod(inputs)

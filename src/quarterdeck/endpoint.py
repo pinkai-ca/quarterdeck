@@ -10,6 +10,7 @@ conservative default, and the home says which.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from . import key_proof, keyfile
 from . import durable
+from .harness.key_routes import ZAI_CHAT, ZAI_MODELS, zai_model, zai_route
 from .ship import Pool, ShipError
 from .pricing import save_price, saved_price
 
@@ -27,6 +29,8 @@ GOOGLE_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_CONTEXT = 32768
 DEFAULT_OUTPUT = 8192
 TIMEOUT = 5.0
+ZAI_LISTING_BYTES = 256 * 1024
+ZAI_LISTING_ROWS = 256
 CHOICE_FILE = "model.json"  # written in the seat home when it is built, read at launch
 
 
@@ -41,10 +45,11 @@ def google_openai(url: str | None) -> bool:
 
 @dataclass(frozen=True)
 class Served:
-    """One model an endpoint lists, with the context length it states, where it states one."""
+    """One listed model and any context length or creation time the listing states."""
 
     id: str
     context: int | None = None
+    created: int | None = None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -64,16 +69,26 @@ def models(url: str, timeout: float = TIMEOUT, *, api_key: str | None = None,
         headers["Authorization"] = f"Bearer {api_key}"
         headers.update(key_proof.listing_headers(url))
     request = urllib.request.Request(f"{url.rstrip('/')}/models", headers=headers)
+    zai = request.full_url == ZAI_MODELS
     try:
         # urllib carries the auth header across a redirect, so a call with a key follows none.
         opening = (key_proof.keyed_opener(request.full_url).open if api_key and allow_redirects else
                    urllib.request.urlopen if allow_redirects else
                    urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open)
         with opening(request, timeout=timeout) as response:
-            data = json.load(response)
+            if zai:
+                raw = response.read(ZAI_LISTING_BYTES + 1)
+                if len(raw) > ZAI_LISTING_BYTES:
+                    raise ShipError("Z.ai model listing exceeds the byte limit")
+                data = json.loads(raw)
+            else:
+                data = json.load(response)
     except urllib.error.HTTPError as error:
-        raise ShipError(f"{url} answered {error.code} to /models") from None
-    except (OSError, ValueError) as error:
+        with error:
+            if api_key and key_proof.zai_exhausted(request.full_url, error):
+                raise ShipError(key_proof.ZAI_EXHAUSTED) from None
+            raise ShipError(f"{url} answered {error.code} to /models") from None
+    except (OSError, ValueError, http.client.HTTPException, RecursionError) as error:
         # Header validation errors can quote the Authorization value. Never echo
         # exception payloads from an authenticated request into doctor or a post.
         detail = type(error).__name__ if api_key else (getattr(error, "reason", None) or error)
@@ -81,11 +96,17 @@ def models(url: str, timeout: float = TIMEOUT, *, api_key: str | None = None,
     rows = data.get("data") if isinstance(data, dict) else None
     if not isinstance(rows, list):
         raise ShipError(f"{url}/models answered with something other than a model listing")
+    if zai and len(rows) > ZAI_LISTING_ROWS:
+        raise ShipError("Z.ai model listing exceeds the row limit")
     served = []
     for row in rows:
         if isinstance(row, dict) and isinstance(row.get("id"), str):
+            if zai and (not zai_model(row["id"]) or (api_key and api_key in row["id"])):
+                continue
             length = row.get("max_model_len")  # vLLM states it; the OpenAI shape has no such field
-            served.append(Served(row["id"], length if isinstance(length, int) and length > 0 else None))
+            created = row.get("created")
+            served.append(Served(row["id"], length if isinstance(length, int) and length > 0 else None,
+                                 created if type(created) is int and created > 0 else None))
     return served
 
 
@@ -120,9 +141,14 @@ def choose(pool: Pool, wanted: str | None) -> Choice:
     """The model a seat runs on its endpoint pool: the one the ship names, found in the listing, or the first listed."""
     if not pool.endpoint:
         raise ShipError(f"pool {pool.name} names no endpoint")
+    zai = zai_route(pool) == ZAI_CHAT
+    if zai and not zai_model(wanted):
+        raise ShipError(f"pool {pool.name}: Z.ai needs an explicit model ID for this account")
     try:
         served = models(pool.endpoint, api_key=_secret(pool))
     except ShipError as error:
+        if zai:
+            raise ShipError(f"pool {pool.name}: {error}; could not discover models for launch") from None
         raise ShipError(f"pool {pool.name}: {error}; start the server, or point the pool at one that answers") from None
     if not served:
         raise ShipError(f"pool {pool.name}: {pool.endpoint} serves no model")
@@ -135,16 +161,30 @@ def choose(pool: Pool, wanted: str | None) -> Choice:
             # Gemini's compatible endpoint can list resource names but expects a bare ID in requests.
             model = next((replace(m, id=wanted) for m in served if m.id == f"models/{wanted}"), None)
         if model is None:
+            if zai:
+                raise ShipError(f"pool {pool.name}: Z.ai does not serve the declared model")
             names = ", ".join(m.id for m in served)
             raise ShipError(f"pool {pool.name}: {pool.endpoint} does not serve {wanted!r}; it serves {names}")
     context = pool.context or model.context or DEFAULT_CONTEXT
     if pool.output is not None and pool.output >= context:
         raise ShipError(f"pool {pool.name}: output must be smaller than the selected model's context ({context:,}), leaving room for input")
-    note = None
+    notes = []
     if not pool.context and not model.context:
-        note = f"the endpoint states no context length; {DEFAULT_CONTEXT} assumed, or declare context = N in the pool"
+        notes.append(f"the endpoint states no context length; {DEFAULT_CONTEXT} assumed, or declare context = N in the pool")
+    if zai:
+        latest = newest_by_created(served)
+        notes.append(f"newest by listed creation time: {latest}" if latest else "newest by listed creation time unknown")
     output = pool.output if pool.output is not None else min(DEFAULT_OUTPUT, max(context // 4, 1024))
-    return Choice(pool.name, model.id, context, output, note=note)
+    return Choice(pool.name, model.id, context, output, note=" · ".join(notes) or None)
+
+
+def newest_by_created(served: list[Served]) -> str | None:
+    """A listing establishes one newest model only when its creation dates are complete and unambiguous."""
+    if not served or any(model.created is None for model in served):
+        return None
+    newest = max(model.created for model in served)
+    names = {model.id for model in served if model.created == newest}
+    return names.pop() if len(names) == 1 else None
 
 
 def key(pool: Pool) -> dict[str, str]:

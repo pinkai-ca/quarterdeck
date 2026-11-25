@@ -140,6 +140,25 @@ On 24 November 2026, OpenCode 1.19.5 made one live call in its jail on `gemini-3
 
 xAI API keys are still awaiting live proof.
 
+For a Z.ai Standard API key, use `provider = "zai"` and `api_key = "keys:glm"`.
+Claude Code takes `endpoint = "https://api.z.ai/api/anthropic"` and an explicit model ID available to the account.
+Quarterdeck uses the ship's Claude program pin and the existing key helper.
+OpenCode and pi use `endpoint = "https://api.z.ai/api/paas/v4/"` and require an explicit model ID from its authenticated listing.
+Their generated model choice notes the newest model by the listing's creation time when the listing establishes one. The seat runs the explicitly selected model.
+Codex requires the Responses wire protocol and Quarterdeck's current Codex key route uses native OpenAI login. The Z.ai Responses address would need its own route and compatibility proof.
+A named key can be shared by pools for a single provider. Declaring a key does not add it to any seat's pool list. A Z.ai conversation resumes only where its record proves the same provider address and pool name.
+
+A Z.ai launch keeps each program on its declared route, and other pools keep their settings.
+OpenCode's final configuration, after the ship template and seat settings, is checked when it is written and again at launch. It names only the pool's provider and the declared model, including for the small model, every agent and every mode. Sharing is disabled, updates are off, MCP servers, plugins and enterprise settings are empty, and the generated key field is the only `{env:…}` or `{file:…}` substitution. Project configuration, the model catalog fetch, external and default plugins, language-server downloads and the npm dependency installer stay off.
+Claude Code writes `skipWebFetchPreflight = true` and refuses a template or seat setting that changes it or turns on `autoUploadSessions`. Official marketplace auto-install and nonessential traffic stay off.
+pi starts with `PI_OFFLINE=1`.
+A refusal names the setting, never its value.
+
+Z.ai Standard API keys use account balance or usage bundles. Quarterdeck shows account balance as unknown.
+The doctor makes one model-list request on the standard Chat Completions address for either Z.ai pool. Inference needs a separate proof.
+HTTP 429 with Z.ai code 1113 reports exhausted balance or bundle. An owning OpenCode turn that records both fields holds the pool for one hour locally. The provider's reset time is unknown. The first accepted request after that interval clears the old refusal, and a new proved refusal starts a new interval. Restart, fresh start, and model discovery leave the hold in place. Claude Code and pi do not retain enough evidence to establish this native balance refusal.
+See the [Z.ai key guide](https://docs.z.ai/devpack/notice/api-key-management) and [API errors](https://docs.z.ai/api-reference/api-code).
+
 The default crew raised with `qd setup` carried one small change from its order to its landing in each of two runs on 21 November 2026. In one run the desk, captain and engineer all used Claude Code on an Anthropic key with `claude-sonnet-5-5`. In the other they all used Codex on a Codex subscription with `gpt-6.2-sol`. On `claude-haiku-5-5` the desk did the work itself and never ordered the crew.
 
 ## How to use it

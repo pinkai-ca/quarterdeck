@@ -870,7 +870,10 @@ def _validate(ship: Ship) -> None:
                 raise ShipError(f'group {group.name}: member {member!r} is not a declared seat')
         if group.lead in group.members:
             raise ShipError(f'group {group.name}: lead must be separate from its members')
+    key_providers = {}
     for pool in ship.pools.values():
+        if pool.api_key and key_providers.setdefault(pool.api_key, pool.provider) != pool.provider:
+            raise ShipError(f"pool {pool.name}: an API key may be declared for only one provider")
         if pool.kind != "endpoint" and harnesses.native_name(pool.provider) is None:
             raise ShipError(f"pool {pool.name}: unsupported {pool.kind} provider {pool.provider!r}; "
                             f"choose a company with a native harness, or declare an endpoint URL")
@@ -884,6 +887,10 @@ def _validate(ship: Ship) -> None:
         if pool.endpoint and pool.api_key and pool.endpoint.startswith("http://") and not loopback_endpoint(pool.endpoint):
             raise ShipError(f"pool {pool.name}: a key travels only over https, or over http to this machine's loopback; "
                             "give the endpoint an https address")
+        if pool.provider == 'zai' and pool.paid_by_key:
+            from .harness.key_routes import ZAI_CHAT, ZAI_MESSAGES, zai_route
+            if zai_route(pool) is None:
+                raise ShipError(f'pool {pool.name}: Z.ai keys require {ZAI_MESSAGES} or {ZAI_CHAT}')
         if pool.context is not None and (isinstance(pool.context, bool) or not isinstance(pool.context, int) or pool.context <= 0):
             raise ShipError(f"pool {pool.name}: context must be a count of tokens, not {pool.context!r}")
         if pool.output is not None:
@@ -912,7 +919,7 @@ def _validate(ship: Ship) -> None:
                 harness.check_defaults(selected, ship.folder / 'homes' / harness.name)
             except ShipError as error:
                 raise ShipError(f"pool {pool}: {error}") from None
-            if reason := keyfile.accepts(harness, ship.pools[pool]):
+            if reason := keyfile.accepts(harness, ship.pools[pool], selected):
                 raise ShipError(f"seat {seat.name}: {reason}")
             if seat.pool_choices and selected.remote_control and not harness.remote_control:
                 raise ShipError(f"seat {seat.name}: {harness.name} has no Remote Control")

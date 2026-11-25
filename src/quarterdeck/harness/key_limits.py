@@ -7,7 +7,10 @@ Measured on 21 November 2026, each program against a local server answering with
 - Codex 0.166.0: a turn failure with the code ``usage_limit_exceeded`` (spend), or, for rate, with no code and the
   words ``exceeded retry limit, last status: 429``.
 
-Grok Build, OpenCode and pi are not measured: their key's limit is its declared budget alone. A refusal holds the pool
+- OpenCode 1.19.5 on Z.ai: the owning assistant's completed APIError retains HTTP 429 and business code 1113.
+  Claude Code and pi omit the Z.ai business code in the recorded refusal.
+
+A refusal holds the pool
 for a bounded time and is then tried again, since a credit can be topped up and a rate window passes. No record reader
 needs this module, and it is in no reader's stamp set.
 """
@@ -22,6 +25,7 @@ from pathlib import Path
 from .limits import Wall
 
 SPEND, RATE = 'spend', 'rate'
+ZAI_EVENT_PREFIX = 'key-refusal:opencode:zai-balance:'
 HOLD = {SPEND: timedelta(hours=1), RATE: timedelta(minutes=5)}
 TAIL_BYTES = 256 * 1024
 CLAUDE_ERRORS = {'billing_error': SPEND, 'rate_limit': RATE}
@@ -86,3 +90,22 @@ def refusal(seat) -> Wall | None:
     form, at = found
     key = f'key-refusal:{name}:{form}:{at.isoformat()}'
     return Wall(key, at, at + HOLD[form], f'its provider refused the key for {form}', signature=key)
+
+
+def zai_outcome(seat, launched):
+    """The joined OpenCode record can prove a balance refusal or a later accepted request."""
+    from .opencode_record import last_request
+    from ..key_proof import ZAI_EXHAUSTED, zai_balance_response
+
+    if seat.harness.name != 'opencode' or (record := seat.record()) is None or seat.launched() != launched:
+        return None, None
+    found = last_request(record, launched.pool, datetime.fromisoformat(launched.at))
+    if found is None or seat.launched() != launched:
+        return None, None
+    at, status, raw = found
+    if status is None:
+        return None, at
+    if status == 429 and zai_balance_response(raw):
+        key = f'{ZAI_EVENT_PREFIX}{at.isoformat()}'
+        return Wall(key, at, at + HOLD[SPEND], ZAI_EXHAUSTED, signature=key), None
+    return None, None

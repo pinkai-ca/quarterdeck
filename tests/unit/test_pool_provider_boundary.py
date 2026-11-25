@@ -35,7 +35,7 @@ def test_endpoint_labels_and_valid_siblings_work_across_generic_metadata(tmp_pat
             '[pools.valid-key]\nprovider="claude"\napi_key="keys:synthetic-key"\n'
             f'[pools.local]\nprovider="{label}"\nendpoint="https://synthetic.invalid/v1"\n')
     if key:
-        text += 'api_key="keys:synthetic-key"\n'
+        text += 'api_key="keys:synthetic-endpoint-key"\n'
     (tmp_path / "ship.toml").write_text(text)
     ship = load(tmp_path)
     endpoint = ship.pools["local"]

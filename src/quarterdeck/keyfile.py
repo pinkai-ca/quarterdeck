@@ -218,8 +218,11 @@ def route(harness_name: str, pool) -> Route | None:
     return _routes().get(harness_name) if getattr(pool, 'paid_by_key', False) else None
 
 
-def accepts(harness, pool) -> str | None:
+def accepts(harness, pool, seat=None) -> str | None:
     """Why this program cannot run on this pool, or None: the program's own rule, then whether it takes a key."""
+    if pool.provider == 'zai' and pool.paid_by_key:
+        from .harness.key_routes import zai_accepts
+        return zai_accepts(harness.name, pool, seat)
     if reason := harness.accepts(pool):
         return reason
     if pool.paid_by_key and harness.name not in _routes():
@@ -261,7 +264,8 @@ def status_line(pool, *, jailed_caller: bool = False) -> str:
     file it read. A jailed seat cannot see the file, so what it finds there is not called missing."""
     found = problem(pool)
     if found is None:
-        return f"pool {pool.name}: key present in {path(getattr(pool, 'ship_folder', None))}"
+        note = ' · account balance unknown' if pool.provider == 'zai' else ''
+        return f"pool {pool.name}: key present in {path(getattr(pool, 'ship_folder', None))}{note}"
     if jailed_caller and found.state == MISSING:
         return f'pool {pool.name}: key not visible from inside a jail'
     return f'pool {pool.name}: key {found.state}: {found}'

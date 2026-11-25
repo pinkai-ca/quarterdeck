@@ -289,6 +289,10 @@ class Quotas:
         reader = harnesses.get(event.harness) if event.harness in harnesses.NAMES else None
         scope = reader.quota_scope_label(event) if reader is not None else None
         label = item["pool"] if item["pool"] != UNKNOWN else item["seat"] + " (pool unknown)"
+        from .harness.key_limits import ZAI_EVENT_PREFIX
+        if event.key.startswith(ZAI_EVENT_PREFIX):
+            retry = datetime.fromisoformat(item['resets_at']).astimezone(timezone.utc)
+            return f"{label} {event.reason} · reset unknown · next eligible try {retry:%Y-%m-%d %H:%M:%S UTC}"
         return (f"{label} {event.reason}" + (f" ({scope})" if scope else "") +
                 f" · {reset_text(item['resets_at'], item['source'].startswith('screen:'))}")
 
@@ -307,6 +311,18 @@ class Quotas:
     def walls(self, now: datetime | None = None, *, scope=None, pool=None, ship=None) -> list[str]:
         return sorted({self.describe(item) for item in self.events(now, ship=ship)
                        if (pool is None or item["pool"] == pool) and self.applicability(item, scope) is True})
+
+    def accept_zai_request(self, pool: str, at: datetime, *, commit: bool) -> None:
+        """A proved accepted request after eligibility supersedes this pool's previous Z.ai refusal."""
+        from .harness.key_limits import ZAI_EVENT_PREFIX
+
+        matches = (pool, ZAI_EVENT_PREFIX + '%', stamp(at))
+        where = "pool=? AND event LIKE ? AND resets_at<=? AND superseded=0"
+        if self.db.execute(f"SELECT 1 FROM wall_events WHERE {where} LIMIT 1", matches).fetchone() is None:
+            return
+        self.db.execute(f"UPDATE wall_events SET superseded=1 WHERE {where}", matches)
+        if commit:
+            self.db.commit()
 
     def recognized(self, seat: str, event: Wall) -> bool:
         """Persisted evidence also recognizes an old banner when its record is unreadable."""
@@ -430,11 +446,23 @@ def observe_key_refusal(book, seat, now: datetime | None = None, *, commit: bool
     from .harness import key_limits
 
     launched = seat.launched()
-    if launched is None or not seat.ship.pools.get(launched.pool) or not seat.ship.pools[launched.pool].paid_by_key:
+    if launched is None or (pool := seat.ship.pools.get(launched.pool)) is None or not pool.paid_by_key:
         return
-    event = key_limits.refusal(seat)
+    from .harness.key_routes import ZAI_CHAT, zai_route
+    from .provenance import provider_route
+    launch_route = getattr(launched, 'provider_route', None)
     now = now or datetime.now(timezone.utc)
-    if (event is None or event.resets_at <= now or event.at < datetime.fromisoformat(launched.at)
+    if pool.provider == 'zai' or (launch_route and launch_route['provider'] == 'zai'):
+        # A same-name edit cannot turn another provider's refusal into Z.ai evidence,
+        # or reinterpret a Z.ai refusal as a native subscription rate wall.
+        if zai_route(pool) != ZAI_CHAT or launch_route != provider_route(pool):
+            return
+        event, accepted = key_limits.zai_outcome(seat, launched)
+        if accepted is not None and accepted <= now:
+            book.quota.accept_zai_request(pool.name, accepted, commit=commit)
+    else:
+        event = key_limits.refusal(seat)
+    if (event is None or event.resets_at <= now or not datetime.fromisoformat(launched.at) <= event.at <= now
             or book.quota.recognized(seat.name, event)):
         return
     book.quota.observe(f'key:{seat.name}:{launched.at}', seat.name, launched.pool, event, now, commit=commit)

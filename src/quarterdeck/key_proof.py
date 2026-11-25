@@ -1,21 +1,26 @@
 """qd doctor's proof that a pool's key works, by one call that spends nothing.
 
 The call goes only to the provider's fixed address, or to the endpoint the pool itself declares. The key travels in a
-header, never in a URL. A redirect is refused, since urllib would carry the header to wherever it points. Only the
-answer's status is read: its body is never read, printed or stored, and no exception's text is kept.
+header, never in a URL. A redirect is refused, since urllib would carry the header to wherever it points.
+Z.ai's documented 429 body is read only for its bounded business code. No response or exception text is kept.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import http.client
+import json
+from typing import Literal
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from . import keyfile
+from .harness.key_routes import ZAI_MODELS, zai_route
 
 TIMEOUT = 10.0
+ZAI_ERROR_BYTES = 16 * 1024
+ZAI_EXHAUSTED = 'Z.ai refused the key for insufficient balance or no resource package (HTTP 429, code 1113)'
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,8 @@ def keyed_opener(url: str) -> urllib.request.OpenerDirector:
 
 def address(pool) -> tuple[Address | None, bool]:
     """Where this pool's key is proven, and whether a good answer proves it: an endpoint's listing may be public."""
+    if zai_route(pool) is not None:
+        return Address(ZAI_MODELS, 'Authorization', bearer=True), False
     if pool.endpoint:
         base = pool.endpoint.rstrip('/')
         if urllib.parse.urlsplit(base).hostname == OPENROUTER_HOST:
@@ -67,8 +74,33 @@ def address(pool) -> tuple[Address | None, bool]:
     return ADDRESSES.get(pool.provider), True
 
 
-def status(found: Address, key: str, timeout: float = TIMEOUT) -> int | None:
-    """The answer's status, or None where no answer came. The body stays unread."""
+def zai_exhausted(url: str, error: urllib.error.HTTPError) -> bool:
+    """Only the exact Z.ai listing's HTTP 429 with the documented business code establishes exhaustion."""
+    if url != ZAI_MODELS or error.code != 429:
+        return False
+    try:
+        raw = error.read(ZAI_ERROR_BYTES + 1)
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
+    return zai_balance_response(raw)
+
+
+def zai_balance_response(raw: bytes | str) -> bool:
+    if len(raw) > ZAI_ERROR_BYTES:
+        return False
+    try:
+        if isinstance(raw, str) and len(raw.encode('utf-8')) > ZAI_ERROR_BYTES:
+            return False
+        body = json.loads(raw)
+    except (ValueError, RecursionError):
+        return False
+    detail = body.get('error') if isinstance(body, dict) else None
+    code = detail.get('code') if isinstance(detail, dict) else None
+    return code == '1113' or type(code) is int and code == 1113
+
+
+def status(found: Address, key: str, timeout: float = TIMEOUT) -> int | Literal['zai-exhausted'] | None:
+    """HTTP status, a classified Z.ai exhaustion, or None when no answer came."""
     headers = {'User-Agent': 'quarterdeck', found.header: f'Bearer {key}' if found.bearer else key, **dict(found.extra)}
     opener = keyed_opener(found.url)
     outcome = None
@@ -76,8 +108,8 @@ def status(found: Address, key: str, timeout: float = TIMEOUT) -> int | None:
         with opener.open(urllib.request.Request(found.url, headers=headers), timeout=timeout) as answer:
             outcome = answer.status
     except urllib.error.HTTPError as error:
-        outcome = error.code
-        error.close()
+        with error:
+            outcome = 'zai-exhausted' if zai_exhausted(found.url, error) else error.code
     except (OSError, ValueError, http.client.HTTPException):
         outcome = None  # a header's validation error can quote its value: nothing of it is kept
     return outcome
@@ -95,7 +127,11 @@ def prove(pool) -> tuple[bool, str]:
     answer = status(found, key)
     if answer is None:
         return False, f'could not reach {urllib.parse.urlsplit(found.url).hostname}'
+    if answer == 'zai-exhausted':
+        return False, ZAI_EXHAUSTED
     if 200 <= answer < 300:
+        if zai_route(pool) is not None:
+            return True, 'Z.ai model listing answered; inference unverified'
         return True, 'key works' if conclusive else 'answers with this key; it may not need one'
     if answer in (401, 403):
         return False, 'key refused by the provider'
