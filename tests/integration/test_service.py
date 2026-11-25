@@ -97,7 +97,7 @@ def test_controls_go_through_the_service_by_slash_command(ship: shipmod.Ship, tm
     lines = qd(capsys, "set", "captain", "model=fake-2", "pool=fake", "effort=low").splitlines()
     assert lines[0].startswith('ship.toml: seats.captain.model = "fake-2" · written')
     assert lines[1].startswith("  model = fake-2 · applied by /model fake-2 in %") and lines[1].endswith("confirmed by screen")
-    assert lines[3] == "  pool written; qd restart captain applies it"
+    assert lines[3] == "  pool order written; captain already runs on fake, its first choice; nothing moves"
     assert lines[5].startswith("  effort = low · applied by /effort low in %")
     assert shipmod.load(ship.folder).seat("captain").model == "fake-2"
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)

@@ -736,8 +736,8 @@ def set_seat(ship: shipmod.Ship, name: str | None, changes: list[str], *, adopt_
     proofs = []
     for proof, (_, key, raw) in zip(written, parsed):
         proofs.append(proof)
-        if key == "pool" and switching:
-            proofs.append(f"  pool written; qd fresh {seat.name} applies it with the harness")
+        if key == "pool":
+            proofs.append(pool_order_guidance(ship, seat, raw, switching=switching))
         else:
             proofs.append(apply_control(ship, seat, key, raw))
     return proofs
@@ -790,6 +790,30 @@ def adopt(ship: shipmod.Ship, seat: seatmod.Seat) -> list[str]:
         if getattr(seat.spec, f'{key}_mode') is not None:
             edits.append((f"seats.{seat.name}", f'{key}_mode', 'named'))
     return shipmod.set_values(ship, edits)
+
+
+def pool_order_guidance(ship: shipmod.Ship, seat: seatmod.Seat, raw: str, *, switching: bool = False) -> str:
+    """What a written pool order does to the running choice: a restart keeps a declared current pool until it is
+    spent, and a launch of a down seat takes the pool Seat.launch_choice gives."""
+    if switching:
+        return f"  pool written; qd fresh {seat.name} applies it with the harness"  # fresh decides its own pool
+    value = parse_value(raw)
+    pools = [value] if isinstance(value, str) else [str(name) for name in value]
+    current = seat.pool.name if seat.is_up else None
+    if current is not None and current in pools:
+        if current == pools[0]:
+            return f"  pool order written; {seat.name} already runs on {current}, its first choice; nothing moves"
+        return (f"  pool order written; {seat.name} stays on {current} until it is spent, a restart included; "
+                f"qd set {seat.name} pool={pools[0]} moves it to {pools[0]} at its next idle moment")
+    try:
+        choice, why = seat_of(shipmod.load(ship.folder), seat.name).launch_choice()
+        where = f'{choice} ({why})'
+    except ShipError as error:
+        where = f'a pool not known now ({error})'
+    if current is None:
+        return f"  pool order written; {seat.name} is down: qd up {seat.name} launches it on {where}"
+    return (f"  pool order written; {current} is no longer declared: {seat.name} keeps running there, "
+            f"and its next launch takes {where}")
 
 
 def apply_control(ship: shipmod.Ship, seat: seatmod.Seat, key: str, value: str) -> str:

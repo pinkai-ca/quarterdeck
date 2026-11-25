@@ -279,3 +279,33 @@ def test_a_relaunch_with_every_choice_walled_stays_where_it_is(migrated, monkeyp
     proof = r.worker.restart()
     assert 'relaunched on' not in proof
     assert Seat(r.ship, r.ship.seat('worker'), r.tmux).launched().pool == 'first'
+
+
+@pytest.mark.parametrize('walled', [('first',), ()], ids=['first-spent', 'first-open'])
+@pytest.mark.parametrize('switching', [False, True], ids=['order', 'with-harness'])
+def test_a_dropped_running_pool_names_the_launch_choice_not_always_the_first(tmp_path, monkeypatch, walled, switching):
+    from quarterdeck.ship import load
+
+    def declaration(_, pools):
+        (tmp_path / 'ship.toml').write_text(
+            '[ship]\nname="synthetic"\n' + ''.join(f'[pools.{name}]\nprovider="openai"\n'
+                                                   for name in ('first', 'second', 'third'))
+            + '[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="codex"\nmodel="synthetic-source"\n'
+            + f'pool={pools}\n')
+        return load(tmp_path)
+
+    ship = declaration(tmp_path, '["first", "second", "third"]')
+    running = Seat(ship, ship.seat('worker'), SimpleNamespace(pane=lambda ident: None))
+    running.trusted.mkdir(parents=True, exist_ok=True)
+    seatmod.Launched('%1', 101, '2026-11-24T00:00:00+00:00', 'third', None, ['codex'], 'synthetic',
+                     'codex').write(running.trusted / 'launch.json')
+    declaration(tmp_path, '["first", "second"]')  # the edit the answer describes: third is dropped
+    walls(monkeypatch, *walled)
+    seat = SimpleNamespace(name='worker', is_up=True, pool=SimpleNamespace(name='third'))
+    said = cli.pool_order_guidance(ship, seat, 'first,second', switching=switching)
+    choice = 'second (' if walled else 'first ('  # Seat.launch_choice: first spent, second has room
+    if switching:  # qd fresh decides its own pool: no prediction is appended
+        assert said == '  pool written; qd fresh worker applies it with the harness'
+    else:
+        assert said.startswith('  pool order written; third is no longer declared: worker keeps running there, '
+                               f'and its next launch takes {choice}')

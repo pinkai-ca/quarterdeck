@@ -35,6 +35,7 @@ from .claude_record import input_rows, inspect_entries
 from .types import AUTHENTICATION, Inputs, State, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_limits import ExtraUsage, extra_usage_at_refusal, limit_wall, rejected_limit_info
 from .claude_background import (notification as background_notification, BackgroundBash, BRIDGE_EVENT_ID, LINKED_VERSION,
+                                STOPPED_RESUME,
                                 AbsorbedWatch, BashRelaunchQueue, TaskNoticeQueue, WatchCompletionQueue,
                                 bridge_link_event, bridge_pointer, bridge_status, linked_notice_origin,
                                 linked_root, native_task_id, user_notice)
@@ -70,7 +71,11 @@ PASTED_OPENING_LINE = re.compile(r'^<pasted_content(?= id="[^"\n]+">$)', re.M)
 DATA_FLOW_ROWS = ('data-flow-records', 'data-flow-incomplete', 'derived-from')
 RESPONSE_ID = re.compile(r'msg_(?:staging_|local_)?[A-Za-z0-9]{1,64}')
 TOOL_USE_ID = re.compile(r'toolu_[A-Za-z0-9]{1,64}')
-COMPACT_SNAPSHOT_TOOLS = ('Agent', 'Bash', 'TaskStop')
+COMPACT_SNAPSHOT_TOOLS = ('Agent', 'Bash', 'TaskStop', 'Read', 'SendUserFile', 'Write')  # last three: 2.1.331
+# Measured on 2.1.331 person's seats (sanitized shapes): a tool event restated in a compaction snapshot. Remote
+# Control events stay with their measured joins: a link at startup, an input bound to its typed root.
+SNAPSHOT_EVENT_TOOLS = ('Read',)
+MEMORY_WRITE_ID = re.compile(r'[-0-9_a-z]{55}')
 
 
 def ai_title(entry: dict) -> bool:
@@ -98,6 +103,35 @@ def _data_flow_snapshot_tool(entry) -> bool:
             and isinstance(entry['tool_use_id'], str) and TOOL_USE_ID.fullmatch(entry['tool_use_id']) is not None)
 
 
+def _data_flow_event(entry, names) -> bool:
+    return (isinstance(entry, dict) and entry.keys() == {'event_id', 'tool_name'} and entry['tool_name'] in names
+            and isinstance(entry['event_id'], str) and BRIDGE_EVENT_ID.fullmatch(entry['event_id']) is not None)
+
+
+def _data_flow_memory_write(entry) -> bool:
+    """The program's own memory write, measured on 2.1.331: an event naming what it touched, never input."""
+    touched = entry.get('touched') if isinstance(entry, dict) else None
+    return (isinstance(entry, dict) and entry.keys() == {'event_id', 'touched'}
+            and isinstance(entry['event_id'], str) and BRIDGE_EVENT_ID.fullmatch(entry['event_id']) is not None
+            and isinstance(touched, dict) and touched.keys() == {'action', 'id', 'kind'}
+            and touched['action'] == 'write' and touched['kind'] == 'memory'
+            and isinstance(touched['id'], str) and MEMORY_WRITE_ID.fullmatch(touched['id']) is not None)
+
+
+MIXED_REMOTE_INPUT = 'a Remote Control input of unknown time, unbound in its data-flow row'
+
+
+def mixed_remote_input(row) -> bool:
+    """The measured 2.1.331 row that carries a Remote Control input event beside response entries. Its event has no
+    time and no established link to any typed row, so it is held under this name, never dated or dismissed."""
+    items = row.get('records')
+    return (row.get('type') == 'data-flow-records' and row.keys() == {'type', 'v', 'sessionId', 'records'}
+            and type(row['v']) is int and row['v'] == 1 and isinstance(row['sessionId'], str) and bool(row['sessionId'])
+            and isinstance(items, list) and len(items) >= 2
+            and sum(_data_flow_event(item, ('RemoteControlInput',)) for item in items) == 1
+            and all(_data_flow_response(item) or _data_flow_event(item, ('RemoteControlInput',)) for item in items))
+
+
 def _derived_session(entry, session: str) -> bool:
     return (isinstance(entry, dict) and entry.keys() == {'type', 'id', 'via'}
             and entry['type'] == 'claude_code_session' and isinstance(entry['id'], str) and bool(entry['id'])
@@ -114,8 +148,13 @@ def data_flow_metadata(row) -> bool:
     if kind == 'data-flow-records':
         items = row.get('records')
         snapshot = fields == {'records', 'snapshot'} and row['snapshot'] is True
-        return ((fields == {'records'} or snapshot) and isinstance(items, list)
-                and all(_data_flow_response(item) or snapshot and _data_flow_snapshot_tool(item) for item in items))
+        if not ((fields == {'records'} or snapshot) and isinstance(items, list)):
+            return False
+        if snapshot:
+            # A compaction snapshot restates what the conversation already carried; it is not new input.
+            return all(_data_flow_response(item) or _data_flow_snapshot_tool(item) or _data_flow_memory_write(item)
+                       or _data_flow_event(item, SNAPSHOT_EVENT_TOOLS) for item in items)
+        return all(_data_flow_response(item) or _data_flow_memory_write(item) for item in items)
     if kind == 'data-flow-incomplete':
         codes = row.get('codes')
         return (fields == {'codes'} and isinstance(codes, list) and bool(codes)
@@ -541,7 +580,8 @@ def inputs(record: Path, snapshot) -> list[Input]:
             continue
         if kind in DATA_FLOW_ROWS:
             if remote_disposition != 'event' and not data_flow_metadata(row):
-                found.skip(line, kind, 'unknown native data-flow metadata')
+                found.skip(line, kind, MIXED_REMOTE_INPUT if mixed_remote_input(row)
+                           else 'unknown native data-flow metadata')
             continue
         private, _ = task_queue.take(row, at)
         if private:
@@ -700,7 +740,7 @@ def person_inputs(record: Path, excluded: tuple[str, ...]) -> list[datetime]:
                 # Use the receipt reader's exact same row and task joins on this observation.
                 remote_events = inputs.__wrapped__(record, snapshot).remote_events
             if line not in remote_events:
-                raise ValueError('unknown native data-flow metadata')
+                raise ValueError(MIXED_REMOTE_INPUT if mixed_remote_input(row) else 'unknown native data-flow metadata')
             undated_remote |= remote_events[line]
             continue
         if 'isSidechain' in row and type(row['isSidechain']) is not bool:
@@ -771,6 +811,29 @@ USAGE_REFUSAL_ATTACHMENTS = (
 )
 
 
+SYNTHETIC_MODEL = '<synthetic>'
+
+
+RESUME_PLACEHOLDER = 'No response requested.'
+
+
+def _synthetic_model(entry: dict, message: dict) -> bool:
+    """The program's own placeholder reply, which names no model that ran, in its two measured forms: the API error
+    envelope (2.1.317, 2.1.330) and the 2.1.331 resume placeholder (not an error, made by the program, its fixed
+    text). Each is a stop-sequence reply with no output tokens."""
+    usage, content = message.get('usage'), message.get('content')
+    if not (message.get('model') == SYNTHETIC_MODEL and message.get('role') == 'assistant'
+            and message.get('stop_reason') == 'stop_sequence' and isinstance(usage, dict)
+            and type(usage.get('output_tokens')) is int and usage['output_tokens'] == 0
+            and isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict)
+            and content[0].get('type') == 'text' and isinstance(content[0].get('text'), str)):
+        return False
+    if entry.get('isApiErrorMessage') is True:
+        return True
+    return (entry.get('version') == LINKED_VERSION and entry.get('isApiErrorMessage') is False
+            and entry.get('madeBy') == 'other' and content[0]['text'] == RESUME_PLACEHOLDER)
+
+
 def _terminal_api_error(entry: dict, message: dict) -> bool:
     """The native synthetic envelope of a failed response with no tool call."""
     content = message.get('content')
@@ -782,7 +845,7 @@ def _terminal_api_error(entry: dict, message: dict) -> bool:
             and all(entry.get(key, False) is False for key in
                     ('isMeta', 'isVirtual', 'apiErrorIsTransient', 'truncatedAfterOutput', 'streamWatchdogGaveUp'))
             and entry.get('streamCutCause') is None
-            and message.get('model') == '<synthetic>' and message.get('role') == 'assistant'
+            and message.get('model') == SYNTHETIC_MODEL and message.get('role') == 'assistant'
             and message.get('type') == 'message'
             and message.get('stop_reason') == 'stop_sequence' and message.get('stop_sequence') == ''
             and isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict)
@@ -852,6 +915,7 @@ def _wall_clock() -> datetime:
 class _ClaudeState(State):
     extra_usage: tuple[ExtraUsage, ...] = ()
     absorbed_watch: AbsorbedWatch | None = None
+    input_hold: str | None = None  # an input the record holds by name, of unknown time; no screen lifts it
 
 
 class _Reader(JsonLinesReader):
@@ -884,6 +948,7 @@ class _Reader(JsonLinesReader):
         self.metadata_session = None
         self.remote_control_startup = _RemoteControlStartup(record.stem)
         self.remote_input = _RemoteTypedInput(record.stem)
+        self.mixed_remote = False  # the measured mixed Remote Control input row: a named hold for the record's life
         self.walls = []
         self.extra_usage = []
         self.notice_input = None  # accounting candidate only: a notice cannot open a turn
@@ -904,15 +969,20 @@ class _Reader(JsonLinesReader):
         if (self.task_queue.pending is not None or self.task_queue.unknown
                 or self.bash_relaunch.pending or self.bash_relaunch.unknown
                 or self.watch_completion.pending is not None or self.watch_completion.unknown):
-            state = replace(state, pending_tools=None,
-                            queue_error=state.queue_error or 'task notification queue unresolved')
+            named = (self.task_queue.causes == {'stopped'} and self.task_queue.pending is None
+                     and not (self.bash_relaunch.pending or self.bash_relaunch.unknown
+                              or self.watch_completion.pending is not None or self.watch_completion.unknown))
+            state = replace(state, pending_tools=None, queue_error=state.queue_error or (
+                STOPPED_RESUME if named else 'task notification queue unresolved'))
         if self.answering_notice():
             state = replace(state, turn_open=None)
         if self.open is None and self.orphan_auth:
             state = replace(state, failure=self.orphan_auth)
         absorbed = None if self.unterminated is not None else self.watch_completion.absorbed_watch()
-        if self.extra_usage or absorbed is not None:
-            return _ClaudeState(**vars(state), extra_usage=tuple(self.extra_usage), absorbed_watch=absorbed)
+        held = MIXED_REMOTE_INPUT if self.mixed_remote else None
+        if self.extra_usage or absorbed is not None or held is not None:
+            return _ClaudeState(**vars(state), extra_usage=tuple(self.extra_usage), absorbed_watch=absorbed,
+                                input_hold=held)
         return state
 
     def answering_notice(self) -> bool:
@@ -949,6 +1019,8 @@ class _Reader(JsonLinesReader):
                 return
             if not data_flow_metadata(entry) or self.metadata_session not in (None, entry['sessionId']):
                 self.tools_known = False
+                if mixed_remote_input(entry) and entry['sessionId'] == self.remote_input.session:
+                    self.mixed_remote = True
             else:
                 self.metadata_session = entry['sessionId']
             return
@@ -1238,7 +1310,8 @@ class _Reader(JsonLinesReader):
                 self.open['auth_failure'] = failure
         if message.get('role', 'assistant') != 'assistant' or not self.content_known(message.get('content'), 'assistant'):
             self.tools_known = False
-        self.model = message.get("model") or self.model
+        if not _synthetic_model(entry, message):
+            self.model = message.get("model") or self.model  # a native error envelope names no model that ran
         self.effort = entry.get("effort") or self.effort
         if self.open is None:
             if any(block.get('type') == 'tool_use' for block in message.get('content') or []):
@@ -2045,6 +2118,8 @@ class ClaudeHarness(Harness):
     remote_control = True
     human_tools = ('AskUserQuestion',)
     human_tool_policy = "AskUserQuestion is denied by the native permissions policy."
+
+    person_quiet_reasons = (MIXED_REMOTE_INPUT,)  # held by name in the quiet-time reading
 
     def person_inputs(self, record: Path, excluded: tuple[str, ...]) -> list[datetime]:
         return person_inputs(record, excluded)

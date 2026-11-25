@@ -329,3 +329,56 @@ def test_streaming_and_full_reader_agree_on_bounded_output_file_equality(tmp_pat
     full, full_turns = claude.read(record)
     assert full.pending_tools == streamed.pending_tools and full.projection_usage.compatibility
     assert full_turns == turns
+
+
+def bash_notice(second, **fields):
+    rows = agent_notice(second, 'bash', task=SHELL, call=SHELL_CALL, **fields)
+    return rows
+
+
+@pytest.mark.parametrize('difference', [None, 'different-text', 'no-dequeue', 'untimed-notice', 'foreign-queue',
+                                         'human-origin'])
+def test_an_own_bash_notice_delivered_by_dequeue_settles_only_when_bound(tmp_path, difference):
+    notices = bash_notice(7)
+    if difference == 'different-text':
+        notices[-1]['message']['content'] = notices[-1]['message']['content'].replace('Synthetic', 'Other')
+    if difference == 'no-dequeue':
+        del notices[1]
+    if difference == 'untimed-notice':
+        notices[-1]['timestamp'] = '<timestamp>'
+    if difference == 'foreign-queue':
+        notices[1]['sessionId'] = 'other-session'
+    if difference == 'human-origin':
+        notices[-1]['origin'] = dict(kind='human')
+    record = fixture(tmp_path, [*shell_rows(SHELL), duration(3), *notices, duration(9)])
+    state = claude.state(record)
+    # The queue carrier alone: the shell's own end is execution evidence, read as before.
+    if difference is None:
+        assert state.queue_error is None and state.turn_open is False
+        assert [item.text for item in claude.inputs(record)] == ['synthetic prompt']
+        assert not claude.inputs(record).skipped
+    else:
+        assert idle.check(state) is not None
+        if difference != 'human-origin':
+            assert state.queue_error == 'task notification queue unresolved'
+
+
+def stopped_notice(second, note=None):
+    from quarterdeck.harness.claude_background import STOPPED_NOTE
+    text = (f'<task-notification>\n<task-id>{SHELL}</task-id>\n<tool-use-id>{SHELL_CALL}</tool-use-id>\n'
+            f'<status>stopped</status>\n<summary>Background command "Synthetic" was stopped</summary>\n'
+            f'<note>{note or STOPPED_NOTE}</note>\n</task-notification>')
+    return [queue(second, 'enqueue'), queue(second + .01, 'dequeue'),
+            row('user', second + .02, message=dict(role='user', content=text),
+                origin=dict(kind='task-notification'), rowSource='harness', promptSource='system',
+                queueSkipAttachments=True, queueTranscriptOnly=True, promptId=f'synthetic-prompt-{second}')]
+
+
+@pytest.mark.parametrize('note', [None, 'Another note.'])
+def test_the_measured_resume_stopped_notice_is_a_named_queue_hold(tmp_path, note):
+    from quarterdeck.harness.claude_background import STOPPED_RESUME
+    record = fixture(tmp_path, [*shell_rows(SHELL), duration(3), *stopped_notice(5, note), duration(6)])
+    state = claude.state(record)
+    expected = STOPPED_RESUME if note is None else 'task notification queue unresolved'
+    assert state.queue_error == expected
+    assert idle.check(state) == idle.Hold('queue-unknown', f'queue unknown: {expected}')

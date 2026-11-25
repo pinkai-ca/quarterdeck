@@ -490,6 +490,54 @@ def test_every_live_path_still_holds_where_the_screen_shows_work_or_does_not_say
     assert built.moved == []
 
 
+NAMED_HOLDS = {
+    'remote-input': (dict(input_hold='a Remote Control input of unknown time, unbound in its data-flow row'),
+                     'input-unknown', 'a Remote Control input of unknown time, unbound in its data-flow row'),
+    'stopped-watch': (dict(queue_error='the stopped notice of a task the previous process left running'),
+                      'queue-unknown', 'queue unknown: the stopped notice of a task the previous process left running'),
+}
+
+
+def named_state(**changes):
+    """The adapter's own state carries the input hold; the common State never names a program's row."""
+    from quarterdeck.harness.claude import _ClaudeState
+    held = changes.pop('input_hold', None)
+    state = unread(**changes)
+    return _ClaudeState(**vars(state), input_hold=held) if held else state
+
+
+@pytest.mark.parametrize('named', sorted(NAMED_HOLDS))
+@pytest.mark.parametrize('path', ['select', 'wall'])
+def test_a_named_record_hold_reaches_each_move_decision_and_no_footer_lifts_it(case, monkeypatch, path, named):
+    fields, dimension, reason = NAMED_HOLDS[named]
+    built = case(named_state(**fields), text(NOTHING), human=True, alone=True)  # a footer that settles tools alone
+    svc = built.service(monkeypatch)
+    seat = built.seat
+    assert idle.reading(seat).hold == idle.Hold(dimension, reason)
+    if path == 'wall':
+        svc.failover()
+        assert move_hold.wall_reading(seat)[0] == f'{reason}: no move weighed'
+    else:
+        seat.declaration = SimpleNamespace(pools=seat.spec.pools, for_pool=lambda pool: pool)
+        seat._accept_pool = lambda declaration, pool: None
+        seat.retiring = lambda: None
+        svc.ship = SimpleNamespace(pool=lambda pool: pool)
+        svc.request_metadata = {}
+        monkeypatch.setattr(service, 'Door', door.Door)
+        request = {'origin': request_queue.launch_binding(seat)}
+        assert svc.select_request(seat, 'pool-oak', request) is None
+        assert svc.request_wait == (dimension, f'move to pool pool-oak: {reason}')
+    assert built.moved == []
+
+
+def test_an_earlier_busy_reason_comes_before_a_named_input_hold(case):
+    hold = NAMED_HOLDS['remote-input'][0]
+    assert idle.check(named_state(turn_open=True, **hold)).dimension == 'turn-open'
+    assert idle.check(named_state(queued=('typed',), **hold)).dimension == 'queue-pending'
+    assert idle.check(named_state(**hold)).dimension == 'input-unknown'
+    assert idle.check(named_state(pending_tools=(), **hold)).dimension == 'input-unknown'
+
+
 def test_a_relaunch_proved_by_the_record_alone_says_nothing_of_the_screen(case, monkeypatch):
     built = case(unread(pending_tools=(), active_tools=()), text(MODE + ' · 2 shells'))
     assert built.service(monkeypatch).relaunch(built.seat, True) == 'synthetic restart proof'

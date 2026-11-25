@@ -58,6 +58,11 @@ def waking_lines() -> tuple[str, ...]:
     return (LINE,)
 
 
+def _known(seat, reason) -> bool:
+    """A shared reason, or one the seat's adapter declares for a row it holds by name."""
+    return reason in REASONS or reason in getattr(seat.harness, 'person_quiet_reasons', ())
+
+
 def _unknown(launch, reason: str) -> dict:
     return dict(version=VERSION, launch=launch, at=None, reason=reason)
 
@@ -78,7 +83,7 @@ def read(seat, now: datetime, excluded: tuple[str, ...] | None = None) -> dict:
         times = seat.harness.person_inputs(record, waking_lines() if excluded is None else excluded)
     except ValueError as error:
         reason = str(error)
-        return _unknown(launch, reason if reason in REASONS else 'record could not be classified')
+        return _unknown(launch, reason if _known(seat, reason) else 'record could not be classified')
     except OSError:
         return _unknown(launch, 'record unreadable')
     if times is None:
@@ -132,8 +137,8 @@ def fact(seat) -> dict:
             return _unknown(launch, 'reading unreadable')
         if at.tzinfo is None:
             return _unknown(launch, 'reading unreadable')
-    elif data['reason'] not in REASONS and not (isinstance(data['reason'], str)
-                                                and data['reason'] == UNDECLARED.format(seat.harness.name)):
+    elif not _known(seat, data['reason']) and not (isinstance(data['reason'], str)
+                                                   and data['reason'] == UNDECLARED.format(seat.harness.name)):
         return _unknown(launch, 'reading unreadable')
     return data
 

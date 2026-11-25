@@ -748,8 +748,14 @@ def request(runtime: Path, kind: str, **data) -> str:
         if kind == 'select':
             try:
                 meta = request_queue.metadata(path)
-                if meta.get('select_wait') is True and request_queue.claimed(path) is False:
-                    return f"accepted: {data['seat']} {meta['waiting']['reason']} (request {name}); applies at an idle break"
+                waiting = meta.get('waiting')
+                if (isinstance(waiting, dict) and isinstance(waiting.get('reason'), str)
+                        and request_queue.claimed(path) is False):
+                    # Whatever the service recorded first, an idle proof or another hold: the asker reads it now.
+                    row = request_queue.view(path)
+                    return (f"accepted: {data['seat']} waits: {row['reason']} (request {name}); it moves at the first "
+                            f"idle break that clears this; qd status and qd watch {data['seat']} show each later reason; "
+                            f"cancel: qd restart {data['seat']} --cancel {name}")
             except (OSError, ValueError, TypeError, KeyError, ShipError):
                 pass  # the service's final answer or ordinary pending reading will say what is known
         time.sleep(0.1)

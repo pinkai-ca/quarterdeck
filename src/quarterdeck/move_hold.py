@@ -47,7 +47,8 @@ def publish(seat, binding, hold):
     category = hold.dimension if hold is not None else None
     if category is not None and category not in idle.REASONS:
         raise ValueError('unsupported move hold category')
-    detail = hold.reason if category == 'tools-pending' and not seat.session.human else None
+    kept = (category == 'tools-pending' and not seat.session.human) or category in NAMED
+    detail = hold.reason if kept else None
     _write(path(seat), dict(version=1, generation=binding, category=category, detail=detail))
 
 
@@ -79,8 +80,15 @@ def _fresh(seat, target):
     return data
 
 
+NAMED = ('input-unknown', 'queue-unknown')  # holds whose exact name the wall reading shows
+
+
 def _idle_reason(seat, data):
     category, detail = data['category'], data.get('detail')
+    if category in NAMED and detail is not None:
+        if not isinstance(detail, str) or len(detail) > 512 or any(not c.isprintable() for c in detail):
+            raise ValueError('invalid move detail')
+        return detail
     if not seat.session.human and category == 'tools-pending' and detail is not None:
         if (not isinstance(detail, str) or len(detail) > 512 or not detail.startswith('tools pending: ')
                 or any(not c.isprintable() for c in detail)):
@@ -102,8 +110,9 @@ def publish_wall(seat, binding, source, category=None, *, target=None, detail=No
     try:
         if binding is None or generation(seat) != binding or seat.pool.name != source:
             return
+        kept = (category == 'tools-pending' and not seat.session.human) or category in NAMED
         data = dict(version=1, generation=binding, source=source, category=category, target=target,
-                    detail=detail if category == 'tools-pending' and not seat.session.human else None)
+                    detail=detail if kept else None)
         _write(seat.trusted / WALL_MOVE, data)
     except (OSError, ShipError):
         pass  # this optional reading grants no clearance and never changes the move

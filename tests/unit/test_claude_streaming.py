@@ -157,6 +157,61 @@ def test_claude_terminal_overload_projects_a_timed_failed_turn(tmp_path, monkeyp
     assert idle.check(state) is None
 
 
+def answered_turn(model='claude-sonnet-5-5'):
+    prompt = dict(overload_prompt(), uuid='earlier', timestamp='2026-11-23T09:40:00.000Z')
+    reply = dict(type='assistant', isSidechain=False, version='2.1.331', sessionId='synthetic', uuid='reply',
+                 parentUuid='earlier', timestamp='2026-11-23T09:40:05.000Z', message=dict(
+                     id='msg_synthetic', model=model, role='assistant', type='message', stop_reason='end_turn',
+                     usage=dict(input_tokens=1, output_tokens=1), content=[dict(type='text', text='Synthetic reply.')]))
+    duration = dict(type='system', subtype='turn_duration', isSidechain=False, version='2.1.331',
+                    sessionId='synthetic', uuid='duration', parentUuid='reply', durationMs=5000,
+                    timestamp='2026-11-23T09:40:05.100Z')
+    return prompt, reply, duration
+
+
+def resume_placeholder():
+    # The measured 2.1.331 shape: written on resume, not an API error, no output.
+    return dict(type='assistant', isSidechain=False, version='2.1.331', sessionId='synthetic', uuid='placeholder',
+                parentUuid='duration', timestamp='2026-11-23T09:41:00.000Z', isApiErrorMessage=False, madeBy='other',
+                message=dict(id='synthetic-placeholder', model='<synthetic>', role='assistant', type='message',
+                             stop_reason='stop_sequence', stop_sequence='', usage=dict(input_tokens=0, output_tokens=0),
+                             content=[dict(type='text', text='No response requested.')]))
+
+
+def test_an_error_envelope_keeps_the_last_model_that_ran(tmp_path):
+    record = tmp_path / 'synthetic.jsonl'
+    append_rows(record, *answered_turn(), overload_prompt(), overload_error(),
+                dict(type='last-prompt', sessionId='synthetic', leafUuid='error'))
+    state, turns = claude.ClaudeHarness().reader(record)
+    assert state.model == 'claude-sonnet-5-5' and turns[-1].model == 'claude-sonnet-5-5' and len(turns) == 2
+    assert state.turn_open is False and turns[-1].successful is False and turns[-1].timed  # decisions unchanged
+
+
+@pytest.mark.parametrize('change', [None, 'output', 'stop', 'named', 'made-by', 'text', 'version', 'unmarked'])
+def test_a_resume_placeholder_keeps_the_last_model_that_ran(tmp_path, change):
+    record = tmp_path / 'synthetic.jsonl'
+    placeholder = resume_placeholder()
+    if change == 'output':
+        placeholder['message']['usage']['output_tokens'] = 3
+    elif change == 'stop':
+        placeholder['message']['stop_reason'] = 'end_turn'
+    elif change == 'named':
+        placeholder['message']['model'] = 'claude-opus-5-5'
+    elif change == 'made-by':
+        placeholder['madeBy'] = 'model'
+    elif change == 'text':
+        placeholder['message']['content'][0]['text'] = 'Another reply.'
+    elif change == 'version':
+        placeholder['version'] = '2.1.332'
+    elif change == 'unmarked':
+        del placeholder['isApiErrorMessage']
+    append_rows(record, *answered_turn(), placeholder)
+    before, _ = claude.ClaudeHarness().reader(record)
+    expected = {None: 'claude-sonnet-5-5', 'named': 'claude-opus-5-5'}.get(change, '<synthetic>')
+    assert before.model == expected
+    assert before.turn_open is False and before.pending_tools == ()
+
+
 @pytest.mark.parametrize('change', [
     {'version': '2.1.330'}, {'version': '2.1.332'}, {'version': None},
     {'isSidechain': True}, {'isSidechain': None}, {'sessionId': 'other'},

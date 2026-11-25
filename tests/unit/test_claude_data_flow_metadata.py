@@ -284,3 +284,97 @@ def test_remote_control_startup_requires_the_current_root_prefix(tmp_path, other
     assert claude.inputs(record).skipped
     with pytest.raises(ValueError, match='unknown native data-flow metadata'):
         claude.person_inputs(record, ())
+
+
+EVENT = 'event_00000000-0000-4000-8000-0000000000{:02d}'
+MEMORY = 'synthetic-memory-' + 'a' * 38  # the measured class: 55 of '-', digits, '_' and lower case
+
+
+@pytest.mark.parametrize('fields', [
+    # D: the program's own memory write beside an ordinary response entry
+    {'records': [{'event_id': EVENT.format(1), 'touched': {'action': 'write', 'id': MEMORY, 'kind': 'memory'}},
+                 {'listed': ['msg_SyntheticOld'], 'mark_sent_by': 'synthetic-session', 'response_id': 'msg_SyntheticNew'}]},
+    # C: a tool event restated in a compaction snapshot
+    {'snapshot': True, 'records': [{'event_id': EVENT.format(2), 'tool_name': 'Read'}]},
+    # The 2.1.331 snapshot tool-use names
+    {'snapshot': True, 'records': [{'tool_name': name, 'tool_use_id': f'toolu_Synthetic{i}'}
+                                   for i, name in enumerate(('Read', 'SendUserFile', 'Write'))]},
+])
+def test_measured_331_metadata_carries_no_input(tmp_path, fields):
+    native = Native(tmp_path / 'record.jsonl', 'claude')
+    native.finish()
+    native.rows.append(metadata(native, 'data-flow-records', **fields))
+    native.flush()
+    found = claude.inputs(native.path)
+    assert [item.text for item in found] == ['Synthetic task'] and not found.skipped
+    assert claude.state(native.path).pending_tools == ()
+    assert len(claude.person_inputs(native.path, ())) == 1
+
+
+REMOTE_INPUT = {'event_id': EVENT.format(3), 'tool_name': 'RemoteControlInput'}
+RESPONSE = {'mark_sent_by': 'synthetic-session', 'response_id': 'msg_SyntheticNew'}
+
+
+def memory(event=EVENT.format(5), **touched):
+    return {'event_id': event, 'touched': {'action': 'write', 'id': MEMORY, 'kind': 'memory', **touched}}
+
+
+@pytest.mark.parametrize(('records', 'snapshot'), [
+    # E stays with its joins until measured: a person's Remote Control input is never plain metadata.
+    ([REMOTE_INPUT, RESPONSE, {'tool_name': 'Write', 'tool_use_id': 'toolu_Synthetic'}], True),
+    ([REMOTE_INPUT, REMOTE_INPUT, RESPONSE], False),  # not the measured mixed form: two inputs
+    ([REMOTE_INPUT, RESPONSE, {'tool_name': 'Write', 'tool_use_id': 'toolu_Synthetic'}], False),
+    ([{'event_id': EVENT.format(4), 'tool_name': 'Read'}], False),  # a tool event outside a snapshot
+    ([{'tool_name': 'Write', 'tool_use_id': 'toolu_Synthetic'}], False),  # a tool-use entry outside a snapshot
+    ([memory(action='read')], False),
+    ([memory(id=MEMORY + 'b')], True),
+    ([memory(id=MEMORY.upper())], False),
+    ([memory(kind='other')], False),
+    ([memory(event='event_other')], False),
+])
+def test_331_remote_and_unmeasured_entries_stay_unknown(tmp_path, records, snapshot):
+    native = Native(tmp_path / 'record.jsonl', 'claude')
+    native.finish()
+    fields = dict(records=records, snapshot=True) if snapshot else dict(records=records)
+    native.rows.append(metadata(native, 'data-flow-records', **fields))
+    native.flush()
+    found = claude.inputs(native.path)
+    assert found.skipped == [dict(line=4, kind='data-flow-records', reason='unknown native data-flow metadata')]
+    with pytest.raises(ValueError, match='unknown native data-flow metadata'):
+        claude.person_inputs(native.path, ())
+
+
+def test_the_measured_mixed_remote_input_holds_quiet_time_under_its_own_name(tmp_path):
+    from types import SimpleNamespace
+    from quarterdeck import person_quiet
+
+    native = Native(tmp_path / 'record.jsonl', 'claude')
+    native.finish()
+    native.rows.append(metadata(native, 'data-flow-records', records=[REMOTE_INPUT, RESPONSE]))
+    native.flush()
+    found = claude.inputs(native.path)
+    # The typed root keeps its own proved time; the unbound event is neither dated nor dismissed.
+    assert [item.text for item in found] == ['Synthetic task']
+    assert found.skipped == [dict(line=4, kind='data-flow-records', reason=claude.MIXED_REMOTE_INPUT)]
+    with pytest.raises(ValueError, match='Remote Control input of unknown time'):
+        claude.person_inputs(native.path, ())
+    from datetime import datetime, timezone
+    launch = SimpleNamespace(pane='%1', pid=1, at='2026-11-24T00:00:00+00:00', harness='claude', version='2.1.331')
+    seat = SimpleNamespace(launched=lambda: launch, record=lambda: native.path, harness=claude.ClaudeHarness())
+    fact = person_quiet.read(seat, datetime.now(timezone.utc))
+    assert fact['at'] is None and fact['reason'] == claude.MIXED_REMOTE_INPUT
+
+
+def test_the_mixed_remote_input_is_a_named_move_hold_in_the_record_reading(tmp_path):
+    from quarterdeck import idle
+
+    native = Native(tmp_path / 'synthetic-session.jsonl', 'claude', conversation='synthetic-session')
+    native.finish()
+    native.rows.append(metadata(native, 'data-flow-records', records=[REMOTE_INPUT, RESPONSE]))
+    native.flush()
+    state = claude.state(native.path)
+    assert state.input_hold == claude.MIXED_REMOTE_INPUT
+    assert idle.check(state) == idle.Hold('input-unknown', claude.MIXED_REMOTE_INPUT)
+    native.rows[-1] = metadata(native, 'data-flow-records', records=[REMOTE_INPUT, REMOTE_INPUT, RESPONSE])
+    native.flush()
+    assert getattr(claude.state(native.path), 'input_hold', None) is None  # other unknown rows: the generic reason

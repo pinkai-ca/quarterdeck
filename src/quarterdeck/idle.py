@@ -61,6 +61,7 @@ REASONS = {
     'turn-open': 'a turn is open',
     'queue-unknown': 'queue state unknown',
     'queue-pending': 'input is queued',
+    'input-unknown': 'an input of unknown time is in its record',
     'tools-unknown': 'tool state unknown',
     'tools-pending': 'tools are pending',
     'completion': 'its last input has no recorded completion',
@@ -122,6 +123,9 @@ def check(state: State | None, seat=None, *, explicit=False) -> Hold | None:
         return Hold('queue-unknown', REASONS['queue-unknown'])
     if state.queued:
         return Hold('queue-pending', REASONS['queue-pending'])
+    if held := getattr(state, 'input_hold', None):
+        # Named by an adapter's own state; only after an earlier busy reason clears, and never lifted by a screen.
+        return Hold('input-unknown', held)
     if state.pending_tools != ():
         key = 'tools-unknown' if state.pending_tools is None else 'tools-pending'
         return Hold(key, tool_reason(state))

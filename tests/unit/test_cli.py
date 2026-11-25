@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from quarterdeck import cli
 from quarterdeck.cli import parse_value
 from quarterdeck.ship import load
@@ -22,7 +24,7 @@ def test_set_writes_the_ship_file_and_says_what_applies_it(drydock: Path, capsys
     lines = out.splitlines()
     assert lines[0].startswith('ship.toml: seats.captain.model = "fake-2" · written')
     assert lines[1] == "  model written; captain is down, so qd up captain applies it"
-    assert lines[3] == "  pool written; qd restart captain applies it"
+    assert lines[3] == "  pool order written; captain is down: qd up captain launches it on fake (its saved choice)"
     assert lines[4].startswith("ship.toml: seats.captain.remote_control = true")
     assert lines[5] == "  remote_control written; qd restart captain applies it"
     captain = load(drydock).seat("captain")
@@ -124,3 +126,14 @@ def test_a_seat_posts_as_itself_and_only_a_shell_that_is_no_seat_may_name_a_send
     assert store.all()[-1].sender == "worker-1", "nothing was stored"
     code, out, _ = run(capsys, "post", "report", "--from", "worker-1", "--to", "captain", "naming itself is allowed")
     assert code == 0
+
+
+@pytest.mark.parametrize(('current', 'said'), [
+    ('first', 'worker already runs on first, its first choice; nothing moves'),
+    ('second', 'worker stays on second until it is spent, a restart included; '
+               'qd set worker pool=first moves it to first at its next idle moment'),
+])
+def test_a_written_pool_order_says_what_the_running_choice_does(current, said):
+    from types import SimpleNamespace
+    seat = SimpleNamespace(name='worker', is_up=True, pool=SimpleNamespace(name=current))
+    assert cli.pool_order_guidance(SimpleNamespace(), seat, 'first,second') == f'  pool order written; {said}'

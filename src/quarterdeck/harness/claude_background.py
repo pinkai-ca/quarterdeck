@@ -215,6 +215,33 @@ def linked_user_notice(entry, *, own_shell=False):
     return notice if notice is not None and (notice.kind != 'bash' or own_shell) else None
 
 
+STOPPED_NOTE = ('No completion record was found for it in the previous session. It may have been stopped (via the UI, '
+                'Monitor timeout, or agent teardown — these leave no transcript marker), or it may have been running '
+                'when the previous Claude Code process exited. Check the output file for partial results before '
+                'assuming it completed.')
+STOPPED_RESUME = 'the stopped notice of a task the previous process left running'
+
+
+def stopped_resume_notice(entry, session) -> bool:
+    """The measured 2.1.331 resume notice for a task the previous process left running. Whether that task's output
+    was delivered is not in the record, so this names the hold; it never settles it."""
+    message = entry.get('message')
+    if (entry.get('type') != 'user' or entry.get('version') != LINKED_VERSION or not linked_root(entry, session)
+            or entry.get('origin') != {'kind': 'task-notification'} or entry.get('rowSource') != 'harness'
+            or entry.get('promptSource') != 'system' or entry.get('queueSkipAttachments') is not True
+            or entry.get('queueTranscriptOnly') is not True or not native_task_id(entry.get('promptId'))
+            or entry.keys() & {'turnPromptId', 'turnOrigin'}
+            or not isinstance(message, dict) or message.get('role') != 'user'):
+        return False
+    envelope = NOTICE_ENVELOPE.fullmatch(message.get('content')) if isinstance(message.get('content'), str) else None
+    if envelope is None:
+        return False
+    fields, rest = _header(envelope[1]), _header(envelope[2])
+    return (fields is not None and set(fields) == {'task-id', 'tool-use-id', 'status'} and fields['status'] == 'stopped'
+            and native_task_id(fields['task-id']) and bool(fields['tool-use-id'])
+            and rest == {'note': STOPPED_NOTE})
+
+
 @dataclass
 class PendingNotice:
     notice: TaskNotice
@@ -231,6 +258,11 @@ class TaskNoticeQueue:
         self.version = None
         self.pending = None
         self.unknown = False
+        self.causes = set()  # why unknown: 'stopped' names the measured resume notice; anything else is 'other'
+
+    def _unknown(self, cause='other'):
+        self.pending, self.unknown = None, True
+        self.causes.add(cause)
 
     def take(self, entry, at):
         """Return (private carrier, bound notice). A candidate alone cannot settle anything."""
@@ -241,18 +273,20 @@ class TaskNoticeQueue:
             self.version = entry['version']
         pending = self.pending
         if linked_notice_origin(entry):
-            notice = linked_user_notice(entry)
+            # A Bash notice is the seat's own only where this queue already holds it, dequeued, with the same text.
+            notice = linked_user_notice(entry, own_shell=pending is not None and pending.dequeued_at is not None
+                                        and pending.notice.kind == 'bash')
             if (pending is not None and pending.dequeued_at is not None and notice == pending.notice
                     and linked_root(entry, self.session) and at is not None and at > pending.dequeued_at
                     and entry['message']['content'] == pending.text):
                 self.pending = None
                 return True, (notice, pending.at)
-            self.pending, self.unknown = None, True
+            self._unknown('stopped' if pending is None and stopped_resume_notice(entry, self.session) else 'other')
             return True, None
         if kind in ('user', 'assistant') or entry.get('subtype') == 'compact_boundary':
             # A different actual turn or compaction breaks the measured carrier sequence.
             if pending is not None:
-                self.pending, self.unknown = None, True
+                self._unknown()
         if kind != 'queue-operation' or self.version != LINKED_VERSION:
             return False, None
         text = entry.get('content')
@@ -263,13 +297,14 @@ class TaskNoticeQueue:
             if own and at is not None and set(entry) == keys | {'content'} and pending is None:
                 self.pending = PendingNotice(notice, text, at)
             else:
-                self.pending, self.unknown = None, True
+                self._unknown()
             return True, None
         if pending is None:
             return False, None
         timed = own and at is not None and at > pending.at
-        if (timed and operation == 'dequeue' and set(entry) == keys
-                and pending.notice.kind != 'bash' and pending.dequeued_at is None):
+        if timed and operation == 'dequeue' and set(entry) == keys and pending.dequeued_at is None:
+            # 2.1.331 also delivers an own Bash notice this way (measured on person's seats): it settles only on
+            # the linked recorded notice row with the same text, after the dequeue, as every dequeued notice does.
             pending.dequeued_at = at
             return True, None
         if (timed and operation == 'remove' and set(entry) == keys | {'content', 'reason'}
@@ -277,7 +312,7 @@ class TaskNoticeQueue:
                 and pending.text == text):
             self.pending = None
             return True, (pending.notice, pending.at)
-        self.pending, self.unknown = None, True
+        self._unknown()
         # A different queue operation stays with the ordinary queue reader.
         return False, None
 

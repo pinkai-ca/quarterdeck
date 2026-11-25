@@ -1429,7 +1429,9 @@ class Service:
                     Service.tell_held(self, data, meta, answer)  # by the class: a stand-in service has no method of its own
                     if answer is None:
                         if isinstance(data, dict) and data.get('kind') in request_queue.SEAT_KINDS:
-                            dimension, reason = self.request_wait or ('unknown', 'service decision unknown')
+                            # No hold was measured on this pass: say so, and let the next measured hold replace it.
+                            dimension, reason = self.request_wait or ('undecided', 'the service has not yet measured '
+                                                                       'what the request waits for')
                             request_queue.hold(path, meta, dimension, reason)
                         if 'control_confirmation' not in meta:
                             self.clear_request_claim(claim)
