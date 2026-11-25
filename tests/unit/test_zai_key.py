@@ -20,7 +20,7 @@ from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.ledger import Ledger
 from quarterdeck.post import now
 from quarterdeck.seat import Launched, Seat, process_start
-from quarterdeck.ship import Pool, ShipError, load
+from quarterdeck.ship import Pool, SeatSpec, ShipError, load
 from quarterdeck.tmux import Pane
 
 
@@ -483,6 +483,40 @@ def zai_home(tmp_path, monkeypatch, key_file, program, *, template=None, setting
 
 
 QUALIFIED = f'standard/{MODEL}'
+
+
+def test_zai_opencode_merged_instructions_use_local_paths(tmp_path, monkeypatch):
+    adapter = get('opencode')
+    pool = Pool('standard', 'zai', api_key='keys:synthetic', endpoint=ZAI_CHAT)
+    spec = SeatSpec('worker', 'crew', 'worker', 'opencode', (pool.name,),
+                    settings={'instructions': ['notes/seat.md']})
+    choice = endpoint.Choice(pool.name, MODEL, 1000, 100)
+    monkeypatch.setattr(adapter, 'endpoint_home', lambda *_: (choice, True))
+    monkeypatch.setattr(adapter, 'endpoint_ready', lambda *_: None)
+    home = tmp_path / 'runtime/seats/worker/home'
+    config_path = home / 'config/opencode/opencode.json'
+    template_dir = tmp_path / 'templates'
+    template_dir.mkdir()
+    template = template_dir / 'opencode.json'
+    local_instructions = [str(tmp_path / 'runtime/brief/worker.md'), 'notes/ship.md', 'notes/seat.md']
+
+    template.write_text(json.dumps({'instructions': ['notes/ship.md']}))
+    adapter.build_home(home, spec, pool, template_dir)
+    assert json.loads(config_path.read_text())['instructions'] == local_instructions
+
+    http_url = 'http://synthetic.invalid/ship.md'
+    https_url = 'HTTPS://synthetic.invalid/seat.md'
+    template.write_text(json.dumps({'instructions': ['notes/ship.md', http_url]}))
+    with pytest.raises(ShipError, match=r'^Z\.ai OpenCode instructions must use local paths$'):
+        adapter.build_home(home, spec, pool, template_dir)
+
+    template.write_text(json.dumps({'instructions': ['notes/ship.md']}))
+    remote_spec = replace(spec, settings={'instructions': ['notes/seat.md', https_url]})
+    with pytest.raises(ShipError, match=r'^Z\.ai OpenCode instructions must use local paths$'):
+        adapter.build_home(home, remote_spec, pool, template_dir)
+
+    adapter.build_home(home, remote_spec, replace(pool, provider='synthetic'), template_dir)
+    assert json.loads(config_path.read_text())['instructions'] == [*local_instructions, https_url]
 
 
 @pytest.mark.parametrize('layer', ['template', 'seat'])

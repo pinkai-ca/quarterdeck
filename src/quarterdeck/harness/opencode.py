@@ -98,6 +98,11 @@ def require_zai_config(config, pool, model) -> None:
         raise ShipError('Z.ai OpenCode requires disabled sharing and updates')
     if any(config.get(option, empty) != empty for option, empty in (('mcp', {}), ('plugin', []), ('enterprise', {}))):
         raise ShipError('Z.ai OpenCode requires empty MCP, plugin and enterprise settings')
+    instructions = config.get('instructions')
+    if isinstance(instructions, list) and any(
+            isinstance(entry, str) and entry.lstrip().lower().startswith(('http://', 'https://'))
+            for entry in instructions):
+        raise ShipError('Z.ai OpenCode instructions must use local paths')
     if _zai_substitution(config, ('provider', pool.name, *_ZAI_KEY_FIELD)):
         raise ShipError('Z.ai OpenCode settings contain a substitution marker outside the generated key field')
 

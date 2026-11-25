@@ -150,6 +150,7 @@ A named key can be shared by pools for a single provider. Declaring a key does n
 
 A Z.ai launch keeps each program on its declared route, and other pools keep their settings.
 OpenCode's final configuration, after the ship template and seat settings, is checked when it is written and again at launch. It names only the pool's provider and the declared model, including for the small model, every agent and every mode. Sharing is disabled, updates are off, MCP servers, plugins and enterprise settings are empty, and the generated key field is the only `{env:…}` or `{file:…}` substitution. Project configuration, the model catalog fetch, external and default plugins, language-server downloads and the npm dependency installer stay off.
+OpenCode's Z.ai route rejects HTTP and HTTPS URLs in `instructions`. Local instruction paths are allowed.
 Claude Code writes `skipWebFetchPreflight = true` and refuses a template or seat setting that changes it or turns on `autoUploadSessions`. Official marketplace auto-install and nonessential traffic stay off.
 pi starts with `PI_OFFLINE=1`.
 A refusal names the setting, never its value.
