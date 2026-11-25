@@ -1069,6 +1069,9 @@ def _run_step(step: str, seat, ctx: dict, store, attempts, latest) -> _Step:
                 ops.append(('ending', words, 'append'))  # law: nothing-waits-silently
         elif step == 'launch':
             ctx['launched'] = launched = seat.launched()
+            if (resume_hold := getattr(seat, 'route_resume_hold', None)) and (words := resume_hold()):
+                ops.append(('seat_holds', words, 'append'))  # law: nothing-waits-silently
+                ops.append(('needs_human', name, 'once'))
             if hold := getattr(seat, 'pool_move_hold', None):
                 ops.append(('seat_holds', hold, 'append'))  # law: nothing-waits-silently
             elif refused_pool := launch_pool_refusal(seat, launched):

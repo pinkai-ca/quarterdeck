@@ -10,6 +10,7 @@ from threading import Event, Thread
 
 import pytest
 
+from quarterdeck import provenance
 from quarterdeck import compaction, post, record_owner, watch
 from quarterdeck.harness import get
 from quarterdeck.harness.base import Join, Screen
@@ -35,10 +36,13 @@ def world(tmp_path, monkeypatch, request):
     seat.trusted.mkdir(parents=True, exist_ok=True)
     source = [Native(seat.home/'synthetic-record', program)]
     monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=source[0].serial + 0.5))
-    Launched('%1', 123, AT.isoformat(), 'synthetic', None, [program], 'synthetic', harness=program).write(seat.trusted/'launch.json')
+    route = provenance.provider_route(seat.pool)
+    Launched('%1', 123, AT.isoformat(), 'synthetic', None, [program], 'synthetic', harness=program,
+             start='1', provider_route=route).write(seat.trusted/'launch.json')
     def pin():
         (seat.trusted/'record').write_text(str(source[0].path))
         record_owner.register(seat.trusted, source[0].path, program)
+        provenance.remember_launch(seat.trusted, source[0].path, seat.launched())
     pin()
     monkeypatch.setattr(seat, 'record', lambda: source[0].path)
     monkeypatch.setattr(seat, 'join', lambda: Join(source[0].path))
@@ -54,7 +58,7 @@ def world(tmp_path, monkeypatch, request):
         if not resume:
             source[0] = Native(seat.home/f'synthetic-record-{len(calls)}', program, f'synthetic-successor-{len(calls)}')
         Launched('%1', 123, (AT + timedelta(microseconds=len(calls))).isoformat(), 'synthetic', source[0].conversation if resume else None,
-                 [program], 'synthetic', harness=program).write(seat.trusted/'launch.json')
+                 [program], 'synthetic', harness=program, start='1', provider_route=route).write(seat.trusted/'launch.json')
         pin()
         return 'synthetic launch'
     monkeypatch.setattr(seat, '_down', down)

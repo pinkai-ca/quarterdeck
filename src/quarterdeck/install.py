@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import ast
 from contextlib import contextmanager
+from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
@@ -25,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import trusted_files
-from . import copy_state, durable, lock_holders, resources, servicectl
+from . import copy_state, durable, lock_holders, resources, route_cutover, servicectl
 from .ship import Ship, ShipError, fence
 from .tmux import Tmux
 
@@ -50,6 +51,7 @@ PHASE_CAUSES = {
 }
 FAILURE_STEPS = frozenset(PHASE_CAUSES) | {'preparing', 'installing', 'origin', '--version', 'laws', '--help'}
 LOADED_COPY = copy_state.loaded_identity(__file__, sys.prefix)
+STARTING_ROUTE_ENROLLMENT = None
 # The directory roles under runtime/: the live copy, the copy before it, back's swap, and sync's backup of
 # the live copy, which becomes the copy before it only once the new copy is active.
 ROLES = ('venv', 'venv.prev', 'venv.swap', 'venv.backup')
@@ -178,8 +180,32 @@ def git(repo: Path, *args: str) -> bytes:
 
 
 def _extract_commit(repo: Path, commit: str, folder: Path) -> None:
-    with tarfile.open(fileobj=io.BytesIO(git(repo, 'archive', '--format=tar', commit))) as archive:
+    _extract_archive(git(repo, 'archive', '--format=tar', commit), folder)
+
+
+def _extract_archive(content: bytes, folder: Path) -> None:
+    with tarfile.open(fileobj=io.BytesIO(content)) as archive:
         archive.extractall(folder, filter='data')
+
+
+@dataclass(frozen=True)
+class SyncArchive:
+    commit: str
+    content: bytes
+    guarded: bool
+
+
+def sync_archive(repo: Path, commit: str) -> SyncArchive:
+    """Read the capability from the same pinned archive the installer will unpack."""
+    content = git(repo, 'archive', '--format=tar', commit)
+    with tarfile.open(fileobj=io.BytesIO(content)) as archive:
+        try:
+            marker = archive.getmember(f'src/{route_cutover.MODULE}')
+        except KeyError:
+            marker = None
+        if marker is not None and not marker.isfile():
+            raise ShipError('provider route capability in the target archive is unreadable')
+    return SyncArchive(commit, content, marker is not None)
 
 
 def previous_install(runtime: Path) -> dict | None:
@@ -543,18 +569,16 @@ def _capable(source: Path) -> bool:
         return False
 
 
-def _proof(ship: Ship, fact: dict) -> tuple[str, list[str]]:
-    """Exactly the same live-path proof for sync and back; no ship handoff or source redirect."""
-    live = ship.runtime / 'venv'
-    if 'instance' not in fact:
-        # The ordinary back proof can record an identity; a legacy no-op never does.
-        fact['instance'] = uuid4().hex
-        durable.replace_file(live / copy_state.MARKER,
-                             json.dumps(dict(commit=fact['commit'], instance=fact['instance'])) + '\n')
+def _proof_environment() -> dict:
     environment = dict(os.environ)
     for name in ('QD_SHIP', 'QD_SEAT', 'QD_COPY_START', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONUSERBASE'):
         environment.pop(name, None)
     environment['PYTHONNOUSERSITE'] = '1'
+    return environment
+
+
+def package_origin(live: Path, have_laws: bool) -> tuple[Path, str]:
+    """Use the copy interpreter to find and hash its own imported package."""
     origin_code = (
         'import hashlib, json, pathlib, sys, quarterdeck\n'
         'root = pathlib.Path(sys.argv[1]).resolve()\n'
@@ -570,17 +594,32 @@ def _proof(ship: Ship, fact: dict) -> tuple[str, list[str]]:
         ' digest.update(path.read_bytes() + b"\\0")\n'
         'print(json.dumps({"package": str(package.parent), "package_digest": digest.hexdigest()}))\n'
     )
-    have_laws = fact['have_laws']
-    fact['proof_command'] = 'origin'
     origin = _run([str(live / 'bin/python'), '-I', '-c', origin_code, str(live),
                    'laws' if have_laws else '--help'], 'checking live package, prefix and resources',
-                  timeout=60, env=environment, cwd=ship.runtime)
+                  timeout=60, env=_proof_environment(), cwd=live.parent)
     try:
         identity = json.loads(origin.stdout)
         package = Path(identity['package'])
-        fact['package_digest'] = identity['package_digest']
+        digest = identity['package_digest']
+        if not package.is_relative_to(live.resolve()) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+            raise ValueError('invalid package identity')
+        return package, digest
     except (ValueError, TypeError, KeyError):
         raise ShipError('live package identity proof returned an invalid answer') from None
+
+
+def _proof(ship: Ship, fact: dict) -> tuple[str, list[str]]:
+    """Exactly the same live-path proof for sync and back; no ship handoff or source redirect."""
+    live = ship.runtime / 'venv'
+    if 'instance' not in fact:
+        # The ordinary back proof can record an identity; a legacy no-op never does.
+        fact['instance'] = uuid4().hex
+        durable.replace_file(live / copy_state.MARKER,
+                             json.dumps(dict(commit=fact['commit'], instance=fact['instance'])) + '\n')
+    have_laws = fact['have_laws']
+    fact['proof_command'] = 'origin'
+    package, fact['package_digest'] = package_origin(live, have_laws)
+    environment = _proof_environment()
     fact['proof_command'] = '--version'
     version = _run([str(live / 'bin/qd'), '--version'], 'proving installed version',
                    timeout=60, env=environment, cwd=ship.runtime).stdout.strip()
@@ -669,6 +708,10 @@ def _activate(ship: Ship, data: dict, fact: dict, tmux: Tmux | None) -> list[str
     fact['at'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
     data['current'] = fact
     data['previous_copy'] = pending['old_current']
+    if mode := pending.get('route_cutover_mode'):
+        if mode == 'virgin':
+            route_cutover.require_virgin(ship)
+        pending[route_cutover.REFERENCE] = route_cutover.begin(ship, data, fact, mode)
     _phase(ship, data, 'target_ready')  # durable proof, still ineligible for ordinary handoff
     from .seat import prepare_program_path
     prepare_program_path(ship, bin_dir=ship.runtime / 'venv/bin')
@@ -679,6 +722,8 @@ def _activate(ship: Ship, data: dict, fact: dict, tmux: Tmux | None) -> list[str
                                       expected=fact if fact.get('safety') == COPY_SAFETY else None,
                                       startup_token=pending['token']))
     # Only a confirmed startup (or an intentionally stopped ship) may commit activation.
+    if receipt := pending.get(route_cutover.REFERENCE):
+        data[route_cutover.REFERENCE] = receipt
     pending['activated'] = True
     _phase(ship, data, 'activated')
     _cleanup(ship, data)
@@ -718,29 +763,63 @@ def resolve_target(repo: Path, ref: str = 'HEAD') -> tuple[Path, str]:
     return repo, commit
 
 
+def preflight_route_sync(ship: Ship, commit: str, *,
+                         mode: str | None = None) -> None:
+    """Refuse before recovery, shutdown, or creating a pending install."""
+    data = _state(ship.runtime)
+    if data.get('pending') is not None:
+        if problem := route_cutover.doctor(ship, data):
+            raise ShipError(problem)
+        raise ShipError(f'{ship.folder.name}: copy has a pending operation; recover it before a provider route update')
+    route_cutover.check_transition(ship, data, commit, True, mode=mode)
+
+
 def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
             back: bool = False, force: bool = False,
-            target: tuple[Path, str] | None = None) -> list[str]:
+            target: tuple[Path, str] | None = None, enroll_route_guard: bool = False,
+            skip_route_guard: bool = False, archive: SyncArchive | None = None) -> list[str]:
     """Stable internal API for canonical sync and its shared upgrade alias handler."""
     if ship.code == 'checkout':
         raise ShipError(copy_state.CHECKOUT_REFUSAL)
+    mode = 'enroll' if enroll_route_guard else 'virgin' if skip_route_guard else None
+    if (enroll_route_guard and skip_route_guard) or (mode and (back or force)):
+        raise ShipError('provider route enrollment requires a single forward sync without --force')
     if back and (force or ref != 'HEAD'):
         raise ShipError('--back cannot be combined with a target or --force')
     if target is not None and (back or copy_state.COMMIT.fullmatch(target[1]) is None):
         raise ShipError('a pinned local target requires a complete commit and cannot go back')
     recovery_proofs = recover(ship)  # before source discovery, target resolution, or a no-op
     repo, commit = (None, None) if back else (target or resolve_target(source_repo(ship), ref))
+    if mode:
+        if Path(__file__).resolve().parents[2] != repo:
+            raise ShipError('enroll the provider route cutover from the guard-aware checkout')
+    archive_problem = None
     if not back:
         selected = copy_state.select(ship.folder, mode=ship.code, mode_known=True)
-        if not force and selected.qd and selected.fact['commit'] == commit:
+        if not mode and not force and selected.qd and selected.fact['commit'] == commit:
+            if problem := route_cutover.doctor(ship, selected.state):
+                raise ShipError(problem)
             return [*recovery_proofs, *dirty_notice(ship, selected.fact), *historical_notice(selected.fact),
                     f'already runs {commit[:7]}; nothing to do']
+        try:
+            archive = archive if archive is not None else sync_archive(repo, commit)
+        except (ShipError, tarfile.TarError) as error:
+            archive_problem = error  # keep the ordinary transaction's archive failure and recovery
+        if archive is not None and archive.commit != commit:
+            raise ShipError('source archive differs from the pinned commit')
+    guarded = archive is not None and archive.guarded
+    if guarded:
+        preflight_route_sync(ship, commit, mode=mode)
+    if mode and not guarded:
+        raise archive_problem or ShipError('target does not implement provider route enrollment')
     # Preload controller dependencies before in-place pip can replace their source files.
     from .seat import prepare_program_path  # noqa: F401
     with install_lock(ship):
         data = _state(ship.runtime)
         recovered = [*recovery_proofs, *_recover(ship, data)]
         old = data.get('current')
+        if guarded:
+            route_cutover.check_transition(ship, data, commit, True, mode=mode)
         if back:
             target = copy_state.previous(data)
             reason = copy_state.usable(ship.runtime / 'venv.prev', target)
@@ -764,9 +843,15 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
             if not back:
                 staging = ship.runtime / 'upgrade' / pending['token']
                 staging.mkdir(parents=True)
-                _extract_commit(repo, commit, staging)
+                if archive_problem is not None:
+                    raise archive_problem
+                _extract_archive(archive.content, staging)
                 cause = 'resource declaration invalid'
                 resource_files = resources.plan(staging)
+                if mode:
+                    if not (staging / 'src' / route_cutover.MODULE).is_file():
+                        raise ShipError('target does not implement provider route enrollment')
+                    pending['route_cutover_mode'] = mode
             proofs += _stop_and_snapshot(ship, data)
             if back:
                 _phase(ship, data, 'swapping', mutable=True)
@@ -922,6 +1007,9 @@ def bootstrap_service(ship: Ship, argv: list[str]) -> None:
         if holding == 'earlier':
             global EARLIER_INSTALLER
             EARLIER_INSTALLER = (pending['owner_pid'], pending['owner_start'])
+        if pending.get('phase') == 'target_ready':
+            global STARTING_ROUTE_ENROLLMENT
+            STARTING_ROUTE_ENROLLMENT = pending.get(route_cutover.REFERENCE)
         return  # the live parent owns the install lock and will confirm/finalize startup
     changed = False
     with install_lock(ship):

@@ -97,7 +97,9 @@ class Transaction:
             self.calls.append(('archive',))
             if self.failure == 'archive':
                 raise ShipError('synthetic archive failed')
-            yield SimpleNamespace(extractall=self.extract)
+            def member(name):
+                raise KeyError(name)
+            yield SimpleNamespace(extractall=self.extract, getmember=member)
 
         def plan(source):
             if self.failure == 'declaration':

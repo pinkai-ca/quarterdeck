@@ -5,9 +5,9 @@ installer before it waits for a new service's beat there. This code beats in the
 only over 11ca0ea6 or later, whose installer reads the folder; an installer from before the move (8639dedc, before
 the lock's move, or 35cbf5af, just before the heartbeat's) would time out at target_ready, and no ship runs one.
 
-Real install path in a throwaway: an installed copy of 11ca0ea6, its own `qd sync` to this tree with the service
-running, and this code's `qd sync --back` to that copy, each through target_ready to a running service. Fake programs
-only; no seat is raised.
+Real install path in a throwaway: enroll from the current checkout and return to 11ca0ea6 while the ship is stopped.
+Then use 11ca0ea6's own `qd sync` to this tree with the service running, and this code's `qd sync --back` to that copy,
+each through target_ready to a running service. Fake programs only; no seat is raised.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import servicectl, service as servicemod
+from quarterdeck import route_cutover, servicectl, service as servicemod
 from quarterdeck.tmux import Tmux
 
 from tests.integration.test_upgrade_resources import RESOURCE_ROOTS, archive, commit, environment, git, install
@@ -62,7 +62,8 @@ def earlier_ship(tmp_path: Path, tmux: Tmux):
     (ship / 'runtime').mkdir()
 
     env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
-    env.update(QD_TMUX_SOCKET=tmux.socket, PIP_NO_INDEX='1', PIP_DISABLE_PIP_VERSION_CHECK='1')
+    env.update(QD_TMUX_SOCKET=tmux.socket, PIP_NO_INDEX='1', PIP_DISABLE_PIP_VERSION_CHECK='1',
+               DBUS_SESSION_BUS_ADDRESS=f'unix:path={tmp_path / "absent-bus"}')
     # The earlier code, installed outside the ship, makes the ship's first copy at the earlier commit.
     source = tmp_path / 'earlier-source'
     archive(earlier_commit, source, EARLIER_ROOTS)
@@ -70,7 +71,21 @@ def earlier_ship(tmp_path: Path, tmux: Tmux):
     install(seed, source)
     first = run(seed.parent / 'qd', '--ship', ship, 'sync', earlier, env=env, cwd=repo)
     assert first.returncode == 0, (first.stdout, first.stderr)
-    assert json.loads((ship / 'runtime/installed.json').read_text())['commit'] == earlier
+    runtime = ship / 'runtime'
+    state = runtime / 'installed.json'
+    assert json.loads(state.read_text())['commit'] == earlier
+
+    checkout_env = {**env, 'PYTHONPATH': str(repo / 'src')}
+    enrolled = run(sys.executable, '-c', 'from quarterdeck.cli import main; raise SystemExit(main())',
+                   '--ship', ship, 'sync', target, route_cutover.ENROLL, env=checkout_env, cwd=repo)
+    assert enrolled.returncode == 0, (enrolled.stdout, enrolled.stderr)
+    receipt = json.loads((runtime / route_cutover.FILE).read_text())
+    assert receipt['commit'] == target and receipt['mode'] == 'enroll'
+    back = run(runtime / 'venv/bin/qd', '--ship', ship, 'sync', '--back', env=env, cwd=repo)
+    assert back.returncode == 0, (back.stdout, back.stderr)
+    record = json.loads(state.read_text())
+    assert record['commit'] == earlier and record[route_cutover.REFERENCE] == receipt
+
     started = run(ship / 'runtime/venv/bin/python', '-c',
                   'import sys; from pathlib import Path; from quarterdeck import servicectl, ship; '
                   'print(servicectl.start(ship.load(Path(sys.argv[1])), qd=Path(sys.argv[2])))',

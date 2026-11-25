@@ -37,6 +37,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `hand_door.py` | a hand's one order at a time at the door: its order in hand, read as its fresh start reads it; what does not belong to it waits, unread and named on the status line, for the report and the fresh start that carries the next |
 | `hand_transcripts.py` | accounted, closed hand transcripts retained outside the seat's write allowance |
 | `provenance.py` | which launch a record belongs to |
+| `route_cutover.py` | the explicit first-cutover receipt that proves which legacy launches may resume |
 | `providers.py` | normalizes declared companies and builds public identity metadata |
 | `quota.py` | quota walls and the usage refresh |
 | `record_location.py` | logical record names that survive retirement without rewriting their ledger keys |

@@ -66,7 +66,7 @@ pool = "codex"
     monkeypatch.setattr(CodexHarness, "version", lambda self: "synthetic")
     Store(seat.ship.runtime).new("order", "desk", "worker", "synthetic launch task")
     assert tmux.socket, "every process in this test uses the private server"
-    assert "fresh" in seat.up()  # even the normal resume request becomes fresh for another harness
+    assert "fresh" in seat.up(resume=False)
 
     def finished():
         path = seat.record()

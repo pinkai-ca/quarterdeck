@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import acts, cli, credential as credentialmod, post, seat as seatmod, watch
+from quarterdeck import acts, cli, credential as credentialmod, post, provenance, seat as seatmod, watch
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.home import credential
 from quarterdeck.harness.synthetic_record import ClaudeShape
@@ -118,7 +118,8 @@ def test_a_restart_with_the_service_down_leaves_the_pool_holding_the_newer_crede
     pane = Pane("%1", "crew", "worker", 101, 80, 24, False, False, None)
     ship.tmux.panes["%1"] = pane
     Launched("%1", 101, (post.now() - timedelta(minutes=1)).isoformat(), "claude-primary", None,
-             ["claude"], "synthetic", "claude").write(seat.trusted / "launch.json")
+             ["claude"], "synthetic", "claude", start="1",
+             provider_route=provenance.provider_route(seat.pool)).write(seat.trusted / "launch.json")
     (seat.trusted / "record").write_text(str(record.path))
     link = refreshed(seat.home)
     seat.restart()

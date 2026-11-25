@@ -14,8 +14,9 @@ FIRST_ROW_BYTES = 64 * 1024
 
 
 class Unproved(ShipError):
-    def __init__(self, seat: str, reason: str = 'the existing conversation could not be identified', *, launch=None):
-        self.reason, self.launch = reason, launch
+    def __init__(self, seat: str, reason: str = 'the existing conversation could not be identified', *,
+                 launch=None, pool: str | None = None):
+        self.reason, self.launch, self.pool = reason, launch, pool
         super().__init__(f'{seat}: {reason}. Use qd fresh {seat} to start a new conversation carrying its handoff.')
 
 

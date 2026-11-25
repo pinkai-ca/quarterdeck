@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from quarterdeck import provenance
 from quarterdeck import credential, move_hold, trusted_files
 from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
@@ -158,7 +159,8 @@ def test_native_readers_gate_service_move(tmp_path, monkeypatch, program, provid
     record = build(seat.home, mode)
     # This fixture has already been joined to the launch. The service uses the ordinary ownership checks.
     when = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    before = Launched(pane.id, pane.pid, when, 'first', None, [seat.harness.program], 'synthetic', program)
+    before = Launched(pane.id, pane.pid, when, 'first', None, [seat.harness.program], 'synthetic', program,
+                      start='1', provider_route=provenance.provider_route(seat.pool))
     before.write(seat.trusted / trusted_files.LAUNCH)
     (seat.trusted / trusted_files.RECORD).write_text(f'{record}\n')
     assert seat.record() == record

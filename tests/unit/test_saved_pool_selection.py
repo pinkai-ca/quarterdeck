@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import alarms, cli, pending, post, quota, record_owner, seat as seatmod, service, ship as shipmod, watch
+from quarterdeck import alarms, cli, pending, post, provenance, quota, record_owner, seat as seatmod, service, ship as shipmod, watch
 from quarterdeck.harness import codex
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.claude import ClaudeHarness
@@ -41,7 +41,8 @@ def migrated(tmp_path, monkeypatch):
         pane = Pane(ident, 'crew', seat.name, 100 + len(live), 80, 24, False, False, None)
         live[ident] = pane
         Launched(ident, pane.pid, (post.now()-timedelta(minutes=1)).isoformat(), 'first', None,
-                 ['codex'], 'synthetic', 'codex').write(seat.trusted/'launch.json')
+                 ['codex'], 'synthetic', 'codex', start='1',
+                 provider_route=provenance.provider_route(seat.pool)).write(seat.trusted/'launch.json')
         (seat.trusted/'record').write_text(str(record.path))
         assert seat.record() == record.path
         return record
@@ -69,6 +70,8 @@ def migrated(tmp_path, monkeypatch):
     monkeypatch.setattr(Seat, '_open_window', open_window)
     monkeypatch.setattr(Seat, '_survives', lambda *a: None)
     monkeypatch.setattr(seatmod.shutil, 'which', lambda *a, **k: '/usr/bin/sh')
+    monkeypatch.setattr(seatmod, 'process_start', lambda pid: str(pid))
+    monkeypatch.setattr(seatmod, 'process_alive', lambda pid, start: False)
     monkeypatch.setattr(cli.Tmux, 'for_ship', lambda ship: tmux)
     for adapter in (CodexHarness, ClaudeHarness):
         monkeypatch.setattr(adapter, 'version', lambda self: 'synthetic')

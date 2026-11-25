@@ -1,23 +1,123 @@
-"""Durable launch boundaries for charging a resumed record to the pool that ran each turn."""
+"""Durable launch boundaries for conversation resumes and charging turns to their pools."""
 
 from __future__ import annotations
 
-from . import seat_files
+from dataclasses import replace
 
+from . import durable, seat_files, trusted_cache
+
+import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from . import trusted_files
 from .harness.base import record_fingerprint
 
 UNKNOWN = "-"
+LAUNCH_ROUTES = "launch-routes"
+_ROUTE_EVIDENCE = trusted_cache.Kept()
+
+
+def provider_route(pool) -> dict[str, str]:
+    """Identify the declared address without retaining its text or any key reference."""
+    address = 'default' if pool.endpoint is None else hashlib.sha256(pool.endpoint.encode()).hexdigest()
+    return {'provider': pool.provider, 'address': address}
+
+
+def valid_provider_route(route) -> bool:
+    return (isinstance(route, dict) and route.keys() == {'provider', 'address'}
+            and isinstance(route['provider'], str) and bool(route['provider'].strip())
+            and isinstance(route['address'], str) and bool(re.fullmatch(r'default|[0-9a-f]{64}', route['address'])))
+
+
+def launch_route_binding(launch) -> dict:
+    """Stable across updates to the same launch's notice, answers, and price."""
+    return {'pane': launch.pane, 'pid': launch.pid, 'start': launch.start, 'at': launch.at,
+            'harness': launch.harness, 'pool': launch.pool}
+
+
+def launch_route_path(folder: Path, launch) -> Path:
+    identity = json.dumps(launch_route_binding(launch), sort_keys=True).encode()
+    return folder / LAUNCH_ROUTES / (hashlib.sha256(identity).hexdigest() + '.json')
+
+
+def save_launch_route(folder: Path, launch) -> None:
+    path = launch_route_path(folder, launch)
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    evidence = {'identity': launch_route_binding(launch), 'provider_route': launch.provider_route}
+    durable.replace_file(path, json.dumps(evidence) + '\n')
+
+
+def load_launch_route(folder: Path, launch):
+    """The current launch has either matching evidence, an older companion, or an unproved side record."""
+    path = launch_route_path(folder, launch)
+    key, started = str(folder), trusted_cache.now()
+    try:
+        stamp = trusted_cache.link_stamp(path)
+        if stamp is None:
+            _ROUTE_EVIDENCE.drop(key)
+            return launch
+        if kept := _ROUTE_EVIDENCE.get(key, (stamp,)):
+            identity, route = kept
+        else:
+            raw = seat_files.read_text(path)
+            data = json.loads(raw) if raw is not None else {}
+            identity, route = data['identity'], data['provider_route']
+            after = trusted_cache.link_stamp(path)
+            if stamp != after:
+                raise ValueError('provider route changed during its read')
+            _ROUTE_EVIDENCE.keep(key, (stamp,), (after,), started, (identity, route))
+        if not launch.start or identity != launch_route_binding(launch) or not valid_provider_route(route):
+            raise ValueError('unproved launch route')
+        return replace(launch, provider_route=dict(route), route_unproved=False)
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        _ROUTE_EVIDENCE.drop(key)
+        return replace(launch, route_unproved=True)
+
+
+def before_cutover(at: str, cutover: datetime | None) -> bool:
+    if cutover is None:
+        return False
+    try:
+        when = datetime.fromisoformat(at)
+        return when.utcoffset() is not None and when < cutover
+    except (ValueError, TypeError):
+        return False
 
 
 def launch_event(record: Path, launched) -> dict:
     from .record_owner import launch_reader
 
-    return {"record": str(record), "at": launched.at, "pool": launched.pool,
-            "harness": launch_reader(launched), "price": getattr(launched, "price", None)}
+    event = {"record": str(record), "at": launched.at, "pool": launched.pool,
+             "harness": launch_reader(launched), "price": getattr(launched, "price", None)}
+    if getattr(launched, 'route_unproved', False):
+        event['provider_route'] = None
+    elif (route := getattr(launched, 'provider_route', None)) is not None:
+        event['provider_route'] = route
+    return event
+
+
+def retained_routes(folder: Path, record: Path, *, cutover: datetime | None = None):
+    """Read this record's proved routes. A pre-guard join may lack one."""
+    try:
+        stream = (folder / trusted_files.LAUNCHES).open()
+    except FileNotFoundError:
+        return
+    with stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if event.get('record') != str(record):
+                continue
+            if 'provider_route' not in event and before_cutover(event.get('at'), cutover):
+                yield None, event.get('pool')
+                continue
+            route, pool = event.get('provider_route'), event.get('pool')
+            if not valid_provider_route(route) or not isinstance(pool, str):
+                raise ValueError('invalid retained provider route')
+            yield route, pool
 
 
 def retained_launch(folder: Path, record: Path, launched) -> bool:
@@ -135,10 +235,7 @@ class Provenance:
     def prepare(self, seat, current: Path | None, launched):
         """Read launch evidence before the record transaction; cache the pre-read stamp."""
         path = seat.trusted / trusted_files.LAUNCHES
-        from .record_owner import launch_reader
-        active = ({"record": str(current), "at": launched.at, "pool": launched.pool,
-                   "harness": launch_reader(launched), "price": getattr(launched, "price", None)}
-                  if current is not None and launched is not None else None)
+        active = launch_event(current, launched) if current is not None and launched is not None else None
         stamp = (record_fingerprint(path), json.dumps(active, sort_keys=True))
         if self.sources.get(path) == stamp and path in self.launch_events:
             return path, stamp, None

@@ -246,6 +246,9 @@ def framework_check(ship: Ship) -> Check:
     if selected.warning:
         lines.append(selected.warning)
     copy_ready = selected.qd is not None or selected.first_copy
+    if cutover_problem := install.route_cutover.doctor(ship, data or {}):
+        lines.append(cutover_problem)
+        copy_ready = False
     if selected.first_copy:
         try:
             install.source_repo(ship)

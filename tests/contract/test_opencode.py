@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from quarterdeck import provenance
 from quarterdeck import endpoint, input_receipt
 from quarterdeck.harness import opencode
 from quarterdeck.harness.opencode import OpenCodeHarness
@@ -382,7 +383,10 @@ def test_scoped_hand_relaunch_refuses_unproved_directory_before_retirement(tmp_p
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: pane if ident == pane.id else None))
     legacy = build_record(seat.home, directory=seat.home.parent / "work")  # saved in the old seat-runtime folder
     Launched(pane.id, pane.pid, datetime.now(UTC).isoformat(), pool.name, None,
-             ["opencode"], VERSION, "opencode").write(seat.trusted / "launch.json")
+             ["opencode"], VERSION, "opencode", start="1",
+             provider_route=provenance.provider_route(pool)).write(seat.trusted / "launch.json")
+    if joined:
+        provenance.remember_launch(seat.trusted, legacy, seat.launched())
     monkeypatch.setattr(seat, "record", lambda: legacy if joined else None)
     assert seat.is_up
     retired = []
@@ -426,7 +430,9 @@ def test_a_jailed_hand_launched_then_resumed_through_the_seat_is_checked_against
     assert launched.argv[:2] == ("opencode", str(folder))
     record = build_record(seat.home, number=2, directory=folder)  # the session saved where that launch worked
     Launched(pane.id, pane.pid, datetime.now(timezone.utc).isoformat(), pool.name, None,
-             ["opencode"], VERSION, "opencode").write(seat.trusted / "launch.json")
+             ["opencode"], VERSION, "opencode", start="1",
+             provider_route=provenance.provider_route(pool)).write(seat.trusted / "launch.json")
+    provenance.remember_launch(seat.trusted, record, seat.launched())
     monkeypatch.setattr(seat, "record", lambda: record)
     monkeypatch.setattr(seat, "_never_resumed", lambda: False)  # stands for a seat whose role may resume
     monkeypatch.setattr(seat, "_down", lambda: "down")
@@ -436,6 +442,7 @@ def test_a_jailed_hand_launched_then_resumed_through_the_seat_is_checked_against
     # A session saved anywhere else is still refused by the same preflight, naming both folders.
     elsewhere = tmp_path / "elsewhere"
     record = build_record(seat.home, number=3, directory=elsewhere, session="ses_elsewhere")
+    provenance.remember_launch(seat.trusted, record, seat.launched())
     monkeypatch.setattr(seat, "record", lambda: record)
     with pytest.raises(ShipError, match=f"recorded {str(elsewhere)!r}, expected {str(folder)!r}"):
         seat.restart()
@@ -472,7 +479,7 @@ def test_the_seat_gives_its_adapter_the_same_folder_at_launch_and_at_every_resum
              ["opencode"], VERSION, "opencode").write(seat.trusted / "launch.json")
     seat.home.mkdir(mode=0o700, parents=True)  # the home the resumed conversation was made in: a resume refuses an absent one
     monkeypatch.setattr(seat, "_resume_target",
-                        lambda: resume_target.Target("synthetic-session", seat.home / "record.db"))
+                        lambda pool=None: resume_target.Target("synthetic-session", seat.home / "record.db"))
 
     def adapter(spec, *args, **kwargs):
         given.append(spec.cwd)

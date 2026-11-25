@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import sqlite3
 import sys
 from collections import Counter
@@ -28,12 +29,17 @@ RESTART_CONTROLS = {"pool": "restart", "harness": "fresh", "cwd": "restart", "pe
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(argv if argv is not None else sys.argv[1:])
+    try:
+        install.route_cutover.check_install_proof(argv)
+    except ShipError as error:
+        completed_error(f'qd: {error}')
+        return 2
     parser = build_parser()
     args = parser.parse_args(argv)
     if not hasattr(args, "run"):
         parser.print_help()
         return 0
-    argv = list(argv if argv is not None else sys.argv[1:])
     argv = choose_default(args, argv)
     runs_itself = (args.run in (cmd_upgrade, cmd_service, cmd_setup, cmd_init, cmd_raise, cmd_default)
                    and not (args.run is cmd_service and (getattr(args, 'settle_barrier', False)
@@ -282,6 +288,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument('--force', action='store_true', help='install and prove even when the commit is unchanged')
         p.add_argument('--all', dest='all_ships', action='store_true',
                        help='sync project ships one at a time, default last, stopping on failure')
+        if name == 'sync':
+            cutover = p.add_mutually_exclusive_group()
+            cutover.add_argument(install.route_cutover.ENROLL, action='store_true',
+                                 help='record the first provider-route guard activation on this installed ship')
+            cutover.add_argument(install.route_cutover.SKIP, action='store_true',
+                                 help='install the provider-route guard on a ship proved to have no launch history')
     return parser
 
 
@@ -385,9 +397,11 @@ def cmd_up(args: argparse.Namespace) -> list[str] | str:
 
 @resting_failover.reading_pass()
 def _up_by_name(seat: seatmod.Seat, *, resume: bool, pool: str | None) -> list[str]:
-    from . import compaction, write_bound
+    from . import compaction, fresh_handoff, write_bound
+    from .harness import resume_target
 
     runtime = seat.ship.runtime
+    unproved = None
     with lifecycle.claim(runtime, seat.name, wait=lifecycle.explicit_wait()):
         snapshot = resting_failover.snapshot(runtime)
         if snapshot.problem == 'busy' and resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
@@ -409,16 +423,29 @@ def _up_by_name(seat: seatmod.Seat, *, resume: bool, pool: str | None) -> list[s
             if live and (attempt is None or attempt.phase != 'releasing'):
                 raise ShipError(f'{seat.name} is up in {pane.id}; qd restart {seat.name} relaunches it')
             seat.require_declared_pool(pool)
-        with resting_failover.releasing(seat, previous, attempt, live=live, caller=caller_of(seat.ship)):
-            write_bound.lift(runtime, seat.name, f'qd up by {caller_of(seat.ship)}')
-            compaction.disarm(seat, adopt_successor=True)
-            if live and ((attempt is not None and attempt.phase == 'releasing')
-                         or (pool is None and resting_failover.hold_state(seat) is resting_failover.Hold.HELD)):
-                proof = already_up
-            else:
-                proof = seat._up_with_pool_choice(resume, pool=pool, fresh_after_order=True)
+        try:
+            with resting_failover.releasing(seat, previous, attempt, live=live, caller=caller_of(seat.ship)):
+                write_bound.lift(runtime, seat.name, f'qd up by {caller_of(seat.ship)}')
+                compaction.disarm(seat, adopt_successor=True)
+                if live and ((attempt is not None and attempt.phase == 'releasing')
+                             or (pool is None and resting_failover.hold_state(seat) is resting_failover.Hold.HELD)):
+                    proof = already_up
+                else:
+                    proof = seat._up_with_pool_choice(resume, pool=pool, fresh_after_order=True)
+        except resume_target.Unproved as error:
+            if error.pool is None:
+                raise
+            unproved = error
         if seat.is_up and intent:
             relaunch_intent.clear(runtime, seat.name, 'qd up')
+    if unproved is not None:
+        if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
+            choice = ['--pool', pool] if pool is not None else []
+            retry = shlex.join(['qd', 'up', seat.name, '--fresh', *choice])
+            return [f'{seat.name}: {unproved.reason}; resting release remains held. '
+                    f'An authorized operator can start a new conversation with {retry}']
+        proof = fresh_handoff.resume_unproved(seat, unproved, caller=caller_of(seat.ship).lower(),
+                                              selected_pool=pool).proof
     return [proof, service.start(seat.ship)]
 
 
@@ -607,8 +634,7 @@ def restart_needs_handoff(ship, seat, error) -> str:
     if seat.session.human:
         raise error
     from . import fresh_handoff
-    return fresh_handoff.request(seat, reason=error.reason, caller=caller_of(ship).lower(),
-                                 expected_launch=error.launch, restart=True).proof
+    return fresh_handoff.resume_unproved(seat, error, caller=caller_of(ship).lower()).proof
 
 
 def cmd_stop(args: argparse.Namespace) -> str:
@@ -1312,6 +1338,10 @@ def cmd_doctor(args: argparse.Namespace) -> Reading | list[str]:
 
 def cmd_upgrade(args: argparse.Namespace) -> list[str] | Reading:
     back, force = getattr(args, 'back', False), getattr(args, 'force', False)
+    enroll = getattr(args, 'enroll_provider_route_cutover', False)
+    skip = getattr(args, 'skip_provider_route_cutover', False)
+    if (enroll or skip) and (back or force or getattr(args, 'all_ships', False)):
+        raise ShipError('provider route enrollment is a single forward sync without --force')
     if getattr(args, 'all_ships', False):
         if back:
             raise ShipError('--all cannot be combined with --back; go back one ship at a time')
@@ -1332,7 +1362,10 @@ def cmd_upgrade(args: argparse.Namespace) -> list[str] | Reading:
     if back and (args.ref is not None or force):
         raise ShipError('--back cannot be combined with a target or --force')
     ship = load_ship(args)
-    proofs = install.upgrade(ship, args.ref or 'HEAD', Tmux.for_ship(ship), back=back, force=force)
+    enrollment = {'enroll_route_guard': True} if enroll else {}
+    if skip:
+        enrollment['skip_route_guard'] = True
+    proofs = install.upgrade(ship, args.ref or 'HEAD', Tmux.for_ship(ship), back=back, force=force, **enrollment)
     if getattr(args, "upgrade_alias", False):
         proofs[-1] += " · `upgrade` is now `qd sync`"
     return proofs

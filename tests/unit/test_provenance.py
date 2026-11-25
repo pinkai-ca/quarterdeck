@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 
-from quarterdeck import service
+from quarterdeck import provenance, service
 from quarterdeck.harness.base import State, Tokens, ToolCall, Turn, Usage, Window
 from quarterdeck.harness.synthetic_record import CodexShape
 from quarterdeck.ledger import Ledger, Machine, table
@@ -32,7 +32,8 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     record = shape.path
     (seat.trusted / 'record').write_text(str(record))
     origin = datetime.now(timezone.utc) - timedelta(minutes=10)
-    initial_launch = Launched('%1', 1001, origin.isoformat(), 'pool-a', None, ['fake'], 'synthetic')
+    initial_launch = Launched('%1', 1001, origin.isoformat(), 'pool-a', None, ['fake'], 'synthetic', start='1',
+                              provider_route=provenance.provider_route(seat.pool))
     initial_launch.write(seat.trusted / 'launch.json')
     old = Turn(0, origin + timedelta(seconds=1), origin + timedelta(seconds=2),
                'old input', 'old reply', 'synthetic-model', Tokens(1, 10, 0, 2),
@@ -59,6 +60,9 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
         return active['pane']
 
     monkeypatch.setattr(seat, '_open_window', open_window)
+    from quarterdeck import seat as seatmod
+    monkeypatch.setattr(seatmod, 'process_start', lambda pid: str(pid))
+    monkeypatch.setattr(seatmod, 'process_alive', lambda pid, start: False)
     monkeypatch.setattr(service.machine, 'processes', lambda: {})
     svc = Service(ship, tmux)
     svc.meters['worker'] = SimpleNamespace(root=1001, sample=lambda table: None,
@@ -71,6 +75,10 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     resumed = seat.launched()
     journal = [json.loads(line) for line in (seat.trusted / 'record-launches.jsonl').read_text().splitlines()]
     assert [(event['pool'], event['at']) for event in journal] == [('pool-a', initial_launch.at), ('pool-b', resumed.at)]
+    assert journal[0]['provider_route'] == initial_launch.provider_route
+    assert journal[1]['provider_route'] == resumed.provider_route == {'provider': 'synthetic', 'address': 'default'}
+    assert list(provenance.retained_routes(seat.trusted, record)) == [
+        (initial_launch.provider_route, 'pool-a'), (resumed.provider_route, 'pool-b')]
 
     # No new turn is required for unreadability to affect both launch pools.
     record.unlink()

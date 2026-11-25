@@ -137,13 +137,18 @@ def test_a_program_that_exits_at_once_is_a_refusal_not_an_up(ship: shipmod.Ship,
     from quarterdeck.harness.base import Launch
 
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
-    monkeypatch.setattr(captain.harness, "launch", lambda *args, **kwargs: Launch(("sh", "-c", "echo no such model; exit 7")))
-    with pytest.raises(ShipError, match="sh exited 7 at once; its pane stays for a look.*It printed: no such model"):
-        captain.up()
+    with monkeypatch.context() as patch:
+        patch.setattr(captain.harness, "launch",
+                      lambda *args, **kwargs: Launch(("sh", "-c", "echo no such model; exit 7")))
+        # Model the process having already been reaped when up asks for its start time.
+        patch.setattr(seatmod, "process_start", lambda pid: None)
+        with pytest.raises(ShipError, match="sh exited 7 at once; its pane stays for a look.*It printed: no such model"):
+            captain.up()
     pane = captain.pane()
     assert pane is not None and pane.dead and pane.exit_status == 7, "the pane stays, and the seat knows whose it is"
-    monkeypatch.undo()
-    assert "captain up in %" in captain.up()
+    assert captain.launched().start is None and captain.record() is None
+    proof = captain.up()
+    assert "captain up in %" in proof and "· fresh ·" in proof
     assert [p.window for p in tmux.panes("Bridge")] == ["Picard"], "the dead pane went when the seat came back"
 
 

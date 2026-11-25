@@ -3,18 +3,21 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
+import hashlib
 import json
 from threading import Event
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
-from quarterdeck import alarms, cli, fresh_handoff, post, quota, relaunch_intent, ship_locks, shutdown
+from quarterdeck import alarms, cli, fresh_handoff, post, provenance, quota, relaunch_intent, ship_locks, shutdown, watch
 from quarterdeck.harness import get, record_file, resume_target
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.harness.synthetic_record import CodexShape
 from quarterdeck.harness.types import Screen
+from quarterdeck.ship import Pool
 
 from .test_cross_program_failover import running, usage  # noqa: F401
 from .resting_attempts import UNSETTLED, save_attempt, settle
@@ -27,6 +30,123 @@ def cross_read_bound(path, reader, monkeypatch):
     monkeypatch.setattr(record_file, bound_name, bound)
     with path.open('r+b') as stream:
         stream.truncate(bound + 1)
+
+
+def single_pool(seat):
+    spec = replace(seat.spec, pools=(seat.pool.name,), pool_choices={})
+    seat.ship.seats[seat.name] = seat.spec = seat._declaration = spec
+
+
+def launched_on(seat, pool):
+    launch = replace(seat.launched(), provider_route=provenance.provider_route(pool))
+    (seat.trusted / 'record-launches.jsonl').unlink(missing_ok=True)
+    launch.write(seat.trusted / 'launch.json')
+    return launch
+
+
+@pytest.mark.parametrize('running', [False, True], indirect=True, ids=['crew', 'human'])
+def test_one_pool_up_uses_the_retained_provider_route_after_down(running, monkeypatch):
+    r, seat = running, running.seat
+    single_pool(seat)
+    destination = seat.pool
+    address = 'https://synthetic.invalid/v1'
+    historic = Pool(destination.name, 'z.ai', api_key='keys:synthetic', endpoint=address)
+    launched_on(seat, historic)
+    seat.ship.pools[destination.name] = historic
+    seat.record()
+    seat.ship.pools[destination.name] = destination
+    seat.down()
+    assert seat.launched() is None
+    assert list(provenance.retained_routes(seat.trusted, r.source.path)) == [
+        ({'provider': 'zai', 'address': hashlib.sha256(address.encode()).hexdigest()}, destination.name)
+    ]
+    journal = (seat.trusted / 'record-launches.jsonl').read_text()
+    assert address not in journal and historic.api_key not in journal
+
+    note = r.svc.store.new('order', seat.name, seat.name, 'synthetic handoff')
+    monkeypatch.setattr(cli.service, 'start', lambda _: 'synthetic service')
+    proof, _ = cli._up_by_name(seat, resume=True, pool=None)
+    if seat.session.human:
+        assert 'Use qd fresh' in proof and not r.launches
+        facts = watch.facts(seat.ship, seat.tmux, walls=[], login=[])
+        assert f'conversation resume held; use qd fresh {seat.name}' in facts.line()
+        assert address not in facts.line() and 'zai' not in facts.line()
+        assert 'started a new conversation' in seat.fresh(explicit=True)
+    else:
+        assert 'started a new conversation' in proof
+    assert seat.launched().resume is None and seat.launched().provider_route == provenance.provider_route(destination)
+    assert seat.route_resume_hold() is None
+    assert note.body in r.launches[-1][-1]
+
+
+def test_delegated_up_publishes_hold_after_a_same_name_route_change(running, monkeypatch):
+    r, seat = running, running.seat
+    single_pool(seat)
+    seat.ship.sessions['crew'] = replace(seat.ship.sessions['crew'], human=True)
+    launched_on(seat, replace(seat.pool, endpoint='https://old.synthetic.invalid/v1'))
+    seat.down()
+    monkeypatch.setattr(cli.service, 'start', lambda _: 'synthetic service')
+    monkeypatch.setattr(cli.install.copy_state, 'select',
+                        lambda *_args, **_kwargs: SimpleNamespace(checkout=False, qd=seat.folder / 'bin/qd'))
+    monkeypatch.setattr(cli.install, 'running_from', lambda _: False)
+    calls = []
+
+    def child(argv, **kwargs):
+        calls.append(argv)
+        assert argv[-3:] == ['--json', 'up', seat.name]
+        proof = cli._up_by_name(seat, resume=True, pool=None)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(proof))
+
+    monkeypatch.setattr(cli.install.subprocess, 'run', child)
+    proof, _ = cli.install.delegate_up(seat.ship, seat=seat.name, fresh=False)
+    assert 'Use qd fresh' in proof and len(calls) == 1
+    assert seat.route_resume_hold() and seat.launched() is None and not r.launches
+
+
+@pytest.mark.parametrize('running', [False, True], indirect=True, ids=['crew', 'human'])
+def test_service_restart_after_same_name_address_edit_keeps_the_live_conversation(running):
+    r, seat = running, running.seat
+    single_pool(seat)
+    prior = replace(seat.pool, endpoint='https://old.synthetic.invalid/v1')
+    launch = launched_on(seat, prior)
+    if seat.session.human:
+        with pytest.raises(resume_target.Unproved, match='provider route'):
+            r.svc.relaunch(seat, True)
+        assert seat.route_resume_hold()
+    else:
+        assert 'handoff order' in r.svc.relaunch(seat, True)
+        assert fresh_handoff.active(seat.ship.runtime, seat.name)['phase'] == 'waiting'
+    assert seat.launched() == launch and seat.is_up and not r.launches
+
+
+def test_zai_resume_requires_the_recorded_address_and_pool(running):
+    r, seat = running, running.seat
+    historic = Pool('first', 'z.ai', api_key='keys:synthetic', endpoint='https://synthetic.invalid/v1')
+    launched_on(seat, historic)
+    seat.ship.pools['first'] = historic
+    assert seat._require_resume().record == r.source.path
+    seat.ship.pools['second'] = replace(historic, name='second', api_key='keys:another-synthetic')
+    with pytest.raises(resume_target.Unproved, match='provider route'):
+        seat._require_resume(pool='second')
+    assert not r.launches
+
+
+@pytest.mark.parametrize('running', [False, True], indirect=True, ids=['crew', 'human'])
+def test_same_program_move_checks_the_selected_address_before_launching(running):
+    r, seat = running, running.seat
+    r.svc.failover()
+    before = seat.launched()
+    assert before.pool == 'second'
+    launched_on(seat, replace(seat.pool, endpoint='https://old.synthetic.invalid/v1'))
+    before = seat.launched()
+    if seat.session.human:
+        with pytest.raises(resume_target.Unproved, match='provider route'):
+            r.svc.select(seat, 'third')
+        assert seat.route_resume_hold()
+    else:
+        assert 'handoff order' in r.svc.select(seat, 'third')
+        assert fresh_handoff.active(seat.ship.runtime, seat.name)['pool'] == 'third'
+    assert seat.launched() == before and len(r.launches) == 1
 
 
 @pytest.mark.parametrize('running', [False, True], indirect=True, ids=['crew', 'human'])

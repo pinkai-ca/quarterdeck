@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from quarterdeck import cli, credential, pending, post, quota, record_owner, seat as seatmod, service, standing, watch
+from quarterdeck import cli, credential, pending, post, provenance, quota, record_owner, resting_failover, seat as seatmod, service, standing, watch
 from quarterdeck.harness import record_file
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
@@ -43,7 +43,8 @@ def running(tmp_path, monkeypatch, request):
     source.begin('old synthetic input', 'synthetic-source', 'high')
     source.end('old synthetic reply')
     Launched('%1', 101, (post.now()-timedelta(minutes=1)).isoformat(), 'first', None,
-             ['codex'], 'synthetic', 'codex').write(seat.trusted/'launch.json')
+             ['codex'], 'synthetic', 'codex', start='1',
+             provider_route=provenance.provider_route(seat.pool)).write(seat.trusted/'launch.json')
     (seat.trusted/'record').write_text(str(source.path))
     seat.record()
     launches, created, reseeds = [], [], []
@@ -74,6 +75,8 @@ def running(tmp_path, monkeypatch, request):
     monkeypatch.setattr(seat, '_open_window', open_window)
     monkeypatch.setattr(seat, '_survives', lambda *a: None)
     monkeypatch.setattr(seatmod.shutil, 'which', lambda *a, **k: '/usr/bin/sh')
+    monkeypatch.setattr(seatmod, 'process_start', lambda pid: str(pid))
+    monkeypatch.setattr(seatmod, 'process_alive', lambda pid, start: False)
     for adapter in (CodexHarness, ClaudeHarness):
         monkeypatch.setattr(adapter, 'version', lambda self: 'synthetic')
         monkeypatch.setattr(adapter, 'screen', lambda *a: Screen('', '', working=False))
@@ -158,6 +161,40 @@ def test_unknown_destination_is_skipped_without_inventing_capacity(running, late
         assert r.seat.pool.name == 'first' and not r.launches
         assert not r.svc.ledger.usage_known('second') and not r.svc.ledger.usage_known('third')
         assert any(not row.get('current') for row in watch.headline_readings(r.seat.ship) if row['pool'] == 'second')
+
+
+@pytest.mark.parametrize('running,known', [(False, True), (True, True), (False, False), (True, False)],
+                         ids=['crew-open', 'human-open', 'crew-resting', 'human-resting'], indirect=['running'])
+def test_unproved_route_at_wall_moves_crew_and_holds_a_person(running, known, monkeypatch):
+    r = running
+    r.svc.failover()
+    source = r.seat.launched()
+    assert source.pool == 'second'
+    original = r.seat.record()
+    contents = original.read_bytes()
+    provenance.launch_route_path(r.seat.trusted, source).unlink()
+    usage(r.svc, 'second', 1.0)
+    if not known:
+        r.svc.ledger.record_usage('third', Usage((), post.now(), 'synthetic unavailable'))
+        choice = resting_failover.Candidate('third', ('synthetic account', 'synthetic generation'))
+        monkeypatch.setattr(resting_failover, 'eligible_source', lambda seat: True)
+        monkeypatch.setattr(resting_failover, 'candidate',
+                            lambda service, seat, name, now: choice if name == 'third' else None)
+    order = r.svc.store.new('order', 'issuer', 'worker', 'synthetic work to continue')
+    r.svc.failover()
+    assert original.read_bytes() == contents
+    attempt = resting_failover.attempt_for(r.seat)
+    if not r.seat.session.human:
+        # A resting destination admitted by its policy takes the one reserved trial, as a new conversation.
+        assert r.seat.pool.name == 'third' and len(r.launches) == 2
+        assert r.seat.launched().resume is None and order.id in r.launches[-1][-1]
+        if known:
+            assert attempt is None
+        else:
+            assert (attempt.pool, attempt.phase, attempt.destination) == ('third', 'launched', r.seat.launched().at)
+    else:
+        assert r.seat.pool.name == 'second' and len(r.launches) == 1 and attempt is None
+        assert 'resume held' in r.seat.route_resume_hold()
 
 
 def test_unknown_or_missing_saved_selection_does_not_choose_the_first_program(running):
@@ -281,9 +318,11 @@ def test_legacy_pool_list_also_requires_record_proof_at_the_move_boundary(tmp_pa
     shape.begin('synthetic input', 'synthetic-model', 'high')
     shape.end('synthetic reply')
     record = shape.path
-    Launched('%1', 101, post.now().isoformat(), 'one', None, ['fake'], 'synthetic', 'fake').write(seat.trusted/'launch.json')
+    Launched('%1', 101, post.now().isoformat(), 'one', None, ['fake'], 'synthetic', 'fake', start='1',
+             provider_route=provenance.provider_route(seat.pool)).write(seat.trusted/'launch.json')
     (seat.trusted/'record').write_text(str(record))
     record_owner.register(seat.trusted, record, 'fake')
+    assert seat.record() == record
     calls = []
 
     def move(target=None):

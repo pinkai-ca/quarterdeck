@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from quarterdeck import provenance
 from quarterdeck import credential, jail_end, relaunch_intent, seat as seatmod, shutdown, trusted_files, watch, write_bound
 from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship, ShipError
@@ -32,7 +33,8 @@ def world(tmp_path, monkeypatch):
         w.marker = w.seat.trusted / seatmod.RETIRING
         w.launch_path = w.seat.trusted / trusted_files.LAUNCH
         w.old = seatmod.Launched('%1', 123, '2000-01-01T10:00:00+00:00', 'primary', None, ['fake'],
-                                 'synthetic', harness='fake', start='old-start')
+                                 'synthetic', harness='fake', start='old-start',
+                                 provider_route=provenance.provider_route(w.seat.pool))
         w.old.write(w.launch_path)
         w.binding = dict(seat=w.seat.name, pid=w.old.pid, start=w.old.start,
                          launch=dict(pane=w.old.pane, at=w.old.at))

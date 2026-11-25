@@ -27,6 +27,7 @@ def write_ship(project, name, *, checkout=False):
 def modeled_project(tmp_path, monkeypatch, *, fail=None, after_failure=None, marked=True):
     # Keep modeled installer tests independent of the host's running servers.
     monkeypatch.setattr(sync_all.Tmux, 'for_ship', lambda ship: SimpleNamespace(ship=ship.folder))
+    monkeypatch.setattr(install, 'sync_archive', lambda repo, commit: install.SyncArchive(commit, b'', False))
     project = tmp_path / 'synthetic-project-zzzz'
     crew = ['alpha-crew-zzzz', 'beta-crew-zzzz']
     office = 'aaa-office-zzzz'  # sorts first, but the explicit mark must put it last
@@ -46,7 +47,7 @@ def modeled_project(tmp_path, monkeypatch, *, fail=None, after_failure=None, mar
     def observe(folder):
         return states[folder.name], None
 
-    def upgrade(ship, ref, tmux=None, *, force=False, target=None):
+    def upgrade(ship, ref, tmux=None, *, force=False, target=None, archive=None):
         assert target is pinned
         calls.append((ship.folder.name, ref, force))
         if ship.folder.name == fail:
@@ -241,7 +242,7 @@ def test_moving_head_during_first_ship_does_not_change_any_target(tmp_path, monk
         resolutions.append((project, ref))
         return real_resolve(project, ref)
 
-    def upgrade(ship, ref, tmux=None, *, force=False, target=None):
+    def upgrade(ship, ref, tmux=None, *, force=False, target=None, archive=None):
         targets.append(target[1])
         if len(targets) == 1:
             (world.project / 'synthetic-next.txt').write_text('synthetic next source\n')
@@ -321,9 +322,10 @@ def test_cli_all_passes_each_ships_own_server_to_its_installer(tmp_path, monkeyp
     # No legacy servers in this synthetic project; use the real per-ship selector.
     monkeypatch.setattr(Tmux, 'defaults', lambda own: [])
     monkeypatch.setattr(install, 'resolve_target', lambda project, ref: (project, TARGET))
+    monkeypatch.setattr(install, 'sync_archive', lambda repo, commit: install.SyncArchive(commit, b'', False))
     monkeypatch.setattr(sync_all, 'observe', lambda folder: (states[folder], None))
 
-    def upgrade(ship, ref, tmux, *, force=False, target=None):
+    def upgrade(ship, ref, tmux, *, force=False, target=None, archive=None):
         assert tmux.socket == str(ship_socket(ship))
         servers.append((ship.folder, tmux))
         states[ship.folder] = target[1]

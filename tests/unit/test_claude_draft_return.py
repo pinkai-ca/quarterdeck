@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from quarterdeck import input_receipt, post, post_threads, watch
+from quarterdeck import input_receipt, post, post_threads, provenance, watch
 from quarterdeck.harness import claude
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
@@ -73,6 +73,9 @@ def test_popped_nonopen_post_is_unread_and_carried_until_actual_submission(setup
     path = original.home / "claude.jsonl"
     append(path, *[dict(entry, sessionId='synthetic-session') for entry in working()])
     seat = bind(svc, original, "claude", path)
+    launch = replace(seat.launched(), start='1', provider_route=provenance.provider_route(seat.pool), route_unproved=False)
+    launch.write(seat.trusted / 'launch.json')
+    provenance.remember_launch(seat.trusted, path, launch)
     # Neither an answer nor a report is itself an open obligation.
     parent = svc.store.new("question" if kind == "answer" else "order", seat.name, "desk", "Synthetic parent")
     message = svc.store.new(kind, "desk", seat.name, "Synthetic reply", re=parent.id)

@@ -16,9 +16,10 @@ from unittest.mock import Mock
 import pytest
 
 from quarterdeck import (
-    auth_failure, cli, lifecycle, move_hold, pending, post, quota, relaunch_intent, resting_failover, service, shutdown,
-    unit_hold, watch, write_bound,
+    auth_failure, cli, lifecycle, move_hold, pending, post, provenance, quota, relaunch_intent, resting_failover, service,
+    shutdown, unit_hold, watch, write_bound,
 )
+from quarterdeck import seat as seatmod
 from quarterdeck.harness import claude_sign_in
 from quarterdeck.harness.claude import ClaudeHarness, LOGIN_QUESTION
 from quarterdeck.harness.limits import Usage, Wall, Window
@@ -77,8 +78,12 @@ def world(tmp_path, monkeypatch):
     record = ClaudeShape(seat.home, tmp_path, 'synthetic-root', spec.model)
     record.begin('synthetic completed input', spec.model, 'none')
     record.end('synthetic completion')
+    # Every launch writes its process start and provider route, as Seat._up does; the record joins that launch.
+    monkeypatch.setattr(seatmod, 'process_start', lambda pid: str(pid))
+    monkeypatch.setattr(seatmod, 'process_alive', lambda pid, start: False)
     Launched('%1', 101, (now - timedelta(minutes=2)).isoformat(), 'first', None,
-             ['claude'], 'synthetic', 'claude').write(seat.trusted / 'launch.json')
+             ['claude'], 'synthetic', 'claude', start='101',
+             provider_route=provenance.provider_route(pools['first'])).write(seat.trusted / 'launch.json')
     (seat.trusted / 'record').write_text(str(record.path))
     seat.record()
 
@@ -433,7 +438,7 @@ def test_attempt_is_shared_by_aliases_and_same_expiry_rewrites(world, tmp_path, 
 
 
 @pytest.mark.parametrize('change', ['unit', 'unknown-unit', 'binding', 'composer', 'became-ordinary', 'access',
-                                    'busy', 'resume', 'unconfirmed-delivery'])
+                                    'busy', 'unconfirmed-delivery'])
 def test_revalidation_holds_without_spending_the_attempt(world, monkeypatch, change):
     w = world
     w.remember('rest', w.window())
@@ -456,10 +461,6 @@ def test_revalidation_holds_without_spending_the_attempt(world, monkeypatch, cha
         return None
 
     monkeypatch.setattr(resting_failover, 'unit_reason', recheck)
-    if change == 'resume':
-        def refuse_resume(*_):
-            raise resume_target.Unproved(w.seat.name, launch=original)
-        monkeypatch.setattr(w.seat, '_require_resume', refuse_resume)
     if change == 'unconfirmed-delivery':
         monkeypatch.setattr(pending, 'active', lambda *_: [SimpleNamespace(data={'phase': 'submitting'})])
     with shutdown.Stop(w.ship.runtime).installed():
@@ -476,6 +477,92 @@ def test_revalidation_holds_without_spending_the_attempt(world, monkeypatch, cha
         monkeypatch.setattr(resting_failover, 'unit_reason', lambda *_: None)
         w.svc.failover()
         assert w.seat.launched().pool == 'rest'
+
+
+def unprove(w, monkeypatch, cause):
+    """The source conversation cannot continue: its launch lost its route evidence, or it cannot be identified."""
+    if cause == 'route':
+        provenance.launch_route_path(w.seat.trusted, w.seat.launched()).unlink()
+    else:
+        def refuse_resume(*_, **_choice):
+            raise resume_target.Unproved(w.seat.name, launch=w.seat.launched())
+        monkeypatch.setattr(w.seat, '_require_resume', refuse_resume)
+
+
+@pytest.mark.parametrize('cause', ['route', 'unidentified'])
+def test_an_unproved_crew_conversation_takes_one_fresh_trial_with_its_work(world, monkeypatch, cause):
+    w = world
+    w.remember('rest', w.window())
+    w.expired()
+    contents = w.record.path.read_bytes()
+    order = w.svc.store.new('order', 'issuer', w.seat.name, 'synthetic work to carry')
+    unprove(w, monkeypatch, cause)
+    intent = relaunch_intent.path(w.ship.runtime, w.seat.name)
+    original = resting_failover.outcome
+
+    def checked_outcome(runtime, attempt, phase, destination):
+        recorded = json.loads(intent.read_text())
+        assert recorded['resume'] is False and recorded['destination']['pool'] == 'rest' and phase == 'launched'
+        return original(runtime, attempt, phase, destination)
+
+    with monkeypatch.context() as check, shutdown.Stop(w.ship.runtime).installed():
+        check.setattr(resting_failover, 'outcome', checked_outcome)
+        w.svc.failover()
+    launch = w.seat.launched()
+    assert launch.pool == 'rest' and launch.resume is None and len(w.live.launches) == 1
+    assert order.id in w.live.launches[0][-1]
+    assert w.record.path.read_bytes() == contents  # the old conversation stays whole in its record
+    rows = resting_failover.attempts(w.ship.runtime)
+    assert list(rows) == [w.seat.name]
+    assert (rows[w.seat.name].phase, rows[w.seat.name].destination) == ('launched', launch.at)
+    assert resting_failover.hold_state(w.seat) is resting_failover.Hold.HELD and not intent.exists()
+    notices = [m.body for m in w.svc.store.for_seat(w.seat.name) if m.sender == post.SHIP]
+    assert any('moved to resting pool rest' in body and 'could not continue' in body
+               and resume_target.NEW_CONVERSATION in body for body in notices)
+    w.svc.failover()
+    assert len(w.live.launches) == 1 and len(resting_failover.attempts(w.ship.runtime)) == 1
+
+
+@pytest.mark.parametrize('reason', [unit_hold.SOON, unit_hold.UNKNOWN])
+@pytest.mark.parametrize('cause', ['route', 'unidentified'])
+def test_a_unit_hold_decides_before_the_conversation_is_proved(world, monkeypatch, cause, reason):
+    w = world
+    w.remember('rest', w.window())
+    w.expired()
+    unprove(w, monkeypatch, cause)
+    proved = Mock(side_effect=AssertionError('the conversation was read before the unit decided'))
+    monkeypatch.setattr(resting_failover, 'unit_reason', lambda _: reason)
+    monkeypatch.setattr(w.seat, '_require_resume', proved)
+    w.svc.failover()
+    assert not w.live.launches and not resting_failover.attempts(w.ship.runtime) and not proved.called
+    message = 'configured user unit' if reason == unit_hold.SOON else 'needs a human'
+    assert message in move_hold.wall_reading(w.seat)[0]
+
+
+@pytest.mark.parametrize('stop', ['ineligible', 'spent', 'changed'])
+def test_an_unproved_conversation_takes_no_trial_without_a_reservation(world, monkeypatch, stop):
+    w = world
+    if stop != 'ineligible':
+        w.remember('rest', w.window())
+        w.expired()
+    unprove(w, monkeypatch, 'route')
+    if stop == 'spent':
+        monkeypatch.setattr(resting_failover, 'claim', lambda *_: None)
+    if stop == 'changed':
+        real, reads = resting_failover.candidate, []
+
+        def changing(service, seat, name, now):
+            # The choice read before the conversation is proved changes before its reservation.
+            choice = real(service, seat, name, now)
+            reads.append(name)
+            if choice is not None and reads.count(name) > 2:
+                return replace(choice, identity=(choice.identity[0], 'a later generation'))
+            return choice
+
+        monkeypatch.setattr(resting_failover, 'candidate', changing)
+    w.svc.failover()
+    assert not w.live.launches and not resting_failover.attempts(w.ship.runtime)
+    assert w.seat.launched().pool == 'first' and not relaunch_intent.path(w.ship.runtime, w.seat.name).exists()
 
 
 @pytest.mark.parametrize('failure', ['raise', 'login', 'record'])

@@ -107,7 +107,7 @@ effort = "medium"
 steps = 0
 step_seconds = 0
 '''
-    # Ordinary phase restarts follow the checkout; the upgrade proof opts into a real own copy.
+    # Ordinary phase restarts follow the checkout; the upgrade test installs before raising a seat.
     code = getattr(request, 'param', 'checkout')
     if code is not None:
         declaration = shipmod.edit(declaration, 'ship', 'code', code)
@@ -121,6 +121,8 @@ step_seconds = 0
     monkeypatch.setenv("PIP_NO_INDEX", "1")
     monkeypatch.setenv("PIP_DISABLE_PIP_VERSION_CHECK", "1")
     monkeypatch.setenv("PIP_CACHE_DIR", str(tmp_path / "pip-cache"))
+    if code is None:
+        install.upgrade(ship, "HEAD", tmux)
     seat = Seat(ship, ship.seat("synthetic-seat-zzzz"), tmux)
     children = []
     seat.up(resume=False)
@@ -250,8 +252,10 @@ def test_upgrade_stop_waits_midpaste_and_new_service_does_not_repeat(world):
     original = world.post()
     runtime = world.ship.runtime
     wait_for(lambda: (runtime / "phase-hit").exists())
-    thread, results, errors = stopping(lambda: install.upgrade(world.ship, "HEAD", world.tmux))
-    wait_for(lambda: (runtime / "term-seen").exists())
+    # Reinstall the pinned commit so the running seat and service already follow a proved copy.
+    thread, results, errors = stopping(lambda: install.upgrade(world.ship, "HEAD", world.tmux, force=True))
+    wait_for(lambda: errors or (runtime / "term-seen").exists())
+    assert not errors, errors
     assert thread.is_alive()
     (runtime / "phase-release").touch()
     thread.join(timeout=90)

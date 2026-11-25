@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import check, doctor, drill, key_launch, record_owner
-from quarterdeck.harness import get, resume_target
+from quarterdeck.harness import get
 from quarterdeck.seat import Seat
 from quarterdeck.ship import Pool, ProgramPinError, Session, load, program_adapter
 from quarterdeck.tmux import Pane
@@ -91,8 +91,6 @@ def test_restart_adopts_pin_and_keeps_saved_conversation(machines, monkeypatch):
     record.parent.mkdir(parents=True)
     record.write_text(json.dumps({'type': 'user', 'sessionId': 'conversation', 'timestamp': previous.at,
                                   'message': {'content': 'synthetic question'}}) + '\n')
-    target = resume_target.Target('conversation', record)
-    monkeypatch.setattr(changed, '_require_resume', lambda: target)
 
     def old_process_stops():
         panes.pop(previous.pane)

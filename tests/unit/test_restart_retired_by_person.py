@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from quarterdeck import provenance
 from quarterdeck import human_wake, person_quiet, post, request_queue, service as servicemod
 from quarterdeck.harness.types import Screen
 from quarterdeck.seat import Launched, process_start
@@ -21,7 +22,9 @@ def own_restart(desk, monkeypatch):
     pane = os.getpid()
     world.seat.tmux.pane = lambda _: SimpleNamespace(id='%1', pid=pane, dead=False)
     Launched('%1', pane, AT.isoformat(), 'synthetic', None, [world.seat.spec.harness], 'synthetic',
-             harness=world.seat.spec.harness, start=process_start(pane)).write(world.seat.trusted / 'launch.json')
+             harness=world.seat.spec.harness, start=process_start(pane),
+             provider_route=provenance.provider_route(world.seat.pool)).write(world.seat.trusted / 'launch.json')
+    provenance.remember_launch(world.seat.trusted, world.native.path, world.seat.launched())
     world.now = AT + timedelta(seconds=10)
     world.screen = Screen(text='', box='', working=False)
     world.calls = []

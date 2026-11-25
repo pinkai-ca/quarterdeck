@@ -1842,8 +1842,8 @@ class Service:
         except resume_target.Unproved as error:
             if self is None or seat.session.human:
                 raise
-            return fresh_handoff.request(seat, reason=error.reason, caller=caller or seat.ship.operator.lower(),
-                                         expected_launch=error.launch, service=self, restart=True).proof
+            return fresh_handoff.resume_unproved(seat, error, caller=caller or seat.ship.operator.lower(),
+                                                 service=self).proof
 
     def _relaunch(self, seat: Seat, resume: bool, *, reading=None, released=None) -> str | None:
         """Explicit recovery alone may interrupt a proven question-only wait. ``released`` is when the seat
@@ -2801,6 +2801,13 @@ class Service:
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
 
     def _try_resting_failover(self, seat, ordered, binding, came_from):
+        """One reserved trial of an eligible resting subscription.
+
+        The person, user-unit, launch, wall, delivery, screen and candidate decisions are read before the
+        conversation's continuation is proved, so a route-proof failure never masks them, and again at the
+        reservation. A same-route conversation resumes. A crew conversation that cannot be proved starts new on
+        the same reservation, carrying its open work; a person's conversation holds for their choice.
+        """
         from . import relaunch_intent, unit_hold
         from .harness import resume_target
 
@@ -2812,11 +2819,10 @@ class Service:
         choice = first_candidate()
         if choice is None:
             return
-        attempt = None
+        attempt = unproved = None
 
-        def reserve(target):
-            nonlocal attempt
-            if target is None or relaunch_intent.held(seat):
+        def admitted():
+            if relaunch_intent.held(seat):
                 return False
             if reason := resting_failover.unit_reason(self.ship):
                 category = 'resting-unit-unknown' if reason == unit_hold.UNKNOWN else 'resting-unit'
@@ -2836,25 +2842,38 @@ class Service:
             screen = Door(seat).screen()
             # At a crew wall the ordinary delivery carriage may take the queued work.
             if (screen is None or not idle.at_rest(replace(screen, queued=0))
-                    or seat.record() != target.record or move_hold.generation(seat) != binding):
-                return False
-            current = quota.candidate_pools(seat)
-            if (current != ordered or any(quota.cached_open(self.ship, self.ledger, name, seat) for name in current)
-                    or first_candidate() != choice
                     or move_hold.generation(seat) != binding):
                 return False
+            current = quota.candidate_pools(seat)
+            return not (current != ordered
+                        or any(quota.cached_open(self.ship, self.ledger, name, seat) for name in current)
+                        or first_candidate() != choice
+                        or move_hold.generation(seat) != binding)
+
+        def reserve(target, error):
+            nonlocal attempt, unproved
+            if target is None and error is None:
+                return False  # another program, or a conversation that is not resumable, takes no trial
+            if not admitted() or (target is not None and seat.record() != target.record):
+                return False
+            launch = seat.launched()
+            if launch is None:
+                return False
             attempt = resting_failover.claim(seat, choice, launch.at)
+            unproved = error
             return attempt is not None
 
         launch_error = None
         try:
             with seat._lifecycle(automatic=True, resting_clear=True), relaunch_intent.section(self, seat, relaunch_intent.RESTING, resume=True):
+                if not admitted():
+                    return
                 try:
                     proof = seat._failover_to(choice.pool, reserve=reserve)
                     if proof is None:
                         return
                     launch = seat.launched()
-                    if launch is None or launch.pool != choice.pool or not seat.is_up:
+                    if attempt is None or launch is None or launch.pool != choice.pool or not seat.is_up:
                         raise ShipError('the resting subscription did not start')
                 except (OSError, ShipError, TmuxError, sqlite3.DatabaseError) as error:
                     launch_error = error
@@ -2885,8 +2904,11 @@ class Service:
             self.log(relaunch_intent.RESTING, seat=seat.name, pool=choice.pool, outcome='login')
             return
         notice = f"moved to resting pool {choice.pool} from {came_from} at its wall; destination usage unverified"
+        if unproved is not None:
+            notice += f"; its conversation could not continue ({unproved.reason.rstrip('.')})"
         self.report_pool_move(seat, notice)
-        self.log(relaunch_intent.RESTING, seat=seat.name, pool=choice.pool, came_from=came_from, proof=proof)
+        self.log(relaunch_intent.RESTING, seat=seat.name, pool=choice.pool, came_from=came_from, proof=proof,
+                 **({'fresh': unproved.reason} if unproved is not None else {}))
 
     def _back_from_key(self, seat: Seat) -> None:
         """A seat on a key that is not spent goes back, when idle, to the first subscription before it in its list that
@@ -3016,7 +3038,7 @@ class Service:
             if self._record_identity_hold(reason) and self.resumes_on(seat, pool):
                 from .harness import resume_target
                 try:
-                    seat._require_resume(declaration.for_pool(pool))
+                    seat._require_resume(declaration.for_pool(pool), pool=pool)
                 except resume_target.Unproved as error:
                     if seat.session.human:
                         raise
@@ -3045,7 +3067,7 @@ class Service:
         if (not seat.session.human and getattr(self, 'ledger', None) is not None
                 and callable(getattr(declaration, 'for_pool', None)) and self.resumes_on(seat, pool)):
             try:
-                seat._require_resume(declaration.for_pool(pool))
+                seat._require_resume(declaration.for_pool(pool), pool=pool)
             except resume_target.Unproved as error:
                 if not quota.current_walled(seat, self.ledger):
                     return self._stage_unproved_select(seat, error, pool)

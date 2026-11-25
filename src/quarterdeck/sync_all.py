@@ -76,6 +76,21 @@ def run(project: Path, ref: str = 'HEAD', *, force: bool = False) -> dict:
     target = install.resolve_target(project, ref)
     rows = plan(project)
     stopped = False
+    archive = install.sync_archive(*target)
+    if archive.guarded:
+        # The whole fleet is read first, including ships after any that are already enrolled.
+        for row in rows:
+            ship = row['ship_object']
+            if row['disposition'] == 'passed over' or ship is None:
+                continue
+            try:
+                install.preflight_route_sync(ship, target[1])
+            except ShipError as error:
+                row.update(disposition='failed', reason=str(error))
+                stopped = True
+        if stopped:
+            return dict(target=target[1], ships=[{key: value for key, value in row.items() if key != 'ship_object'}
+                                                 for row in rows], ok=False)
     for row in rows:
         if row['disposition'] == 'passed over':
             continue
@@ -88,7 +103,7 @@ def run(project: Path, ref: str = 'HEAD', *, force: bool = False) -> dict:
             stopped = True
             continue
         try:
-            row['proof'] = install.upgrade(ship, ref, Tmux.for_ship(ship), force=force, target=target)
+            row['proof'] = install.upgrade(ship, ref, Tmux.for_ship(ship), force=force, target=target, archive=archive)
             commit, reason = observe(ship.folder)
             row.update(commit=commit, reason=reason)
             if commit != target[1] or reason is not None:

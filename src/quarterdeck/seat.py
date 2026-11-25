@@ -30,14 +30,13 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import providers, durable, harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
+from . import providers, durable, harness as harnesses, input_receipt, pending, post, provenance, record_owner, ship as shipmod, standing
 from . import carriage as carriagemod
 from . import resting_failover
 from . import key_launch, keyfile
 from .harness.base import Harness, Join, Launch, _version_in_runtime
 from .harness.capabilities import validate_selection
-from .provenance import remember_launch, retained_launch
-from .pricing import save_price
+from .pricing import binding as price_binding, save_price
 from . import trusted_cache, trusted_files
 from .harness import resume_target
 from .ship import Pool, SeatSpec, Ship, ShipError
@@ -49,6 +48,7 @@ RELAUNCH_END_SECONDS = 60.0  # a relaunch (restart, fresh, a pool move) watches 
 RETIRING = trusted_files.RETIRING
 TEMPORARY = 'temporary.json'  # in a temporary seat's trusted folder: its raising, for qd down if it is left behind
 REFUSED_RELAUNCH = trusted_files.REFUSED_RELAUNCH  # a relaunch refused while the old program was ending, until up succeeds
+ROUTE_RESUME_HELD = 'route-resume-held'  # in the seat's trusted folder until a launch succeeds
 
 
 def process_start(pid: int) -> str | None:
@@ -96,6 +96,8 @@ class Launched:
     answered: list[dict] | None = None  # the account holder's questions the framework answered in this launch
     start: str | None = None  # the program process's start time, read from /proc at launch: its identity with pid
     pool_selected: str | None = None  # the key pool explicitly selected for this live launch
+    provider_route: dict[str, str] | None = None
+    route_unproved: bool = False  # the side evidence does not establish a route or a legacy shape
 
     def write(self, path: Path) -> None:
         data = asdict(self)
@@ -110,9 +112,17 @@ class Launched:
             data.pop('pool_selected')
         if data['start'] is None:
             data.pop('start')  # unchanged launch shape where the start was not read
+        data.pop('provider_route')
+        data.pop('route_unproved')
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)  # the seat's trusted folder (trusted_files)
+        if self.provider_route is not None:
+            provenance.save_launch_route(path.parent, self)
         durable.replace_file(path, json.dumps(data, indent=2) + "\n")
-        save_price(path, price)
+        if self.provider_route is not None or self.route_unproved:
+            side = {'binding': price_binding(path), 'price': price, 'route_evidence': True}
+            durable.replace_file(path.with_name(trusted_files.PRICE), json.dumps(side) + "\n")
+        else:
+            save_price(path, price)
 
     @property
     def when(self) -> datetime:
@@ -247,14 +257,18 @@ def _binding(info: os.stat_result, raw: bytes) -> list:
     return [info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, hashlib.sha256(raw).hexdigest()]
 
 
-def _saved_price(price_path: Path, info: os.stat_result, raw: bytes) -> dict | None:
-    """pricing.saved_price, with the launch's binding taken from the one read of it, never a second read."""
+def _launch_companion(price_path: Path, info: os.stat_result, raw: bytes) -> dict | None:
+    """Read the launch-price companion under the exact binding of the bytes already read."""
     binding = _binding(info, raw)
     try:
         extra = json.loads(price_path.read_text())
-        return extra['price'] if extra['binding'] == binding else None
+        return extra if extra['binding'] == binding and 'price' in extra else None
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def _saved_price(price_path: Path, info: os.stat_result, raw: bytes) -> dict | None:
+    return (_launch_companion(price_path, info, raw) or {}).get('price')
 
 
 def parse_launch(text: str, name: str) -> dict:
@@ -576,6 +590,8 @@ class Seat:
             return self._failover_to(pool)
 
     def _failover_to(self, pool: str, *, reserve=None) -> str | None:
+        """``reserve(target, unproved)`` admits the move once the conversation is read. With a reservation, a crew
+        conversation that cannot be proved is offered to it as a new conversation; the reservation decides."""
         from .recovery import require_clear
         require_clear(self)
 
@@ -583,9 +599,16 @@ class Seat:
         observation = self._observe_selection(selected, self.ship.pool(pool))
         same_program = selected.harness == self.spec.harness
         resume = same_program and self.resumable()
-        target = self._require_resume(selected) if resume else None
+        target = unproved = None
+        if resume:
+            try:
+                target = self._require_resume(selected, pool=pool)
+            except resume_target.Unproved as error:
+                if reserve is None or self.session.human:
+                    raise
+                resume, unproved = False, error
         if reserve is not None:
-            if not reserve(target):
+            if not reserve(target, unproved):
                 return None
             from . import compaction
             compaction.disarm(self, adopt_successor=True)
@@ -606,7 +629,8 @@ class Seat:
         """Canonical launch/selection/readability metadata, without reading a launch."""
         from . import seat_migration
         result = []
-        for name in (trusted_files.LAUNCH, trusted_files.POOL, seat_migration.UNCONFIRMED):
+        for name in (trusted_files.LAUNCH, trusted_files.PRICE, provenance.LAUNCH_ROUTES, trusted_files.POOL,
+                     seat_migration.UNCONFIRMED):
             try:
                 info = trusted_files.path(self.ship.runtime, self.name, name).stat()
             except FileNotFoundError:
@@ -637,7 +661,7 @@ class Seat:
             _LAUNCHES.drop(key)
             return None
         if before is not None and (kept := _LAUNCHES.get(key, before)) is not None:
-            return copy.deepcopy(kept)
+            return provenance.load_launch_route(self.trusted, copy.deepcopy(kept))
         try:
             with open(path, 'rb') as stream:
                 info = os.fstat(stream.fileno())
@@ -657,16 +681,18 @@ class Seat:
             except ValueError as error:
                 raise LaunchUnreadable(f"{self.folder.name}: launch record refused ({error}); "
                                        "this seat is held, no other") from None
-        result = Launched(**data, price=_saved_price(price_path, info, raw))
+        companion = _launch_companion(price_path, info, raw)
+        result = Launched(**data, price=companion.get('price') if companion else None,
+                          route_unproved=companion is None or 'route_evidence' in companion)
         if before is None:
-            return result
+            return provenance.load_launch_route(self.trusted, result)
         try:
             after = (trusted_cache.stamp(path), trusted_cache.stamp(price_path))
         except OSError:
-            return result
+            return provenance.load_launch_route(self.trusted, result)
         if trusted_cache.stamp_of(info) == before[0] and _LAUNCHES.keep(key, before, after, started, result):
-            return copy.deepcopy(result)
-        return result
+            result = copy.deepcopy(result)
+        return provenance.load_launch_route(self.trusted, result)
 
     def pane(self) -> Pane | None:
         """The live pane of this seat's launch, by pane id and process id, or None."""
@@ -879,7 +905,8 @@ class Seat:
     def _note_owned(self, record: Path) -> None:
         record_owner.register(self.trusted, record, self.spec.harness)
         launched = self.launched()
-        remember_launch(self.trusted, record, launched if record_owner.launch_reader(launched) == self.spec.harness else None)
+        provenance.remember_launch(self.trusted, record,
+                                   launched if record_owner.launch_reader(launched) == self.spec.harness else None)
         owned = self.home / "conversations.owned"
         from . import seat_files
         seat_files.make_folder(self.home)  # never through a link its jail planted  # the home is its jail's to write: read and write here never follow a link
@@ -954,7 +981,7 @@ class Seat:
         from . import seat_files  # the home is its jail's: read without following a link, and bounded
         return (registered in record_owner.registry_events(self.trusted)
                 and str(record) in (seat_files.read_text(owned) or '').splitlines()
-                and retained_launch(self.trusted, record, launched)
+                and provenance.retained_launch(self.trusted, record, launched)
                 and self.launched() == launched)
 
     # -- the one relaunch path -----------------------------------------------------------
@@ -1030,9 +1057,12 @@ class Seat:
         selected = self.declaration.for_pool(target)
         same_program = selected.harness == self.spec.harness
         resume = resume and same_program
+        self._accept_pool(selected, self.ship.pool(target))
         prior_launch = self.launched()
-        prepared = (self._require_resume(selected, expected=expected)
+        prepared = (self._require_resume(selected, pool=target, expected=expected)
                     if resume and (require_resume_target or prior_launch is not None) else None)
+        if resume and prepared is None:
+            prepared = self._resume_target(self.ship.pool(target))
         relaunch_intent.record_destination(self, resume, pool=target, harness=selected.harness, target=prepared)
         if target == current and pool is None and why == 'its saved choice':
             (self.trusted / EXPLICIT).unlink(missing_ok=True)
@@ -1168,8 +1198,12 @@ class Seat:
             raise ShipError(f"{self.name} is up in {left.id}; qd restart {self.name} relaunches it")
         if target is not None and not resume:
             raise ShipError(f'{self.name}: the proved conversation cannot be resumed on this launch')
-        if resume and target is None:
-            target = self._resume_target()
+        pool = self.pool
+        if resume:
+            if target is None:
+                target = self._resume_target()
+            else:
+                self._require_record_route(target.record, pool, previous)
         if self.spec.remote_control and not self.harness.remote_control:
             raise ShipError(f"{self.name}: remote_control = true, and {self.harness.name} has no Remote Control; "
                             "select a harness that offers it or drop the key")
@@ -1203,7 +1237,6 @@ class Seat:
         else:
             brief = self.folder / 'check-opening-brief.txt'
             durable.replace_file(brief, '')  # a throwaway task-only check is not a crew conversation
-        pool = self.pool
         ship_home = self.ship.folder / "homes" / self.harness.name
         spec = self.adapter_spec()  # the adapter sees the seat's real working directory, as every preflight does
         if pool.paid_by_key:
@@ -1307,12 +1340,13 @@ class Seat:
             except (OSError, UnicodeError, carriage_plan.ImpossibleBudget) as error:
                 raise ShipError(f'{self.name}: bounded carriage could not be published ({error}); nothing was started') from None
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
+        route = provenance.provider_route(pool)
         pane = self._open_window(argv, launch.env, path)
         from . import relaunch_intent
         selected = relaunch_intent.explicit_pool(self, pool.name) if pool.paid_by_key else None
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, version, self.spec.harness,
                             sorted(map(str, prior)), launch.price, launch.recovery, notice=launch.notice,
-                            start=process_start(pane.pid), pool_selected=selected)
+                            start=process_start(pane.pid), pool_selected=selected, provider_route=route)
         if launch.deferred_opening is not None:
             from . import launch_opening
             try:
@@ -1336,6 +1370,7 @@ class Seat:
         if resume_id:
             self.record()  # retain the resumed record's new pool boundary immediately
         self._survives(pane.id, launch.argv[0])
+        (self.trusted / ROUTE_RESUME_HELD).unlink(missing_ok=True)
         if launch.deferred_opening is not None:
             launched = self._deliver_opening(launched)
         attempts = post.Attempts(self.ship.runtime)
@@ -1363,14 +1398,70 @@ class Seat:
             return launched
         return launch_opening.deliver(self, launched, readiness=self._check_opening_readiness)
 
-    def _resume_target(self) -> resume_target.Target | None:
+    def route_resume_hold(self) -> str | None:
+        if (self.trusted / ROUTE_RESUME_HELD).exists():
+            return f'{self.name}: conversation resume held; use qd fresh {self.name} to start a new conversation'
+        return None
+
+    def _require_record_route(self, record: Path | None, pool: Pool, launched: Launched | None) -> None:
+        """Compare only evidence already bound to this record, including launches that have ended."""
+        destination = provenance.provider_route(pool)
+        zai = pool.provider == 'zai'
+        from . import route_cutover
+
+        cutover = route_cutover.first(self.ship)
+        try:
+            routes = list(provenance.retained_routes(self.trusted, record, cutover=cutover)) if record is not None else []
+            compatible = all((route == destination and (not zai or source == pool.name))
+                             or (route is None and not zai) for route, source in routes)
+            current_known = (launched is None or launched.provider_route is not None or
+                             (not launched.route_unproved and provenance.before_cutover(launched.at, cutover)))
+            if routes and compatible and current_known and (not zai or all(route for route, _ in routes)):
+                return
+        except (OSError, ValueError, AttributeError):
+            pass  # an unreadable journal cannot prove equality
+        if self.session.human and not (hold := self.trusted / ROUTE_RESUME_HELD).exists():
+            durable.replace_file(hold, 'conversation resume held\n')
+        raise resume_target.Unproved(self.name, "the existing conversation's provider route could not be proved",
+                                     launch=launched, pool=pool.name)
+
+    def _failed_launch_without_record(self, launched: Launched, pinned: Path) -> bool:
+        """An exact dead pane that never had a conversation can be retried fresh."""
+        if (launched.start is not None or launched.resume is not None or launched.records_before
+                or self.tmux is None or self.harness.home_variable is None or os.path.lexists(pinned)):
+            return False
+        pane = self._lifecycle_pane(launched)
+        if pane is None or not pane.dead:
+            return False
+        try:
+            return not self.harness.records(self.home) and not os.path.lexists(pinned)
+        except (OSError, ValueError):
+            return False
+
+    def _resume_target(self, pool: Pool | None = None) -> resume_target.Target | None:
         from .record_location import retired
         pinned = self.trusted / trusted_files.RECORD
+        launched = self.launched()
+        saved = None
         try:
-            launched = self.launched()
-            if pinned.is_file() and retired(Path(pinned.read_text().strip())):
-                raise resume_target.Unproved(self.name, 'the conversation is retired', launch=launched)
+            if pinned.is_file():
+                saved = Path(pinned.read_text().strip())
+                if retired(saved):
+                    raise resume_target.Unproved(self.name, 'the conversation is retired', launch=launched)
             record = self.record()
+        except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+            record = None
+        if record is None and saved is not None:
+            owner = record_owner.lookup_reader(self, saved)
+            if owner is not None and owner != self.harness.name:
+                return None  # the selected program cannot resume a different program's record
+        if record is not None or saved is not None:
+            self._require_record_route(record or saved, pool if pool is not None else self.pool, launched)
+        elif launched is not None and launched.route_unproved:
+            if self._failed_launch_without_record(launched, pinned):
+                return None
+            self._require_record_route(None, pool if pool is not None else self.pool, launched)
+        try:
             identity = resume_target.identify(self.harness, record) if record is not None else None
             if self.launched() != launched or (launched is not None and launched.resume and identity != launched.resume):
                 return None
@@ -1378,7 +1469,7 @@ class Seat:
             return None
         return resume_target.Target(identity, record) if identity is not None else None
 
-    def _require_resume(self, spec: SeatSpec | None = None, *,
+    def _require_resume(self, spec: SeatSpec | None = None, *, pool: str | None = None,
                         expected: resume_target.Target | None = None) -> resume_target.Target:
         launched = self.launched()
         if self.resumable():
@@ -1388,7 +1479,9 @@ class Seat:
             except seat_home.Absent:
                 raise resume_target.Unproved(self.name, f'its seat home {self.home} is absent',
                                              launch=launched) from None
-        target = self._resume_target() if self.resumable() else None
+        target = None
+        if self.resumable():
+            target = self._resume_target() if pool is None else self._resume_target(self.ship.pool(pool))
         if target is None or (expected is not None and target != expected):
             raise resume_target.Unproved(self.name, launch=launched)
         self.harness.preflight_resume(self.adapter_spec(spec), self.home, lambda: target.id)
@@ -1765,6 +1858,7 @@ class Seat:
         (self.trusted / RETIRING).unlink(missing_ok=True)
         if launched is not None:
             (self.trusted / trusted_files.LAUNCH).unlink(missing_ok=True)
+            provenance.launch_route_path(self.trusted, launched).unlink(missing_ok=True)
         return True
 
     def relaunch_refused(self) -> str | None:
@@ -1959,8 +2053,13 @@ class Seat:
         """Diagnose missing identity when the service cannot read the current turn."""
         if self.resumable():
             destination = self._off_wall_destination()
-            if destination is None or self.declaration.for_pool(destination[0]).harness == self.spec.harness:
+            if destination is None:
                 self._require_resume()
+            else:
+                pool = destination[0]
+                selected = self.declaration.for_pool(pool)
+                if selected.harness == self.spec.harness:
+                    self._require_resume(selected, pool=pool)
 
     def _relaunch_off_wall(self, *, resume: bool) -> str | None:
         """A relaunch never lands on a walled pool while a declared choice has room: it takes the launch's choice.
@@ -1976,7 +2075,7 @@ class Seat:
         observation = self._observe_selection(selected, self.ship.pool(target))
         same_program = selected.harness == self.spec.harness
         resume = resume and same_program and self.resumable()
-        prepared = self._require_resume(selected) if resume else None
+        prepared = self._require_resume(selected, pool=target) if resume else None
         from . import relaunch_intent
         relaunch_intent.record_destination(self, resume, pool=target, harness=selected.harness, target=prepared)
         stopped = self._relaunch_down()
@@ -2412,7 +2511,7 @@ def bring_up(ship: Ship, tmux: Tmux) -> list[str]:
     proofs = [shipmod.fence(ship)]
     if not ship.is_repository:
         proofs.append(f"{ship.folder.name} is not its own repository: its declaration travels with the folder above")
-    from . import write_bound
+    from . import fresh_handoff, write_bound
     for seat in seats(ship, tmux, launching=True):
         if seat.is_up:
             proofs.append(f"{seat.name} already up in {seat.pane().id}")
@@ -2430,6 +2529,10 @@ def bring_up(ship: Ship, tmux: Tmux) -> list[str]:
                         proof = seat._up_with_pool_choice(True, fresh_after_order=True)
             except shipmod.KeyRefused as refused:
                 proof = str(refused)  # that seat alone stays down; the rest of the ship comes up
+            except resume_target.Unproved as error:
+                if error.pool is None:
+                    raise
+                proof = fresh_handoff.resume_unproved(seat, error, caller=ship.operator.lower()).proof
             proofs.append(proof)
     return proofs
 

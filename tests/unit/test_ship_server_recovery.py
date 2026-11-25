@@ -21,6 +21,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from quarterdeck import provenance
 from quarterdeck import cli, credential, jail_end, lifecycle, post, relaunch_intent, resting_failover, shutdown, trusted_files, watch
 from quarterdeck import seat as seatmod, server_recovery as recovery, ship as shipmod
 from quarterdeck.harness.claude import ClaudeHarness
@@ -339,7 +340,8 @@ def choice_world(tmp_path, monkeypatch):
         seat = seatmod.Seat(ship, spec, tmux)
         seat.move_to(saved)
         launched = seatmod.Launched('%1', dead_pid(), (post.now() - timedelta(minutes=1)).isoformat(), saved, None,
-                                    [old_program], 'synthetic', harness=old_program)
+                                    [old_program], 'synthetic', harness=old_program, start='original-start',
+                                    provider_route=provenance.provider_route(seat.pool))
         launched.write(seat.trusted / trusted_files.LAUNCH)
         shape = CodexShape if cross_program else ClaudeShape
         record = shape(seat.home, tmp_path, 'synthetic-resume-target', 'synthetic-model')

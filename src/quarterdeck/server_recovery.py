@@ -222,7 +222,7 @@ def pass_once(service) -> str | None:
                 if seat.session.human:
                     raise
                 result = fresh_handoff.request(seat, reason=error.reason, expected_launch=proved,
-                                               service=service, restart=True)
+                                               service=service, restart=True, pool=error.pool, immediate=False)
                 if result.disposition != 'started':
                     raise ShipError(result.proof) from error
                 new_conversations.append(seat.name)  # the restart already reported to the seat

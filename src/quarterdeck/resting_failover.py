@@ -347,7 +347,7 @@ def _observe_outcome(runtime, attempt, phase, destination):
 
 
 def observe_screen(seat, attempt, screen, launch):
-    if (launch is not None and launch.at == attempt.destination and seat.launched() == launch
+    if (attempt is not None and launch is not None and launch.at == attempt.destination and seat.launched() == launch
             and getattr(getattr(screen, 'interruption', None), 'name', None) == 'login'):
         _observe_outcome(seat.ship.runtime, attempt, 'login', launch.at)
         return True
@@ -357,7 +357,8 @@ def observe_screen(seat, attempt, screen, launch):
 def observe_record(seat, attempt, state):
     """Resolve startup by the record's first successful use or a preceding refusal."""
     launch = seat.launched()
-    if launch is None or launch.at != attempt.destination or state is None or (since := parse(launch.at)) is None:
+    if (attempt is None or launch is None or launch.at != attempt.destination
+            or state is None or (since := parse(launch.at)) is None):
         return False
     from .harness.types import AUTHENTICATION
 

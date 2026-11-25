@@ -7,11 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import check, credential, lifecycle, pending, post, post_retirement
+from quarterdeck import check, credential, lifecycle, pending, post, post_retirement, provenance
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
+from quarterdeck.ship import Pool
 from quarterdeck.tmux import Pane
 
 
@@ -20,7 +21,9 @@ class SyntheticSeat(Seat):
 
     def __init__(self, runtime, name):
         self.spec = SimpleNamespace(name=name, harness='claude', pool_choices=False, role='worker', pools=('claude',))
-        self.ship = SimpleNamespace(runtime=runtime, session_of=lambda spec: SimpleNamespace(human=False))
+        paid = Pool('synthetic-pool', 'anthropic')
+        self.ship = SimpleNamespace(runtime=runtime, code='checkout', pool=lambda name: paid,
+                                    session_of=lambda spec: SimpleNamespace(human=False))
         self.folder = runtime / 'seats' / name
         self.trusted = runtime / 'trusted' / name
         self.home = self.folder / 'home'
@@ -35,7 +38,9 @@ class SyntheticSeat(Seat):
 
     def _write_launch(self, at, prior):
         Launched(self._pane.id, self._pane.pid, at.isoformat(), 'synthetic-pool', None,
-                 ['claude'], 'synthetic', 'claude', prior).write(self.trusted / 'launch.json')
+                 ['claude'], 'synthetic', 'claude', prior, start='1',
+                 provider_route=provenance.provider_route(self.ship.pool('synthetic-pool'))).write(
+                     self.trusted / 'launch.json')
 
     def _accept_pool(self):
         pass

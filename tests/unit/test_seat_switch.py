@@ -11,10 +11,11 @@ import json
 
 import pytest
 
-from quarterdeck import cli, post, request_queue, service as servicemod, watch
+from quarterdeck import cli, post, provenance, request_queue, resting_failover, service as servicemod, watch
 from quarterdeck.harness import resume_target
 from quarterdeck.harness.types import Screen
 from quarterdeck.ship import load
+from .resting_attempts import save_attempt
 from .test_cross_program_failover import running, usage  # noqa: F401  (the fixture and its helper)
 
 SINGLE = '''[ship]
@@ -112,6 +113,27 @@ def test_the_same_program_moves_by_restart_with_resume(running):
     r.svc.account()
     assert "moved to third from second" in select(r, "third")
     assert r.seat.pool.name == "third" and r.seat.launched().resume is not None and "--resume" in r.launches[-1]
+
+
+def test_unproved_named_up_leaves_the_resting_release_for_authorized_fresh(running, monkeypatch):
+    r = running
+    r.svc.failover()
+    source = r.seat.launched()
+    # The process ended with its last launch record still available to named up.
+    r.live['pane'] = None
+    _, attempt = save_attempt(r.seat, 'failed')
+    provenance.launch_route_path(r.seat.trusted, source).unlink()
+    monkeypatch.delenv('QD_SEAT', raising=False)
+    monkeypatch.setattr(servicemod, 'start', lambda ship: 'synthetic service')
+    proof, = cli._up_by_name(r.seat, resume=True, pool=None)
+    assert 'qd up worker --fresh' in proof and len(r.launches) == 1
+    assert resting_failover.attempt_for(r.seat) == attempt
+    monkeypatch.setenv('QD_SEAT', r.seat.name)
+    with pytest.raises(resting_failover.Held, match='cannot release'):
+        cli._up_by_name(r.seat, resume=False, pool=None)
+    monkeypatch.delenv('QD_SEAT')
+    assert 'fresh' in cli._up_by_name(r.seat, resume=False, pool=None)[0]
+    assert r.seat.launched().resume is None and resting_failover.attempt_for(r.seat).phase == 'released'
 
 
 def test_a_selection_refuses_an_invalid_destination_and_waits_for_an_open_turn(running):

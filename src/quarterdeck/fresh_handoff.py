@@ -106,6 +106,13 @@ def _unavailable(seat, launched, pane):
     return pid_dead(launched.pid) is True
 
 
+def resume_unproved(seat, error, *, caller=None, service=None, selected_pool=None):
+    """Recover an unproved resume on the selected route, with a handoff while the old program can run."""
+    pool = selected_pool or (error.pool if error.pool is not None and error.pool != seat.pool.name else None)
+    return request(seat, reason=error.reason, caller=caller, expected_launch=error.launch,
+                   service=service, restart=True, pool=pool, immediate=False)
+
+
 @resting_failover.reading_pass()
 def request(seat, *, reason, caller=None, expected_launch=None, service=None, restart=False,
             pool=None, enclosed=False, immediate=None, ready=None):
