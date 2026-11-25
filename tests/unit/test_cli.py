@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -15,6 +17,37 @@ def run(capsys, *argv: str) -> tuple[int, str, str]:
     code = cli.main(list(argv))
     out = capsys.readouterr()
     return code, out.out, out.err
+
+
+def test_version_install_proof_compares_resolved_directories(tmp_path, capsys, monkeypatch):
+    runtime = tmp_path / 'actual-runtime'
+    (runtime / 'venv').mkdir(parents=True)
+    linked_runtime = tmp_path / 'runtime'
+    linked_runtime.symlink_to(runtime, target_is_directory=True)
+    monkeypatch.setattr(sys, 'prefix', str(linked_runtime / 'venv'))
+    read_state = Mock(return_value={})
+    verify = Mock()
+    monkeypatch.setattr(cli.install, '_state', read_state)
+    monkeypatch.setattr(cli.install.route_cutover, 'require_virgin', verify)
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as outside:
+        cli.main(['--version'])
+    assert outside.value.code == 0
+    assert capsys.readouterr().out.startswith('qd ')
+    read_state.assert_not_called()
+
+    monkeypatch.chdir(runtime)
+    with pytest.raises(SystemExit) as inside:
+        cli.main(['--version'])
+    assert inside.value.code == 0
+    read_state.assert_called_once_with(linked_runtime)
+    verify.assert_called_once()
+
+    linked_runtime.unlink()
+    code, _, err = run(capsys, '--version')
+    assert code == 2 and 'provider route installation proof directory is unknown' in err
+    read_state.assert_called_once()
 
 
 def test_set_writes_the_ship_file_and_says_what_applies_it(drydock: Path, capsys, monkeypatch):

@@ -168,7 +168,14 @@ def check_install_proof(argv: list[str]) -> None:
 
     live = Path(sys.prefix)
     runtime = live.parent
-    if live.name != 'venv' or runtime.name != 'runtime' or Path.cwd() != runtime:
+    if live.name != 'venv' or runtime.name != 'runtime':
+        return
+    try:
+        proof_directory = runtime.resolve(strict=True)
+        working_directory = Path.cwd().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ShipError('provider route installation proof directory is unknown') from error
+    if working_directory != proof_directory:
         return
     ship = SimpleNamespace(folder=runtime.parent, runtime=runtime)
     state = install._state(runtime)
