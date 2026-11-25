@@ -1,5 +1,6 @@
 """Synthetic identities and clocks for the signed-in background-task record forms."""
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
@@ -7,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import idle
-from quarterdeck.harness import claude, claude_record, json_record
+from quarterdeck.harness import claude, claude_background, claude_record, json_record
 
 
 VERSION = '2.1.331'
@@ -334,6 +335,285 @@ def test_streaming_and_full_reader_agree_on_bounded_output_file_equality(tmp_pat
 def bash_notice(second, **fields):
     rows = agent_notice(second, 'bash', task=SHELL, call=SHELL_CALL, **fields)
     return rows
+
+
+def absorbed_bash_transcript():
+    output = '/synthetic/shell.output'
+    text = notice_text('bash', task=SHELL, call=SHELL_CALL, output=output)
+    cwd_hint = ('Session cwd remains /synthetic/background; directory changes made by the backgrounded command '
+                'do not apply to subsequent commands.')
+    acknowledgement = (f'{claude_record.BACKGROUND_HEADER}{SHELL}. Output is being written to: {output}. '
+                       + claude_background.BASH_ACK_GUIDANCE + '\n' + cwd_hint)
+    start = [prompt(0), tool(1, SHELL_CALL, 'Bash', command='sleep 120', description='Synthetic',
+                            run_in_background=True),
+             result(2, SHELL_CALL, acknowledgement, backgroundTaskId=SHELL, interrupted=False, isImage=False,
+                    noOutputExpected=False, stdout='', stderr='', backgroundCwdHint=cwd_hint)]
+    start[0].update(uuid='synthetic-prompt-row', promptSource='typed', turnOrigin='human',
+                    promptId='synthetic-prompt', turnPromptId='synthetic-prompt')
+    start[1].update(uuid='synthetic-background-call', parentUuid=start[0]['uuid'])
+    start[2].update(uuid='synthetic-background-result', promptId='synthetic-prompt', parentUuid=start[1]['uuid'],
+                    sourceToolAssistantUUID=start[1]['uuid'], cwd='/synthetic/working')
+    start[2]['message']['content'][0]['is_error'] = False
+
+    def assistant(second, identity, parent, block):
+        return row('assistant', second, uuid=identity, parentUuid=parent, session_id=SESSION, madeBy='model',
+                   requestRef='synthetic-request', message=dict(role='assistant', stop_reason='tool_use', content=[block]))
+
+    start.append(row('attachment', 4, uuid='synthetic-deferred-tools', parentUuid=start[2]['uuid'],
+                     attachment=dict(type='deferred_tools_record')))
+    thinking = assistant(5.1, 'synthetic-thinking', start[-1]['uuid'], dict(type='thinking', thinking=''))
+    speech = assistant(5.2, 'synthetic-text', thinking['uuid'], dict(type='text', text='Synthetic working.'))
+    foreground_call = 'synthetic-foreground-call'
+    foreground = assistant(5.3, 'synthetic-foreground', speech['uuid'], dict(
+        type='tool_use', id=foreground_call, name='Bash', input=dict(command='sleep 5'), caller=dict(type='direct')))
+    foreground_result = result(6.9, foreground_call)
+    foreground_result.update(uuid='synthetic-foreground-result', parentUuid=foreground['uuid'],
+                             sourceToolAssistantUUID=foreground['uuid'], session_id=SESSION, promptId='synthetic-prompt')
+    foreground_result['message']['content'][0]['is_error'] = False
+    attachment = row('attachment', 5, uuid='synthetic-attachment', parentUuid=foreground_result['uuid'],
+                     session_id=SESSION, renderedRole='system', userType='external', entrypoint='cli', cwd='/synthetic',
+                     gitBranch='main', dataFlowOn=True, rendered=[dict(content=text)],
+                     renderedInHumanTurn=[dict(content=text)],
+                     attachment=dict(type='queued_command', prompt=text, source_uuid='synthetic-command',
+                                     delivery_id='synthetic-delivery', commandMode='task-notification',
+                                     origin=dict(kind='task-notification', producer='session-task'), rowSource='recorded',
+                                     runId='synthetic-run', timestamp=(AT + timedelta(seconds=5)).isoformat()))
+    sequence = [queue(5, 'enqueue', content=text), thinking, speech, foreground,
+                queue(7, 'remove', content=text, reason='absorbed_mid_turn', commandUuid='synthetic-command',
+                      deliveryId='synthetic-delivery'), foreground_result, attachment]
+    wire_copy = dict(type='api-request-blob', sessionId=SESSION, hash='a' * 64,
+                     message=dict(role='system', content=[dict(type='text', text=text)]))
+    return start, sequence, [wire_copy, duration(8)]
+
+
+def early_enqueued_bash_transcript():
+    start, sequence, tail = absorbed_bash_transcript()
+    typed, background, acknowledgement, _ = start
+    enqueue, thinking, _, foreground, remove, foreground_result, attachment = sequence
+    context = [typed]
+    for kind in ('environment', 'model', 'deferred_tools_delta', 'agent_listing_delta', 'mcp_instructions_delta',
+                 'skill_listing', 'total_tokens_reminder', 'session_context', 'date', 'credential_org',
+                 'prompt_snapshot'):
+        context.append(row('attachment', .1, uuid=f'synthetic-{kind}', parentUuid=context[-1]['uuid'],
+                           session_id=SESSION, attachment=dict(type=kind)))
+    thinking.update(timestamp=row('assistant', .5)['timestamp'], parentUuid=context[-1]['uuid'])
+    background.update(parentUuid=thinking['uuid'], session_id=SESSION)
+    acknowledgement['session_id'] = SESSION
+    del acknowledgement['toolUseResult']['backgroundCwdHint']
+    acknowledgement['message']['content'][0]['content'] = f'{claude_record.BACKGROUND_HEADER}{SHELL}.'
+    foreground.update(timestamp=row('assistant', 3)['timestamp'], parentUuid=acknowledgement['uuid'])
+    del foreground['message']['content'][0]['caller']
+    for assistant in (thinking, background, foreground):
+        assistant.pop('requestRef', None)
+        assistant.pop('madeBy', None)
+        assistant['requestId'] = 'synthetic-first-request'
+    snapshot = row('attachment', 6.95, uuid='synthetic-result-snapshot', parentUuid=foreground_result['uuid'],
+                   session_id=SESSION, attachment=dict(type='prompt_snapshot', cliPrefix='', contextRendering={},
+                   echoWireToolInputs=False, inlineTools=[], keptReminders=[], reminderFold={}, systemPrompt=[],
+                   systemTurns=[], toolChangeHeader='', tools=[]))
+    attachment['parentUuid'] = snapshot['uuid']
+    return context, [enqueue, thinking, background, acknowledgement, foreground, remove,
+                     foreground_result, snapshot, attachment], tail
+
+
+@pytest.mark.parametrize('transcript', [absorbed_bash_transcript, early_enqueued_bash_transcript],
+                         ids=['direct-result-parent', 'snapshot-parent'])
+def test_an_absorbed_bash_notice_settles_the_existing_turn_incrementally(tmp_path, transcript):
+    start, sequence, tail = transcript()
+    record = fixture(tmp_path, start)
+    expected = ('Bash',) if transcript is absorbed_bash_transcript else ()
+    assert claude.state(record).pending_tools == expected
+    for entry in sequence[:-1]:
+        write(record, [entry], 'a')
+        state = claude.state(record)
+        assert state.pending_tools is None and state.turn_open is True
+        assert state.queue_error == 'task notification queue unresolved'
+        assert state.queued == state.consumed == ()
+        assert claude.inputs(record).skipped
+    with record.open('a') as stream:
+        stream.write(json.dumps(sequence[-1]))
+    assert claude.state(record).queue_error == 'task notification queue unresolved'
+    with record.open('a') as stream:
+        stream.write('\n')
+    state = claude.state(record)
+    assert state.queue_error is None and state.pending_tools == () and state.turn_open is True
+    assert not claude.inputs(record).skipped
+    write(record, tail, 'a')
+    state, turns = claude.read(record)
+    cold_state, cold_turns = claude.read(fixture(tmp_path / 'cold', start + sequence + tail))
+    assert replace(state, last_write=cold_state.last_write) == cold_state and turns == cold_turns
+    assert state.queue_error is None and state.pending_tools == () and state.turn_open is False
+    assert state.active_tools == () and state.queued == state.consumed == ()
+    assert [turn.input for turn in turns] == ['synthetic prompt']
+    inputs = claude.inputs(record)
+    assert [item.text for item in inputs] == ['synthetic prompt'] and not inputs.skipped
+
+
+def test_an_absorbed_bash_notice_can_belong_to_a_native_callback_turn(tmp_path):
+    start, sequence, tail = absorbed_bash_transcript()
+    callback = agent_notice(-.02, 'bash', task='prior-task', call='prior-call')
+    callback[-1].update(uuid=start[0]['uuid'], promptId='synthetic-prompt', turnPromptId='synthetic-prompt')
+    record = fixture(tmp_path, [prompt(-2, 'prior prompt'), duration(-1)] + callback + start[1:] + sequence + tail)
+    reader = claude._Reader(record)
+    state = reader.state()
+    assert reader.background.tasks[SHELL_CALL].terminal == 'completed'
+    assert state.queue_error is None and state.turn_open is False
+    assert state.pending_tools is None  # the earlier notice has separate unresolved ownership
+    assert [turn.input for turn in reader.turns] == ['prior prompt', '']
+    inputs = claude.inputs(record)
+    assert [item.text for item in inputs] == ['prior prompt'] and not inputs.skipped
+
+
+@pytest.mark.parametrize('fault', ['mismatched-mirror', 'different-sentence', 'trailing-slash', 'wrong-output'])
+def test_a_direct_notice_requires_its_acknowledgement_output_and_measured_hint(tmp_path, fault):
+    start, sequence, tail = absorbed_bash_transcript()
+    acknowledgement = start[2]
+    mirror = acknowledgement['toolUseResult']
+    block = acknowledgement['message']['content'][0]
+    if fault == 'mismatched-mirror':
+        mirror['backgroundCwdHint'] = mirror['backgroundCwdHint'].replace('/background', '/different')
+    elif fault == 'wrong-output':
+        block['content'] = block['content'].replace('/synthetic/shell.output', '/synthetic/other.output')
+    else:
+        text, hint = block['content'].split('\n')
+        if fault == 'different-sentence':
+            hint = hint.replace('Session cwd remains', 'Working directory is')
+        else:
+            hint = hint.replace('/background;', '/background/;')
+        block['content'] = text + '\n' + hint
+        mirror['backgroundCwdHint'] = hint
+    assert_absorbed_notice_hold(tmp_path, start, sequence, tail)
+
+
+@pytest.mark.parametrize('transcript', [absorbed_bash_transcript, early_enqueued_bash_transcript],
+                         ids=['direct-result-parent', 'snapshot-parent'])
+@pytest.mark.parametrize('fault', ['no-attachment', 'no-remove', 'different-remove-text', 'different-attachment-text',
+                                   'wrong-task', 'wrong-call', 'foreign-session', 'broken-assistant-chain',
+                                   'wrong-parent', 'wrong-result', 'different-command', 'different-delivery',
+                                   'untimed-attachment', 'wrong-origin', 'extra-field', 'later-version',
+                                   'different-result-prompt', 'other-turn', 'duration', 'compaction'])
+def test_an_unmatched_absorbed_bash_notice_holds_the_queue(tmp_path, transcript, fault):
+    start, sequence, tail = transcript()
+    enqueue, attachment = sequence[0], sequence[-1]
+    foreground, remove, result = sequence[-5:-2] if transcript is early_enqueued_bash_transcript else sequence[-4:-1]
+    if fault == 'no-attachment':
+        sequence.remove(attachment)
+    elif fault == 'no-remove':
+        sequence.remove(remove)
+    elif fault == 'different-remove-text':
+        remove['content'] += '\n'
+    elif fault == 'different-attachment-text':
+        attachment['attachment']['prompt'] += '\n'
+    elif fault in ('wrong-task', 'wrong-call'):
+        key, identity = ('task-id', SHELL) if fault == 'wrong-task' else ('tool-use-id', SHELL_CALL)
+        payload = enqueue['content'].replace(f'<{key}>{identity}</{key}>', f'<{key}>unrelated</{key}>')
+        enqueue['content'] = remove['content'] = attachment['attachment']['prompt'] = payload
+    elif fault == 'foreign-session':
+        attachment['sessionId'] = 'synthetic-foreign-session'
+    elif fault == 'broken-assistant-chain':
+        foreground['parentUuid'] = 'synthetic-unrelated-assistant'
+    elif fault == 'wrong-parent':
+        attachment['parentUuid'] = 'synthetic-unrelated-result'
+    elif fault == 'wrong-result':
+        result['message']['content'][0]['tool_use_id'] = 'unrelated-tool'
+    elif fault == 'different-result-prompt':
+        result['promptId'] = 'synthetic-other-prompt'
+    elif fault == 'other-turn':
+        start.append(row('user', 4, uuid='synthetic-other-prompt-row', promptId='synthetic-other-prompt',
+                         turnPromptId='synthetic-other-prompt', promptSource='typed', turnOrigin='human',
+                         origin=dict(kind='human'), message=dict(role='user', content='another prompt')))
+    elif fault == 'duration':
+        sequence.insert(1, duration(5.05))
+    elif fault == 'compaction':
+        sequence.insert(1, compact(5.05))
+    elif fault == 'different-command':
+        attachment['attachment']['source_uuid'] = 'synthetic-other-command'
+    elif fault == 'different-delivery':
+        attachment['attachment']['delivery_id'] = 'synthetic-other-delivery'
+    elif fault == 'untimed-attachment':
+        del attachment['timestamp']
+    elif fault == 'wrong-origin':
+        attachment['attachment']['origin']['producer'] = 'unknown'
+    elif fault == 'extra-field':
+        attachment['attachment']['unknown'] = True
+    elif fault == 'later-version':
+        attachment['version'] = '2.1.332'
+    assert_absorbed_notice_hold(tmp_path, start, sequence, tail)
+
+
+@pytest.mark.parametrize('fault', ['root-ancestry', 'request', 'background-source', 'background-tool',
+                                   'background-task', 'background-prompt', 'background-text', 'snapshot-parent',
+                                   'no-snapshot', 'snapshot-shape', 'outer-timestamp', 'inner-timestamp'])
+def test_an_early_enqueue_requires_the_typed_turn_chain_and_its_own_background_call(tmp_path, fault):
+    start, sequence, tail = early_enqueued_bash_transcript()
+    _, thinking, background, acknowledgement, foreground, _, _, snapshot, attachment = sequence
+    if fault == 'root-ancestry':
+        thinking['parentUuid'] = 'unrelated-context'
+    elif fault == 'request':
+        foreground['requestId'] = 'other-request'
+    elif fault == 'background-source':
+        acknowledgement['sourceToolAssistantUUID'] = 'different-source'
+    elif fault == 'background-tool':
+        background['message']['content'][0]['id'] = 'different-call'
+    elif fault == 'background-task':
+        acknowledgement['toolUseResult']['backgroundTaskId'] = 'different-task'
+    elif fault == 'background-prompt':
+        acknowledgement['promptId'] = 'different-turn'
+    elif fault == 'background-text':
+        acknowledgement['message']['content'][0]['content'] = f'{claude_record.BACKGROUND_HEADER}{SHELL}-other.'
+    elif fault == 'snapshot-parent':
+        snapshot['parentUuid'] = 'unrelated-result'
+    elif fault == 'no-snapshot':
+        sequence.remove(snapshot)
+    elif fault == 'snapshot-shape':
+        del snapshot['attachment']['systemPrompt']
+    elif fault == 'outer-timestamp':
+        attachment['timestamp'] = snapshot['timestamp']
+    elif fault == 'inner-timestamp':
+        attachment['attachment']['timestamp'] = snapshot['timestamp']
+    assert_absorbed_notice_hold(tmp_path, start, sequence, tail)
+
+
+def assert_absorbed_notice_hold(tmp_path, start, sequence, tail):
+    record = fixture(tmp_path, start)
+    claude.state(record)
+    claude.inputs(record)
+    for entry in sequence + tail:
+        write(record, [entry], 'a')
+        claude.state(record)
+        claude.inputs(record)
+    state = claude.state(record)
+    cold = fixture(tmp_path / 'cold', start + sequence + tail)
+    cold_state = claude.state(cold)
+    assert replace(state, last_write=cold_state.last_write) == cold_state
+    assert state.pending_tools is None
+    assert state.queue_error == 'task notification queue unresolved'
+    assert state.queued == state.consumed == ()
+    assert claude.inputs(record).skipped == claude.inputs(cold).skipped
+    assert claude.inputs(record).skipped
+
+
+@pytest.mark.parametrize('transcript', [absorbed_bash_transcript, early_enqueued_bash_transcript],
+                         ids=['direct-result-parent', 'snapshot-parent'])
+@pytest.mark.parametrize('cause', ['stopped', 'ordinary-queue'])
+def test_an_absorbed_bash_notice_keeps_an_independent_queue_hold(tmp_path, transcript, cause):
+    start, sequence, tail = transcript()
+    if cause == 'stopped':
+        extra, expected = stopped_notice(-3), claude_background.STOPPED_RESUME
+    else:
+        extra, expected = [queue(-3, 'popAll')], 'popAll identity unresolved'
+    record = fixture(tmp_path, extra + start + sequence + tail)
+    assert claude.state(record).queue_error == expected
+
+
+def test_an_older_bash_notice_keeps_its_original_queue_reading(tmp_path):
+    start, sequence, tail = absorbed_bash_transcript()
+    for entry in start + sequence + tail:
+        if 'version' in entry:
+            entry['version'] = '2.1.317'
+    state = claude.state(fixture(tmp_path, start + sequence + tail))
+    assert state.queue_error is None and state.pending_tools == ()
+    assert state.consumed == (sequence[0]['content'],)
 
 
 @pytest.mark.parametrize('difference', [None, 'different-text', 'no-dequeue', 'untimed-notice', 'foreign-queue',

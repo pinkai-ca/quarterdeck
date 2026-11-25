@@ -248,14 +248,23 @@ class PendingNotice:
     text: str
     at: datetime
     dequeued_at: datetime | None = None
+    absorption: 'BashAbsorption | None' = None
+
+
+ABSORPTION_CONTEXT = frozenset({
+    'environment', 'model', 'deferred_tools_delta', 'agent_listing_delta', 'mcp_instructions_delta', 'skill_listing',
+    'total_tokens_reminder', 'session_context', 'date', 'credential_org', 'prompt_snapshot',
+})
 
 
 class TaskNoticeQueue:
-    """Read the two private task-notification routes without guessing a human queue slot."""
+    """Read private task notifications without guessing a human queue slot."""
 
-    def __init__(self, session):
-        self.session = session
+    def __init__(self, background):
+        self.background = background
+        self.session = background.session
         self.version = None
+        self.turn = None
         self.pending = None
         self.unknown = False
         self.causes = set()  # why unknown: 'stopped' names the measured resume notice; anything else is 'other'
@@ -264,14 +273,58 @@ class TaskNoticeQueue:
         self.pending, self.unknown = None, True
         self.causes.add(cause)
 
-    def take(self, entry, at):
+    def track_turn(self, row, at):
+        kind = row.get('type')
+        if kind == 'system' and row.get('subtype') in ('turn_duration', 'compact_boundary'):
+            self.turn = None
+        if self.pending is None and self.turn is not None and self.turn.row is not None:
+            if kind == 'attachment':
+                value = row.get('attachment')
+                if (isinstance(value, dict) and isinstance(value.get('type'), str)
+                        and value['type'] in ABSORPTION_CONTEXT
+                        and BashAbsorption.root(row, self.session) and at is not None
+                        and row.get('parentUuid') == self.turn.row and native_task_id(row.get('uuid'))
+                        and row['uuid'] != self.turn.row):
+                    self.turn = replace(self.turn, row=row['uuid'], context=value['type'])
+                else:
+                    self.turn = replace(self.turn, row=None, context=None)
+            elif kind == 'assistant' or root_tool_result(row) is not None:
+                self.turn = replace(self.turn, row=None, context=None)
+        if kind != 'user' or root_tool_result(row) is not None:
+            return
+        self.turn = None
+        prompt, message = row.get('promptId'), row.get('message')
+        if (at is None or row.get('version') != LINKED_VERSION or not linked_root(row, self.session)
+                or not native_task_id(prompt) or row.get('turnPromptId') != prompt
+                or not isinstance(message, dict) or message.get('role') != 'user'
+                or not isinstance(message.get('content'), str) or not message['content']):
+            return
+        typed = (row.get('origin') == {'kind': 'human'} and row.get('promptSource') == 'typed'
+                 and row.get('turnOrigin') == 'human')
+        if typed:
+            uuid = row.get('uuid')
+            self.turn = RootTurn(prompt, at, uuid if native_task_id(uuid) else None)
+
+    def take(self, entry, at, *, complete=True):
         """Return (private carrier, bound notice). A candidate alone cannot settle anything."""
         kind = entry.get('type')
+        pending = self.pending
+        if pending is not None and pending.absorption is not None:
+            disposition = pending.absorption.advance(entry, at, pending, self.background, complete=complete)
+            if disposition == 'settled':
+                self.background.end(pending.absorption.task, 'completed', pending.at)
+                self.pending = None
+                return True, None
+            if disposition is not None:
+                return disposition == 'private', None
+            self._unknown()
+            pending = None
         if entry.get('isSidechain'):
             return False, None
         if 'version' in entry:
             self.version = entry['version']
-        pending = self.pending
+        if complete:
+            self.track_turn(entry, at)
         if linked_notice_origin(entry):
             # A Bash notice is the seat's own only where this queue already holds it, dequeued, with the same text.
             notice = linked_user_notice(entry, own_shell=pending is not None and pending.dequeued_at is not None
@@ -280,12 +333,18 @@ class TaskNoticeQueue:
                     and linked_root(entry, self.session) and at is not None and at > pending.dequeued_at
                     and entry['message']['content'] == pending.text):
                 self.pending = None
+                if complete:
+                    self.turn = RootTurn(entry['promptId'], at)
                 return True, (notice, pending.at)
             self._unknown('stopped' if pending is None and stopped_resume_notice(entry, self.session) else 'other')
             return True, None
         if kind in ('user', 'assistant') or entry.get('subtype') == 'compact_boundary':
-            # A different actual turn or compaction breaks the measured carrier sequence.
+            # Only the measured assistant chain can carry a notice through a turn already in progress.
             if pending is not None:
+                if kind == 'assistant' and pending.dequeued_at is None and complete:
+                    pending.absorption = BashAbsorption.start(entry, at, pending, self.background, self.turn)
+                    if pending.absorption is not None:
+                        return False, None
                 self._unknown()
         if kind != 'queue-operation' or self.version != LINKED_VERSION:
             return False, None
@@ -357,6 +416,7 @@ class WatchOrigin:
 class BashAcknowledgement:
     description: str
     output: str
+    prompt: str | None
 
 
 def watch_output(block, task):
@@ -373,9 +433,11 @@ BASH_ACK_GUIDANCE = (
     'Read the file only if the user asks for progress, or if you need a line it prints before you can go on, '
     "such as a server's ready line or port."
 )
+BASH_CWD_HINT = re.compile(r'Session cwd remains [^;\r\n]*[^/;\r\n]; directory changes made by the '
+                          r'backgrounded command do not apply to subsequent commands\.')
 
 
-def bash_acknowledgement(entry, block, task, call, call_row, command, description):
+def bash_acknowledgement(entry, block, task, call, call_row, command, description, *, with_cwd_hint=False):
     result = entry['toolUseResult']
     if (not native_task_id(call) or not native_task_id(call_row)
             or entry.get('sourceToolAssistantUUID') != call_row or entry.get('parentUuid') != call_row
@@ -384,9 +446,17 @@ def bash_acknowledgement(entry, block, task, call, call_row, command, descriptio
             or any(result.get(key) is not False for key in ('interrupted', 'isImage', 'noOutputExpected'))):
         return None
     output = watch_output(block, task)
-    if (output is not None and block['content'] == f'{BACKGROUND_HEADER}{task}. Output is being written to: '
-            f'{output}. {BASH_ACK_GUIDANCE}'):
-        return BashAcknowledgement(description, output)
+    if output is None:
+        return None
+    expected = f'{BACKGROUND_HEADER}{task}. Output is being written to: {output}. {BASH_ACK_GUIDANCE}'
+    if with_cwd_hint:
+        hint = result.get('backgroundCwdHint')
+        if not isinstance(hint, str) or BASH_CWD_HINT.fullmatch(hint) is None:
+            return None
+        expected += '\n' + hint
+    if block['content'] == expected:
+        prompt = entry.get('promptId')
+        return BashAcknowledgement(description, output, prompt if native_task_id(prompt) else None)
     return None
 
 
@@ -411,6 +481,7 @@ class Task:
     undated_evidence: bool = False  # a row about it the reader could not date: it may be from after any launch
     watch: WatchOrigin | None = None
     bash_ack: BashAcknowledgement | None = None
+    absorption_ack: BashAcknowledgement | None = None
 
 
 def ship_watch_commands(record: Path | None) -> frozenset[str]:
@@ -533,12 +604,15 @@ class BackgroundBash:
                 cwd = entry.get('cwd')
                 origin = WatchOrigin(command, description, output, entry.get('promptId'), exact,
                                      cwd if isinstance(cwd, str) else None)
-            ack = None
+            ack = absorption_ack = None
             if version == LINKED_VERSION and not watch and own_call and linked and called_at < at:
                 ack = bash_acknowledgement(entry, block, task, call, call_row, command, description)
+                if ack is None:
+                    absorption_ack = bash_acknowledgement(entry, block, task, call, call_row, command, description,
+                                                          with_cwd_hint=True)
             self.tasks[call] = Task(call, task, at, at, other_evidence_at=at, version=version, called_at=called_at,
                                     acknowledged_at=at, inbox_watch_started=called_at if watch else None,
-                                    watch=origin, bash_ack=ack)
+                                    watch=origin, bash_ack=ack, absorption_ack=absorption_ack)
             self.task_calls[task] = call
             for early in self.early.pop(call, ()):
                 self.notice(self.tasks[call], *early)
@@ -1210,9 +1284,11 @@ class BashRelaunchQueue:
 
 
 @dataclass(frozen=True)
-class WatchTurn:
+class RootTurn:
     prompt: str
     started: datetime
+    row: str | None = None
+    context: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1223,11 +1299,200 @@ class ForegroundBash:
 
 
 @dataclass
+class BashAbsorption:
+    """A root Bash completion taken into the foreground tool's existing turn."""
+
+    turn: RootTurn
+    request_key: str
+    request: str
+    assistant: str
+    task: Task | None = None
+    background_call: str | None = None
+    background_result: str | None = None
+    foreground: ForegroundBash | None = None
+    removal: tuple[str, str] | None = None
+    result: str | None = None
+    snapshot: str | None = None
+
+    @staticmethod
+    def root(row, session):
+        return (row.get('version') == LINKED_VERSION and linked_root(row, session)
+                and row.get('session_id', session) == session)
+
+    @staticmethod
+    def assistant_block(row):
+        message = row.get('message')
+        if (row.get('type') != 'assistant' or not isinstance(message, dict)
+                or message.get('role') != 'assistant' or message.get('stop_reason') != 'tool_use'
+                or not native_task_id(row.get('uuid'))):
+            return None
+        content = message.get('content')
+        if isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict):
+            return content[0]
+        return None
+
+    @classmethod
+    def start(cls, row, at, pending, background, turn):
+        if (pending.notice.kind != 'bash' or turn is None or at is None or at < turn.started
+                or not cls.root(row, background.session)):
+            return None
+        block = cls.assistant_block(row)
+        if block is None or block.get('type') != 'thinking' or not isinstance(block.get('thinking'), str):
+            return None
+        task = background.tasks.get(pending.notice.call)
+        if task is None:
+            # The enqueue may have been written ahead of the first request's assistant and tool rows.
+            if (turn.context != 'prompt_snapshot' or row.get('parentUuid') != turn.row or row['uuid'] == turn.row
+                    or at >= pending.at or not native_task_id(row.get('requestId'))
+                    or pending.notice.call in background.calls):
+                return None
+            return cls(turn, 'requestId', row['requestId'], row['uuid'])
+        ack = task.bash_ack or task.absorption_ack
+        if (not cls.owns(task, pending, background, turn) or ack is None or ack.prompt != turn.prompt
+                or ack.output != pending.notice.output or at < task.started or row.get('madeBy') != 'model'
+                or not native_task_id(row.get('requestRef'))):
+            return None
+        return cls(turn, 'requestRef', row['requestRef'], row['uuid'], task=task)
+
+    @staticmethod
+    def owns(task, pending, background, turn):
+        return (task is not None and task.version == LINKED_VERSION and task.task == pending.notice.task
+                and task.inbox_watch_started is None
+                and task.phase == 'pending' and not task.invalid and task.call not in background.unknown_calls
+                and task.called_at >= turn.started and task.latest <= pending.at)
+
+    def next_assistant(self, row):
+        if (row.get(self.request_key) == self.request and row.get('parentUuid') == self.assistant
+                and row.get('uuid') != self.assistant
+                and (self.request_key == 'requestId' or row.get('madeBy') == 'model')):
+            return self.assistant_block(row)
+        return None
+
+    def tool_result(self, row, call, parent):
+        result = root_tool_result(row)
+        if (result is not None and result.get('tool_use_id') == call and result.get('is_error') is False
+                and row.get('promptId') == self.turn.prompt and row.get('sourceToolAssistantUUID') == parent
+                and row.get('parentUuid') == parent and native_task_id(row.get('uuid')) and row['uuid'] != parent):
+            return result
+        return None
+
+    def find_background(self, row, at, pending):
+        if at >= pending.at:
+            return None
+        if self.background_call is None:
+            block = self.next_assistant(row)
+            if block is not None and block.get('type') == 'tool_use' and block.get('name') == 'Bash':
+                args = block.get('input')
+                if (block.get('id') == pending.notice.call and isinstance(args, dict)
+                        and args.get('run_in_background') is True):
+                    self.background_call = row['uuid']
+                    return 'ordinary'
+        else:
+            mirror = row.get('toolUseResult')
+            result = self.tool_result(row, pending.notice.call, self.background_call)
+            if (result is not None and isinstance(mirror, dict)
+                    and mirror.get('backgroundTaskId') == pending.notice.task):
+                text = result.get('content')
+                marker = re.escape(BACKGROUND_HEADER + pending.notice.task)
+                if isinstance(text, str) and re.match(rf'{marker}(?![A-Za-z0-9_-])', text) is not None:
+                    self.background_result = self.assistant = row['uuid']
+                    return 'ordinary'
+        return None
+
+    def advance(self, row, at, pending, background, *, complete):
+        if not complete or at is None or at < self.turn.started:
+            return None
+        # The ordinary tool reader sees the acknowledgement after this queue reader sees its row.
+        if self.task is None:
+            if self.background_result is None:
+                if not self.root(row, background.session):
+                    return None
+                return self.find_background(row, at, pending)
+            self.task = background.tasks.get(pending.notice.call)
+        if not self.owns(self.task, pending, background, self.turn) or at < self.task.started:
+            return None
+        if row.get('type') == 'queue-operation':
+            if (self.foreground is not None and self.removal is None and at > pending.at
+                    and row.keys() == QUEUE_KEYS | {'content', 'reason', 'commandUuid', 'deliveryId'}
+                    and row['sessionId'] == background.session and row['operation'] == 'remove'
+                    and row['reason'] == 'absorbed_mid_turn' and row['content'] == pending.text
+                    and native_task_id(row['commandUuid']) and native_task_id(row['deliveryId'])
+                    and row['commandUuid'] != row['deliveryId']):
+                self.removal = row['commandUuid'], row['deliveryId']
+                return 'private'
+            return None
+        if not self.root(row, background.session):
+            return None
+        if self.foreground is None:
+            block = self.next_assistant(row)
+            if block is None or self.background_result is not None and at >= pending.at:
+                return None
+            if self.background_result is None and block.get('type') == 'text' and isinstance(block.get('text'), str):
+                self.assistant = row['uuid']
+                return 'ordinary'
+            if self.background_result is None and block.get('caller') != {'type': 'direct'}:
+                return None
+            self.foreground = foreground_bash(row, at)
+            return 'ordinary' if self.foreground is not None and self.foreground.call != self.task.call else None
+        if self.removal is None:
+            return None
+        if self.result is None:
+            mirror = row.get('toolUseResult')
+            if (self.tool_result(row, self.foreground.call, self.foreground.row) is not None
+                    and isinstance(mirror, dict) and 'backgroundTaskId' not in mirror
+                    and at >= self.foreground.started):
+                self.result = row['uuid']
+                return 'ordinary'
+            return None
+        if self.background_result is not None and self.snapshot is None:
+            if (row.get('type') == 'attachment' and row.get('parentUuid') == self.result
+                    and native_task_id(row.get('uuid')) and row['uuid'] != self.result
+                    and self.result_snapshot(row.get('attachment'))):
+                self.snapshot = row['uuid']
+                return 'ordinary'
+            return None
+        if self.attachment(row, at, pending):
+            return 'settled'
+        return None
+
+    @staticmethod
+    def result_snapshot(value):
+        return (isinstance(value, dict) and value.get('type') == 'prompt_snapshot'
+                and value.keys() == {'type', 'cliPrefix', 'contextRendering', 'echoWireToolInputs', 'inlineTools',
+                                     'keptReminders', 'reminderFold', 'systemPrompt', 'systemTurns',
+                                     'toolChangeHeader', 'tools'})
+
+    def attachment(self, row, at, pending):
+        if (row.keys() != {'type', 'attachment', 'parentUuid', 'uuid', 'timestamp', 'isSidechain', 'rendered',
+                           'renderedInHumanTurn', 'renderedRole', 'session_id', 'sessionId', 'userType',
+                           'entrypoint', 'cwd', 'version', 'gitBranch', 'dataFlowOn'}
+                or row['type'] != 'attachment' or row['parentUuid'] != (self.snapshot or self.result)
+                or not native_task_id(row['uuid']) or row['uuid'] in (self.snapshot, self.result, self.foreground.row)
+                or row['dataFlowOn'] is not True or row['renderedRole'] != 'system'
+                or row['userType'] != 'external' or row['entrypoint'] != 'cli'
+                or not all(isinstance(row[key], str) for key in ('cwd', 'gitBranch'))):
+            return False
+        for rendered in (row['rendered'], row['renderedInHumanTurn']):
+            if (not isinstance(rendered, list) or len(rendered) != 1 or not isinstance(rendered[0], dict)
+                    or rendered[0].keys() != {'content'} or not isinstance(rendered[0]['content'], str)):
+                return False
+        value = row['attachment']
+        return (isinstance(value, dict) and value.keys() == {'type', 'prompt', 'source_uuid', 'delivery_id',
+                                                           'commandMode', 'origin', 'rowSource', 'runId', 'timestamp'}
+                and value['type'] == 'queued_command' and value['commandMode'] == 'task-notification'
+                and value['origin'] == {'kind': 'task-notification', 'producer': 'session-task'}
+                and value['rowSource'] == 'recorded' and isinstance(value['runId'], str) and bool(value['runId'])
+                and when(value['timestamp']) is not None and value['prompt'] == pending.text
+                and (self.snapshot is None or when(value['timestamp']) == at == pending.at)
+                and (value['source_uuid'], value['delivery_id']) == self.removal)
+
+
+@dataclass
 class WatchCompletion:
     task: Task
     text: str
     enqueued_at: datetime
-    turn: WatchTurn
+    turn: RootTurn
     phase: str
     foreground: ForegroundBash | None = None
     disposed_at: datetime | None = None
@@ -1333,7 +1598,7 @@ class WatchCompletionQueue:
             if root_tool_result(row):
                 return
             prompt = row.get('promptId')
-            self.turn = (WatchTurn(prompt, at) if native_task_id(prompt) and row.get('turnPromptId') == prompt
+            self.turn = (RootTurn(prompt, at) if native_task_id(prompt) and row.get('turnPromptId') == prompt
                          and row.get('origin') == {'kind': 'human'} and row.get('promptSource') == 'typed'
                          and row.get('turnOrigin') == 'human' and message.get('role') == 'user'
                          and isinstance(content, str) and content else None)

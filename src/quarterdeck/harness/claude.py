@@ -540,13 +540,16 @@ class _ClaudeInputs(Inputs):
               or (row.get('type') == 'api-request' and row.get('version') == LINKED_VERSION
                   and row.get('querySource') == 'repl_main_thread')
               or row.get('type') == 'ai-title' and not ai_title(row)
-              or (row.get('type') == 'system' and row.get('subtype') in ('turn_duration', 'bridge_status')
+              or (row.get('type') == 'attachment' and isinstance(row.get('attachment'), dict)
+                  and row['attachment'].get('type') == 'queued_command')
+              or (row.get('type') == 'system' and row.get('subtype') in ('turn_duration', 'bridge_status',
+                                                                      'compact_boundary')
                   and row.get('version') == LINKED_VERSION), parse=claude_record.parse)
 def inputs(record: Path, snapshot) -> list[Input]:
     found, queued = _ClaudeInputs(), []
     dequeue = _TextlessDequeue()
-    task_queue = TaskNoticeQueue(record.stem)
     background = BackgroundBash(record)
+    task_queue = TaskNoticeQueue(background)
     bash_relaunch = BashRelaunchQueue(background)
     watch_completion = WatchCompletionQueue(background)
     startup = _RemoteControlStartup(record.stem)
@@ -583,7 +586,7 @@ def inputs(record: Path, snapshot) -> list[Input]:
                 found.skip(line, kind, MIXED_REMOTE_INPUT if mixed_remote_input(row)
                            else 'unknown native data-flow metadata')
             continue
-        private, _ = task_queue.take(row, at)
+        private, _ = task_queue.take(row, at, complete=snapshot.ends_newline or line != snapshot.line_count)
         if private:
             continue  # the native task queue produces no receipt for a person
         if kind == 'ai-title' and not ai_title(row):
@@ -940,8 +943,8 @@ class _Reader(JsonLinesReader):
         self.textless_dequeue = _TextlessDequeue()
         self.queue_slots = []  # FIFO, including returned drafts and consumed echo identities
         self.queue_version = None
-        self.task_queue = TaskNoticeQueue(record.stem)
         self.background = BackgroundBash(record)
+        self.task_queue = TaskNoticeQueue(self.background)
         self.bash_relaunch = BashRelaunchQueue(self.background)
         self.watch_completion = WatchCompletionQueue(self.background)
         self.children = Children(record)
@@ -1034,12 +1037,14 @@ class _Reader(JsonLinesReader):
             if watch_disposition == 'turn':
                 self.start_notice_turn(at)
             return
-        private, evidence = self.task_queue.take(entry, at)
+        private, evidence = self.task_queue.take(entry, at, complete=entry is not self.unterminated)
         if private:
             if evidence is not None:
                 notice, enqueued_at = evidence
                 if notice.kind == 'bash':
                     self.background.delivered_to_child(notice, enqueued_at, self.children.compacted_at)
+                    if kind == 'user':
+                        self.start_notice_turn(at)  # a recorded callback can own later root tool calls
                 else:
                     self.children.notice(notice, enqueued_at)
                     self.start_notice_turn(at)
