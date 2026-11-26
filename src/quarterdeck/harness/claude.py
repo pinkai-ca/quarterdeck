@@ -71,10 +71,6 @@ PASTED_OPENING_LINE = re.compile(r'^<pasted_content(?= id="[^"\n]+">$)', re.M)
 DATA_FLOW_ROWS = ('data-flow-records', 'data-flow-incomplete', 'derived-from')
 RESPONSE_ID = re.compile(r'msg_(?:staging_|local_)?[A-Za-z0-9]{1,64}')
 TOOL_USE_ID = re.compile(r'toolu_[A-Za-z0-9]{1,64}')
-COMPACT_SNAPSHOT_TOOLS = ('Agent', 'Bash', 'TaskStop', 'Read', 'SendUserFile', 'Write')  # last three: 2.1.331
-# Measured on 2.1.331 person's seats (sanitized shapes): a tool event restated in a compaction snapshot. Remote
-# Control events stay with their measured joins: a link at startup, an input bound to its typed root.
-SNAPSHOT_EVENT_TOOLS = ('Read',)
 REMOTE_CONTROL_EVENTS = ('RemoteControlLinked', 'RemoteControlInput')
 MEMORY_WRITE_ID = re.compile(r'[-0-9_a-z]{55}')
 
@@ -141,19 +137,15 @@ def _derived_session(entry, session: str) -> bool:
             and (entry['via'] in ('resume', 'branch') or entry['via'] == 'compact' and entry['id'] == session))
 
 
-def _data_flow_snapshot_item(item, *, for_compaction: bool) -> bool:
-    if _data_flow_snapshot_tool(item):
-        return for_compaction or item['tool_name'] in COMPACT_SNAPSHOT_TOOLS
+def _data_flow_snapshot_item(item) -> bool:
+    # Remote Control events still need their own startup or input join.
     if _data_flow_event(item):
-        name = item['tool_name']
-        if for_compaction:
-            return name not in REMOTE_CONTROL_EVENTS
-        return name in SNAPSHOT_EVENT_TOOLS
-    return (_data_flow_response(item) or _data_flow_memory_write(item)
-            or for_compaction and _data_flow_update_event(item))
+        return item['tool_name'] not in REMOTE_CONTROL_EVENTS
+    return (_data_flow_snapshot_tool(item) or _data_flow_response(item)
+            or _data_flow_memory_write(item) or _data_flow_update_event(item))
 
 
-def data_flow_metadata(row, *, for_compaction: bool = False) -> bool:
+def data_flow_metadata(row) -> bool:
     """Root transcript bookkeeping from the native v1 writers and sanitized row shapes."""
     kind = row.get('type')
     if (kind not in DATA_FLOW_ROWS or type(row.get('v')) is not int or row['v'] != 1
@@ -167,9 +159,9 @@ def data_flow_metadata(row, *, for_compaction: bool = False) -> bool:
             return False
         if snapshot:
             # A compaction snapshot restates what the conversation already carried; it is not new input.
-            return all(_data_flow_snapshot_item(item, for_compaction=for_compaction) for item in items)
+            return all(_data_flow_snapshot_item(item) for item in items)
         return (all(_data_flow_response(item) or _data_flow_memory_write(item) for item in items)
-                or for_compaction and _compaction_data_flow_update(items))
+                or _data_flow_update(items))
     if kind == 'data-flow-incomplete':
         codes = row.get('codes')
         return (fields == {'codes'} and isinstance(codes, list) and bool(codes)
@@ -461,8 +453,8 @@ def _data_flow_update_event(event) -> bool:
             or (source['type'] == 'unknown' and source_id is None))
 
 
-def _compaction_data_flow_update(items) -> bool:
-    """Measured .331 updates that contain no compaction boundary, even when other readers hold them."""
+def _data_flow_update(items) -> bool:
+    """A single measured event, optionally paired with a response reference."""
     if not 1 <= len(items) <= 2:
         return False
     events = [item for item in items if not (_data_flow_response(item) and item.keys() == {'listed', 'response_id'})]
@@ -496,7 +488,7 @@ def compactions(record: Path):
             for row in rows:
                 kind = row.get('type')
                 if kind in DATA_FLOW_ROWS:
-                    if not data_flow_metadata(row, for_compaction=True):
+                    if not data_flow_metadata(row):
                         raise ValueError('unknown native data-flow metadata')
                     session = row['sessionId']
                     if not isinstance(session, str) or not session:
