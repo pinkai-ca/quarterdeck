@@ -135,13 +135,17 @@ def emit(args: argparse.Namespace, result: Any, *, completed_act: bool = False, 
     return output.emit(result, json_output=args.json, completed_act=completed_act, emitted=emitted)
 
 
+class MainParser(argparse.ArgumentParser):
+    def format_help(self) -> str:
+        return 'Send a request to the desk with qd "a sentence" or echo text | qd\n' + super().format_help()
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="qd", description=__doc__.split("\n\n")[0],
-                                     epilog=desk_request.help_text())
+    parser = MainParser(prog="qd", description=__doc__.split("\n\n")[0], epilog=desk_request.help_text())
     parser.add_argument("--ship", help="the ship folder (default: $QD_SHIP, else the default ship: qd default)")
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     parser.add_argument("--version", action="version", version=f"qd {__version__}")
-    verbs = parser.add_subparsers(title="verbs", metavar="<verb>")
+    verbs = parser.add_subparsers(title="verbs", metavar="<verb>", parser_class=argparse.ArgumentParser)
 
     def verb(name: str, run, help: str) -> argparse.ArgumentParser:
         p = verbs.add_parser(name, help=help, description=help)

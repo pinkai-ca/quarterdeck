@@ -199,20 +199,42 @@ def test_terminal_request_uses_the_unique_desk_and_the_ordinary_operator_post(sh
     cli.service.alive.assert_called_once_with(crew / 'runtime')
 
 
-def test_default_crew_selects_the_fleet_and_explicit_ship_keeps_its_own(shell, capsys, monkeypatch):
-    earlier = declare(shell.project / 'ships' / 'first', human=False)
-    embedded = declare(shell.project / 'ships' / 'second')
+@pytest.mark.parametrize('empty_office', [False, True])
+def test_only_the_acting_ship_is_considered_when_the_office_declaration_is_absent(shell, capsys, monkeypatch,
+                                                                                 empty_office):
+    earlier = declare(shell.project / 'ships' / 'first')
+    other = declare(shell.project / 'ships' / 'second')
     (shell.project / 'ships/.default').write_text('first\n')
+    if empty_office:
+        (shell.project / 'office').mkdir()
     input_text(monkeypatch)
     assert cli.main(['Take a look']) == 0
     assert shell.identity.call_args.args[0].folder == earlier
-    assert drop(earlier).to == 'desk@second' and not (embedded / 'runtime').exists()
-    other = declare(shell.workspace / 'different')
+    order = drop(earlier)
+    assert (order.sender, order.to) == ('ada', 'desk')
+    out, err = capsys.readouterr()
+    assert not err and out == f'Posted {order.id} to desk@first · see the reply with qd inbox --wait\n'
+    assert not (other / 'runtime').exists()
+    assert not (shell.project / 'office' / 'runtime').exists()
+
     monkeypatch.setenv('QD_SHIP', str(other))
     assert cli.main(['A second request']) == 0
-    assert drop(other).body.endswith('A second request')
-    out, _ = capsys.readouterr()
-    assert out.endswith('see the reply with qd inbox --wait\n')
+    order = drop(other)
+    assert (order.sender, order.to) == ('ada', 'desk')
+    out, err = capsys.readouterr()
+    assert not err and out == f'Posted {order.id} to desk@second · see the reply with qd inbox --wait\n'
+
+
+def test_separate_office_takes_precedence_over_the_acting_ships_desk(shell, capsys, monkeypatch):
+    crew = declare(shell.project / 'ships' / 'crew')
+    office = declare(shell.project / 'office', kind='office')
+    input_text(monkeypatch)
+    assert cli.main(['Take a look']) == 0
+    order = drop(crew)
+    assert (order.sender, order.to) == ('ada@crew', 'desk@office')
+    out, err = capsys.readouterr()
+    assert not err and out == f'Posted {order.id} to desk@office · see the reply with qd inbox --wait\n'
+    assert not (office / 'runtime').exists()
 
 
 def test_inbox_command_can_use_the_invoked_qd_when_it_is_outside_path(shell, monkeypatch):
@@ -278,23 +300,59 @@ def test_origin_down_files_the_order_and_points_to_the_correct_start_command(she
         assert not (office / 'runtime').exists()
 
 
-@pytest.mark.parametrize(('scenario', 'remedy'), [
-    ('absent', 'qd init'),
-    ('ambiguous', 'more than one desk'),
-    ('invalid', 'fix its ship.toml'),
-    ('without-desk', 'needs one seat named desk'),
-])
-def test_missing_ambiguous_or_invalid_office_refuses_before_filing(shell, capsys, monkeypatch, scenario, remedy):
-    crew = declare(shell.project / 'ships' / 'crew', human=scenario != 'absent')
-    office = shell.project / 'office'
-    if scenario != 'absent':
-        declare(office, kind='office', role='member' if scenario == 'without-desk' else 'desk')
-    if scenario == 'invalid':
-        (office / 'ship.toml').write_text('bad toml')
+def test_two_desks_on_the_acting_ship_are_refused_by_name(shell, capsys, monkeypatch):
+    crew = declare(shell.project / 'ships' / 'crew')
+    declaration = crew / 'ship.toml'
+    text = declaration.read_text()
+    declaration.write_text(text + '\n[seats.second-desk]' + text.split('[seats.desk]', 1)[1])
     input_text(monkeypatch, 'Please review\n')
     assert cli.main([]) == 2
     out, err = capsys.readouterr()
-    assert out == '' and remedy in err
+    assert not out and 'more than one desk on crew (desk, second-desk)' in err
+    assert 'qd post order --to <seat>' in err
+    assert not (crew / 'runtime').exists()
+
+
+@pytest.mark.parametrize(('role', 'human'), [('desk', False), ('member', True)])
+def test_no_eligible_desk_names_the_acting_ship_and_the_remedies(shell, capsys, monkeypatch, role, human):
+    crew = declare(shell.project / 'ships' / 'crew', role=role, human=human)
+    peer = declare(shell.project / 'ships' / 'peer')
+    (shell.project / 'ships/.default').write_text('crew\n')
+    input_text(monkeypatch, 'Please review\n')
+    assert cli.main([]) == 2
+    out, err = capsys.readouterr()
+    assert not out and 'no desk on crew' in err
+    assert 'role = "desk"' in err and 'human = true' in err and 'qd post order --to <seat>' in err
+    assert not (crew / 'runtime').exists() and not (peer / 'runtime').exists()
+
+
+@pytest.mark.parametrize(('content', 'reason'), [
+    (b'', 'declare kind = "office"'),
+    (b'bad toml', 'not valid TOML'),
+    (b'\xff', 'UnicodeDecodeError'),
+    (PermissionError, 'PermissionError'),
+    (None, 'needs one seat named desk'),
+])
+def test_invalid_office_declaration_names_its_file_and_refuses_before_filing(shell, capsys, monkeypatch,
+                                                                           content, reason):
+    crew = declare(shell.project / 'ships' / 'crew')
+    office = declare(shell.project / 'office', kind='office', role='member')
+    declaration = office / 'ship.toml'
+    if content is PermissionError:
+        read_text = type(declaration).read_text
+
+        def read(path, *args, **kwargs):
+            if path == declaration:
+                raise PermissionError
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(type(declaration), 'read_text', read)
+    elif content is not None:
+        declaration.write_bytes(content)
+    input_text(monkeypatch, 'Please review\n')
+    assert cli.main([]) == 2
+    out, err = capsys.readouterr()
+    assert not out and str(declaration) in err and reason in err
     assert not (crew / 'runtime').exists() and not (office / 'runtime').exists()
 
 
@@ -304,7 +362,8 @@ def test_no_input_still_shows_help(shell, capsys, monkeypatch, argv, stdin, time
     input_text(monkeypatch, stdin, timeout)
     assert cli.main(argv) == 0
     out, err = capsys.readouterr()
-    assert out.startswith('usage: qd ')
+    assert out.splitlines()[0] == 'Send a request to the desk with qd "a sentence" or echo text | qd'
+    assert out.splitlines()[1].startswith('usage: qd ')
     assert ('stdin gave no byte or EOF' in err) == timeout
     assert len(err.splitlines()) == int(timeout)
 
@@ -332,7 +391,7 @@ def test_seat_never_reaches_input_or_routing(shell, capsys, monkeypatch, mode):
     monkeypatch.setattr(desk_request, 'destination', route)
     assert cli.main([]) == 0
     out, err = capsys.readouterr()
-    assert out.startswith('usage: qd ') and err == ''
+    assert out.splitlines()[1].startswith('usage: qd ') and err == ''
     assert cli.main(['Look at this']) == 2
     out, err = capsys.readouterr()
     assert not out and 'qd post' in err
@@ -359,6 +418,8 @@ def test_other_argv_follows_the_existing_parser(shell, capsys, monkeypatch, argv
     if argv == ['psot']:
         assert 'invalid choice' in err and 'psot' in err
     if argv == ['--help']:
+        assert out.splitlines()[0] == 'Send a request to the desk with qd "a sentence" or echo text | qd'
+        assert out.splitlines()[1].startswith('usage: qd ')
         help_text = ' '.join(out.split())
         assert 'up to 5 seconds for its first byte or EOF' in help_text
         assert 'Stdin reading is limited to 10 minutes total' in help_text

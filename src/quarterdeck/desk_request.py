@@ -44,7 +44,7 @@ def origin() -> tuple[shipmod.Ship | SimpleNamespace | None, ShipError | None, b
     if chosen:
         folder = Path(chosen).expanduser().resolve()
         hint = SimpleNamespace(folder=folder, kind='office' if folder.name == 'office' else 'crew', seats={})
-        return hint, ShipError(f'{refusal}; check QD_SHIP and the ship declaration'), False
+        return hint, ShipError(f"{refusal}; check QD_SHIP and {folder / 'ship.toml'}"), False
     refusal = ShipError(f'{refusal}; to use the shortcut with a named ship, set QD_SHIP to its folder')
     try:
         ships = shipmod.ships_folder()
@@ -67,36 +67,38 @@ def origin() -> tuple[shipmod.Ship | SimpleNamespace | None, ShipError | None, b
 def project_office(project: Path) -> shipmod.Ship | None:
     from .setup import office_folder
 
-    folder = office_folder(project)
-    if not folder.exists():
-        return None
+    declaration = project / 'office' / 'ship.toml'
     try:
-        if (folder / 'ship.toml').is_symlink():
+        try:
+            mode = declaration.lstat().st_mode
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(mode):
             raise ShipError('ship.toml must be a real file')
-        office = shipmod.load(folder)
+        office = shipmod.load(office_folder(project))
         if office.kind != 'office':
             raise ShipError('declare kind = "office" in [ship]')
     except (ShipError, OSError, ValueError, TypeError, KeyError, AttributeError) as error:
         reason = str(error) if isinstance(error, ShipError) else type(error).__name__
-        raise ShipError(f'cannot use the project office at {folder} ({reason}); fix its ship.toml and retry') from None
+        reason = reason.removeprefix(f'{declaration}: ')
+        raise ShipError(f'cannot use the project office declaration {declaration} ({reason}); fix it and retry') from None
     return office
 
 
 def destination(origin: shipmod.Ship) -> tuple[shipmod.Ship, str]:
-    """Find the desk in the project's office or a crew's legacy human session."""
+    """Find the desk in the separate office if declared, or on the acting ship."""
     project = fleet.project_of(origin)
     office = project_office(project) if project is not None else None
-    peers = {**fleet.peers(origin), origin.folder.name: origin}
-    if office is not None:
-        peers[office.folder.name] = office
-    desks = [(ship, name) for ship in peers.values() for name, seat in ship.seats.items()
-             if seat.role == 'desk' and ship.session_of(seat).human]
+    ship = office or origin
+    desks = [name for name, seat in ship.seats.items() if seat.role == 'desk' and ship.session_of(seat).human]
+    alternative = 'or use qd post order --to <seat> "your request"'
     if not desks:
-        raise ShipError('no desk in this fleet; run qd init to create the project office, or use qd post --to <seat>')
+        raise ShipError(f'no desk on {ship.folder.name}; declare a seat with role = "desk" in a session with '
+                        f'human = true, {alternative}')
     if len(desks) != 1:
-        addresses = ', '.join(sorted(f'{name}@{ship.folder.name}' for ship, name in desks))
-        raise ShipError(f'more than one desk in this fleet ({addresses}); keep one office desk or use qd post --to <seat>')
-    return desks[0]
+        names = ', '.join(sorted(desks))
+        raise ShipError(f'more than one desk on {ship.folder.name} ({names}); keep one desk {alternative}')
+    return ship, desks[0]
 
 
 def read_stdin(stream, *, clock=time.monotonic) -> tuple[str, bool]:
