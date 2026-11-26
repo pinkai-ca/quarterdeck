@@ -128,9 +128,13 @@ Every key lives in one file of yours, `~/.config/quarterdeck/keys.toml`, one lin
 
 To use a key as a fallback, list its pool after the subscription pool in the seat's pool list, for example `pool = ["claude", "anthropic-api"]`. With `qd setup`, answer `key_fallback.<program>` with the key's name in `keys.toml`. For Claude Code, include `"key_fallback": {"claude": "anthropic"}` in the JSON file you pass to `--answers`.
 
-When the subscription reads as spent, a seat can move to a key from the same provider at its next idle moment and return automatically after the subscription resets.
+When a provider refuses work at its limit or reports 100% usage, Quarterdeck tries eligible pools after the current one in list order and wraps to the beginning if needed. It moves the seat at the next idle break. A running seat stays on its subscription while it has room, even if an earlier subscription resets. It can return to an earlier subscription the next time it reaches a limit or when it relaunches.
 
-On 25 November 2026, a live test with Claude Code 2.1.331 used disposable seats and synthetic prompts. The move to an Anthropic key with Sonnet 5.5 followed a 100% usage reading for the subscription model. The seat kept the same conversation when it moved to the key and when it returned after reset. It recalled a word from before the first move on both pools. The key spend was $0.16.
+On each automatic launch, Quarterdeck checks pools in list order and chooses the first with known room. If it reaches a usable saved pool whose allowance is unknown, it can choose that pool even if a later one has known room.
+
+A key selected automatically gives way at idle to the first earlier subscription known to have room. A same-provider return keeps the conversation when Quarterdeck can verify that the program will resume it.
+
+A key pool can declare a different model. On 25 November 2026, a live test with Claude Code 2.1.331 used disposable seats and synthetic prompts. After a 100% usage reading on the subscription, the seat moved from Fable 5.2 to Sonnet 5.5 on an Anthropic key. It kept the same conversation on the key and on return after reset, recalling a word from before the first move on both pools. Claude Code can serve a different model from the one requested at launch. In this test it served Opus 5.5 on return, when the launch requested the subscription's declared model, Fable 5.2. The key spend was $0.16.
 
 In a separate test, the automatic move from the Claude subscription to a Z.ai key with `glm-5.3` started a new conversation with the handoff. The return failed in that live test, with retries about once a second. Since 25 November, a crew seat starts a new conversation with the handoff when it returns across providers, just as it does on the outbound move. If Quarterdeck cannot make a move, it waits before trying again. A stand-in test verified the fix. Live verification is pending. A person's own seat stays on the key and reports that the desk is needed. See the [automatic failover tests](docs/HARNESSES.md#automatic-failover-tests).
 
