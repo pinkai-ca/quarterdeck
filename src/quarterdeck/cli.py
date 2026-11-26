@@ -1313,12 +1313,16 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     data = {"seat": seat, "messages": messages}
     if changed:
         data["standing_orders_changed"] = changed[0]
-    caller = os.environ.get('QD_SEAT') or ship.operator.lower()
-    target = () if caller == seat else (seat,)
-    instruction = watch_instruction(qd_command(ship.folder, 'inbox', '--wait', *target))
-    batch = Reading(data, lambda data: (data.get("standing_orders_changed", "")
-                                        + post.typed(data["messages"], second=second)
-                                        + instruction))
+
+    def render_batch(data):
+        text = data.get("standing_orders_changed", "") + post.typed(data["messages"], second=second)
+        if seat == ship.operator.lower():
+            return text.removesuffix("\n")  # the emitter adds the final newline
+        caller = os.environ.get('QD_SEAT') or ship.operator.lower()
+        target = () if caller == seat else (seat,)
+        return text + watch_instruction(qd_command(ship.folder, 'inbox', '--wait', *target))
+
+    batch = Reading(data, render_batch)
     from . import inbox_watch
     proof = None
 

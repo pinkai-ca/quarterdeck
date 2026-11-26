@@ -159,6 +159,37 @@ def test_wait_batch_rearm_names_a_seat_selected_by_the_operator(inbox, capsys):
     assert capsys.readouterr().out.endswith(qd_command(folder, 'inbox', '--wait', 'desk') + '\n')
 
 
+def test_operator_wait_batch_ends_with_the_reply(inbox, capsys):
+    from quarterdeck import ship
+
+    folder, store, _ = inbox
+    declaration = folder / "ship.toml"
+    declaration.write_text(ship.edit(declaration.read_text(), "ship", "operator", "TestOperator"))
+    order = store.new("order", "testoperator", "captain", "synthetic work")
+    reply = store.new("report", "captain", "testoperator", "finished\nwith details", re=order.id)
+
+    assert cli.main(["--ship", str(folder), "inbox", "--wait"]) == 0
+    assert capsys.readouterr().out == post.typed([reply])
+    runtime = folder / "runtime"
+    assert [(a.message, a.result) for a in post.Attempts(runtime).all()] == [(reply.id, "watch")]
+    assert not post.watch_file(runtime, "testoperator").exists()
+
+
+def test_human_session_wait_batch_keeps_the_full_rearm_instruction(inbox, capsys, monkeypatch):
+    from quarterdeck.seat_command import qd_command
+
+    folder, _, messages = inbox
+    monkeypatch.setenv("QD_SEAT", "desk")
+
+    assert cli.main(["--ship", str(folder), "inbox", "--wait"]) == 0
+    assert capsys.readouterr().out == (
+        post.typed(messages)
+        + "qd > Finish your current task, then read and act on the delivered messages. "
+        + "To re-arm your inbox watch, run this command in the background.\n"
+        + qd_command(folder, "inbox", "--wait") + "\n"
+    )
+
+
 def test_waiting_a_door_seat_is_still_refused(inbox, capsys):
     folder, _, _ = inbox
     assert cli.main(["--ship", str(folder), "--json", "inbox", "captain", "--wait"]) == 2
