@@ -122,8 +122,10 @@ def running_from(bin_dir: Path) -> bool:
     return Path(sys.executable).parent.resolve() == bin_dir.resolve()
 
 
-def handoff(folder: Path, argv: list[str]) -> None:
+def handoff(folder: Path, argv: list[str], *, desk_request: dict[str, str] | None = None) -> None:
     selected = copy_state.select(folder)
+    if desk_request is not None and (selected.qd is None or not copy_state.supports_desk_request(selected.qd)):
+        return  # a copy older than the shortcut can still read the ordinary order
     if selected.warning:
         print(f'qd: {selected.warning}; continuing with this qd', file=sys.stderr)
     elif selected.qd is not None and not running_from(selected.qd.parent):
@@ -133,7 +135,12 @@ def handoff(folder: Path, argv: list[str]) -> None:
             print(f'qd: acting on the default ship {folder.name} ({folder}); '
                   'its copy is older than the default-ship annotation', file=sys.stderr, flush=True)
         try:
-            os.execv(str(selected.qd), [str(selected.qd), *argv])
+            command = [str(selected.qd), *argv]
+            if desk_request is not None:
+                # Preserve the exact argv gate and hand over the original, unread stdin.
+                os.execve(command[0], command, {**os.environ, **desk_request, 'QD_SHIP': str(folder)})
+            else:
+                os.execv(command[0], command)
         except OSError:
             print('qd: installed copy could not start; continuing with this qd; '
                   'use qd sync from the checkout or qd doctor', file=sys.stderr)

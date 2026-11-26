@@ -14,6 +14,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `cost_evidence.py` | a turn's cost evidence, kept beside the Ledger's turns |
 | `credential.py` | the one link a seat shares with its pool, reseeded and relinked on the tick, never from a jailed seat, a seat on an endpoint pool, or a launch naming a pool not declared for the seat. Directory locking for subscription refreshes across ships. Metadata-only review holds and their audited release |
 | `daily_live.py` | the daily live test: a minimal check of each program the day's readings do not show was used, and one report to the desk |
+| `desk_request.py` | resolves the operator’s desk and reads bounded UTF-8 input for terminal requests |
 | `doctor.py` | `qd doctor`, the installation checked and handed to a seat to fix |
 | `endpoint.py` | endpoint pools: what a server serves, the model a seat takes from it, the key beside it |
 | `fakeharness.py` | the entry point installed as `qd-fakeharness`, for the simulator under `harness/` |

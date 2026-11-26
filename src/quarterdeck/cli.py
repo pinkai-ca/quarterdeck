@@ -20,7 +20,7 @@ from . import resting_failover
 from . import (__version__, check, copy_state, daily_live, doctor, drill, harness as harnesses, install, ledger, post, relaunch_intent, sandbox, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .output import Reading
-from . import output, ledger_reading, lifecycle, closed_pipe
+from . import closed_pipe, desk_request, ledger_reading, lifecycle, output
 from .ship import ShipError
 from .harness.capabilities import selection_label
 from .tmux import CUTOVER, Tmux, TmuxError, ship_socket as shipsocket
@@ -36,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
         completed_error(f'qd: {error}')
         return 2
     parser = build_parser()
+    if desk_request.candidate(argv):
+        return cmd_desk_request(parser, argv)
     args = parser.parse_args(argv)
     if not hasattr(args, "run"):
         parser.print_help()
@@ -76,7 +78,9 @@ def completed_error(text):
         closed_pipe.silence('stderr')
 
 
-DEFAULT_HANDOFF = "default-label-v1"  # read statically by the invoking copy before exec
+# The invoking copy reads these declarations before exec.
+DEFAULT_HANDOFF = "default-label-v1"
+DESK_REQUEST_HANDOFF = "desk-request-v1"
 HANDED = copy_state.DEFAULT_SHIP_ENV
 
 
@@ -132,7 +136,8 @@ def emit(args: argparse.Namespace, result: Any, *, completed_act: bool = False, 
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="qd", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="qd", description=__doc__.split("\n\n")[0],
+                                     epilog=desk_request.help_text())
     parser.add_argument("--ship", help="the ship folder (default: $QD_SHIP, else the default ship: qd default)")
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     parser.add_argument("--version", action="version", version=f"qd {__version__}")
@@ -1018,6 +1023,71 @@ def cmd_watch(args: argparse.Namespace) -> Reading | str:
 
 
 # -- post --------------------------------------------------------------------------------
+
+
+def cmd_desk_request(parser: argparse.ArgumentParser, argv: list[str]) -> int:
+    from . import post_sender
+
+    def help_only():
+        parser.print_help()
+        return 0
+
+    try:
+        if seat := os.environ.get('QD_SEAT'):
+            if not argv:
+                return help_only()
+            raise ShipError(f'this shell is seat {seat}; use qd post order --to <seat> "your request" to post as yourself')
+        origin, refusal, scoped = desk_request.origin()
+        if origin is not None and (session := post_sender.seat_session(origin)) is not None:  # law: identity
+            if not argv:
+                return help_only()
+            raise ShipError(session.refusal(origin.folder, None))
+
+        qd = desk_request.command_entry(sys.argv[0])
+        if refusal is None:
+            handoff_env = {copy_state.DESK_REQUEST_ENTRY_ENV: qd}
+            if scoped:
+                handoff_env[copy_state.DESK_REQUEST_SCOPE_ENV] = str(origin.folder)
+            install.handoff(origin.folder, argv, desk_request=handoff_env)
+
+        sentence = argv[0].strip() if argv else ''
+        try:
+            stdin, initial_timeout = desk_request.read_stdin(sys.stdin)
+        except KeyboardInterrupt:
+            completed_error('qd: interrupted while reading stdin')
+            return 130
+        if initial_timeout:
+            completed_error(f'qd: stdin gave no byte or EOF within {desk_request.FIRST_INPUT_SECONDS} seconds. '
+                            'Close the pipe or redirect a complete file.')
+        attachment = stdin if stdin.strip() else ''
+        if not sentence and not attachment:
+            return help_only()
+        if refusal is not None:
+            raise refusal
+
+        destination, desk = desk_request.destination(origin)
+        address = f'{desk}@{destination.folder.name}'
+        to = desk if origin.folder == destination.folder else address
+        body = desk_request.body(sentence, attachment)
+        shipmod.fence(origin)
+        store = post.Store(origin.runtime)
+        sender = this_seat(origin, None, operator_too=True)
+        with post.reading_pass(store=store):
+            message = store.prepare('order', sender, to, body)
+        scope = origin.folder if scoped else None
+        inbox = desk_request.shell_command(qd, scope, 'inbox', '--wait')
+        if service.alive(origin.runtime):
+            proof = f'Posted {message.id} to {address}'
+        else:
+            start = desk_request.shell_command(qd, scope, 'up')
+            proof = (f'Filed {message.id} for {address} · delivery waits for the {origin.folder.name} service '
+                     f'· start it with {start}')
+        post.write_drop(origin.runtime, message, seat=sender, bounded=True)  # law: can-post
+        output.emit(f'{proof} · see the reply with {inbox}', completed_act=True)
+        return 0
+    except (ShipError, OSError) as error:
+        completed_error(f'qd: {error}')
+        return 2
 
 
 def cmd_post(args: argparse.Namespace) -> str:

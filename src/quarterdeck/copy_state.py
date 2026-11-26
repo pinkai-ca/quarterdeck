@@ -16,6 +16,8 @@ import re
 import tomllib
 
 DEFAULT_SHIP_ENV = 'QD_DEFAULT_SHIP'
+DESK_REQUEST_ENTRY_ENV = 'QD_DESK_REQUEST_ENTRY'
+DESK_REQUEST_SCOPE_ENV = 'QD_DESK_REQUEST_SCOPE'
 RECORD = 'installed.json'
 MARKER = '.quarterdeck-copy.json'
 FORMAT = 1
@@ -167,6 +169,14 @@ class Selection:
 
 
 def supports_default_annotation(qd: Path) -> bool:
+    return _cli_declares(qd, 'DEFAULT_HANDOFF', 'default-label-v1')
+
+
+def supports_desk_request(qd: Path) -> bool:
+    return _cli_declares(qd, 'DESK_REQUEST_HANDOFF', 'desk-request-v1')
+
+
+def _cli_declares(qd: Path, name: str, value: str) -> bool:
     """Read the selected copy's static declaration without importing it."""
     import ast
 
@@ -185,9 +195,9 @@ def supports_default_annotation(qd: Path) -> bool:
         if len(text) > limit:
             return False
         markers = [node.value for node in ast.parse(text).body if isinstance(node, ast.Assign)
-                   and any(isinstance(target, ast.Name) and target.id == 'DEFAULT_HANDOFF'
+                   and any(isinstance(target, ast.Name) and target.id == name
                           for target in node.targets)]
-        return len(markers) == 1 and isinstance(markers[0], ast.Constant) and markers[0].value == 'default-label-v1'
+        return len(markers) == 1 and isinstance(markers[0], ast.Constant) and markers[0].value == value
     except (OSError, ValueError, SyntaxError, RuntimeError):
         return False
 

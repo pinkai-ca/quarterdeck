@@ -1,18 +1,24 @@
 """The fleet is an index of project declarations, never another configuration."""
 
+from pathlib import Path
+
 from . import ship as shipmod
 from .ship import ShipError
 
 
-def declaration_files(ship: shipmod.Ship) -> tuple:
-    """The only peer files a jailed post needs; never a peer runtime or home."""
+def project_of(ship: shipmod.Ship) -> Path | None:
+    """The project owning this office or non-template ship, when it has one."""
     folder = ship.folder
     if getattr(ship, 'kind', None) == 'office' and folder.name == 'office':
-        project = folder.parent
-    elif folder.parent.name == 'ships' and folder.name not in shipmod.TEMPLATES:
-        project = folder.parent.parent
-    else:
-        project = None
+        return folder.parent
+    if folder.parent.name == 'ships' and folder.name not in shipmod.TEMPLATES:
+        return folder.parent.parent
+    return None
+
+
+def declaration_files(ship: shipmod.Ship) -> tuple:
+    """The only peer files a jailed post needs; never a peer runtime or home."""
+    project = project_of(ship)
     if project is None:
         return (ship.folder / 'ship.toml',)
     folders = [project / 'office']

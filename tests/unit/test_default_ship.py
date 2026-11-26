@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import cli, doctor, install, ship as shipmod, standing
+from quarterdeck import cli, doctor, fleet_post, install, post, ship as shipmod, standing
 from quarterdeck.ship import ShipError
 
 DRYDOCK = Path(__file__).resolve().parents[2] / "ships" / "drydock" / "ship.toml"
@@ -417,6 +418,83 @@ def test_installed_handoff_keeps_the_pinned_folder_and_calls_out_old_copies(proj
         named = subprocess.run([sys.executable, "-c", caller, "--ship", str(folder), "ledger"],
                                capture_output=True, text=True, check=True)
         assert (named.stdout, named.stderr) == ("historical output\n", "")
+
+
+@pytest.mark.parametrize('office_only', [False, True])
+def test_desk_request_installed_copy_and_operator_reply_round_trip(project, tmp_path, office_only):
+    office = project / "office"
+    office.mkdir()
+    template = DRYDOCK.read_text()
+    office_text = template.split("[seats.captain]", 1)[0] + "[seats.desk]" + template.split(
+        "[seats.desk]", 1)[1].split("[seats.worker-1]", 1)[0]
+    office_text = office_text.replace('[ship]\n', '[ship]\nkind = "office"\n', 1)
+    office_text = office_text.replace('operator = "operator"', 'operator = "Office operator"')
+    office_text = office_text.replace('[sessions.bridge]\ntitle = "Bridge"\n', '')
+    office_text = office_text.replace('[sessions.crew]\ntitle = "Crew"\n', '')
+    (office / "ship.toml").write_text(office_text)
+    origin = office
+    if not office_only:
+        origin = ship(project, "endeavour").resolve()
+        declaration = origin / "ship.toml"
+        declaration.write_text(declaration.read_text().replace('human = true', 'human = false').replace(
+            'operator = "operator"', 'operator = "Crew operator"'))
+        mark(project, "endeavour\n")
+    synthetic_copy(origin, capable=True)
+    caller = (
+        "import sys; "
+        f"sys.path.insert(0, {str(Path(cli.__file__).parents[1])!r}); "
+        "from pathlib import Path; from quarterdeck import cli, desk_request, standing; "
+        f"standing.PROJECT_DIR = Path({str(project)!r}); "
+        "desk_request.read_stdin = lambda *a: sys.exit('the checkout read stdin before handoff'); "
+        "raise SystemExit(cli.main())"
+    )
+    bin_dir = tmp_path / "shell bin"
+    bin_dir.mkdir()
+    qd = bin_dir / "qd"
+    qd.write_text(f"#!{sys.executable}\n{caller}\n")
+    qd.chmod(0o755)
+    env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}
+    ordinary_shell = tmp_path / "small project"
+    ordinary_shell.mkdir()
+    result = subprocess.run(["qd", "Review this file"], input="the attachment\n", cwd=ordinary_shell,
+                            env=env, capture_output=True, text=True, check=True)
+    assert result.stderr == '' and len(result.stdout.splitlines()) == 1
+    proof, command = result.stdout.strip().rsplit(" · see the reply with ", 1)
+    flags = ["--ship", str(office)] if office_only else []
+    assert shlex.split(command) == ["qd", *flags, "inbox", "--wait"]
+
+    source, destination = shipmod.load(origin), shipmod.load(office)
+    store, desk_store = post.Store(source.runtime), post.Store(destination.runtime)
+    assert post.file_drops(store) == []
+    order, = store.all()
+    assert proof.startswith(f"Filed {order.id} for desk@office · delivery waits for the {origin.name} service · ")
+    assert shlex.split(proof.split('start it with ', 1)[1]) == ['qd', *flags, 'up']
+    assert order.body == f"Working directory: {ordinary_shell}\n\nReview this file\n\nAttached stdin:\nthe attachment\n"
+    assert order.subject is None
+    if office_only:
+        assert (order.sender, order.to) == ('office operator', 'desk')
+    else:
+        assert (order.sender, order.to) == ('crew operator', 'desk@office')
+        assert fleet_post.run(source, store) == [] and fleet_post.run(destination, desk_store) == []
+        received, = desk_store.open_for('desk')
+        assert (received.id, received.sender, received.to) == (order.id, 'crew operator@endeavour', 'desk')
+
+    subprocess.run(['qd', 'post', 'report', '--re', order.short, 'Finished the review.'], cwd=ordinary_shell,
+                   env={**env, 'QD_SHIP': str(office), 'QD_SEAT': 'desk'}, capture_output=True, text=True, check=True)
+    assert post.file_drops(desk_store) == []
+    if not office_only:
+        assert fleet_post.run(destination, desk_store) == [] and fleet_post.run(source, store) == []
+    reply = store.closing_report(order)
+    assert reply.to == source.operator.lower() and reply.re == order.id
+    for message in order, reply:
+        relative = Path('post/store', f'{message.id}.json')
+        assert (source.runtime / relative).read_bytes() == (destination.runtime / relative).read_bytes()
+
+    result = subprocess.run(shlex.split(command), stdin=subprocess.DEVNULL, cwd=ordinary_shell,
+                            env=env, capture_output=True, text=True, check=True)
+    assert result.stderr == ''
+    assert f'report from {reply.sender} · {reply.short} · re {order.short}' in result.stdout
+    assert 'Finished the review.' in result.stdout
 
 
 def test_the_installed_copy_requires_a_named_ship_and_has_no_default_mark(project, tmp_path):

@@ -691,19 +691,31 @@ def id_sender(message_id: str) -> str | None:
     return sender
 
 
-def write_drop(runtime: Path, message: Message, *, seat: str | None = None) -> Path:
+def drop_size_error() -> ShipError:
+    return ShipError(f'message exceeds the {DROP_MAX_BYTES:,}-byte post limit; shorten it or name a file in the message')
+
+
+def write_drop(runtime: Path, message: Message, *, seat: str | None = None, bounded: bool = False) -> Path:
     """The seat's write: one regular file in its own drop folder, returned before the service files it.
 
     The bytes are the message's own JSON. The service copies them, or holds them (law: can-post).
     The walk is the post folder's own: a link on the way is a hold, never followed. ``seat`` names
     the folder when the sender is written in its ship-qualified form, for a post to another ship.
+    A bounded caller refuses oversize or invalid UTF-8 before publishing a drop.
     """
+    document = message.to_json()
+    if bounded:
+        try:
+            if len(document.encode('utf-8')) > DROP_MAX_BYTES:
+                raise drop_size_error()
+        except UnicodeEncodeError:
+            raise ShipError('the request and working directory must be UTF-8; correct them and retry') from None
     folder = drop_dir(runtime, seat or message.sender)
     post_dir.ensure_directory(folder)
     path = folder / f"{message.id}.json"
     if _mode(path) is not None:
         raise ShipError(f"{message.id} exists; messages are immutable")  # law: post-is-files
-    durable.replace_file(path, message.to_json())
+    durable.replace_file(path, document, encoding='utf-8' if bounded else None)
     return path
 
 
