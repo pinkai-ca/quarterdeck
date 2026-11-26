@@ -112,7 +112,7 @@ On 21 November 2026, a live Codex seat switched from an OpenAI API key to a Code
 The 25 November 2026 live tests used Claude Code 2.1.331 with disposable seats and synthetic prompts.
 
 - **Anthropic subscription to Anthropic key and back.** The provider served the turn that produced a 100% usage reading for the subscription model. At the next idle moment, Quarterdeck moved the seat automatically to an Anthropic key on Sonnet 5.5. The seat resumed the same conversation and recalled a word from before the move. After a restart on the key, the seat completed one turn on that key before the return. After the subscription reset, the seat returned automatically and recalled the word again in the same conversation. Claude Code served Opus 5.5 on return with Fable 5.2 declared, and Quarterdeck showed Opus 5.5 as the served model. The key spend was $0.16.
-- **Anthropic subscription to Z.ai key.** The automatic move to a Z.ai key on `glm-5.3` started a new conversation and carried the handoff. The return failed in this live test. A separate fix for the return is in progress.
+- **Anthropic subscription to Z.ai key.** The automatic move to a Z.ai key on `glm-5.3` started a new conversation and carried the handoff. The return failed in this live test, with retries about once a second. Since 25 November, Quarterdeck starts a new conversation with the handoff on a crew seat's cross-provider return, as it does on the outbound move. If it cannot make a move, it waits before retrying. The stand-in verified the fixed behavior. Live verification is pending. A person's own seat stays on the key and reports that the desk is needed.
 
 ### Single-provider crew tests
 
