@@ -75,6 +75,7 @@ COMPACT_SNAPSHOT_TOOLS = ('Agent', 'Bash', 'TaskStop', 'Read', 'SendUserFile', '
 # Measured on 2.1.331 person's seats (sanitized shapes): a tool event restated in a compaction snapshot. Remote
 # Control events stay with their measured joins: a link at startup, an input bound to its typed root.
 SNAPSHOT_EVENT_TOOLS = ('Read',)
+REMOTE_CONTROL_EVENTS = ('RemoteControlLinked', 'RemoteControlInput')
 MEMORY_WRITE_ID = re.compile(r'[-0-9_a-z]{55}')
 
 
@@ -99,12 +100,14 @@ def _data_flow_response(entry) -> bool:
 
 def _data_flow_snapshot_tool(entry) -> bool:
     return (isinstance(entry, dict) and entry.keys() == {'tool_name', 'tool_use_id'}
-            and entry['tool_name'] in COMPACT_SNAPSHOT_TOOLS
+            and isinstance(entry['tool_name'], str) and bool(entry['tool_name'])
             and isinstance(entry['tool_use_id'], str) and TOOL_USE_ID.fullmatch(entry['tool_use_id']) is not None)
 
 
-def _data_flow_event(entry, names) -> bool:
-    return (isinstance(entry, dict) and entry.keys() == {'event_id', 'tool_name'} and entry['tool_name'] in names
+def _data_flow_event(entry, names=None) -> bool:
+    return (isinstance(entry, dict) and entry.keys() == {'event_id', 'tool_name'}
+            and isinstance(entry['tool_name'], str) and bool(entry['tool_name'])
+            and (names is None or entry['tool_name'] in names)
             and isinstance(entry['event_id'], str) and BRIDGE_EVENT_ID.fullmatch(entry['event_id']) is not None)
 
 
@@ -138,7 +141,19 @@ def _derived_session(entry, session: str) -> bool:
             and (entry['via'] in ('resume', 'branch') or entry['via'] == 'compact' and entry['id'] == session))
 
 
-def data_flow_metadata(row) -> bool:
+def _data_flow_snapshot_item(item, *, for_compaction: bool) -> bool:
+    if _data_flow_snapshot_tool(item):
+        return for_compaction or item['tool_name'] in COMPACT_SNAPSHOT_TOOLS
+    if _data_flow_event(item):
+        name = item['tool_name']
+        if for_compaction:
+            return name not in REMOTE_CONTROL_EVENTS
+        return name in SNAPSHOT_EVENT_TOOLS
+    return (_data_flow_response(item) or _data_flow_memory_write(item)
+            or for_compaction and _data_flow_update_event(item))
+
+
+def data_flow_metadata(row, *, for_compaction: bool = False) -> bool:
     """Root transcript bookkeeping from the native v1 writers and sanitized row shapes."""
     kind = row.get('type')
     if (kind not in DATA_FLOW_ROWS or type(row.get('v')) is not int or row['v'] != 1
@@ -152,9 +167,9 @@ def data_flow_metadata(row) -> bool:
             return False
         if snapshot:
             # A compaction snapshot restates what the conversation already carried; it is not new input.
-            return all(_data_flow_response(item) or _data_flow_snapshot_tool(item) or _data_flow_memory_write(item)
-                       or _data_flow_event(item, SNAPSHOT_EVENT_TOOLS) for item in items)
-        return all(_data_flow_response(item) or _data_flow_memory_write(item) for item in items)
+            return all(_data_flow_snapshot_item(item, for_compaction=for_compaction) for item in items)
+        return (all(_data_flow_response(item) or _data_flow_memory_write(item) for item in items)
+                or for_compaction and _compaction_data_flow_update(items))
     if kind == 'data-flow-incomplete':
         codes = row.get('codes')
         return (fields == {'codes'} and isinstance(codes, list) and bool(codes)
@@ -372,7 +387,7 @@ def _accepted_input(row: dict, text: str, stamp: datetime | None) -> Input:
 
 
 def _reactive_auto_boundary(row: dict, metadata: dict) -> bool:
-    """The three measured automatic boundary forms saved by the interactive 2.1.331 writer."""
+    """The measured automatic boundary forms saved by the interactive 2.1.331 writer."""
     row_fields = {'type', 'subtype', 'content', 'level', 'parentUuid', 'logicalParentUuid', 'isSidechain',
                   'uuid', 'timestamp', 'userType', 'entrypoint', 'cwd', 'sessionId', 'version',
                   'gitBranch', 'slug', 'dataFlowOn', 'compactMetadata'}
@@ -386,14 +401,18 @@ def _reactive_auto_boundary(row: dict, metadata: dict) -> bool:
 
     metadata_fields = {'trigger', 'preTokens', 'postTokens', 'cumulativeDroppedTokens', 'durationMs',
                        'preservedSegment', 'preservedMessages', 'preCompactOrganizations'}
+    cover_start = 'preCompactOrganizationsCoverStart'
+    if cover_start in metadata and metadata[cover_start] is not True:
+        return False
+    fields = metadata.keys() - {cover_start}
     discovered_tools = {'preCompactDiscoveredTools'}
-    if 'isMeta' in row:
-        if metadata.keys() != metadata_fields | discovered_tools:
+    if fields == metadata_fields:
+        if cover_start not in metadata:
             return False
-    elif metadata.keys() == metadata_fields | {'preCompactOrganizationsCoverStart'}:
-        if type(metadata['preCompactOrganizationsCoverStart']) is not bool:
+    elif 'isMeta' in row:
+        if fields != metadata_fields | discovered_tools:
             return False
-    elif metadata.keys() != metadata_fields | discovered_tools | {'precomputed'} or metadata['precomputed'] is not True:
+    elif fields != metadata_fields | discovered_tools | {'precomputed'} or metadata['precomputed'] is not True:
         return False
 
     if 'preCompactDiscoveredTools' in metadata:
@@ -427,18 +446,7 @@ _SHORT_MEMORY_WRITE_ID = re.compile(r'[-0-9_a-z]{42}')
 _DATA_FLOW_SOURCE_ID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
 
 
-def _compaction_data_flow_update(row) -> bool:
-    """Measured .331 updates that contain no compaction boundary, even when other readers hold them."""
-    if (row.keys() != {'type', 'v', 'sessionId', 'records'} or row['type'] != 'data-flow-records'
-            or type(row['v']) is not int or row['v'] != 1):
-        return False
-    items = row['records']
-    if not isinstance(items, list) or not 1 <= len(items) <= 2:
-        return False
-    events = [item for item in items if not (_data_flow_response(item) and item.keys() == {'listed', 'response_id'})]
-    if len(events) != 1:
-        return False
-    event = events[0]
+def _data_flow_update_event(event) -> bool:
     if _data_flow_memory_write(event, id_pattern=_SHORT_MEMORY_WRITE_ID):
         return True
     if (not isinstance(event, dict) or event.keys() != {'event_id', 'source'}
@@ -450,7 +458,18 @@ def _compaction_data_flow_update(row) -> bool:
     source_id = source['id']
     return ((source['type'] == 'claude_code_session' and isinstance(source_id, str)
              and _DATA_FLOW_SOURCE_ID.fullmatch(source_id) is not None)
-            or (source['type'] == 'unknown' and source_id is None and len(items) == 2))
+            or (source['type'] == 'unknown' and source_id is None))
+
+
+def _compaction_data_flow_update(items) -> bool:
+    """Measured .331 updates that contain no compaction boundary, even when other readers hold them."""
+    if not 1 <= len(items) <= 2:
+        return False
+    events = [item for item in items if not (_data_flow_response(item) and item.keys() == {'listed', 'response_id'})]
+    if len(events) != 1:
+        return False
+    event = events[0]
+    return _data_flow_update_event(event) or len(items) == 2 and _data_flow_event(event, ('Read',))
 
 
 def compactions(record: Path):
@@ -477,7 +496,7 @@ def compactions(record: Path):
             for row in rows:
                 kind = row.get('type')
                 if kind in DATA_FLOW_ROWS:
-                    if not (data_flow_metadata(row) or _compaction_data_flow_update(row)):
+                    if not data_flow_metadata(row, for_compaction=True):
                         raise ValueError('unknown native data-flow metadata')
                     session = row['sessionId']
                     if not isinstance(session, str) or not session:

@@ -79,7 +79,6 @@ def test_metadata_preserves_mixed_resume_and_manual_compaction(tmp_path):
     ('data-flow-records', {'records': [{'response_id': 'msg_Synthetic', 'listed': [None]}]}),
     ('data-flow-records', {'records': [{'tool_name': 'Bash', 'tool_use_id': 'toolu_Synthetic'}]}),
     ('data-flow-records', {'snapshot': True, 'records': [{'tool_name': 'Bash', 'tool_use_id': 'other-native-form'}]}),
-    ('data-flow-records', {'snapshot': True, 'records': [{'tool_name': 'Other', 'tool_use_id': 'toolu_Synthetic'}]}),
     ('data-flow-records', {'records': [], 'snapshot': False}),
     ('data-flow-records', {'records': [], 'agentId': 'child-form'}),
     ('data-flow-incomplete', {'codes': [True]}),
@@ -326,6 +325,40 @@ SOURCE_SESSION = dict(type='claude_code_session', id=EVENT.format(8).removeprefi
 SESSION_EVENT = dict(event_id=EVENT.format(6), source=SOURCE_SESSION)
 UNKNOWN_EVENT = dict(event_id=EVENT.format(7), source=dict(type='unknown', id=None))
 LISTED_RESPONSE = dict(listed=['msg_SyntheticOld'], response_id='msg_SyntheticNew')
+READ_EVENT = dict(event_id=EVENT.format(4), tool_name='Read')
+
+
+@pytest.mark.parametrize(('records', 'snapshot'), [
+    ([dict(tool_name='Edit', tool_use_id='toolu_SyntheticEdit'),
+      dict(tool_name='ToolSearch', tool_use_id='toolu_SyntheticSearch')], True),
+    ([dict(tool_name='SyntheticUnseenTool', tool_use_id='toolu_SyntheticUnseen'),
+      dict(event_id=EVENT.format(9), tool_name='SyntheticUnseenTool')], True),
+    ([READ_EVENT, SESSION_EVENT, UNKNOWN_EVENT, SHORT_MEMORY, LISTED_RESPONSE], True),
+    ([READ_EVENT, LISTED_RESPONSE], False),
+    ([LISTED_RESPONSE, READ_EVENT], False),
+    ([UNKNOWN_EVENT], False),
+], ids=['edit-and-toolsearch', 'unseen-tool', 'snapshot-updates', 'read-and-response',
+        'response-and-read', 'standalone-unknown-source'])
+def test_331_snapshot_and_update_metadata_preserves_the_compaction_count(tmp_path, records, snapshot):
+    native = Native(tmp_path / 'record.jsonl', 'claude')
+    native.finish()
+    native.compact()
+    before = claude.compactions(native.path)
+    assert before.count == 1
+    fields = dict(records=records, snapshot=True) if snapshot else dict(records=records)
+    row = metadata(native, 'data-flow-records', **fields)
+    with native.path.open('a') as stream:
+        stream.write(json.dumps(row) + '\n')
+
+    after = claude.compactions(native.path)
+    assert after.reason is None and after.count == 1 and after.complete
+    assert after.frontier == before.frontier and after.turn == before.turn
+    assert after.matches_prefix(before.extent, before.digest)
+    assert claude.inputs(native.path).skipped == [
+        dict(line=5, kind='data-flow-records', reason='unknown native data-flow metadata'),
+    ]
+    json_record._snapshots.clear()
+    assert claude.compactions(native.path) == after
 
 
 @pytest.mark.parametrize('with_response', [False, True], ids=['alone', 'paired'])
@@ -408,19 +441,35 @@ def test_damaged_or_unknown_append_leaves_cold_and_carried_counts_unknown(tmp_pa
     ([{'event_id': EVENT.format(1), 'tool_name': 'RemoteControlLinked'}], True),
     ([REMOTE_INPUT, REMOTE_INPUT, RESPONSE], False),  # not the measured mixed form: two inputs
     ([REMOTE_INPUT, RESPONSE, {'tool_name': 'Write', 'tool_use_id': 'toolu_Synthetic'}], False),
-    ([{'event_id': EVENT.format(4), 'tool_name': 'Read'}], False),  # a tool event outside a snapshot
+    ([READ_EVENT], False),
+    ([READ_EVENT, RESPONSE], False),
+    ([READ_EVENT, dict(LISTED_RESPONSE, listed=[None])], False),
+    ([READ_EVENT, dict(LISTED_RESPONSE, response_id='invalid')], False),
+    ([READ_EVENT, dict(LISTED_RESPONSE, mark_sent_by='synthetic-session')], False),
+    ([READ_EVENT, LISTED_RESPONSE, LISTED_RESPONSE], False),
+    ([dict(READ_EVENT, tool_name='Edit'), LISTED_RESPONSE], False),
     ([{'tool_name': 'Write', 'tool_use_id': 'toolu_Synthetic'}], False),  # a tool-use entry outside a snapshot
+    ([{'tool_name': '', 'tool_use_id': 'toolu_Synthetic'}], True),
+    ([{'tool_name': 1, 'tool_use_id': 'toolu_Synthetic'}], True),
+    ([{'tool_name': 'Edit', 'tool_use_id': 'toolu_Synthetic', 'extra': True}], True),
+    ([dict(READ_EVENT, tool_name='')], True),
+    ([dict(READ_EVENT, tool_name=None)], True),
+    ([dict(READ_EVENT, event_id='event_other')], True),
+    ([dict(READ_EVENT, extra=True)], True),
     ([memory(action='read')], False),
     ([memory(id=MEMORY + 'b')], True),
     ([memory(id=MEMORY.upper())], False),
     ([memory(kind='other')], False),
     ([memory(event='event_other')], False),
-    ([SHORT_MEMORY], True),
+    ([memory(id=MEMORY[:41])], True),
+    ([memory(id=MEMORY[:42], action='read')], True),
     ([memory(id=MEMORY[:41])], False),
     ([dict(SESSION_EVENT, source=dict(SOURCE_SESSION, extra=True))], False),
     ([dict(SESSION_EVENT, source=dict(SOURCE_SESSION, id='not-a-uuid'))], False),
     ([dict(SESSION_EVENT, event_id='event_other')], False),
-    ([UNKNOWN_EVENT], False),
+    ([dict(SESSION_EVENT, source=dict(SOURCE_SESSION, id='not-a-uuid'))], True),
+    ([dict(SESSION_EVENT, source=dict(SOURCE_SESSION, extra=True))], True),
+    ([dict(UNKNOWN_EVENT, source=dict(type='unknown', id='unexpected'))], True),
     ([dict(UNKNOWN_EVENT, source=dict(type='unknown', id='unexpected')), LISTED_RESPONSE], False),
     ([SESSION_EVENT, RESPONSE], False),
     ([SESSION_EVENT, LISTED_RESPONSE, LISTED_RESPONSE], False),

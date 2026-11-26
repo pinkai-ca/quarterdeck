@@ -103,26 +103,34 @@ def candidate_boundary(native, trigger, anchor='synthetic-summary', *, form='wit
                    'preCompactOrganizations': ['synthetic-org'],
                    'preCompactOrganizationsCoverStart': True,
                })
-    if form != 'witnessed':
+    if form in ('is-meta', 'is-meta-cover-only'):
+        row['isMeta'] = False
+    if form in ('precomputed', 'is-meta'):
         metadata = row['compactMetadata']
         del metadata['preCompactOrganizationsCoverStart']
         metadata['preCompactDiscoveredTools'] = ['SyntheticTool']
         if form == 'precomputed':
             metadata['precomputed'] = True
-        elif form == 'is-meta':
-            row['isMeta'] = False
     return row
 
 
-@pytest.mark.parametrize('trigger,form', [
-    ('manual', 'witnessed'), ('auto', 'witnessed'), ('auto', 'precomputed'), ('auto', 'is-meta'),
+@pytest.mark.parametrize('trigger,form,cover_start', [
+    ('manual', 'witnessed', True),
+    ('auto', 'witnessed', True),
+    ('auto', 'precomputed', False),
+    ('auto', 'precomputed', True),
+    ('auto', 'is-meta', False),
+    ('auto', 'is-meta', True),
+    ('auto', 'is-meta-cover-only', True),
 ])
 @pytest.mark.parametrize('compatibility', [False, True], ids=['streaming', 'full'])
-def test_interactive_candidate_boundary_counts_once_and_preserves_the_turn(tmp_path, monkeypatch, trigger, form,
-                                                                      compatibility):
+def test_interactive_candidate_boundary_counts_once_and_preserves_the_turn(
+        tmp_path, monkeypatch, trigger, form, cover_start, compatibility):
     native = history(tmp_path, 'claude')
     before = claude.compactions(native.path)
-    candidate_boundary(native, trigger, form=form)
+    row = candidate_boundary(native, trigger, form=form)
+    if cover_start:
+        row['compactMetadata']['preCompactOrganizationsCoverStart'] = True
     native.add('user', isCompactSummary=True, message=dict(role='user', content='Synthetic summary'))
     native.rows[-1]['uuid'] = 'synthetic-summary'
     if compatibility:
@@ -139,7 +147,7 @@ def test_interactive_candidate_boundary_counts_once_and_preserves_the_turn(tmp_p
     assert [item.text for item in claude.inputs(native.path)] == ['Synthetic task']
 
 
-@pytest.mark.parametrize('variant', ['full', 'precomputed', 'replacement', 'headless', 'direct-idle',
+@pytest.mark.parametrize('variant', ['full', 'precomputed', 'replacement', 'headless', 'missing-cover',
                                     'wrong-anchor', 'wrong-token-type', 'wrong-parent', 'missing-version'])
 def test_distinct_or_malformed_candidate_auto_boundary_leaves_the_count_unknown(tmp_path, variant):
     native = history(tmp_path, 'claude')
@@ -154,8 +162,8 @@ def test_distinct_or_malformed_candidate_auto_boundary_leaves_the_count_unknown(
         metadata['precomputed'] = True
     if variant == 'headless':
         metadata['runningTurnPrompt'] = {}
-    if variant == 'direct-idle':
-        row['isMeta'] = False
+    if variant == 'missing-cover':
+        del metadata['preCompactOrganizationsCoverStart']
     if variant == 'wrong-anchor':
         metadata['preservedSegment']['anchorUuid'] = row['uuid']
     if variant == 'wrong-token-type':
@@ -183,11 +191,9 @@ def test_distinct_or_malformed_candidate_auto_boundary_leaves_the_count_unknown(
     ('precomputed', {}, dict(preCompactDiscoveredTools='SyntheticTool')),
     ('precomputed', {}, dict(preCompactDiscoveredTools=['SyntheticTool', None])),
     ('precomputed', dict(isMeta=False), {}),
-    ('precomputed', {}, dict(preCompactOrganizationsCoverStart=True)),
     ('is-meta', dict(isMeta=True), {}),
     ('is-meta', dict(isMeta=0), {}),
     ('is-meta', dict(unmeasured=True), {}),
-    ('is-meta', {}, dict(preCompactOrganizationsCoverStart=True)),
     ('is-meta', {}, dict(preCompactOrganizations=[])),
     ('is-meta', {}, dict(preCompactDiscoveredTools=[None])),
 ])
@@ -201,6 +207,24 @@ def test_unmeasured_variants_of_the_new_auto_boundaries_leave_the_count_unknown(
 
     reading = claude.compactions(native.path)
     assert reading.count is None and reading.reason is not None
+
+
+@pytest.mark.parametrize('form', ['witnessed', 'precomputed', 'is-meta', 'is-meta-cover-only'])
+@pytest.mark.parametrize('metadata_changes', [
+    dict(preCompactOrganizationsCoverStart=False),
+    dict(preCompactOrganizationsCoverStart=1),
+    dict(preCompactOrganizationsCoverStart='true'),
+    dict(preCompactOrganizationsCoverStart=None),
+    dict(preCompactOrganizationsCoverStart=True, unmeasured=True),
+], ids=['false', 'integer', 'string', 'null', 'extra-field'])
+def test_unmeasured_coverage_metadata_leaves_the_count_unknown(tmp_path, form, metadata_changes):
+    native = history(tmp_path, 'claude')
+    row = candidate_boundary(native, 'auto', form=form)
+    row['compactMetadata'].update(metadata_changes)
+    native.flush()
+
+    reading = claude.compactions(native.path)
+    assert reading.count is None and reading.reason == 'native compaction history unreadable or incomplete'
 
 
 @pytest.mark.parametrize('version', [None, '2.1.317', '2.1.325'])
