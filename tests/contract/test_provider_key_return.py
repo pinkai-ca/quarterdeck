@@ -43,7 +43,7 @@ def test_human_return_holds_its_launch_and_reports_a_safe_reason_in_compact_stat
 
 
 def test_crew_return_with_a_held_handoff_delays_further_attempts(running, monkeypatch):
-    from quarterdeck import fresh_handoff, post
+    from quarterdeck import fresh_handoff, keyfile, post
     from quarterdeck.ship import Pool
 
     class StandInKeyPool(Pool):
@@ -53,6 +53,7 @@ def test_crew_return_with_a_held_handoff_delays_further_attempts(running, monkey
     r = running
     r.svc.failover()
     r.seat.ship.pools['second'] = StandInKeyPool('second', 'anthropic')
+    monkeypatch.setattr(keyfile, 'usable', lambda pool: True)
     before = r.seat.launched()
     clock = [100.0]
     monkeypatch.setattr(service, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
@@ -68,7 +69,7 @@ def test_crew_return_with_a_held_handoff_delays_further_attempts(running, monkey
         r.svc.failover()
     move.assert_called_once_with('first')
     handoff.assert_called_once_with(r.seat, reason=reason, expected_launch=before, service=r.svc,
-                                    restart=True, pool='first', enclosed=True, ready=None)
+                                    pool='first', immediate=False, return_from='second')
     facts = watch.Facts(service='ok', waiting=0, oldest=0, blind=0,
                         seat_holds=watch.service_holds(r.svc.runtime), routes=['synthetic route ' * 30])
     line = headlines.render(headlines.cache_document(facts), compact=True)

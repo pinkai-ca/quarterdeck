@@ -2864,7 +2864,7 @@ class Service:
                                       target=target)
 
     def _move_at_break(self, seat, pool, *, returning=False, unproved=None):
-        from . import relaunch_intent
+        from . import fresh_handoff, keyfile, relaunch_intent
         from .harness import resume_target
 
         source = seat.pool.name
@@ -2885,7 +2885,15 @@ class Service:
                     raise ShipError(f'{seat.name}: resume became unproved after the move began') from error
                 if seat.session.human:
                     raise
-                result = self._fresh_unproved_move(seat, error, pool)
+                if returning and seat.pool.provider != self.ship.pools[pool].provider:
+                    if not keyfile.usable(seat.pool):
+                        raise FreshMoveHeld()
+                    result = fresh_handoff.request(seat, reason=error.reason, expected_launch=error.launch,
+                                                   service=self, pool=pool, immediate=False, return_from=source)
+                    if result.disposition in ('staged', 'already-staged'):
+                        return
+                else:
+                    result = self._fresh_unproved_move(seat, error, pool)
                 if result.disposition != 'started':
                     self.log('failover', seat=seat.name, pool=pool, skipped=result.disposition)
                     if result.disposition == 'start-failed':
@@ -2893,10 +2901,13 @@ class Service:
                     raise FreshMoveHeld()
                 proof = result.proof
         if proof is not None:
-            notice = (f'moved back to pool {pool} from its key {source}: the subscription has room'
-                      if returning else f'moved to pool {pool} from {source} at its wall')
-            self.report_pool_move(seat, notice)
-            self.log('failover', seat=seat.name, pool=pool, came_from=source, proof=proof)
+            self._report_failover(seat, pool, source, proof, returning=returning)
+
+    def _report_failover(self, seat, pool, source, proof, *, returning):
+        notice = (f'moved back to pool {pool} from its key {source}: the subscription has room'
+                  if returning else f'moved to pool {pool} from {source} at its wall')
+        self.report_pool_move(seat, notice)
+        self.log('failover', seat=seat.name, pool=pool, came_from=source, proof=proof)
 
     def _try_resting_failover(self, seat, ordered, binding, came_from):
         """One reserved trial of an eligible resting subscription.
@@ -3009,16 +3020,27 @@ class Service:
         self.log(relaunch_intent.RESTING, seat=seat.name, pool=choice.pool, came_from=came_from, proof=proof,
                  **({'fresh': unproved.reason} if unproved is not None else {}))
 
+    def _key_return_target(self, seat: Seat, *, cached=False) -> str | None:
+        source = seat.pool.name
+        if (not getattr(seat.pool, 'paid_by_key', False) or source not in seat.spec.pools
+                or getattr(seat.launched(), 'pool_selected', None) == source):
+            return None  # an explicit key choice remains in effect for the current launch
+        earlier = seat.spec.pools[:seat.spec.pools.index(source)]
+        return next((name for name in earlier if self.ship.pools[name].kind == 'subscription'
+                     and (quota.cached_open(self.ship, self.ledger, name, seat) if cached
+                          else self.known_open(seat, name))), None)
+
     def _back_from_key(self, seat: Seat) -> None:
-        """A seat on a key that is not spent goes back, when idle, to the first subscription before it in its list that
-        has room: a key pays only while the subscriptions are spent."""
-        if (not getattr(seat.pool, 'paid_by_key', False) or seat.pool.name not in seat.spec.pools
-                or getattr(seat.launched(), 'pool_selected', None) == seat.pool.name):
-            Service._clear_relaunch_retry(self, seat, 'pool move')
-            return  # an explicit key choice remains in effect for the current launch
-        earlier = seat.spec.pools[:seat.spec.pools.index(seat.pool.name)]
-        target = next((name for name in earlier if self.ship.pools[name].kind == 'subscription'
-                       and self.known_open(seat, name)), None)
+        """At idle, an automatically selected key gives way to the first earlier subscription with room."""
+        from . import compaction, fresh_handoff
+
+        if getattr(seat.pool, 'paid_by_key', False) and not seat.session.human:
+            staged = fresh_handoff.load(seat.ship.runtime, seat.name)
+            if (staged is not None and staged.get('pool') is not None
+                    and staged['launch'] == compaction.launch_key(seat)
+                    and (staged['phase'] in ('waiting', 'starting') or staged.get('return_from') is not None)):
+                return  # the shared handoff owns the move or still holds its outcome
+        target = self._key_return_target(seat)
         if target is None:
             Service._clear_relaunch_retry(self, seat, 'pool move')
         elif self._wall_idle_hold(seat) is None:

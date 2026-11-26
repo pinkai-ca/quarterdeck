@@ -5,9 +5,10 @@ from dataclasses import dataclass
 import json
 import re
 
-from . import alarms, compaction, idle, lifecycle, pending, post, post_dir, recovery, relaunch_intent, resting_failover
+from . import alarms, compaction, idle, keyfile, lifecycle, pending, post, post_dir, quota, recovery, relaunch_intent, resting_failover
 from .harness import resume_target
 from .ship import ShipError
+from .tmux import TmuxError
 
 
 SUBJECT = 'Prepare a conversation handoff'
@@ -40,7 +41,9 @@ def load(runtime, name):
             or data.get('phase') not in ('waiting', 'starting', 'done', 'superseded', 'failed')
             or not isinstance(data.get('callers'), list) or not all(isinstance(c, str) for c in data['callers'])
             or not isinstance(data.get('reason'), str) or type(data.get('restart')) is not bool
-            or data['phase'] == 'waiting' and not isinstance(data.get('order'), str)):
+            or data['phase'] == 'waiting' and not isinstance(data.get('order'), str)
+            or ('return_from' in data and (not isinstance(data['return_from'], str)
+                                          or not isinstance(data.get('pool'), str)))):
         raise ShipError(f'{name}: conversation handoff state invalid')
     if data.get('order') is not None:
         order = compaction.decode(data['order'])
@@ -115,7 +118,7 @@ def resume_unproved(seat, error, *, caller=None, service=None, selected_pool=Non
 
 @resting_failover.reading_pass()
 def request(seat, *, reason, caller=None, expected_launch=None, service=None, restart=False,
-            pool=None, enclosed=False, immediate=None, ready=None):
+            pool=None, enclosed=False, immediate=None, ready=None, return_from=None):
     """Stage once per live launch, or start immediately when this program cannot take a turn.
 
     ``pool`` is a destination the caller already chose. ``immediate`` defaults to that choice being set, which is
@@ -123,6 +126,7 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
     passes ``immediate=False`` so the same handoff is staged, bound to ``pool``, and started at the idle break
     after the report. A later request for the same launch does not start another. ``enclosed`` means the caller
     already holds this seat's relaunch section. An explicit move supplies its own idle proof before starting.
+    An automatic return also binds the key it is leaving, so tick checks the original routing decision.
     """
     runtime, name = seat.ship.runtime, seat.name
     reason = reason.rstrip('.')
@@ -177,6 +181,10 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                         data['order'] = store.prepare('order', post.SHIP, name, body, subject=SUBJECT).to_json()
                     if pool is not None:
                         data['pool'] = pool
+                        if return_from is not None:
+                            data['return_from'] = return_from
+                        else:
+                            data.pop('return_from', None)  # an explicit pool choice takes over
                         if not current:
                             _clear_move_alarm(runtime, name)
                     save(runtime, name, data)  # publish the intent before the immutable post
@@ -187,6 +195,7 @@ def request(seat, *, reason, caller=None, expected_launch=None, service=None, re
                 if ready is not None and not ready():
                     return FreshHandoffResult('waiting-idle', f'{name}: the pool move still waits for an idle break.')
                 data['phase'] = 'starting'
+                data.pop('return_from', None)  # the wall move owns the handoff now
                 if pool is not None:
                     data['pool'] = pool
                     for spec in seat.ship.seats.values():
@@ -251,16 +260,27 @@ def _start(service, seat, store, data, *, unable=False, pool=None, enclosed=Fals
     if unable:
         explanation += ' and its old program could no longer run'
     note = f'{name} {resume_target.NEW_CONVERSATION} because {explanation}.'
+    returning = data.get('return_from') is not None
 
     def begin():
         if data.get('pool') is not None:
             _clear_move_alarm(runtime, name)
         try:
             proof = seat._fresh_on_pool(pool) if pool is not None else seat._fresh()
-        except (OSError, ShipError) as error:
+            if returning:
+                launch = seat.launched()
+                if (launch is None or launch.pool != pool or compaction.key_for(launch) == data['launch']
+                        or not seat.is_up):
+                    raise ShipError('the return did not confirm a new launch')
+        except (OSError, ShipError, TmuxError) as error:
             data['phase'] = 'failed'
+            if returning:
+                data.update(problem=f'return to {pool} held: new conversation launch outcome unknown',
+                            failed_launch=compaction.launch_key(seat))
             save(runtime, name, data)
             _notice(store, seat, data, f'{name}: its new conversation could not start. {error}')
+            if returning:
+                raise ShipError(data['problem']) from error
             raise
         _settle_superseded(store, seat, data)  # the order was open while this launch carried it
         data['phase'] = 'done'
@@ -273,14 +293,16 @@ def _start(service, seat, store, data, *, unable=False, pool=None, enclosed=Fals
     if enclosed:
         proof = begin()
     else:
-        with relaunch_intent.section(service, seat, 'fresh-handoff', resume=False, selected_pool=pool):
+        with relaunch_intent.section(service, seat, 'fresh-handoff', resume=False, automatic=returning,
+                                     selected_pool=None if returning else pool):
             proof = begin()
     return f'{proof}\n{note}'
 
 
 def _interrupted(service, seat, data):
     name, runtime = seat.name, seat.ship.runtime
-    explanation = f'{name}: the service stopped during its fresh start and could not confirm the outcome. Inspect qd watch {name}.'
+    action = f'return to {data["pool"]}' if data.get('return_from') is not None else 'fresh start'
+    explanation = f'{name}: the service stopped during its {action} and could not confirm the outcome. Inspect qd watch {name}.'
     data.update(phase='failed', problem=explanation, failed_launch=compaction.launch_key(seat))
     save(runtime, name, data)
     _notice(service.store, seat, data, explanation)
@@ -333,13 +355,19 @@ def tick(service, seat):
         return
     observed, readiness, destination = data, None, None
     pool = observed.get('pool')
+    returning = observed.get('return_from') is not None
     if observed['phase'] == 'waiting' and pool is not None:
         launched = seat.launched()
         if observed['launch'] == compaction.key_for(launched) and _can_prepare(seat):
             readiness = _ready(service, seat, observed, compaction.decode(observed['order']), launched)
         if readiness is not None and observed['launch'] == compaction.launch_key(seat):
             # This can refresh usage with a provider call. Reprove readiness before using its result.
-            destination = service.select_destination(seat, pool)
+            if returning:
+                if not quota.current_walled(seat, service.ledger):
+                    service._key_return_target(seat)
+                destination = (None, False)
+            else:
+                destination = service.select_destination(seat, pool)
     with seat._lifecycle(automatic=True):
         if resting_failover.hold_state(seat) is not resting_failover.Hold.CLEAR:
             return
@@ -350,22 +378,28 @@ def tick(service, seat):
             if destination is None:
                 _interrupted(service, seat, data)
             return
+        if (returning or destination is not None) and data != observed:
+            return
+        launched = seat.launched()
+        if data['launch'] != compaction.key_for(launched):
+            if destination is not None:
+                return  # let the next pass settle the superseded handoff
+            if returning and launched is not None and seat.is_up:
+                _settle_superseded(service.store, seat, data)
+            data['phase'] = 'superseded'
+            save(runtime, name, data)
+            if data.get('pool') is not None:
+                _clear_move_alarm(runtime, name)
+            return
         with post.admission(runtime, name):
-            if destination is not None and data != observed:
-                return
-            launched = seat.launched()
-            if data['launch'] != compaction.key_for(launched):
-                if destination is not None:
-                    return  # let the next pass settle the superseded handoff
-                data['phase'] = 'superseded'
-                save(runtime, name, data)
-                if data.get('pool') is not None:
-                    _clear_move_alarm(runtime, name)
-                return
             if not _can_prepare(seat):
                 return
             order = _publish_order(service.store, data)
             pool = data.get('pool')
+            if returning:
+                if relaunch_intent.pending(seat) or quota.current_walled(seat, service.ledger):
+                    _clear_move_alarm(runtime, name)
+                    return  # let the pending or ordinary wall path take over
             if pool is not None and destination is None:
                 return
             ready = _ready(service, seat, data, order, launched)
@@ -374,17 +408,26 @@ def tick(service, seat):
                 return
             unable, _ = ready
             refusal, unknown = destination if pool is not None else (None, False)
+            if returning:
+                if unable or not seat.is_up:
+                    return
+                if seat.pool.name != data['return_from'] or not keyfile.usable(seat.pool):
+                    refusal = 'the source key is no longer usable'
+                elif service._key_return_target(seat, cached=True) != pool:
+                    refusal = f'{pool} is no longer the first earlier subscription known to have room'
             if refusal is None:
                 data['phase'] = 'starting'
                 save(runtime, name, data)  # claim under the same admission used by input delivery and post
         if refusal is not None:
-            reason = f'staged pool move held. {refusal}'
+            reason = f'return to {pool} held: {refusal}' if returning else f'staged pool move held. {refusal}'
             systems = [spec.name for spec in seat.ship.seats.values() if spec.role == 'systems' and spec.name != name]
             alarms.notify(service, name, None, [order.id, pool, refusal], f'{name}: {reason}',
                           channel='staged-move', up=systems)
             raise ShipError(reason)  # the service's seat guard publishes the named hold
         source = seat.pool.name if pool is not None else None
         proof = _start(service, seat, service.store, data, unable=unable, pool=pool)
-        if pool is not None:
+        if returning:
+            service._report_failover(seat, pool, source, proof, returning=True)
+        elif pool is not None:
             service.report_pool_move(seat, f'moved to pool {pool} from {source} by qd set')
             service.log('select', seat=name, pool=pool, came_from=source, usage_unknown=unknown, proof=proof)

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from quarterdeck import cli, keyfile, post, quota, record_owner, watch
+from quarterdeck import cli, fresh_handoff, keyfile, post, quota, record_owner, watch
 from quarterdeck.harness import resume_target
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
@@ -106,9 +106,11 @@ def test_provider_key_round_trip_with_stand_in(case, tmp_path, tmux, monkeypatch
     from .waiting import start_with_conversation
 
     spec = SeatSpec('worker', 'crew', 'worker', 'fake', ('subscription', 'key'), settings={'step_seconds': '0.05'})
+    key_provider = 'stand-in' if case in ('fresh', 'human') else 'synthetic'
     ship = Ship(tmp_path / 'ship', 'synthetic', 'operator', tmp_path,
-                {'subscription': Pool('subscription', 'synthetic'), 'key': StandInKeyPool('key', 'synthetic')},
+                {'subscription': Pool('subscription', 'synthetic'), 'key': StandInKeyPool('key', key_provider)},
                 {'crew': Session('crew', 'Synthetic')}, {'worker': spec})
+    monkeypatch.setattr(FakeHarness, 'accepts', lambda self, pool: None)
     monkeypatch.setattr(keyfile, 'problem', lambda pool: None)
     monkeypatch.setattr(keyfile, 'route', lambda *args: None)
     monkeypatch.setattr(keyfile, 'value', lambda pool: pytest.fail('this stand-in uses no key'))
@@ -172,6 +174,22 @@ def test_provider_key_round_trip_with_stand_in(case, tmp_path, tmux, monkeypatch
         assert probes == [('subscription', 'key'), ('key', 'subscription')]
         current = Seat(ship, spec, tmux)
         reports = [m.body for m in svc.store.for_seat('worker') if m.kind == 'report']
+        if case == 'fresh':
+            [ask] = [m for m in svc.store.for_seat(spec.name) if m.subject == fresh_handoff.SUBJECT]
+            assert current.launched() == away_launch and current.pool.name == 'key'
+            assert not any('moved back to pool' in report for report in reports)
+            handoff = svc.store.new('order', spec.name, spec.name, 'Carry these new notes from the synthetic key.',
+                                    re=ask.id)
+            svc.store.new('report', spec.name, post.SHIP, f'Handoff: {handoff.id}', re=ask.id)
+
+            for message in svc.attempts.undelivered(svc.store, spec.name):
+                if message.id != handoff.id:
+                    result = svc.deliver(wait_for(idle_seat), [message])
+                    assert 'delivered' in result, result
+            wait_for(idle_seat)
+            svc.fresh_handoffs()
+            current = Seat(ship, spec, tmux)
+            reports = [m.body for m in svc.store.for_seat('worker') if m.kind == 'report']
         if case == 'human':
             assert current.launched() == away_launch and current.pool.name == 'key'
             assert not any('moved back to pool' in report for report in reports)

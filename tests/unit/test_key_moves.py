@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import stat
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import credential, endpoint, harness, keyfile, quota
+from quarterdeck import credential, endpoint, fresh_handoff, harness, keyfile, post, quota, watch
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.grok import GrokHarness
@@ -129,23 +130,186 @@ def test_an_endpoint_program_moves_between_a_keyed_endpoint_and_a_keyless_one(ad
 
 # -- the service: to a key when the subscriptions are spent, and back when one has room ---------------------------------
 
-def keyed(r, name):
+RETURN_RATES = dict(currency='USD', unit='million_tokens', input=2, cache_read=1, cache_write=3, output=4)
+
+
+def keyed(r, name, **options):
     ship = r.seat.ship
-    ship.pools[name] = Pool(name, ship.pools[name].declared_provider, api_key='keys:paid', ship_folder=ship.folder)
+    ship.pools[name] = Pool(name, ship.pools[name].declared_provider, api_key='keys:paid', ship_folder=ship.folder,
+                            **options)
 
 
-def test_a_seat_goes_to_its_key_at_the_wall_and_back_when_the_subscription_has_room(running, key_file):
+def return_orders(r):
+    return [m for m in r.svc.store.for_seat('worker') if m.subject == fresh_handoff.SUBJECT]
+
+
+def return_reports(r):
+    return [m.body for m in r.svc.store.for_seat('worker') if m.body.startswith('moved back to pool')]
+
+
+@pytest.fixture
+def key_return(running, key_file):
     r = running
     key_file.write(paid=KEY)
-    keyed(r, 'second')
+    keyed(r, 'second', price=RETURN_RATES)
     r.svc.failover()
     assert r.seat.pool.name == 'second' and len(r.launches) == 1
     r.svc.failover()
-    assert r.seat.pool.name == 'second' and len(r.launches) == 1, 'its subscription is still spent'
+    assert r.seat.pool.name == 'second' and not return_orders(r), 'its subscription is still spent'
     usage(r.svc, 'first', 0.1)
     r.svc.failover()
+    return r
+
+
+def report_return_handoff(r, order):
+    seat, record = r.seat, r.created[-1]
+    launch = seat.launched()
+    for message in r.svc.attempts.undelivered(r.svc.store, seat.name):
+        r.svc.attempts.close(r.svc.attempts.open(message, seat.name, launch.pane, launch.pid, launch.at), 'delivered')
+    record.begin(post.typed([order]), seat.spec.model, 'high')
+    handoff = r.svc.store.new('order', seat.name, seat.name, 'The new notes written on the key.', re=order.id)
+    r.svc.store.new('report', seat.name, post.SHIP, f'Handoff: {handoff.id}', re=order.id)
+    return handoff
+
+
+def test_a_cross_provider_return_waits_for_a_new_handoff_on_the_key(key_return):
+    r = key_return
+    before = r.seat.launched()
+    [order] = return_orders(r)
+    for _ in range(3):
+        r.svc.fresh_handoffs()
+        r.svc.failover()
+    assert r.seat.launched() == before and return_orders(r) == [order] and not return_reports(r)
+
+    def key_meter():
+        return r.svc.ledger.db.execute(
+            "SELECT count(*), sum(cost) FROM turns WHERE seat='worker' AND pool='second'"
+        ).fetchone()
+
+    r.svc.account()
+    turns_before, cost_before = key_meter()
+    handoff = report_return_handoff(r, order)
+    r.svc.fresh_handoffs()
+    assert r.seat.launched() == before and not return_reports(r), 'the report turn is still open'
+    record = r.created[-1]
+    record.end('Handoff ready.')
+    r.svc.account()
+    turns_after, cost_after = key_meter()
+    assert turns_after == turns_before + 1
+    cached, uncached, written_cache, output, cost = r.svc.ledger.db.execute(
+        'SELECT read_cached, read_uncached, cache_written, written, cost FROM turns WHERE record=? ORDER BY turn DESC LIMIT 1',
+        (str(record.path),),
+    ).fetchone()
+    assert cached == 2000 and written_cache == 200 and output == 53
+    assert uncached == len(post.typed([order])) // 4 + 100
+    assert cost_after - cost_before == pytest.approx(cost)
+    assert (uncached, cost) == (239, pytest.approx(0.003290))
+
+    for _ in range(3):
+        r.svc.fresh_handoffs()
+        r.svc.failover()
     assert r.seat.pool.name == 'first' and len(r.launches) == 2
-    assert any('moved back to pool first' in m.body for m in r.svc.store.for_seat('worker'))
+    assert r.seat.launched().resume is None and r.seat.launched().pool_selected is None
+    assert handoff.body in r.launches[-1][-1] and r.svc.store.is_open(handoff)
+    assert return_orders(r) == [order]
+    assert return_reports(r) == [
+        'moved back to pool first from its key second: the subscription has room and started a new conversation'
+    ]
+
+
+def test_the_staged_return_holds_when_its_destination_has_no_room(key_return):
+    r = key_return
+    [order] = return_orders(r)
+    report_return_handoff(r, order)
+    r.created[-1].end('Handoff ready.')
+    before = r.seat.launched()
+    usage(r.svc, 'first', 1.0)
+    for _ in range(3):
+        r.svc.fresh_handoffs()
+        r.svc.failover()
+    assert r.seat.launched() == before and not return_reports(r) and return_orders(r) == [order]
+    assert any('return to first held:' in line for line in watch.service_holds(r.svc.runtime))
+    usage(r.svc, 'first', 0.1)
+    r.svc.fresh_handoffs()
+    assert r.seat.pool.name == 'first' and len(r.launches) == 2
+    assert watch.service_holds(r.svc.runtime) == []
+
+
+def test_a_return_rechecks_a_destination_that_changes_during_the_usage_read(key_return, monkeypatch):
+    r = key_return
+    [order] = return_orders(r)
+    report_return_handoff(r, order)
+    r.created[-1].end('Handoff ready.')
+    before = r.seat.launched()
+    known_open = r.svc.known_open
+
+    def reads_then_walls(seat, pool):
+        result = known_open(seat, pool)
+        usage(r.svc, pool, 1.0)
+        return result
+
+    with monkeypatch.context() as refresh:
+        refresh.setattr(r.svc, 'known_open', reads_then_walls)
+        r.svc.fresh_handoffs()
+    assert r.seat.launched() == before and not return_reports(r)
+    assert return_orders(r) == [order]
+    assert any('return to first held:' in line for line in watch.service_holds(r.svc.runtime))
+    usage(r.svc, 'first', 0.1)
+    r.svc.fresh_handoffs()
+    assert r.seat.pool.name == 'first' and len(r.launches) == 2
+
+
+@pytest.mark.parametrize('destination', ['first', 'third'])
+def test_a_wall_takes_over_from_a_waiting_return(key_return, destination):
+    r = key_return
+    [order] = return_orders(r)
+    if destination == 'first':
+        usage(r.svc, 'third', 1.0)
+    # No handoff turn can run on this key once the ledger proves its budget is spent.
+    r.seat.ship.pools['second'] = replace(r.seat.pool, budget='0.000001 USD/day')
+    r.svc.account()
+    assert quota.current_walled(r.seat, r.svc.ledger)
+    r.svc.fresh_handoffs()
+    r.svc.failover()
+    assert r.seat.pool.name == destination and len(r.launches) == 2
+    assert not return_reports(r)
+    r.svc.fresh_handoffs()
+    assert not r.svc.store.is_open(order)
+
+
+def test_a_different_launch_cannot_use_the_staged_return(key_return):
+    r = key_return
+    [order] = return_orders(r)
+    handoff = report_return_handoff(r, order)
+    r.created[-1].end('Handoff ready.')
+    r.seat.fresh()
+    replacement = r.seat.launched()
+    assert replacement.pool == 'second' and len(r.launches) == 2
+    r.svc.fresh_handoffs()
+    assert r.seat.launched() == replacement and len(r.launches) == 2
+    assert fresh_handoff.load(r.svc.runtime, r.seat.name)['phase'] == 'superseded'
+    assert r.svc.store.is_open(handoff) and not return_reports(r)
+
+
+def test_an_unconfirmed_return_is_held_without_another_start(key_return, monkeypatch):
+    r = key_return
+    [order] = return_orders(r)
+    report_return_handoff(r, order)
+    r.created[-1].end('Handoff ready.')
+    starts = []
+
+    def refuse(pool):
+        starts.append(pool)
+        raise ShipError('synthetic launch failure')
+
+    monkeypatch.setattr(r.seat, '_fresh_on_pool', refuse)
+    for _ in range(3):
+        r.svc.fresh_handoffs()
+        r.svc.failover()
+    assert starts == ['first'] and return_orders(r) == [order]
+    assert r.seat.pool.name == 'second' and not return_reports(r)
+    assert any('return to first held: new conversation launch outcome unknown' in line
+               for line in watch.service_holds(r.svc.runtime))
 
 
 def test_a_seat_on_a_key_is_not_moved_back_while_it_works(running, key_file, monkeypatch):
