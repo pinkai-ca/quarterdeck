@@ -249,6 +249,7 @@ class PendingNotice:
     at: datetime
     dequeued_at: datetime | None = None
     absorption: 'BashAbsorption | None' = None
+    watch: 'WatchNoticeAbsorption | None' = None
 
 
 ABSORPTION_CONTEXT = frozenset({
@@ -268,6 +269,7 @@ class TaskNoticeQueue:
         self.pending = None
         self.unknown = False
         self.causes = set()  # why unknown: 'stopped' names the measured resume notice; anything else is 'other'
+        self.last_call = None  # the latest root assistant row that called tools: (its uuid, its calls still open)
 
     def _unknown(self, cause='other'):
         self.pending, self.unknown = None, True
@@ -319,12 +321,26 @@ class TaskNoticeQueue:
                 return disposition == 'private', None
             self._unknown()
             pending = None
+        if pending is not None and pending.watch is not None:
+            disposition = pending.watch.advance(entry, at, pending, self.background, complete=complete)
+            if disposition == 'settled':
+                self.background.end(pending.watch.task, 'completed', pending.at)
+                self.pending = None
+                return True, None
+            if disposition == 'ordinary':
+                self._read_through(entry, at, complete)
+                return False, None
+            if disposition is not None:
+                return True, None
+            self._unknown()
+            pending = None
         if entry.get('isSidechain'):
             return False, None
         if 'version' in entry:
             self.version = entry['version']
         if complete:
             self.track_turn(entry, at)
+            self._note_calls(entry)
         if linked_notice_origin(entry):
             # A Bash notice is the seat's own only where this queue already holds it, dequeued, with the same text.
             notice = linked_user_notice(entry, own_shell=pending is not None and pending.dequeued_at is not None
@@ -344,6 +360,9 @@ class TaskNoticeQueue:
                 if kind == 'assistant' and pending.dequeued_at is None and complete:
                     pending.absorption = BashAbsorption.start(entry, at, pending, self.background, self.turn)
                     if pending.absorption is not None:
+                        return False, None
+                    if self._absorb_watch(entry, at, pending, 'ordinary'):
+                        self._read_through(entry, at, complete)
                         return False, None
                 self._unknown()
         if kind != 'queue-operation' or self.version != LINKED_VERSION:
@@ -371,9 +390,48 @@ class TaskNoticeQueue:
                 and pending.text == text):
             self.pending = None
             return True, (pending.notice, pending.at)
+        if operation == 'remove' and complete and self._absorb_watch(entry, at, pending, 'private'):
+            return True, None
         self._unknown()
         # A different queue operation stays with the ordinary queue reader.
         return False, None
+
+    def _absorb_watch(self, entry, at, pending, expected):
+        """Open the measured absorption of the seat's own watch notice on the row that begins it."""
+        if pending.dequeued_at is not None or pending.absorption is not None:
+            return False
+        watch = WatchNoticeAbsorption.start(pending, self.background, self.last_call)
+        if watch is None or watch.advance(entry, at, pending, self.background, complete=True) != expected:
+            return False
+        pending.watch = watch
+        return True
+
+    def _read_through(self, entry, at, complete):
+        """A turn's own row read while a notice is absorbed keeps the version and turn the queue tracks."""
+        if entry.get('isSidechain'):
+            return
+        if 'version' in entry:
+            self.version = entry['version']
+        if complete:
+            self.track_turn(entry, at)
+            self._note_calls(entry)
+
+    def _note_calls(self, entry):
+        """Keep the latest tool-calling assistant row while any of its calls is open in its turn."""
+        kind = entry.get('type')
+        if kind == 'system' and entry.get('subtype') in ('turn_duration', 'compact_boundary'):
+            self.last_call = None
+        elif kind == 'user':
+            result = root_tool_result(entry)
+            if result is None:
+                self.last_call = None  # a prompt or a notice: whatever comes next is not that call's turn
+            elif self.last_call is not None and linked_root(entry, self.session):
+                row, calls = self.last_call
+                if entry.get('sourceToolAssistantUUID') == row and result.get('tool_use_id') in calls:
+                    calls = calls - {result['tool_use_id']}
+                    self.last_call = (row, calls) if calls else None
+        elif calls := tool_calls(entry, self.session):
+            self.last_call = entry['uuid'], calls
 
 
 def user_notice(entry):
@@ -1412,13 +1470,9 @@ class BashAbsorption:
         if not self.owns(self.task, pending, background, self.turn) or at < self.task.started:
             return None
         if row.get('type') == 'queue-operation':
-            if (self.foreground is not None and self.removal is None and at > pending.at
-                    and row.keys() == QUEUE_KEYS | {'content', 'reason', 'commandUuid', 'deliveryId'}
-                    and row['sessionId'] == background.session and row['operation'] == 'remove'
-                    and row['reason'] == 'absorbed_mid_turn' and row['content'] == pending.text
-                    and native_task_id(row['commandUuid']) and native_task_id(row['deliveryId'])
-                    and row['commandUuid'] != row['deliveryId']):
-                self.removal = row['commandUuid'], row['deliveryId']
+            removal = absorbed_removal(row, at, pending, background.session)
+            if self.foreground is not None and self.removal is None and removal is not None:
+                self.removal = removal
                 return 'private'
             return None
         if not self.root(row, background.session):
@@ -1463,28 +1517,159 @@ class BashAbsorption:
                                      'toolChangeHeader', 'tools'})
 
     def attachment(self, row, at, pending):
-        if (row.keys() != {'type', 'attachment', 'parentUuid', 'uuid', 'timestamp', 'isSidechain', 'rendered',
-                           'renderedInHumanTurn', 'renderedRole', 'session_id', 'sessionId', 'userType',
-                           'entrypoint', 'cwd', 'version', 'gitBranch', 'dataFlowOn'}
-                or row['type'] != 'attachment' or row['parentUuid'] != (self.snapshot or self.result)
-                or not native_task_id(row['uuid']) or row['uuid'] in (self.snapshot, self.result, self.foreground.row)
-                or row['dataFlowOn'] is not True or row['renderedRole'] != 'system'
-                or row['userType'] != 'external' or row['entrypoint'] != 'cli'
-                or not all(isinstance(row[key], str) for key in ('cwd', 'gitBranch'))):
+        if (row.keys() != ABSORBED_ATTACHMENT_KEYS or row['parentUuid'] != (self.snapshot or self.result)
+                or row['uuid'] in (self.snapshot, self.result, self.foreground.row)
+                or not absorbed_attachment(row, pending.text, self.removal)):
             return False
-        for rendered in (row['rendered'], row['renderedInHumanTurn']):
-            if (not isinstance(rendered, list) or len(rendered) != 1 or not isinstance(rendered[0], dict)
-                    or rendered[0].keys() != {'content'} or not isinstance(rendered[0]['content'], str)):
-                return False
-        value = row['attachment']
-        return (isinstance(value, dict) and value.keys() == {'type', 'prompt', 'source_uuid', 'delivery_id',
-                                                           'commandMode', 'origin', 'rowSource', 'runId', 'timestamp'}
-                and value['type'] == 'queued_command' and value['commandMode'] == 'task-notification'
-                and value['origin'] == {'kind': 'task-notification', 'producer': 'session-task'}
-                and value['rowSource'] == 'recorded' and isinstance(value['runId'], str) and bool(value['runId'])
-                and when(value['timestamp']) is not None and value['prompt'] == pending.text
-                and (self.snapshot is None or when(value['timestamp']) == at == pending.at)
-                and (value['source_uuid'], value['delivery_id']) == self.removal)
+        return self.snapshot is None or when(row['attachment']['timestamp']) == at == pending.at
+
+
+ABSORBED_ATTACHMENT_KEYS = frozenset({
+    'type', 'attachment', 'parentUuid', 'uuid', 'timestamp', 'isSidechain', 'rendered', 'renderedInHumanTurn',
+    'renderedRole', 'session_id', 'sessionId', 'userType', 'entrypoint', 'cwd', 'version', 'gitBranch', 'dataFlowOn',
+})
+
+
+def absorbed_removal(row, at, pending, session):
+    """The measured remove of a notice absorbed into a running turn: its (commandUuid, deliveryId), or None."""
+    if (row.get('type') == 'queue-operation' and at is not None and at > pending.at
+            and row.keys() == QUEUE_KEYS | {'content', 'reason', 'commandUuid', 'deliveryId'}
+            and row['sessionId'] == session and row['operation'] == 'remove'
+            and row['reason'] == 'absorbed_mid_turn' and row['content'] == pending.text
+            and native_task_id(row['commandUuid']) and native_task_id(row['deliveryId'])
+            and row['commandUuid'] != row['deliveryId']):
+        return row['commandUuid'], row['deliveryId']
+    return None
+
+
+def absorbed_attachment(row, text, removal):
+    """The measured queued_command attachment that renders an absorbed notice in its turn, named by its remove.
+
+    The row's own key set and parent are the caller's: they differ by where the attachment was measured."""
+    if (row.get('type') != 'attachment' or not native_task_id(row.get('uuid'))
+            or row.get('dataFlowOn') is not True or row.get('renderedRole') != 'system'
+            or row.get('userType') != 'external' or row.get('entrypoint') != 'cli'
+            or not all(isinstance(row.get(key), str) for key in ('cwd', 'gitBranch'))):
+        return False
+    for rendered in (row.get('rendered'), row.get('renderedInHumanTurn')):
+        if (not isinstance(rendered, list) or len(rendered) != 1 or not isinstance(rendered[0], dict)
+                or rendered[0].keys() != {'content'} or not isinstance(rendered[0]['content'], str)):
+            return False
+    value = row.get('attachment')
+    return (isinstance(value, dict) and value.keys() == {'type', 'prompt', 'source_uuid', 'delivery_id',
+                                                       'commandMode', 'origin', 'rowSource', 'runId', 'timestamp'}
+            and value['type'] == 'queued_command' and value['commandMode'] == 'task-notification'
+            and value['origin'] == {'kind': 'task-notification', 'producer': 'session-task'}
+            and value['rowSource'] == 'recorded' and isinstance(value['runId'], str) and bool(value['runId'])
+            and when(value['timestamp']) is not None and value['prompt'] == text
+            and removal is not None and (value['source_uuid'], value['delivery_id']) == removal)
+
+
+# Bookkeeping rows the watch reader already reads as ordinary while an absorbed watch finishes its turn.
+WATCH_METADATA = ('api-request', 'api-request-blob', 'api-request-shape', 'data-flow-records', 'last-prompt',
+                  'tools-used', 'custom-title', 'agent-name', 'mode', 'permission-mode', 'session-owner', 'atis-latch')
+
+
+@dataclass
+class WatchNoticeAbsorption:
+    """The completion of the seat's own registered inbox watch, absorbed into a turn already running.
+
+    Measured on 2.1.331 person seats: the enqueue, the turn's own rows, a remove with reason absorbed_mid_turn and
+    the queued_command attachment, with no dequeue. The remove may be written before the turn's assistant rows
+    (form R) or after one (form A, whose first block may be thinking or tool_use). Only the remove and the
+    attachment settle it, and only on every measured equality: the remove's text is the notice's, the attachment's
+    prompt, source and delivery are the enqueue's text and the remove's ids, its time is the enqueue's, and its
+    parent is the turn's tool result just before it. The notice is the one pending: its text is the exact
+    completion of the watch this record registered, by call, task and output file. Anything else is not this
+    reading, and the queue stays unknown. So are rows between them of any form not measured there or read as
+    ordinary bookkeeping by the watch reader."""
+
+    task: Task
+    calls: dict  # assistant row uuid -> its calls still open: the last row before the enqueue, and the turn's since
+    removal: tuple[str, str] | None = None
+    result: str | None = None  # the turn's latest tool result since the enqueue, the attachment's parent
+
+    @classmethod
+    def start(cls, pending, background, last_call):
+        task = background.tasks.get(pending.notice.call) if pending.notice.kind == 'bash' else None
+        return cls(task, dict([last_call]) if last_call else {}) if cls.owns(task, pending, background) else None
+
+    @staticmethod
+    def owns(task, pending, background):
+        return (task is not None and task.watch is not None and task.version == LINKED_VERSION
+                and task.task == pending.notice.task and task.watch.output == pending.notice.output
+                and task.phase == 'pending' and not task.invalid and not task.undated_evidence
+                and task.call not in background.unknown_calls and task.called_at is not None
+                and task.latest <= pending.at and pending.text == shell_notice_text(task, 'completed'))
+
+    def advance(self, row, at, pending, background, *, complete):
+        """'ordinary' for the turn's own rows, 'private' for the remove, 'settled' for the attachment, else None."""
+        if not complete or not self.owns(self.task, pending, background):
+            return None
+        kind = row.get('type')
+        if kind == 'queue-operation':
+            removal = absorbed_removal(row, at, pending, background.session)
+            if self.removal is None and removal is not None:
+                self.removal = removal
+                return 'private'
+            return None
+        if (kind in WATCH_METADATA and row.get('version') in (None, LINKED_VERSION) and not row.get('isSidechain')
+                and row.get('sessionId') == background.session):
+            return 'ordinary'
+        if kind == 'file-history-delta' and row.get('sessionId', background.session) == background.session:
+            return 'ordinary'  # measured between the enqueue and the turn's rows
+        if row.get('isSidechain') is not False:
+            return None
+        if kind == 'assistant':
+            # Its time may be earlier than the enqueue's though it is written after: file order is the order.
+            if self.turn_assistant(row, at, background.session):
+                self.result = None
+                if calls := tool_calls(row, background.session):
+                    self.calls[row['uuid']] = calls
+                return 'ordinary'
+            return None
+        if kind == 'user':
+            # The result closes a call proved by its own row: one read in this turn, or the last before the enqueue.
+            if not self.turn_result(row, at, background.session):
+                return None
+            call, source = root_tool_result(row)['tool_use_id'], row['sourceToolAssistantUUID']
+            if call in self.calls.get(source, ()):
+                self.calls[source] = self.calls[source] - {call}  # a result closes its call once
+                self.result = row['uuid']
+                return 'ordinary'
+            return None
+        value = row.get('attachment')
+        if kind == 'attachment' and isinstance(value, dict) and value.get('type') == 'queued_command':
+            return 'settled' if self.attachment(row, at, pending, background.session) else None
+        if (kind == 'attachment' and isinstance(value, dict) and value.get('type') == 'deferred_tools_record'
+                and BashAbsorption.root(row, background.session) and native_task_id(row.get('uuid'))):
+            return 'ordinary'  # measured between the enqueue and the turn's first assistant row
+        return None  # any other row is not a measured form: the turn ended, a prompt came, or it is unread
+
+    @staticmethod
+    def turn_assistant(row, at, session):
+        message = row.get('message')
+        content = message.get('content') if isinstance(message, dict) else None
+        return (at is not None and BashAbsorption.root(row, session) and native_task_id(row.get('uuid'))
+                and row.get('madeBy') == 'model' and isinstance(message, dict) and message.get('role') == 'assistant'
+                and message.get('stop_reason') == 'tool_use' and isinstance(content, list) and bool(content)
+                and all(isinstance(block, dict) and block.get('type') in ('thinking', 'tool_use') for block in content))
+
+    @staticmethod
+    def turn_result(row, at, session):
+        result = root_tool_result(row)
+        return (result is not None and at is not None and BashAbsorption.root(row, session)
+                and native_task_id(row.get('uuid')) and native_task_id(result.get('tool_use_id'))
+                and native_task_id(row.get('sourceToolAssistantUUID'))
+                and row.get('parentUuid') == row['sourceToolAssistantUUID'] != row['uuid'])
+
+    def attachment(self, row, at, pending, session):
+        slug = row.get('slug')
+        return (self.removal is not None and self.result is not None and at is not None and at == pending.at
+                and row.keys() in (ABSORBED_ATTACHMENT_KEYS, ABSORBED_ATTACHMENT_KEYS | {'slug'})
+                and (slug is None and 'slug' not in row or isinstance(slug, str) and bool(slug))
+                and BashAbsorption.root(row, session) and row['parentUuid'] == self.result
+                and row['uuid'] != self.result and absorbed_attachment(row, pending.text, self.removal))
 
 
 @dataclass
@@ -1615,10 +1800,8 @@ class WatchCompletionQueue:
             return self.queue_disposition(pending, row, at)
         if row.get('sessionId') != self.session:
             return None
-        metadata = ('api-request', 'api-request-blob', 'api-request-shape', 'data-flow-records', 'last-prompt',
-                    'tools-used', 'custom-title', 'agent-name', 'mode', 'permission-mode', 'session-owner', 'atis-latch')
         if (phase == 'dequeue' and kind == 'data-flow-records' and 'version' not in row
-                or phase == 'finish' and kind in metadata and row.get('version') in (None, LINKED_VERSION)):
+                or phase == 'finish' and kind in WATCH_METADATA and row.get('version') in (None, LINKED_VERSION)):
             return 'ordinary'
         if not self.root(row) or at is None:
             return None
@@ -1743,6 +1926,16 @@ def foreground_bash(row, at):
             and args.get('run_in_background', False) is False):
         return ForegroundBash(block['id'], row['uuid'], at)
     return None
+
+
+def tool_calls(row, session):
+    """The call ids of a root assistant row's tool_use blocks, when it names its own row."""
+    message = row.get('message')
+    if (row.get('type') != 'assistant' or not linked_root(row, session) or not native_task_id(row.get('uuid'))
+            or not isinstance(message, dict) or not isinstance(message.get('content'), list)):
+        return frozenset()
+    return frozenset(block['id'] for block in message['content'] if isinstance(block, dict)
+                     and block.get('type') == 'tool_use' and native_task_id(block.get('id')))
 
 
 def root_tool_result(row):
