@@ -250,6 +250,9 @@ class PendingNotice:
     dequeued_at: datetime | None = None
     absorption: 'BashAbsorption | None' = None
     watch: 'WatchNoticeAbsorption | None' = None
+    early: 'EarlyWatchBinding | None' = None
+    read: int = 0  # rows this queue has read since the enqueue
+    unmeasured: bool = False  # a row since the enqueue that no measured absorption admits before its opening row
 
 
 ABSORPTION_CONTEXT = frozenset({
@@ -334,6 +337,18 @@ class TaskNoticeQueue:
                 return True, None
             self._unknown()
             pending = None
+        if pending is not None:
+            pending.read += 1  # the late-bound form may begin only on the first row after the enqueue
+            pending.unmeasured = pending.unmeasured or not self._window_row(entry)
+        if pending is not None and pending.early is not None:
+            disposition = pending.early.advance(entry, at, pending, self.background, complete=complete)
+            if disposition == 'bound':
+                pending.watch, pending.early = pending.early.watch, None
+            if disposition is not None:
+                self._read_through(entry, at, complete)
+                return False, None
+            self._unknown()
+            pending = None
         if entry.get('isSidechain'):
             return False, None
         if 'version' in entry:
@@ -362,6 +377,11 @@ class TaskNoticeQueue:
                     if pending.absorption is not None:
                         return False, None
                     if self._absorb_watch(entry, at, pending, 'ordinary'):
+                        self._read_through(entry, at, complete)
+                        return False, None
+                    if pending.read == 1 and (early := EarlyWatchBinding.start(entry, at, pending,
+                                                                               self.background)):
+                        pending.early = early
                         self._read_through(entry, at, complete)
                         return False, None
                 self._unknown()
@@ -396,9 +416,19 @@ class TaskNoticeQueue:
         # A different queue operation stays with the ordinary queue reader.
         return False, None
 
+    def _window_row(self, entry):
+        """A row the measured absorptions admit between the enqueue and their opening row: the turn's own rows and
+        queue operations, read by take() itself, or the bookkeeping measured there. Any other row is still read as
+        before, so a dequeued notice is unchanged, but the seat's own watch absorption no longer opens after it."""
+        kind = entry.get('type')
+        if kind in ('assistant', 'user'):
+            return entry.get('isSidechain') is not True
+        return kind == 'queue-operation' or WatchNoticeAbsorption.bookkeeping(entry, self.session)
+
     def _absorb_watch(self, entry, at, pending, expected):
         """Open the measured absorption of the seat's own watch notice on the row that begins it."""
-        if pending.dequeued_at is not None or pending.absorption is not None:
+        if (pending.dequeued_at is not None or pending.absorption is not None or pending.early is not None
+                or pending.unmeasured):
             return False
         watch = WatchNoticeAbsorption.start(pending, self.background, self.last_call)
         if watch is None or watch.advance(entry, at, pending, self.background, complete=True) != expected:
@@ -1578,16 +1608,18 @@ class WatchNoticeAbsorption:
     the queued_command attachment, with no dequeue. The remove may be written before the turn's assistant rows
     (form R) or after one (form A, whose first block may be thinking or tool_use). Only the remove and the
     attachment settle it, and only on every measured equality: the remove's text is the notice's, the attachment's
-    prompt, source and delivery are the enqueue's text and the remove's ids, its time is the enqueue's, and its
-    parent is the turn's tool result just before it. The notice is the one pending: its text is the exact
-    completion of the watch this record registered, by call, task and output file. Anything else is not this
-    reading, and the queue stays unknown. So are rows between them of any form not measured there or read as
-    ordinary bookkeeping by the watch reader."""
+    prompt, source and delivery are the enqueue's text and the remove's ids, its own time and its attachment's time
+    are one and the enqueue's (in the late-bound form alone, up to 1 ms before it), and its parent is the turn's
+    tool result just before it. The notice is the one pending: its text is the exact completion of the watch this
+    record registered, by call, task and output file. Anything else is not this reading, and the queue stays
+    unknown. So are rows between them of any form not measured there or read as ordinary bookkeeping by the watch
+    reader."""
 
     task: Task
     calls: dict  # assistant row uuid -> its calls still open: the last row before the enqueue, and the turn's since
     removal: tuple[str, str] | None = None
     result: str | None = None  # the turn's latest tool result since the enqueue, the attachment's parent
+    late: bool = False  # the late-bound form measured two more bookkeeping rows in its metadata run
 
     @classmethod
     def start(cls, pending, background, last_call):
@@ -1613,11 +1645,12 @@ class WatchNoticeAbsorption:
                 self.removal = removal
                 return 'private'
             return None
-        if (kind in WATCH_METADATA and row.get('version') in (None, LINKED_VERSION) and not row.get('isSidechain')
-                and row.get('sessionId') == background.session):
+        if self.bookkeeping(row, background.session):
             return 'ordinary'
-        if kind == 'file-history-delta' and row.get('sessionId', background.session) == background.session:
-            return 'ordinary'  # measured between the enqueue and the turn's rows
+        if self.late and self.removal is None and (bookkeeping := late_bookkeeping(row, background.session)):
+            # Only between the second call and the remove. Nothing else reads history-suppression: the queue keeps
+            # it. The ordinary reader already sets bridge-session aside.
+            return 'private' if bookkeeping == 'history-suppression' else 'ordinary'
         if row.get('isSidechain') is not False:
             return None
         if kind == 'assistant':
@@ -1641,10 +1674,21 @@ class WatchNoticeAbsorption:
         value = row.get('attachment')
         if kind == 'attachment' and isinstance(value, dict) and value.get('type') == 'queued_command':
             return 'settled' if self.attachment(row, at, pending, background.session) else None
-        if (kind == 'attachment' and isinstance(value, dict) and value.get('type') == 'deferred_tools_record'
-                and BashAbsorption.root(row, background.session) and native_task_id(row.get('uuid'))):
-            return 'ordinary'  # measured between the enqueue and the turn's first assistant row
         return None  # any other row is not a measured form: the turn ended, a prompt came, or it is unread
+
+    @staticmethod
+    def bookkeeping(row, session):
+        """The bookkeeping measured around an absorbed watch notice, before its opening row as after it: the watch
+        reader's own-session metadata, a file-history delta and the deferred_tools_record attachment."""
+        kind, value = row.get('type'), row.get('attachment')
+        if kind in WATCH_METADATA:
+            return (row.get('version') in (None, LINKED_VERSION) and not row.get('isSidechain')
+                    and row.get('sessionId') == session)
+        if kind == 'file-history-delta':
+            return row.get('sessionId', session) == session
+        return (kind == 'attachment' and row.get('isSidechain') is False and isinstance(value, dict)
+                and value.get('type') == 'deferred_tools_record' and BashAbsorption.root(row, session)
+                and native_task_id(row.get('uuid')))
 
     @staticmethod
     def turn_assistant(row, at, session):
@@ -1664,12 +1708,156 @@ class WatchNoticeAbsorption:
                 and row.get('parentUuid') == row['sourceToolAssistantUUID'] != row['uuid'])
 
     def attachment(self, row, at, pending, session):
-        slug = row.get('slug')
-        return (self.removal is not None and self.result is not None and at is not None and at == pending.at
+        slug, value = row.get('slug'), row.get('attachment')
+        return (self.removal is not None and self.result is not None and at is not None and self.timed(at, pending)
+                and isinstance(value, dict) and when(value.get('timestamp')) == at
                 and row.keys() in (ABSORBED_ATTACHMENT_KEYS, ABSORBED_ATTACHMENT_KEYS | {'slug'})
                 and (slug is None and 'slug' not in row or isinstance(slug, str) and bool(slug))
                 and BashAbsorption.root(row, session) and row['parentUuid'] == self.result
                 and row['uuid'] != self.result and absorbed_attachment(row, pending.text, self.removal))
+
+
+    def timed(self, at, pending):
+        """The attachment's time, which its own timestamp must repeat: the enqueue's, as measured on every earlier
+        form. The late-bound form's one measured attachment was 1 ms before its enqueue, so that form alone may be up
+        to 1 ms before it, never after."""
+        return pending.at - LATE_ATTACHMENT_LEAD <= at <= pending.at if self.late else at == pending.at
+
+
+LATE_ATTACHMENT_LEAD = timedelta(milliseconds=1)
+
+
+def late_bookkeeping(row, session):
+    """The kind of one of the two session bookkeeping rows measured only in the late-bound form's metadata run, on
+    its exact own-session shape, field types and widths; else None. They carry no conversation, task or launch
+    identity, and this form alone reads them."""
+    kind = row.get('type')
+    if session is None or row.get('sessionId') != session:
+        return None
+    if kind == 'history-suppression':
+        shaped = (row.keys() == {'type', 'sessionId', 'cause', 'ts'} and row['cause'] == 'migration'
+                  and when(row['ts']) is not None)
+    else:
+        shaped = (kind == 'bridge-session' and row.keys() == BRIDGE_KEYS | {'noHistoryBackfill'}
+                  and type(row['lastSequenceNum']) is int and row['lastSequenceNum'] == 0
+                  and row['noHistoryBackfill'] is True
+                  and all(isinstance(row[key], str) and len(row[key]) == width for key, width in (
+                      ('bridgeSessionId', 28), ('ownerAccountUuid', 36), ('ownerOrganizationUuid', 36))))
+    return kind if shaped else None
+
+
+@dataclass
+class EarlyWatchBinding:
+    """The seat's own watch completion enqueued before the rows of the call that started that watch.
+
+    Measured once on 2.1.331 (a person's seat): the watch returned within seconds, so its completion was enqueued
+    and then, in file order, the same request's thinking row, a text row, the Bash call that started the watch and
+    its result naming the task, each timed before the enqueue. Only that bounded prefix is held, row by row: the
+    notice stays pending, so nothing is settled and no idle is proved. The adjacent result must bind the seat's own
+    registered watch to exactly this notice; the next row must be the same request's next tool call, and from it the
+    measured absorption reads the rest, the remove, the closing result and the attachment, on every equality it
+    already proves. Any other row, order, binding or a second notice leaves the queue unknown."""
+
+    thinking: str
+    request: tuple[str, str]  # the request's requestId and requestRef, shared by every row of the prefix
+    step: str = 'text'  # the row expected next: text, call, result, then bound
+    text: str | None = None
+    call: str | None = None
+    called_at: datetime | None = None
+    result: str | None = None
+    acknowledged_at: datetime | None = None
+    watch: 'WatchNoticeAbsorption | None' = None
+
+    @staticmethod
+    def request_of(row):
+        request = row.get('requestId'), row.get('requestRef')
+        return request if all(native_task_id(part) for part in request) else None
+
+    @staticmethod
+    def blocks(row, at, session, kind):
+        """The row's one block when it is a root model row of the measured shape with exactly that block."""
+        message = row.get('message')
+        content = message.get('content') if isinstance(message, dict) else None
+        if (row.get('type') != 'assistant' or row.get('isSidechain') is not False or at is None
+                or not BashAbsorption.root(row, session) or not native_task_id(row.get('uuid'))
+                or row.get('madeBy') != 'model' or not isinstance(message, dict)
+                or message.get('role') != 'assistant' or message.get('stop_reason') != 'tool_use'
+                or not isinstance(content, list) or len(content) != 1
+                or not isinstance(content[0], dict) or content[0].get('type') != kind
+                or row.keys() & {'sourceToolAssistantUUID', 'promptId'}):
+            return None
+        return content[0]
+
+    @classmethod
+    def start(cls, row, at, pending, background):
+        """Only on the request's thinking row, with nothing yet known of the notice's call."""
+        call = pending.notice.call
+        if (pending.notice.kind != 'bash' or pending.dequeued_at is not None or pending.absorption is not None
+                or pending.watch is not None or not native_task_id(call) or not native_task_id(pending.notice.task)
+                or call in background.tasks or call in background.calls or call in background.unknown_calls
+                or call in background.early or pending.notice.task in background.task_calls):
+            return None
+        block = cls.blocks(row, at, background.session, 'thinking')
+        request = cls.request_of(row)
+        if block is None or not isinstance(block.get('thinking'), str) or request is None or at >= pending.at:
+            return None
+        return cls(row['uuid'], request)
+
+    def written(self):
+        return {self.thinking, self.text, self.call, self.result} - {None}
+
+    def advance(self, row, at, pending, background, *, complete):
+        """'ordinary' for each row of the prefix, 'bound' on the row after the binding result, else None.
+
+        Every prefix row is timed before the enqueue though written after it, and names the row before it as its
+        parent: each a row of its own."""
+        if not complete:
+            return None
+        session, notice = background.session, pending.notice
+        if self.step != 'bound' and (at is None or at >= pending.at or row.get('uuid') in self.written()):
+            return None
+        if self.step == 'text':
+            block = self.blocks(row, at, session, 'text')
+            if (block is None or not isinstance(block.get('text'), str) or row.get('parentUuid') != self.thinking
+                    or self.request_of(row) != self.request):
+                return None
+            self.text, self.step = row['uuid'], 'call'
+            return 'ordinary'
+        if self.step == 'call':
+            block = self.blocks(row, at, session, 'tool_use')
+            arguments = block.get('input') if block is not None else None
+            command = arguments.get('command') if isinstance(arguments, dict) else None
+            if (block is None or block.get('name') != 'Bash' or block.get('id') != notice.call
+                    or not isinstance(arguments, dict) or arguments.get('run_in_background') is not True
+                    or not isinstance(command, str) or command not in background.watch_commands
+                    or row.get('parentUuid') != self.text or self.request_of(row) != self.request
+                    or notice.call in background.calls or notice.call in background.tasks):
+                return None
+            self.call, self.called_at, self.step = row['uuid'], at, 'result'
+            return 'ordinary'
+        if self.step == 'result':
+            result = root_tool_result(row)
+            outcome = row.get('toolUseResult')
+            if (not WatchNoticeAbsorption.turn_result(row, at, session) or row.get('isSidechain') is not False
+                    or row['sourceToolAssistantUUID'] != self.call or result.get('tool_use_id') != notice.call
+                    or not isinstance(outcome, dict) or outcome.get('backgroundTaskId') != notice.task
+                    or not native_task_id(row.get('promptId'))):
+                return None
+            self.result, self.acknowledged_at, self.step = row['uuid'], at, 'bound'
+            return 'ordinary'  # the background reader binds the task from this row, after this queue reads it
+        # The binding: exactly this prefix registered the seat's own watch, for exactly the pending notice.
+        task = background.tasks.get(notice.call)
+        if (row.get('uuid') in self.written() or not WatchNoticeAbsorption.owns(task, pending, background)
+                or task.called_at != self.called_at or task.acknowledged_at != self.acknowledged_at or task.started != self.acknowledged_at
+                or task.inbox_watch_started != self.called_at or background.task_calls.get(notice.task) != notice.call
+                or self.blocks(row, at, session, 'tool_use') is None or row.get('parentUuid') != self.result
+                or self.request_of(row) != self.request):
+            return None
+        watch = WatchNoticeAbsorption(task, {}, late=True)
+        if watch.advance(row, at, pending, background, complete=True) != 'ordinary':
+            return None
+        self.watch = watch
+        return 'bound'
 
 
 @dataclass
