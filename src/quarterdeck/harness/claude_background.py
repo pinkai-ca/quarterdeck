@@ -222,9 +222,19 @@ STOPPED_NOTE = ('No completion record was found for it in the previous session. 
 STOPPED_RESUME = 'the stopped notice of a task the previous process left running'
 
 
-def stopped_resume_notice(entry, session) -> bool:
+def dated_row(at, row):
+    if at is not None:
+        try:
+            if datetime.fromisoformat(row['timestamp']).utcoffset() is not None:
+                return at
+        except (TypeError, ValueError, KeyError):
+            pass
+    return None
+
+
+def stopped_resume_notice(entry, session):
     """The measured 2.1.331 resume notice for a task the previous process left running. Whether that task's output
-    was delivered is not in the record, so this names the hold; it never settles it."""
+    was delivered is not in the record. Return only its identities for a separate durable proof."""
     message = entry.get('message')
     if (entry.get('type') != 'user' or entry.get('version') != LINKED_VERSION or not linked_root(entry, session)
             or entry.get('origin') != {'kind': 'task-notification'} or entry.get('rowSource') != 'harness'
@@ -232,14 +242,16 @@ def stopped_resume_notice(entry, session) -> bool:
             or entry.get('queueTranscriptOnly') is not True or not native_task_id(entry.get('promptId'))
             or entry.keys() & {'turnPromptId', 'turnOrigin'}
             or not isinstance(message, dict) or message.get('role') != 'user'):
-        return False
+        return None
     envelope = NOTICE_ENVELOPE.fullmatch(message.get('content')) if isinstance(message.get('content'), str) else None
     if envelope is None:
-        return False
+        return None
     fields, rest = _header(envelope[1]), _header(envelope[2])
-    return (fields is not None and set(fields) == {'task-id', 'tool-use-id', 'status'} and fields['status'] == 'stopped'
-            and native_task_id(fields['task-id']) and bool(fields['tool-use-id'])
-            and rest == {'note': STOPPED_NOTE})
+    if (fields is not None and set(fields) == {'task-id', 'tool-use-id', 'status'}
+            and fields['status'] == 'stopped' and native_task_id(fields['task-id'])
+            and native_task_id(fields['tool-use-id']) and rest == {'note': STOPPED_NOTE}):
+        return fields['tool-use-id'], fields['task-id']
+    return None
 
 
 @dataclass
@@ -272,6 +284,7 @@ class TaskNoticeQueue:
         self.pending = None
         self.unknown = False
         self.causes = set()  # why unknown: 'stopped' names the measured resume notice; anything else is 'other'
+        self.stopped = []  # (carrier time, call id, native task id), preserved across launch views
         self.last_call = None  # the latest root assistant row that called tools: (its uuid, its calls still open)
 
     def _unknown(self, cause='other'):
@@ -367,7 +380,10 @@ class TaskNoticeQueue:
                 if complete:
                     self.turn = RootTurn(entry['promptId'], at)
                 return True, (notice, pending.at)
-            self._unknown('stopped' if pending is None and stopped_resume_notice(entry, self.session) else 'other')
+            stopped = stopped_resume_notice(entry, self.session) if pending is None else None
+            if stopped is not None:
+                self.stopped.append((dated_row(at, entry) if complete else None, *stopped))
+            self._unknown('stopped' if stopped is not None else 'other')
             return True, None
         if kind in ('user', 'assistant') or entry.get('subtype') == 'compact_boundary':
             # Only the measured assistant chain can carry a notice through a turn already in progress.
@@ -591,12 +607,20 @@ def ship_watch_commands(record: Path | None) -> frozenset[str]:
     return frozenset(commands)
 
 
+def watch_registration_order(launch, called, registered, acknowledged, previous):
+    if previous is None:
+        return registered <= acknowledged  # legacy registration only fits inside the acknowledgement interval
+    before = datetime.fromisoformat(previous)
+    return launch <= before < called  # a late registration can still be the first for this call
+
+
 class BackgroundBash:
     def __init__(self, record: Path | None = None):
         self.watch_commands = ship_watch_commands(record)
         self.session = Path(record).stem if record is not None else None
         self.manual_compact_at = None
         self.calls = {}
+        self.bash_calls = []
         self.tasks = {}  # includes terminal identities so later duplicate carriers can be joined
         self.task_calls = {}
         self.unknown_calls = set()
@@ -646,6 +670,8 @@ class BackgroundBash:
         wanted = arguments.get('run_in_background', False) if name == 'Bash' else arguments.get('task_id')
         command = arguments.get('command')
         watch = name == 'Bash' and isinstance(command, str) and command in self.watch_commands
+        if name == 'Bash':
+            self.bash_calls.append((call, at))
         self.calls[call] = name, wanted, at, version, watch, linked, command, arguments.get('description'), row_uuid
         if name == 'Bash' and (not isinstance(wanted, bool) or wanted and version not in CALL_VERSIONS):
             self.unknown_calls.add(call)
@@ -921,10 +947,28 @@ class BackgroundBash:
             else:
                 yield task
 
-    def state(self, state, *, launched_at=None):
+    def watch_acknowledgement(self, launched_at, registered, previous):
+        if not launched_at <= registered or self.unbound:
+            return None
+        calls = [(call, at) for call, at in self.bash_calls if at is None or at <= registered]
+        if not calls or any(at is None for _, at in calls):
+            return None
+        call, at = max(calls, key=lambda item: item[1])
+        task = self.tasks.get(call)
+        if (task is None or task.invalid or task.undated_evidence or call in self.unknown_calls
+                or task.watch is None or not task.watch.exact_acknowledgement or task.phase != 'pending'
+                or not launched_at <= at == task.called_at <= registered
+                or sum(when == at for _, when in calls) != 1
+                or not watch_registration_order(launched_at, at, registered, task.acknowledged_at, previous)):
+            return None
+        return dict(call=call, task=task.task, called_at=at.isoformat(),
+                    acknowledged_at=task.acknowledged_at.isoformat())
+
+    def state(self, state, *, launched_at=None, settled_watches=()):
         # A separate admission view; the cached native tasks and their completion state stay unchanged.
         active = [task for task in self.task_states(launched_at)
-                  if task.phase not in ('ended', 'ended-by-relaunch', 'ended-by-relaunch-after-unreadable-evidence')]
+                  if task.call not in settled_watches
+                  and task.phase not in ('ended', 'ended-by-relaunch', 'ended-by-relaunch-after-unreadable-evidence')]
         unknown = (self.unbound or self.early or self.unknown_calls
                    or any(task.phase == 'unknown' for task in active))
         return replace(state,
@@ -1050,7 +1094,7 @@ class BashRelaunchQueue:
         self.version = None
         self.turn_end = None
         self.exit = None
-        self.unknown = False
+        self.failures = []  # the interrupted sequence and the row which left it unresolved
         self.bridge_seen = False
         self.bridge = None
         self.bridge_events = set()
@@ -1058,6 +1102,20 @@ class BashRelaunchQueue:
         self.after_link = None
         self.after_status = None
         self.undated_remote_input = False
+
+    @property
+    def unknown(self):
+        return bool(self.failures)
+
+    def unresolved(self, boundary, settled_calls):
+        for exit, at in self.failures:
+            task = exit.task
+            if (boundary is None or at is None or max(at, exit.at) >= boundary
+                    or task.invalid or task.undated_evidence or task.call in self.background.unknown_calls
+                    or (task.call not in settled_calls and (task.phase not in ('ended', 'ended-by-relaunch')
+                                                            or task.other_evidence_at >= boundary))):
+                return True
+        return False
 
     @property
     def pending(self):
@@ -1140,7 +1198,7 @@ class BashRelaunchQueue:
             if (private := self.advance(exit, row, at, queue_empty=queue_empty, old_version=old_version)) is not None:
                 return private
             if self.pending:
-                self.unknown = True
+                self.failures.append((exit, dated_row(at, row)))
             self.exit = None
         if kind in ('assistant', 'user') or row.get('subtype') == 'compact_boundary':
             self.turn_end = None

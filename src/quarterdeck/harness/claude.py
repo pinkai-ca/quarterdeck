@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from . import claude_record, record_file
+from . import claude_record, claude_watch, json_record, record_file
 from .claude_limits import REFUSED_WINDOWS
 from .json_record import JsonLinesReader, input_reader, records_matching
 from .claude_record import entries as entries
@@ -1024,8 +1024,21 @@ class _Reader(JsonLinesReader):
         super().__init__(record, snapshot)
 
     def state(self, *, launched_at=None):
+        notices = self.task_queue.stopped
+        scope = claude_watch.joined_launches(self.record) if notices or self.bash_relaunch.unknown else None
+        boundary, settled, settled_calls = None, set(), set()
+        if scope is not None:
+            launch, history = scope
+            if launch['resume'] == self.record.stem and len(history) >= 2:
+                boundary = history[-1][0]
+                settled, settled_calls = claude_watch.scoped_stops(self.record, self.background, notices, history)
+                if claude_watch.joined_launches(self.record) != scope:
+                    boundary, settled, settled_calls = None, set(), set()
+        stopped = len(settled) != len(notices)
+        bash_unknown = self.bash_relaunch.unresolved(boundary, settled_calls)
         state = replace(self.children.project(super().state(), self.background, INPUT_IGNORED, ai_title,
-                                              launched_at=launched_at), walls=tuple(self.walls))
+                                              launched_at=launched_at, settled_watches=settled_calls),
+                        walls=tuple(self.walls))
         startup = self.remote_control_startup
         if (self.remote_input.pending
                 or self.metadata_session is not None and self.children.sessions != {self.metadata_session}
@@ -1034,12 +1047,11 @@ class _Reader(JsonLinesReader):
         if state.queue_error is None and any(slot.uncertain and slot.phase in ('queued', 'pending')
                                              for slot in self.queue_slots):
             state = replace(state, queue_error='unknown queue operation')
-        if (self.task_queue.pending is not None or self.task_queue.unknown
-                or self.bash_relaunch.pending or self.bash_relaunch.unknown
-                or self.watch_completion.pending is not None or self.watch_completion.unknown):
-            named = (self.task_queue.causes == {'stopped'} and self.task_queue.pending is None
-                     and not (self.bash_relaunch.pending or self.bash_relaunch.unknown
-                              or self.watch_completion.pending is not None or self.watch_completion.unknown))
+        other_notice = 'other' in self.task_queue.causes or self.task_queue.pending is not None
+        other_queue = (other_notice or self.bash_relaunch.pending or bash_unknown
+                       or self.watch_completion.pending is not None or self.watch_completion.unknown)
+        if stopped or other_queue:
+            named = stopped and not other_queue
             state = replace(state, pending_tools=None, queue_error=state.queue_error or (
                 STOPPED_RESUME if named else 'task notification queue unresolved'))
         if self.answering_notice():
@@ -2217,6 +2229,25 @@ class ClaudeHarness(Harness):
     def attribution_inputs(self, record: Path) -> list[Input]:
         from .claude_watch import inputs as watch_inputs
         return self.inputs(record) + watch_inputs(record)
+
+    def inbox_watch_binding_dir(self, record: Path) -> Path | None:
+        """Opt into durable watch evidence and locate the bindings beside this record."""
+        return claude_watch.bindings_path(record)
+
+    def inbox_watch_acknowledgement(self, record, launch, registered, previous):
+        if launch.version != LINKED_VERSION:
+            return None
+        scope = claude_watch.joined_launches(record)
+        if scope is None or any(scope[0][key] != getattr(launch, key)
+                                for key in ('at', 'pid', 'pane', 'pool', 'version')):
+            return None
+        with json_record._read_lock:
+            snapshot = claude_record.parse(record)
+            if not snapshot.ends_newline or snapshot.skipped:
+                return None
+            kept = snapshot.readers.get(_Reader)
+            reader = kept[0] if kept is not None and kept[1] == len(snapshot.rows) else _Reader(record, snapshot)
+            return reader.background.watch_acknowledgement(launch.when, registered, previous)
 
     def inbox_watch_absorption(self, record, cwd, launch, state, proof, attempted_at):
         from .claude_watch import artifact_matches

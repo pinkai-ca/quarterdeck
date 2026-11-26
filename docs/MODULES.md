@@ -149,7 +149,7 @@ The modules that the framework table does not list, the module of each part amon
 | `group_post.py` | declared groups: a fixed fanout to the members, and one terminal notice |
 | `human_wake.py` | the one fixed waking line for a human seat, through the door, once per watch |
 | `idle.py` | the one live idle proof that relaunch, failover and selection share |
-| `inbox_watch.py` | a seat's own inbox watch, its live generation and its retained attempt and print evidence |
+| `inbox_watch.py` | a seat's own inbox watch, its retained generation, native binding, and attempt and print evidence |
 | `jail_end.py` | a seat's sandbox ends whole: its tree and orphans at the stop, a hold where they do not end, and the sweep of a stray sandbox |
 | `jail_environment.py` | what an environment may hold, named once: the jail's allowlist, the unjailed panes' and the service's declared lists, the pattern of names that look secret, and the launcher that starts each jail from bwrap's `--clearenv` |
 | `key_launch.py` | the launcher that puts a pool's key into its program, on no process's command line |

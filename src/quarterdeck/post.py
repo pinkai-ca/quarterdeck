@@ -1611,12 +1611,14 @@ class Attempts:
             attempt = Attempt(message.id, seat, at.isoformat(timespec="microseconds"), pane, pid, launched_at,
                               path=self.dir / f"{message.id}-{number}.json")
             data = {k: v for k, v in asdict(attempt).items() if k != "path"}
+            if watch_generation is not None:
+                from . import inbox_watch
+                inbox_watch.begin_attempt(self.dir.parent.parent, watch_generation)
             # law: one-door -- retain the initial attempt before typing, never type twice.
             durable._replace_law_record(attempt.path, json.dumps(data, indent=2) + "\n")
             from . import shutdown
             shutdown.opened(self.dir.parent.parent, attempt)
             if watch_generation is not None:
-                from . import inbox_watch
                 inbox_watch.retain_open(self.dir.parent.parent, attempt, watch_generation)
         return attempt
 

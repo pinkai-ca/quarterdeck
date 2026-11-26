@@ -924,8 +924,8 @@ class Service:
         acts.settle_set_asides(self)
 
     def jailed_watches(self) -> None:
-        """A jailed watch's attempts, opened and closed on its behalf; each seat alone, before the deliveries."""
-        from . import watch_broker
+        """Serve brokered watches and retain live watch acknowledgements before deliveries."""
+        from . import inbox_watch, watch_broker
         served = []
         for seat in self.resolved_seats():
             if not seat.session.human or seat.name in getattr(self.ship, 'forward', {}):
@@ -936,6 +936,10 @@ class Service:
         for seat in served:
             try:
                 watch_broker.run(self, seat)
+                if (callable(getattr(getattr(seat, 'harness', None), 'inbox_watch_binding_dir', None))
+                        and post.watch_reading(self.runtime, seat.name).armed is True):
+                    with post.admission(self.runtime, seat.name, wait=watch_broker.WAIT):
+                        inbox_watch.retain_binding(seat)
             except Exception as error:
                 self.log('error', step='watch_broker', seat=seat.name, error=repr(error))
 

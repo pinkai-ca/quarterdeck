@@ -15,7 +15,8 @@ import secrets
 import signal
 import stat
 
-from . import durable, post, post_dir, trusted_files
+from . import durable, harness, post, post_dir, trusted_files
+from .harness.base import record_fingerprint
 from .procstat import EXITED
 from .ship import ShipError
 
@@ -139,9 +140,61 @@ def launch(runtime, name):
         at = datetime.fromisoformat(data['at'])
         if at.tzinfo is None:
             return None
-        return data['pid'], at, hashlib.sha256(raw).hexdigest()
+        identity = {f'launch_{key}': data.get(key) for key in ('at', 'pid', 'pane', 'pool', 'harness')}
+        return data['pid'], at, hashlib.sha256(raw).hexdigest(), identity
     except (OSError, ValueError, TypeError, KeyError, UnicodeError):
         return None
+
+
+def _generation_evidence(seat, token, source, text, process_start):
+    return dict(seat=seat, generation=token, launch=source[2], watch=text, process_start=process_start,
+                **source[3])
+
+
+def unoffered_path(runtime, token):
+    return runtime / 'post' / 'attempts' / f'.watch-{token}-unoffered'
+
+
+def _offered_path(marker, token):
+    return marker.with_name(f'.watch-{token}-offered')
+
+
+def _attempt_marker(runtime, token):
+    marker = unoffered_path(runtime, token)
+    try:
+        return _read_evidence(marker)
+    except FileNotFoundError:
+        return _read_evidence(_offered_path(marker, token))
+
+
+def _previous_registration(runtime, name, source):
+    """An earlier generation of this launch must never claim the same acknowledgement."""
+    try:
+        token = generation(runtime, name)
+    except FileNotFoundError:
+        return source[1].isoformat()
+    try:
+        before = _attempt_marker(runtime, token)
+        if before['seat'] != name or before['generation'] != token:
+            return None
+        if any(before[key] != value for key, value in source[3].items()):
+            previous = datetime.fromisoformat(before['launch_at'])
+            return source[1].isoformat() if previous < source[1] else None
+        return before['watch'].split()[1]
+    except (OSError, ValueError, TypeError, KeyError, IndexError, RecursionError, ShipError):
+        return None
+
+
+def begin_attempt(runtime, token):
+    if not _hex(token, 32):
+        return
+    marker = unoffered_path(runtime, token)
+    try:
+        # The initial attempt's existing directory sync also persists this rename.
+        # Once it can reach the watch, no restart can resurrect the unoffered name.
+        post_dir.rename(marker, _offered_path(marker, token))
+    except FileNotFoundError:
+        pass  # a legacy, brokered or already offered generation proves no absence
 
 
 def stamp(path):
@@ -181,6 +234,15 @@ def register(runtime, name, *, validate=None, on_registered=None, admitted=True)
             text = f'{os.getpid()} {post.now().isoformat(timespec="microseconds")}\n'
             token = secrets.token_hex(16)
             path.parent.mkdir(parents=True, exist_ok=True)
+            if admitted and source is not None and own is not None:
+                try:
+                    adapter = harness.get(source[3]['launch_harness'])
+                    if callable(getattr(adapter, 'inbox_watch_binding_dir', None)):
+                        evidence = _generation_evidence(name, token, source, text, own[1])
+                        evidence['previous'] = _previous_registration(runtime, name, source)
+                        durable.replace_file(unoffered_path(runtime, token), json.dumps(evidence) + '\n')
+                except (OSError, ShipError):
+                    pass  # the ordinary watch can run; only proving no output needs this marker
             # This is the same canonical generation as the waking reader consumes.
             # A partial publication cannot match the companion's complete binding.
             durable.replace_file(generation_path(runtime, name), token + '\n')
@@ -256,7 +318,46 @@ def alone(seat):
     return _live(seat, lambda launched, registered: launched <= registered, shell_of_its_own=True)
 
 
-def _live(seat, admitted, shell_of_its_own=False):
+def retain_binding(seat):
+    """Retain the native acknowledgement's join to the current, live watch. Called under post admission."""
+    adapter = seat.harness
+    binding_dir = getattr(adapter, 'inbox_watch_binding_dir', None)
+    if not callable(binding_dir):
+        return
+    runtime = seat.ship.runtime
+    try:
+        token = generation(runtime, seat.name)
+        evidence = _attempt_marker(runtime, token)
+        previous = evidence['previous']
+        record = seat.lookup_record()
+        if record is None:
+            return
+        folder = binding_dir(record)
+        if folder is None or (folder / f'{token}.json').exists():
+            return
+        launched = seat.launched()
+        if launched is None:
+            return
+        before = record_fingerprint(record)
+        registered = datetime.fromisoformat(evidence['watch'].split()[1])
+        observed = []
+        if not _live(seat, lambda at, reg: at == launched.when and reg == registered, observe=observed.append):
+            return
+        acknowledgement = adapter.inbox_watch_acknowledgement(record, launched, registered, previous)
+        pane = seat.pane()
+        if (acknowledgement is None or pane is None or pane.dead or (pane.id, pane.pid) != (launched.pane, launched.pid)
+                or observed != [{key: value for key, value in evidence.items() if key != 'previous'}]
+                or seat.launched() != launched or seat.lookup_record() != record
+                or record_fingerprint(record) != before):
+            return
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        data = dict(format=1, **acknowledgement, **evidence)
+        durable.replace_file(folder / f'{token}.json', json.dumps(data) + '\n')
+    except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError, RecursionError, ShipError):
+        return  # incomplete evidence is never a binding
+
+
+def _live(seat, admitted, shell_of_its_own=False, *, observe=None):
     path = post.watch_file(seat.ship.runtime, seat.name)
     companion = proof_path(seat.ship.runtime, seat.name)
     token_path = generation_path(seat.ship.runtime, seat.name)
@@ -299,10 +400,13 @@ def _live(seat, admitted, shell_of_its_own=False):
             parent = ancestor[0]
         else:
             return False
-        return (process(pid) == observed and launch(seat.ship.runtime, seat.name) == source
+        stable = (process(pid) == observed and launch(seat.ship.runtime, seat.name) == source
                 and stamp(path) == before and path.read_text() == text
                 and stamp(companion) == proof_stamp and companion.read_text() == raw
                 and stamp(token_path) == token_stamp
                 and generation(seat.ship.runtime, seat.name) == token)
+        if stable and observe is not None:
+            observe(_generation_evidence(seat.name, token, source, text, observed[1]))
+        return stable
     except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError):
         return False

@@ -92,7 +92,10 @@ def fingerprint(record):
     paths = [record, *((record.with_suffix(''), record.with_suffix('') / 'subagents') if record.suffix == '.jsonl' else ()),
              *child_paths(record)]
     if folder := launch_folder(record):
+        from .claude_watch import bindings_path
         paths.extend(folder / name for name in (trusted_files.LAUNCH, trusted_files.RECORD, trusted_files.LAUNCHES))
+        if bindings := bindings_path(record):
+            paths.append(bindings)
     return tuple(part for path in paths for part in record_fingerprint(path))
 
 
@@ -282,19 +285,19 @@ class Children:
             return
         agent.finished_at = at if notice.kind == 'finished' else None
 
-    def project(self, state, background, ignored, title_valid, *, launched_at=None):
+    def project(self, state, background, ignored, title_valid, *, launched_at=None, settled_watches=()):
         """A fresh view: never mutate the root reader's cached tasks or buffered notices."""
         self.tasks = {}
         try:
             paths = child_paths(self.record)
             if not paths and not self.agents and not self.unknown:
-                return background.state(state, launched_at=launched_at)
+                return background.state(state, launched_at=launched_at, settled_watches=settled_watches)
             if self.sessions != {self.record.stem}:
-                return replace(background.state(state, launched_at=launched_at), pending_tools=None)
+                return replace(background.state(state, launched_at=launched_at, settled_watches=settled_watches), pending_tools=None)
             leaves = {path.stem.removeprefix('agent-'): Leaf(path, self.record.stem, ignored, title_valid)
                       for path in paths}
         except (OSError, ValueError, TypeError, AttributeError, KeyError):
-            return replace(background.state(state, launched_at=launched_at), pending_tools=None)
+            return replace(background.state(state, launched_at=launched_at, settled_watches=settled_watches), pending_tools=None)
         view = deepcopy(background)
         unknown = self.unknown
         ownership = {}
@@ -350,7 +353,7 @@ class Children:
                 unknown = True
             if identity not in associated and (leaf.open is not False or leaf.queued):
                 extra.append(ActiveTool('Agent', leaf.started))
-        projected = view.state(state, launched_at=launched_at)
+        projected = view.state(state, launched_at=launched_at, settled_watches=settled_watches)
         return replace(projected,
                        pending_tools=None if projected.pending_tools is None or unknown else
                        projected.pending_tools + tuple(tool.name for tool in extra),
