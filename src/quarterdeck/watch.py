@@ -1382,10 +1382,17 @@ def service_holds(runtime) -> list[str]:
         return [f"seat holds unreadable: {type(error).__name__}"]
     if not isinstance(data, dict):
         return ["seat holds unreadable: not an object"]
-    return [(f"{name}: {str(text)[:160]}" if step in ('pool move', 'after-order fresh start')
-             else f"{name}: {step} held for this seat alone: {str(text)[:160]}")
-            for name, steps in sorted(data.items()) if isinstance(steps, dict)
-            for step, text in sorted(steps.items())]
+    lines = []
+    for name, steps in sorted(data.items()):
+        if not isinstance(steps, dict):
+            continue
+        for step, text in sorted(steps.items()):
+            detail = str(text)
+            # Transition reasons already have a heading with the action and any destination.
+            heading, colon, _ = detail.partition(':')
+            prefix = '' if colon and heading.endswith(' held') else f'{step} held for this seat alone: '
+            lines.append(f'{name}: {prefix}{detail[:160]}')
+    return lines
 
 
 def line(ship: Ship, tmux: Tmux) -> str:

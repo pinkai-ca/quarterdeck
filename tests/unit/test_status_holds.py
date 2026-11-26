@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import timedelta
+import json
 import sqlite3
 
 import pytest
@@ -132,6 +133,16 @@ def test_unreadable_held_evidence_is_reported_as_unknown(view, monkeypatch):
     monkeypatch.setattr(watch.ledger.Ledger, "reading", unreadable)
     names, warnings = watch.limit_holds(view.seat.ship, [view.seat])
     assert names == [] and warnings == ["held seats unknown; ledger unreadable"]
+
+
+@pytest.mark.parametrize(('step', 'prefix', 'heading'), [
+    ('deliveries', 'OSError: another step held: ', 'deliveries held for this seat alone: '),
+    ('pool move', 'return to second held: ', ''),
+])
+def test_service_hold_keeps_the_reason_within_the_status_bound(tmp_path, step, prefix, heading):
+    reason = prefix + 'x' * 160
+    (tmp_path / watch.SEAT_HOLDS).write_text(json.dumps({'worker': {step: reason}}))
+    assert watch.service_holds(tmp_path) == [f'worker: {heading}{reason[:160]}']
 
 
 def test_alert_names_use_the_room_released_by_allowance_text():

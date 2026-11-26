@@ -260,9 +260,8 @@ def test_refusal_fresh_lifecycle_failure_is_paced_when_its_hold_cannot_be_saved(
         world.svc.refusals()
     assert attempts == [seat.name]
     assert refusal.load(runtime, seat.name)[0]['stage'] == 'claimed'
-    [status] = watch.service_holds(runtime)
-    assert status.startswith('worker: refusal fresh start held')
-    assert status.endswith('could not finish (OSError); retry delayed')
+    assert watch.service_holds(runtime) == [
+        'worker: refusal fresh start held: could not finish (OSError); retry delayed']
 
     monkeypatch.setattr(refusal, 'save', save)
     clock[0] += service.RELAUNCH_RETRY
