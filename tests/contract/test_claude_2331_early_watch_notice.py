@@ -16,8 +16,8 @@ import pytest
 from quarterdeck.harness import claude, claude_background, claude_record
 
 from .test_claude_2331_watch_notice_absorption import (
-    DESC, ENQUEUED, OUT, SESSION, TASK, UNRESOLVED, WATCH_CALL, assert_unknown, attachment, queue, record, remove,
-    row, stamp, watch_notice, write)
+    DESC, ENQUEUED, OUT, SESSION, TASK, UNRESOLVED, WATCH_CALL, armed, assert_unknown, attachment, form, queue,
+    record, remove, row, stamp, tail as absorption_tail, watch_notice, write)
 
 REQUEST = dict(requestId='synthetic-request-id', requestRef='synthetic-request')
 SECOND_CALL = 'toolu_SyntheticSecond'
@@ -109,6 +109,41 @@ def test_the_late_bound_own_watch_notice_settles_exactly_its_watch(tmp_path):
     cold_state, cold_turns = claude.read(record(tmp_path / 'cold', turn() + late() + tail()))
     warm_state, warm_turns = claude.read(path)
     assert replace(warm_state, last_write=cold_state.last_write) == cold_state and warm_turns == cold_turns
+
+
+@pytest.mark.parametrize('note', [
+    dict(type='derived-from', sessions=[dict(type='claude_code_session', id=SESSION, via='resume')]),
+    dict(type='data-flow-incomplete', codes=[9]),
+    dict(type='data-flow-records', records=[dict(response_id='msg_Synthetic1')]),
+], ids=['derived-from', 'data-flow-incomplete', 'data-flow-records'])
+@pytest.mark.parametrize('window', ['before-prefix', 'within-prefix', 'before-opening'])
+def test_data_flow_metadata_does_not_count_in_notice_windows(tmp_path, note, window):
+    if window == 'before-opening':
+        prefix, notice, end = armed(), form('A-thinking'), absorption_tail()
+        position = 1  # after the enqueue and before the assistant row that opens absorption
+    else:
+        prefix, notice, end = turn(), late(), tail()
+        position = 1 if window == 'before-prefix' else index(notice, 'synthetic-watch-ack')
+
+    original = record(tmp_path / 'original', prefix + notice + end)
+    with_note = notice.copy()
+    with_note.insert(position, dict(note, v=1, sessionId=SESSION))
+    changed = record(tmp_path / 'changed', prefix + with_note[:-1])
+    assert claude.state(changed).queue_error == UNRESOLVED
+    write(changed, with_note[-1:], 'a')
+    settled = claude.state(changed)
+    assert settled.queue_error is None and settled.turn_open is True
+    write(changed, end, 'a')
+
+    baseline, reader = claude._Reader(original), claude._Reader(changed)
+    expected, actual = baseline.state(), reader.state()
+    assert expected.queue_error is None and expected.turn_open is False and expected.pending_tools == ()
+    assert replace(actual, last_write=expected.last_write) == expected
+    tasks = list(reader.background.task_states())
+    assert [(task.call, task.phase, task.terminal) for task in tasks] == [(WATCH_CALL, 'ended', 'completed')]
+    assert tasks == list(baseline.background.task_states())
+    inputs = claude.inputs(changed)
+    assert inputs == claude.inputs(original) and not inputs.skip_counts
 
 
 def test_the_hold_grants_nothing_until_the_attachment_line_is_complete(tmp_path):
