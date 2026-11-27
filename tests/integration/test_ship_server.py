@@ -86,6 +86,51 @@ def test_a_seat_runs_on_the_ships_own_server_and_cannot_reach_it_by_TMUX(ship, m
         seatmod.bring_down(ship, server)
 
 
+@pytest.mark.parametrize("whole_ship", [False, True])
+def test_new_detached_crew_windows_use_the_session_default(ship, whole_ship):
+    server = Tmux.for_ship(ship)
+    ordinary = server.new_session("Ordinary")
+    server.run("set-option", "-g", "default-size", "83x27")
+    names = ("captain", "desk", "worker-1")
+    seats = [seatmod.Seat(ship, ship.seat(name), server) for name in names]
+    try:
+        if whole_ship:
+            seatmod.bring_up(ship, server)
+        else:
+            for seat in seats:
+                seat.up(resume=False)
+
+        for seat in seats:
+            session = f"={seat.session.title}:"
+            expected = "83x27" if seat.session.human else "120x30"
+            local = server.run("show-options", "-qv", "-t", session, "default-size").strip()
+            assert local == ("" if seat.session.human else expected)
+            assert server.run("display-message", "-p", "-t", seat.pane().id,
+                              "#{session_attached} #{pane_width}x#{pane_height}").strip() == f"0 {expected}"
+        assert server.run("show-options", "-gv", "default-size").strip() == "83x27"
+        assert not server.run("show-options", "-qv", "-t", ordinary.id, "default-size").strip()
+    finally:
+        seatmod.bring_down(ship, server)
+        server.kill_session_id(ordinary)
+
+
+def test_an_existing_crew_session_keeps_its_window_default(ship):
+    server = Tmux.for_ship(ship)
+    captain = seatmod.Seat(ship, ship.seat("captain"), server)
+    session = server.new_session(captain.session.title, env={"QD_SHIP": str(ship.folder)}, default_size="91x29")
+    try:
+        existing = server.new_window(captain.session.title, "existing", ship.cwd_of(captain.spec), ["cat"])
+        server.run("resize-window", "-t", existing.id, "-x", "65", "-y", "13")
+        captain.up(resume=False)
+        assert server.run("show-options", "-qv", "-t", session.id, "default-size").strip() == "91x29"
+        assert server.run("display-message", "-p", "-t", captain.pane().id,
+                          "#{session_attached} #{pane_width}x#{pane_height}").strip() == "0 91x29"
+        assert server.run("display-message", "-p", "-t", existing.id,
+                          "#{pane_width}x#{pane_height}").strip() == "65x13"
+    finally:
+        seatmod.bring_down(ship, server)
+
+
 def unit_listed(unit: str) -> bool:
     shown = subprocess.run(["systemctl", "--user", "list-units", "--all", "--no-legend", "--plain", unit],
                            capture_output=True, text=True, timeout=10)
@@ -171,6 +216,9 @@ def test_a_ship_on_the_default_server_keeps_running_there_until_one_down_and_up(
     assert captain.pane() is not None and not Path(ship_socket(ship)).exists()
     env = program_environment(captain.pane().pid)
     assert "TMUX" not in env and env["QD_TMUX_SOCKET"] == tmux.socket  # told the server it runs on, explicitly
+    worker = seatmod.Seat(ship, ship.seat("worker-1"), found)
+    worker.up(resume=False)  # a newly created crew session on the legacy endpoint also keeps its defaults
+    assert not found.run("show-options", "-qv", "-t", "=Crew:", "default-size").strip()
 
     facts = watch.facts(ship, found)
     assert facts.cutover == f"tmux: still on the default server {tmux.socket}; qd down, then qd up, moves it"

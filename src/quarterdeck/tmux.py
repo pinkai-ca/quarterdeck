@@ -538,11 +538,12 @@ class Tmux:
     def has_session(self, name: str) -> bool:
         return name in self.sessions()
 
-    def new_session(self, name: str, env: dict[str, str] | None = None) -> SessionIdentity:
+    def new_session(self, name: str, env: dict[str, str] | None = None, *,
+                    default_size: str | None = None) -> SessionIdentity:
         """A detached session, holding its history for days, with the ship in its environment.
 
         It opens on a placeholder window that the first seat replaces, because the
-        history limit must be set before any seat's window exists.
+        history limit and any session default size must be set before a seat's window exists.
         """
         token = secrets.token_hex(16)
         ident = self._invoke("new-session", "-d", "-P", "-F", "#{session_id}", "-e", f"QD_SESSION_OWNER={token}",
@@ -551,6 +552,8 @@ class Tmux:
         try:
             self._invoke("set-option", "-t", ident, "history-limit", str(HISTORY_LINES))
             self._invoke("set-option", "-t", ident, "renumber-windows", "on")
+            if default_size is not None:
+                self._invoke("set-option", "-t", ident, "default-size", default_size)
             for key, value in (env or {}).items():
                 self._invoke("set-environment", "-t", ident, key, value)
         except BaseException:

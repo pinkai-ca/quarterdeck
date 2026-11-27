@@ -43,6 +43,7 @@ from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Pane, Tmux, TmuxError, check_private_folder
 
 
+CREW_DEFAULT_SIZE = "120x30"  # Headroom for 800-character literal drafts with up to two newlines.
 PROCESS_END_SECONDS = 10.0  # how long down watches a closed pane's program end before it leaves the rest to the tick
 RELAUNCH_END_SECONDS = 60.0  # a relaunch (restart, fresh, a pool move) watches a program end this long in all
 RETIRING = trusted_files.RETIRING
@@ -1699,7 +1700,8 @@ class Seat:
         self.server_started = None  # where this launch started the ship's own tmux server, if it did
         session = self.session
         ship_env = {"QD_SHIP": str(self.ship.folder)}
-        if split := (self.tmux.split(self.ship) if getattr(self.tmux, "ship", False) else []):
+        ship_server = getattr(self.tmux, "ship", False)
+        if split := (self.tmux.split(self.ship) if ship_server else []):
             raise ShipError(f"this ship runs in two places: {', '.join(split)}, and also on its own server "
                             f"{self.tmux.socket}; nothing was started. qd down, then qd up, puts it in one")
         if self.tmux.has_session(session.title):
@@ -1708,9 +1710,12 @@ class Seat:
                 raise ShipError(f"tmux session {session.title!r} belongs to {owner or 'another server user'}; "
                                 f"give this ship's session another title")
         else:
-            if getattr(self.tmux, "ship", False):
+            options = {}
+            if ship_server:
                 self.tmux.started_server = None  # this launch's own start of the ship's server, and no earlier one
-            self.tmux.new_session(session.title, env=ship_env)
+                if not (self.tmux.legacy or session.human):
+                    options["default_size"] = CREW_DEFAULT_SIZE
+            self.tmux.new_session(session.title, env=ship_env, **options)
             self.server_started = getattr(self.tmux, "started_server", None)
             status = shlex.join([str(qd_bin() / "qd"), "--ship", str(self.ship.folder), "status", "--line"])
             self.tmux.status_line(session.title, status)
