@@ -9,8 +9,8 @@ from unicodedata import category, east_asian_width
 
 ARRIVAL = 4.0
 LINGER = 3.0
-MOVE = 0.34
-BETWEEN_MOVES = 2.0
+MOVE = 1.0
+BETWEEN_MOVES = 2.0  # start to start, including the time spent moving
 MIN_STRIP = 7
 ARRIVAL_STRIP = 10
 
@@ -92,16 +92,16 @@ class Room:
             self.rows = rows
             self.previous = self.target = self._plan(now, rows)
             self.changed = float('-inf')  # a terminal resize is shown immediately at its new dimensions
-        elif now - self.changed >= BETWEEN_MOVES:
+        elif now >= self.changed + BETWEEN_MOVES:
             target = self._plan(now, rows)
             if target != self.target:
                 self.previous, self.target = self.target, target
                 self.changed = now
-        progress = min(1.0, (now - self.changed) / MOVE)
-        if progress >= 1.0:
+        if now >= self.changed + MOVE:
             return self.target
-        # Cubic ease in/out, with largest-remainder rounding so no row disappears mid-transition.
-        weight = 4 * progress**3 if progress < 0.5 else 1 - 4 * (1 - progress)**3
+        progress = (now - self.changed) / MOVE
+        # Smoothstep eases in and out. Largest-remainder rounding preserves the total row count.
+        weight = progress * progress * (3 - 2 * progress)
         return [_interpolate(before, after, weight) for before, after in zip(self.previous, self.target)]
 
 

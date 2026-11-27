@@ -289,19 +289,20 @@ class Viewer:
                     self.screens[name] = self.display(name)
         return follow_view.compose(self.room.columns, plans, sizes, titles, self.screens, activity, now)
 
-    def run(self, descriptor, stdout, cast):
+    def run(self, descriptor, stdout, cast, *, clock=time.monotonic):
         with ExitStack() as stack:
             arrivals = Arrivals(self.ship, self.specs)
             stack.callback(arrivals.close)
             records = Records(self.ship, tuple(self.specs.values()), self.tmux)
             stack.callback(records.close)
-            frames = follow_view.TerminalFrames(stdout, cast)
+            frames = follow_view.TerminalFrames(stdout, cast, clock=clock)
             stack.callback(frames.close)
             terminal_fd = stdout.fileno()
             check_running = float('-inf')
+            frame_due = float('-inf')
             observed, stamp = {}, float('-inf')
             while True:
-                now = time.monotonic()
+                now = clock()
                 if now >= check_running:
                     check_running = now + 1.0
                     if not self.running():
@@ -313,11 +314,14 @@ class Viewer:
                     observed, stamp = latest, sampled_at
                     for name, reading in observed.items():
                         self.room.activity[name].observe(reading.turn_open, stamp)
-                size = os.get_terminal_size(terminal_fd)
-                size = (size.columns or 80, size.lines or 24)
-                frames.paint(size, self.paint(now, size, observed))
+                if now >= frame_due:
+                    frame_due = now + FRAME
+                    size = os.get_terminal_size(terminal_fd)
+                    size = (size.columns or 80, size.lines or 24)
+                    frames.paint(size, self.paint(now, size, observed))
                 events = [descriptor] if arrivals.fd is None else [descriptor, arrivals.fd]
-                ready, _, _ = select.select(events, (), (), FRAME)
+                # Input can wake us early. Time already spent painting counts toward the next frame.
+                ready, _, _ = select.select(events, (), (), max(0.0, frame_due - clock()))
                 if descriptor in ready:
                     data = os.read(descriptor, 1024)
                     if not data or b'q' in data or b'\x03' in data:
