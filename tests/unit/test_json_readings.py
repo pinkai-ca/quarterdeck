@@ -31,6 +31,23 @@ def invoke(drydock, capsys, monkeypatch):
     return run
 
 
+@pytest.mark.parametrize("command", [
+    ("status",),
+    ("status", "--line"),
+    ("ledger", "--by", "order"),
+])
+def test_json_option_before_or_after_verb(command, drydock, capsys, monkeypatch):
+    monkeypatch.delenv("QD_SEAT", raising=False)
+    prefix = ["--ship", str(drydock)]
+    readings = []
+    for argv in (["--json", *command], [*command, "--json"]):
+        assert cli.main([*prefix, *argv]) == 0
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        readings.append(json.loads(captured.out))
+    assert readings[0].keys() == readings[1].keys()
+
+
 def test_status_and_line_expose_seats_orders_and_facts(invoke, drydock):
     store = post.Store(drydock / "runtime")
     order = store.new("order", "desk", "captain", "synthetic instruction", subject="a subject")

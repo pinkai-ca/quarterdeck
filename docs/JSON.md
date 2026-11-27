@@ -1,10 +1,10 @@
 # Reading as JSON
 
-Any command that shows you something, such as `qd status` or `qd ledger`, can give it as JSON instead of text. Put `--json` straight after `qd`:
+Any command that shows you something, such as `qd status` or `qd ledger`, can give it as JSON instead of text. Put `--json` before or after the command name.
 
 ```sh
 qd --json status
-qd --json ledger --by seat
+qd ledger --by seat --json
 ```
 
 Each command prints one JSON document and a newline: no table, and no Markdown around it.

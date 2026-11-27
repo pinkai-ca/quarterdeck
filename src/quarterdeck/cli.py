@@ -170,6 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def verb(name: str, run, help: str) -> argparse.ArgumentParser:
         p = verbs.add_parser(name, help=help, description=help)
+        # Keep any --json already parsed before the verb.
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print the result as JSON")
         p.set_defaults(run=run)
         return p
 
@@ -232,7 +234,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("controls", cmd_controls, "list a seat's controls with the form each has")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("--harness", choices=harnesses.NAMES, help="read a program's capabilities without a ship")
-    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print the result as JSON")
     p = verb("cascade", cmd_cascade, "start the declared ring once for a question to its orchestrator")
     p.add_argument("--re", required=True, help="the question's id or short id")
     p.add_argument("--efforts", help="fewer declared effort laps, comma separated, in the order named")
@@ -245,7 +246,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("attach", cmd_attach, "open the ship in this terminal: a session on the ship's own tmux server")
     p.add_argument("session", nargs="?", help="a session's name or title (default: the person's own session)")
     p = verb("ls", cmd_ls, "list running tmux sessions of the selected ship, counting declared seats")
-    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print the result as JSON")
     p = verb("status", cmd_status, "every seat on one screen, then the open orders")
     p.add_argument("--line", action="store_true", help="published operational alerts; stale or unavailable readings are marked")
     p = verb("watch", cmd_watch, "read a seat: activity from its record, the door from its screen")
