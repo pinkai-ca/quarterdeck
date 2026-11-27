@@ -24,7 +24,7 @@ from .. import durable
 from ..ship import Pool, SeatSpec
 from .antigravity_quota import banner, fetch_usage, unknown
 from .antigravity_record import OWNED, _CACHE, _parse_usage, first_timestamp, inputs, read, records, session_id, state, turns
-from .base import Box, BoxScroll, Control, Credential, Harness, Interruption, Join, Keys, Launch, Screen, ship_template, trimmed
+from .base import Box, BoxScroll, Control, Credential, Harness, Interruption, Join, Keys, Launch, Screen, program_version, ship_template, trimmed
 from .limits import Usage
 
 STATE_DIR = Path.home() / ".gemini" / "antigravity-cli"
@@ -112,6 +112,9 @@ class AntigravityHarness(Harness):
 
     def is_headline(self, group: str | None, window: str) -> bool:
         return True  # Every reported group/bucket, including a retained unknown measurement.
+
+    def version(self, home: Path | None = None) -> str | None:
+        return program_version(("env", "AGY_CLI_DISABLE_AUTO_UPDATE=true", self.program, "--version"))
 
     def usage(self, pool: Pool) -> Usage:
         if pool.config_dir is not None:
