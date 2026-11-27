@@ -252,7 +252,7 @@ def settled(store, seat, *, brief_at=None):
     terminal = [m for m in incoming if m.sender == post.SHIP and m.kind == 'report' and m.re]
     if terminal:
         from .thread_context import _terminal_notice
-        by_id = {m.id: m for m in store.all()}
+        by_id = store._notice_messages({m.re for m in terminal})
         for message in terminal:
             root = by_id.get(message.re)
             if (root is not None and root.to == seat and root.obligation and not store.is_open(root)

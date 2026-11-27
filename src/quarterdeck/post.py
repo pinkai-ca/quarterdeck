@@ -575,20 +575,28 @@ class Store:
 
         def read():
             seen = post_reads.read_times(self.dir.parent.parent, seat)
-            messages, replies = self._loaded()
-            candidates = self._delivery_messages(seat)
-            if candidates is not None:
-                messages = candidates
-            reported = frozenset(message.id for message in messages
-                                 if any(reply.kind == 'report' and reply.sender == seat
-                                        for reply in replies.get(message.id, ())))
-            return tuple((message.id, seen.get(message.id), message.id in reported) for message in messages
-                         if message.to == seat and not message.obligation and message.kind != 'ack'
-                         and (message.id in seen or message.id in reported))
+            messages, replies = self._read_id_sources(seat)
+            found = []
+            for message in messages:
+                if message.to != seat or message.obligation or message.kind == 'ack':
+                    continue
+                moment = seen.get(message.id)
+                reported = any(reply.kind == 'report' and reply.sender == seat for reply in replies(message))
+                if message.id in seen or reported:
+                    found.append((message.id, moment, reported))
+            return tuple(found)
 
         found = reading_value('body-read', (self.dir.absolute(), seat), read)
         return frozenset(identifier for identifier, moment, reported in found
                          if reported or after is None or identifier not in after or moment > after[identifier])
+
+    def _read_id_sources(self, seat):
+        messages, replies = self._loaded()
+        candidates = self._delivery_messages(seat)
+        return (messages if candidates is None else candidates), lambda message: replies.get(message.id, ())
+
+    def _notice_messages(self, references: Collection[str]) -> dict[str, Message]:
+        return {message.id: message for message in self.all()}
 
     def settled_notices(self, seat: str, *, brief_at=None) -> dict[str, str]:
         """Informational history, independent of actual read receipts and obligations."""
@@ -1351,6 +1359,45 @@ class InboxContext:
                 self._test = _sender_seat(self._store)
             self._senders[sender] = self._test(sender)
         return self._senders[sender]
+
+
+class _OperatorInboxStore(Store):
+    """One indexed inbox reading, with the Store's closure and receipt rules."""
+
+    def __init__(self, store, index):
+        super().__init__(store.dir.parent.parent)
+        self._index = index
+
+    def for_seat(self, seat: str) -> list[Message]:
+        return reading_value('seat', (self.dir.absolute(), seat), lambda: self._index.for_seat(seat))
+
+    def replies(self, message: Message) -> list[Message]:
+        return reading_value('replies', (self.dir.absolute(), message.id), lambda: self._index.replies(message.id))
+
+    def _read_id_sources(self, seat):
+        # Context-only messages are never eligible for this watch to print.
+        return self.for_seat(seat), self.replies
+
+    def _notice_messages(self, references: Collection[str]) -> dict[str, Message]:
+        messages = {}
+        for ref in references:
+            root = self._index.get(ref)
+            if root is not None:
+                messages[root.id] = root
+                messages.update((reply.id, reply) for reply in self.replies(root))
+        return messages
+
+
+def read_operator_inbox(store: Store, read):
+    """Read the operator's inbox, restarting the entire reading if the cache is unavailable."""
+    from .post_index import IndexUnavailable, MessageIndex
+
+    try:
+        with reading_pass(store=store), MessageIndex(store) as index:
+            return read(_OperatorInboxStore(store, index))
+    except IndexUnavailable:
+        with reading_pass(store=store):
+            return read(store)
 
 
 def inbox_reading(store: Store, seat: str, *, recent: bool = False, open_only: bool = False,
@@ -2116,15 +2163,20 @@ def watch_retirement_warning(path: Path, generation: str) -> None:
         pass  # preserving the primary return/error takes precedence if stderr also fails
 
 
-def operator_ready(runtime: Path, operator: str) -> tuple[list[Message], list[Attempt]] | None:
+def operator_ready(runtime: Path, operator: str) -> tuple[list[Message], list[Attempt], set[str]] | None:
     """Claim mail already waiting for a person's shell without arming a seat's watch."""
     store, attempts = Store(runtime), Attempts(runtime)
     with admission(runtime, operator):
-        with reading_pass(store=store, attempts=attempts):
-            messages = attempts.undelivered(store, operator, results=attempts.latest(operator))
+        inventory = attempts.all()
+        results = attempts.latest(operator, attempts=inventory)
+        messages = read_operator_inbox(store, lambda view: attempts.undelivered(view, operator, results=results))
         if not messages:
             return None
-        return messages, [attempts.open(message, operator, None, None, None) for message in messages]
+        # Count prior deliveries before this batch adds its own attempts.
+        identifiers = {message.id for message in messages}
+        second = {a.message for a in inventory if a.seat == operator and a.message in identifiers}
+        opened = [attempts.open(message, operator, None, None, None) for message in messages]
+        return messages, opened, second
 
 
 def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None, *, validate=None) -> tuple[list[Message], list[Attempt]] | None:

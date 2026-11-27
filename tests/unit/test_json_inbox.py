@@ -3,10 +3,12 @@
 import io
 import json
 import hashlib
+from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
-from quarterdeck import cli, output, pending, post
+from quarterdeck import cli, desk_request, fleet_post, output, pending, post, post_index
 
 
 @pytest.fixture
@@ -181,6 +183,126 @@ def test_operator_wait_batch_ends_with_the_reply(inbox, capsys, monkeypatch):
     assert capsys.readouterr().out == post.typed([reply])
     assert not post.watch_file(runtime, "testoperator").exists()
     assert attempts.latest("testoperator") == {earlier.id: "watch", reply.id: "watch"}
+
+
+@pytest.mark.parametrize('as_json', [False, True])
+def test_operator_inbox_restarts_on_index_failure(inbox, capsys, monkeypatch, as_json):
+    folder, store, _ = inbox
+    monkeypatch.setattr(post, 'now', lambda: datetime(2026, 1, 2, 12, tzinfo=timezone.utc))
+    pending_order = store.new('order', 'captain', 'operator', 'Open work', subject='Open')
+    closed_order = store.new('order', 'captain', 'operator', 'Closed work', subject='Closed')
+    closed = store.new('report', 'operator', 'captain', 'Actual closer', re=closed_order.id)
+    sent = store.new('order', 'operator', 'captain', 'A terminal request')
+    direct = store.new('report', 'captain', 'operator', 'A directly printed reply', re=sent.id)
+    desk_request.mark_printed(folder / 'runtime', 'operator', direct)
+    args = ['--ship', str(folder), *(['--json'] if as_json else []), 'inbox']
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr(post, 'read_operator_inbox', lambda store, read: read(store))
+        assert cli.main(args) == 0
+    baseline = capsys.readouterr()
+    assert pending_order.body in baseline.out and closed_order.body in baseline.out
+    assert (closed.id if as_json else closed.short) in baseline.out and direct.body not in baseline.out
+
+    def no_scan(self):
+        pytest.fail('operator indexed-reading view reopened the whole store')
+
+    monkeypatch.setattr(post._OperatorInboxStore, '_loaded', no_scan)
+    assert cli.main(args) == 0
+    assert capsys.readouterr() == baseline
+
+    queried = []
+    replies = post_index.MessageIndex.replies
+
+    def fail_on_closure(self, identifier):
+        queried.append(identifier)
+        if identifier == closed_order.id:
+            raise post_index.IndexUnavailable('synthetic failure after selecting the recipient')
+        return replies(self, identifier)
+
+    monkeypatch.setattr(post_index.MessageIndex, 'replies', fail_on_closure)
+    assert cli.main(args) == 0
+    assert capsys.readouterr() == baseline and closed_order.id in queried
+
+
+def test_operator_terminal_notice_can_follow_a_context_only_root(inbox, capsys, monkeypatch):
+    folder, store, _ = inbox
+    runtime = folder / 'runtime'
+    draft = store.prepare('order', 'captain', 'operator', 'Context-only ancestor')
+    root = replace(draft, sender='captain@other')
+    raw = replace(root, to='operator@drydock').to_json().encode()
+    (store.dir / (root.id + '.json')).write_bytes(raw)
+    imported = fleet_post.import_path(runtime, root.id)
+    imported.parent.mkdir()
+    imported.write_text(json.dumps(dict(origin='other', context=True, sha256=hashlib.sha256(raw).hexdigest())))
+    copy = store.new('order', 'operator', 'desk', 'Group copy', re=root.id)
+    store.new('report', 'operator', 'ship', 'Group closed', re=root.id)
+    notice = store.new('report', 'ship', 'operator', 'Group terminal notice', re=root.id)
+    groups = runtime / 'post' / 'groups'
+    groups.mkdir()
+    (groups / (root.id + '.json')).write_text(json.dumps(dict(
+        format=1, lead='operator', group='synthetic', root=json.loads(root.to_json()),
+        notice=json.loads(notice.to_json()), copies=[json.loads(copy.to_json())])))
+
+    args = ['--ship', str(folder), '--json', 'inbox']
+    with monkeypatch.context() as legacy:
+        legacy.setattr(post, 'read_operator_inbox', lambda store, read: read(store))
+        assert cli.main(args) == 0
+    baseline = capsys.readouterr()
+    data = json.loads(baseline.out)
+    assert data['open'] == [] and [m['id'] for m in data['received']] == [notice.id]
+    assert data['settled'] == {notice.id: 'terminal notice: settled by closure of its work'}
+
+    def no_scan(self):
+        pytest.fail('notice settlement reopened the whole store')
+
+    monkeypatch.setattr(post._OperatorInboxStore, '_loaded', no_scan)
+    assert cli.main(args) == 0
+    assert capsys.readouterr() == baseline
+
+
+def test_operator_wait_uses_one_attempt_inventory_for_initial_batch(inbox, capsys, monkeypatch):
+    folder, store, _ = inbox
+    runtime = folder / 'runtime'
+    old = store.new('report', 'captain', 'operator', 'Already printed')
+    desk_request.mark_printed(runtime, 'operator', old)
+    attempts = post.Attempts(runtime)
+    inventories = []
+    all_current = post.Attempts._all_current
+    again = store.new('report', 'captain', 'operator', 'Print this second delivery')
+    attempts.close(attempts.open(again, 'operator', None, None, None), 'cancelled')
+    new = store.new('question', 'captain', 'operator', 'Print despite a receipt for a different seat')
+    attempts.close(attempts.open(new, 'desk', None, None, None), 'watch')
+
+    def inventory(self, **fields):
+        inventories.append(self)
+        return all_current(self, **fields)
+
+    def no_scan(self):
+        pytest.fail('indexed delivery selection reopened the whole store')
+
+    monkeypatch.setattr(post.Attempts, '_all_current', inventory)
+    monkeypatch.setattr(post._OperatorInboxStore, '_loaded', no_scan)
+    assert cli.main(['--ship', str(folder), 'inbox', '--wait']) == 0
+    assert len(inventories) == 1
+    messages = sorted([again, new], key=lambda message: (message.at, message.id))
+    assert capsys.readouterr().out == post.typed(messages, second={again.id})
+    assert attempts.latest('operator') == {m.id: 'watch' for m in [old, again, new]}
+
+
+def test_operator_wait_enters_watch_when_initial_indexed_read_is_empty(inbox, capsys, monkeypatch):
+    folder, store, _ = inbox
+    wait = post.wait_batch
+
+    def arrive(runtime, seat):
+        new = store.new('question', 'captain', 'operator', 'Arrived at watch start')
+        arrivals.append(new)
+        return wait(runtime, seat)
+
+    arrivals = []
+    monkeypatch.setattr(post, 'wait_batch', arrive)
+    assert cli.main(['--ship', str(folder), 'inbox', '--wait']) == 0
+    assert len(arrivals) == 1 and capsys.readouterr().out == post.typed(arrivals)
 
 
 def test_human_session_wait_batch_keeps_the_full_rearm_instruction(inbox, capsys, monkeypatch):

@@ -1370,14 +1370,20 @@ def cmd_thread(args: argparse.Namespace) -> Reading:
 def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     ship = load_ship(args)
     seat, human, validate = _inbox_target(ship, args.seat)
+    operator_name = getattr(ship, 'operator', None)
+    operator_seat = operator_name.lower() if isinstance(operator_name, str) and operator_name else None
+    operator = operator_seat is not None and seat == operator_seat
     role = ship.seat(seat).role if seat in ship.seats else None
     if not args.wait:
         # A hand reads only what is open for it, as its inbox file does; --all still prints the whole history.
         open_only = not args.all and role == 'hand'
-        excluded = (desk_request.printed_ids(ship.runtime, seat)
-                    if not args.all and human and seat == ship.operator.lower() else ())
-        data = post.inbox_reading(post.Store(ship.runtime), seat, recent=not args.all, open_only=open_only,
-                                  exclude=excluded)
+        excluded = desk_request.printed_ids(ship.runtime, seat) if not args.all and human and operator else ()
+        store = post.Store(ship.runtime)
+
+        def read(view):
+            return post.inbox_reading(view, seat, recent=not args.all, open_only=open_only, exclude=excluded)
+
+        data = post.read_operator_inbox(store, read) if operator else read(store)
         if validate is not None:
             validate()
         return Reading(data,
@@ -1385,19 +1391,23 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     if not human:
         raise ShipError(f"{seat} is reached through its door; --wait is for seats in a human's session")
     shipmod.fence(ship)
-    arrived = post.operator_ready(ship.runtime, seat) if seat == ship.operator.lower() else None
-    if arrived is None:
+    ready = post.operator_ready(ship.runtime, seat) if operator else None
+    if ready is None:
         arrived = (post.wait_batch(ship.runtime, seat, validate=validate) if validate is not None
                    else post.wait_batch(ship.runtime, seat))
-    if arrived is None:
-        return None
-    messages, opened = arrived
+        if arrived is None:
+            return None
+        messages, opened = arrived
+        second = None
+    else:
+        messages, opened, second = ready
     if validate is not None:
         validate()
     # A message this watch's seat was given before (a print judged blind, a resend) says it is a second delivery.
-    now = {attempt.path for attempt in opened}
-    every = post.Attempts(ship.runtime)
-    second = {m.id for m in messages if any(a.seat == seat and a.path not in now for a in every.for_message(m.id))}
+    if second is None:
+        now = {attempt.path for attempt in opened}
+        every = post.Attempts(ship.runtime)
+        second = {m.id for m in messages if any(a.seat == seat and a.path not in now for a in every.for_message(m.id))}
     # A change to the seat's standing orders since it last read them rides at the head of the batch, as at a door.
     from . import brief_change
     from .seat_command import qd_command, watch_instruction
@@ -1408,9 +1418,9 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
 
     def render_batch(data):
         text = data.get("standing_orders_changed", "") + post.typed(data["messages"], second=second)
-        if seat == ship.operator.lower():
+        if operator:
             return text.removesuffix("\n")  # the emitter adds the final newline
-        caller = os.environ.get('QD_SEAT') or ship.operator.lower()
+        caller = os.environ.get('QD_SEAT') or operator_seat
         target = () if caller == seat else (seat,)
         return text + watch_instruction(qd_command(ship.folder, 'inbox', '--wait', *target))
 
