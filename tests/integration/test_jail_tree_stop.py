@@ -103,30 +103,42 @@ def test_the_tree_is_read_before_the_window_is_killed_and_ended_after_the_progra
 # -- the relay --------------------------------------------------------------------------------------------------------
 
 LEAVES_AN_ORPHAN = r'''
-import os, sys, time
+import os, signal, sys, time
+from pathlib import Path
+
 middle = os.fork()
 if middle == 0:
     if os.fork() == 0:
         with open(sys.argv[1] + '.tmp', 'w') as out:
             out.write(str(os.getpid()))
         os.rename(sys.argv[1] + '.tmp', sys.argv[1])
-        time.sleep(600)
-        os._exit(0)
+        while True:
+            signal.pause()
     os._exit(0)  # the orphan's parent ends: it goes to the nearest subreaper, which is the relay
 os.waitpid(middle, 0)
-time.sleep(float(sys.argv[2]))
+release = Path(sys.argv[2])
+while not release.exists():
+    time.sleep(.01)
 sys.exit(3)
 '''
 
 
-def relay_words(folder: Path, pidfile: Path, seconds: float) -> list[str]:
+def relay_words(folder: Path, pidfile: Path, release: Path) -> list[str]:
     return ['env', f'PYTHONPATH={SRC}', sys.executable, '-m', 'quarterdeck.endpoint_relay', str(folder / 'r'),
-            '127.0.0.1', '9', '', '--', sys.executable, '-c', LEAVES_AN_ORPHAN, str(pidfile), str(seconds)]
+            '127.0.0.1', '9', '', '--', sys.executable, '-c', LEAVES_AN_ORPHAN, str(pidfile), str(release)]
 
 
 def orphan_of(pidfile: Path) -> dict[int, str]:
     pid = int(pidfile.read_text())
     return {pid: write_bound._processes()[pid][1]}
+
+
+def wait_for_adoption(orphan, relay_pid):
+    def adopted():
+        identity = jail_end._stat(next(iter(orphan)))
+        return identity is not None and identity[0] == relay_pid
+
+    assert wait_for(adopted, 30), "the relay is the orphan's subreaper"
 
 
 @pytest.fixture
@@ -137,27 +149,34 @@ def short():
 
 
 def test_the_relay_adopts_its_jails_orphan_ends_it_before_it_exits_and_keeps_its_childs_status(short):
-    pidfile = short / 'orphan'
-    relay = subprocess.Popen(relay_words(short, pidfile, 1.0))
+    pidfile, release = short / 'orphan', short / 'release'
+    relay = subprocess.Popen(relay_words(short, pidfile, release))
+    orphan = {}
     try:
         assert wait_for(pidfile.exists, 30)
         orphan = orphan_of(pidfile)
-        assert jail_end._stat(next(iter(orphan)))[0] == relay.pid, 'the relay is the orphan\'s subreaper'
+        wait_for_adoption(orphan, relay.pid)
+        release.touch()
         assert relay.wait(timeout=60) == 3, "the relay's exit status is its child's"
         assert write_bound.alive(orphan) == {}, 'ended and reaped before the relay exited'
     finally:
-        if relay.poll() is None:
+        release.touch()
+        try:
+            relay.wait(timeout=10)
+        except subprocess.TimeoutExpired:
             relay.kill()
-            relay.wait()
+            relay.wait(timeout=10)
+        if left := write_bound.alive(orphan):
+            write_bound.kill(left)
 
 
 def test_a_relay_ended_by_its_panes_hangup_ends_and_reaps_what_it_adopted(short):
-    pidfile, socket = short / 'orphan', short / 's'
+    pidfile, socket, release = short / 'orphan', short / 's', short / 'release'
     env = {key: value for key, value in os.environ.items() if key not in ('TMUX', 'TMUX_PANE')}
     tmux = lambda *args: subprocess.run(['tmux', '-S', str(socket), *args], env=env, capture_output=True, text=True,
                                         timeout=30)
     script = short / 'launch.sh'
-    script.write_text(f'#!/bin/sh\nexec {shlex.join(relay_words(short, pidfile, 600))}\n')
+    script.write_text(f'#!/bin/sh\nexec {shlex.join(relay_words(short, pidfile, release))}\n')
     assert tmux('new-session', '-d', '-s', 'relay', f'sh {shlex.quote(str(script))}').returncode == 0
     servers = OwnServers()  # the test's own server, ended by the pid it ran as (tests/own_tmux_servers.py)
     servers.keep(socket, env=env)
@@ -166,10 +185,12 @@ def test_a_relay_ended_by_its_panes_hangup_ends_and_reaps_what_it_adopted(short)
         orphan = orphan_of(pidfile)
         pane_pid = int(tmux('list-panes', '-t', 'relay', '-F', '#{pane_pid}').stdout.split()[0])
         relay = {pane_pid: write_bound._processes()[pane_pid][1]}
+        wait_for_adoption(orphan, pane_pid)
         tmux('kill-window', '-t', 'relay')
         assert wait_for(lambda: not write_bound.alive(relay), 30), 'the relay ended at its hangup'
         assert write_bound.alive(orphan) == {}, 'and it ended what it adopted before it did'
     finally:
+        release.touch()
         servers.close()
         if pidfile.exists():
             pid = int(pidfile.read_text())

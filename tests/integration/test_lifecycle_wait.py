@@ -33,12 +33,9 @@ def test_service_lifecycle_requests_refuse_busy_claim_without_waiting(drydock, t
         pytest.fail('service request waited on a lifecycle claim')
 
     with lifecycle.claim(ship.runtime, seat.name), monkeypatch.context() as immediate:
-        # Fail on a first sleep as well as bounding elapsed time, so a regression
-        # never spends the production thirty-second deadline inside this test.
+        # The request must finish while the claim is still held, without trying to sleep.
         immediate.setattr(lifecycle, 'time', SimpleNamespace(monotonic=time.monotonic, sleep=no_wait))
-        started = time.monotonic()
         runner.requests()
-        assert time.monotonic() - started < 0.5
         assert path.with_suffix('.done').read_text() == (
             f'refused: {seat.name}: another lifecycle transition is in progress; retry when it ends\n')
         assert later.with_suffix('.done').read_text() == "unknown request 'unknown'\n"
@@ -68,9 +65,7 @@ def test_service_select_stays_queued_on_a_busy_claim_then_applies(drydock, tmux,
 
         with lifecycle.claim(ship.runtime, seat.name), monkeypatch.context() as immediate:
             immediate.setattr(lifecycle, 'time', SimpleNamespace(monotonic=time.monotonic, sleep=no_wait))
-            started = time.monotonic()
             runner.requests()
-            assert time.monotonic() - started < 0.5
             assert later.with_suffix('.done').read_text() == "unknown request 'unknown'\n"
             assert path.exists() and not path.with_suffix('.done').exists()
             assert not path.with_suffix('.claimed').exists()

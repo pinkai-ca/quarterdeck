@@ -16,10 +16,15 @@ from quarterdeck.procstat import EXITED
 from tests.integration import waiting
 
 
-def command(ready, *, ignore=False, descendant=None, output=""):
+def command(ready, *, ignore=False, descendant=None, output="", stopped=None):
     code = "import pathlib, signal, subprocess, sys, time\n"
     if ignore:
         code += "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    if stopped is not None:
+        code += ("def stop(*_):\n"
+                 f"    pathlib.Path({str(stopped)!r}).touch()\n"
+                 "    sys.exit(0)\n"
+                 "signal.signal(signal.SIGTERM, stop)\n")
     if descendant is not None:
         child_ready = str(descendant) + '.ready'
         child = ("import pathlib, signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
@@ -43,24 +48,26 @@ def alive(pid):
         return False
 
 
-def test_ready_client_retires_without_the_script_shutdown_delay(tmp_path):
-    ready = tmp_path / 'ready'
-    with waiting.attached_client(command(ready), ready.exists) as client:
+def test_ready_client_retires_without_the_script_shutdown_delay(tmp_path, monkeypatch):
+    ready, stopped = tmp_path / 'ready', tmp_path / 'stopped'
+    with waiting.attached_client(command(ready, stopped=stopped), ready.exists) as client:
         assert client.poll() is None
-        before = time.monotonic()
+        assert not stopped.exists()
+        monkeypatch.setattr(client, 'terminate', lambda: pytest.fail('retirement signalled the script wrapper'))
     assert client.poll() is not None
-    assert time.monotonic() - before < 1.5
+    assert stopped.exists(), 'the terminal command received SIGTERM directly'
 
 
 def test_nested_clients_retire_independently(tmp_path):
     outer_ready, inner_ready = tmp_path / 'outer', tmp_path / 'inner'
-    with waiting.attached_client(command(outer_ready), outer_ready.exists) as outer:
-        with waiting.attached_client(command(inner_ready), inner_ready.exists) as inner:
-            before = time.monotonic()
-        assert time.monotonic() - before < 1.5
+    outer_stopped, inner_stopped = tmp_path / 'outer-stopped', tmp_path / 'inner-stopped'
+    with waiting.attached_client(command(outer_ready, stopped=outer_stopped), outer_ready.exists) as outer:
+        with waiting.attached_client(command(inner_ready, stopped=inner_stopped), inner_ready.exists) as inner:
+            assert inner.poll() is None
         assert inner.poll() is not None
-        assert outer.poll() is None
+        assert inner_stopped.exists() and not outer_stopped.exists() and outer.poll() is None
     assert outer.poll() is not None
+    assert outer_stopped.exists()
 
 
 @pytest.mark.parametrize('reaps_after_kill', [True, False])

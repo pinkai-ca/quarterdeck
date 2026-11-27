@@ -7,9 +7,6 @@ fixture names and closes.
 import json
 import os
 import signal
-import threading
-import time
-from types import SimpleNamespace
 
 import pytest
 
@@ -18,8 +15,8 @@ from quarterdeck.harness.synthetic_control import events
 from quarterdeck.post import Attempts
 from quarterdeck.ship import ShipError
 from . import test_service_shutdown as phases
-from .test_service_shutdown import MARKER, stopping, wait_for, world  # shared private fake program and owned teardown
-from .test_service_stop_preflight import PREFLIGHT
+from .test_service_shutdown import MARKER, wait_for, world  # shared private fake program and owned teardown
+from .test_service_stop_preflight import PREFLIGHT, stop_at_write_unit, stop_during_preflight
 
 
 OPENED = r'''
@@ -74,10 +71,7 @@ def test_stop_before_the_attempt_leaves_none_and_restart_types_once(world, monke
     message = world.post()
     runtime = world.ship.runtime
     wait_for(lambda: (runtime / 'phase-hit').exists())
-    started = time.monotonic()
-    result = servicectl.stop(runtime)
-    assert time.monotonic() - started < shutdown.ORDINARY_GRACE
-    assert 'service stopped' in result and 'killed' not in result
+    stop_during_preflight(runtime, monkeypatch)
     assert Attempts(runtime).for_message(message.id) == []
     assert world.journal() is None and not shutdown.pointer_path(runtime).exists()
     assert typed(world) == 0
@@ -93,17 +87,9 @@ def test_stop_inside_the_write_unit_waits_then_restart_types_once(world, monkeyp
     runtime = world.ship.runtime
     wait_for(lambda: (runtime / 'phase-hit').exists())
     assert len(Attempts(runtime).for_message(message.id)) == 1
-    thread, results, errors = stopping(lambda: servicectl.stop(runtime))
-    # A service that exits on the signal instead of deferring shows as gone, not as a timeout.
-    wait_for(lambda: (runtime / 'term-seen').exists() or not thread.is_alive())
-    waited = thread.is_alive()
-    (runtime / 'phase-release').touch()
-    thread.join(timeout=10)
-    assert not thread.is_alive() and not errors
-    assert not servicectl.locked(runtime)
+    result = stop_at_write_unit(runtime, monkeypatch)
     attempts = every_attempt_journalled(world, message)
-    assert waited, 'the stop did not wait for the write unit'
-    assert 'killed' not in results[0]
+    assert 'service stopped' in result and 'killed' not in result
     assert len(attempts) == 1
     journal = world.journal()
     if phase == 'opened':
@@ -130,41 +116,9 @@ def test_stop_after_open_stalled_past_ordinary_grace_waits_then_restart_types_on
     monkeypatch.setattr(shutdown, 'ORDINARY_GRACE', 1.0)  # the ordinary bound low, so the delivery's shows past it
     message, _ = stalled_after_open(world, monkeypatch)
     runtime = world.ship.runtime
-    crossed, release = threading.Event(), threading.Event()
-    clock = SimpleNamespace(now=0.0)
-
-    def stop_sleep(seconds):
-        if not (runtime / 'term-seen').exists():
-            time.sleep(.005)
-        elif clock.now == 0:
-            clock.now = shutdown.ORDINARY_GRACE + .5
-        else:
-            # The stop loop has tested its deadline at a time past ordinary grace.
-            crossed.set()
-            release.wait()
-            time.sleep(.005)
-
-    def stop():
-        try:
-            return servicectl.stop(runtime)
-        finally:
-            crossed.set()  # an early return/error must also reach the assertions
-
-    with monkeypatch.context() as stopping_clock:
-        stopping_clock.setattr(servicectl, 'time', SimpleNamespace(
-            monotonic=lambda: clock.now, sleep=stop_sleep))
-        thread, results, errors = stopping(stop)
-        try:
-            crossed.wait()
-            waited = thread.is_alive() and servicectl.locked(runtime)
-        finally:
-            (runtime / 'phase-release').touch()
-            release.set()
-            thread.join()
-    assert not thread.is_alive() and not errors
-    assert waited, 'the stop did not wait past its ordinary grace for the write unit'
-    assert 'service stopped' in results[0] and 'killed' not in results[0]
-    assert 'limit 30s' in results[0]
+    result = stop_at_write_unit(runtime, monkeypatch, past_ordinary=True)
+    assert 'service stopped' in result and 'killed' not in result
+    assert 'limit 30s' in result
     assert not shutdown.pointer_path(runtime).exists()
     attempt, = every_attempt_journalled(world, message)
     assert world.journal()['phase'] == 'cancelled' and typed(world) == 0
