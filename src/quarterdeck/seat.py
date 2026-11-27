@@ -1724,7 +1724,8 @@ class Seat:
         # name, so a link at the name is replaced, never followed.
         script = trusted_files.make(self.ship.runtime, self.name) / trusted_files.LAUNCH_SCRIPT
         durable.replace_file(script, launch_script(self.name, self._launch_words(argv, env, path)))
-        return self.tmux.new_window(session.title, self.spec.display, cwd, ["sh", str(script)], env)
+        return self.tmux.new_window(session.title, self.spec.display, cwd, ["sh", str(script)], env,
+                                    retain_clean_exit=self.spec.up and not self.spec.temporary)
 
     def _survives(self, pane_id: str, program: str, seconds: float = 0.5) -> None:
         """A program that exits as soon as it starts is a refusal, not an "up"; its pane stays for a look."""

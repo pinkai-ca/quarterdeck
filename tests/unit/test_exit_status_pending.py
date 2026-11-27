@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck.seat import Seat
+from quarterdeck import pane_death, servicectl, watch
+from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
 from quarterdeck.ship import ShipError
 from quarterdeck.tmux import Pane
@@ -89,3 +90,39 @@ def test_failed_log_does_not_consume_the_observation():
     Service.pane_died(service, seat, dead())
     Service.pane_died(service, seat, dead(0))
     assert [fields["status"] for event, fields in events] == [None, 0]
+
+
+def test_a_recorded_death_survives_an_unreadable_pane_but_absence_alone_proves_nothing(tmp_path):
+    pane = replace(dead(), dead_time=None)
+    launch = Launched(pane.id, pane.pid, '2000-01-01T00:00:00+00:00', 'fake', None, [], None)
+    seat = SimpleNamespace(name='worker', spec=SimpleNamespace(up=True), trusted=tmp_path, retiring=lambda: None)
+    reading = SimpleNamespace(selected=[seat], contexts={seat.name: {'launched': launch}},
+                              ship=SimpleNamespace(runtime=tmp_path))
+
+    def facts(observed):
+        return watch.Facts('ok', 0, 0, 0, pane_exits=watch._pane_exits(reading, {seat.name: observed}))
+
+    assert not facts(None).pane_exits
+    assert not facts(replace(pane, pid=pane.pid + 1)).pane_exits
+    unknown = 'worker: pane died at unknown time; exit status unknown'
+    assert unknown in facts(pane).line()
+    servicectl.append_log(tmp_path, 'pane-dead', seat=seat.name, pane=pane.id, pid=pane.pid, died=None, status=1)
+    earlier = replace(launch, at='1999-12-31T23:59:59+00:00')
+    pane_death.remember(tmp_path, earlier, None, 4)
+    assert not facts(None).pane_exits
+    actor = SimpleNamespace(log=lambda event, **fields: servicectl.append_log(tmp_path, event, **fields))
+    Service.pane_died(actor, seat, pane, launch)
+    assert unknown in facts(None).line()
+    Service.pane_died(actor, seat, replace(pane, exit_status=7), launch)
+    assert 'worker: pane died at unknown time; exit status 7' in facts(None).line()
+    assert 'worker: pane died at unknown time; exit status 7' in facts(pane).line()
+    marker = tmp_path / pane_death.FILE
+    marker.write_bytes(marker.read_bytes() + b' ' * pane_death.LIMIT)
+    assert not facts(None).pane_exits
+    pane_death.remember(tmp_path, launch, None, 7)
+    seat.retiring = lambda: {'pid': pane.pid}
+    assert not facts(None).pane_exits
+    seat.retiring = lambda: None
+    assert not facts(replace(pane, dead=False)).pane_exits
+    seat.spec.up = False
+    assert not facts(None).pane_exits

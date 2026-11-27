@@ -1,7 +1,7 @@
 """Final status output uses one display-column budget."""
 
 from dataclasses import fields, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 from types import SimpleNamespace
 
@@ -111,6 +111,32 @@ def test_crowded_independent_collection_keeps_its_provenance_and_shortens_the_le
         'service busy: main loop stuck', 'collected here', 'copy warning', '50 need human', 'qd status')
     assert items[:3] == ['1 seat held', '1 sign-in failure', '1 login needed']
     assert any(item.startswith('+') and item.endswith(' more') for item in items)
+    assert headlines.columns(line) <= headlines.WIDTH
+
+
+def test_three_dead_panes_keep_time_and_exit_status_with_disk_and_waiting_alerts():
+    when = '2026-11-27T06:00:00-08:00'
+    exits = {'desk': (datetime.fromisoformat(when), 0),
+             'worker1': (datetime.fromisoformat(when), 7), 'captain': (None, None)}
+    facts = watch.Facts('ok', 2, 7, 0, disks=[('/', 94)], pane_exits=exits)
+    headline = headlines.recover_document(json.loads(json.dumps(headlines.cache_document(facts))))
+    line = headlines.render(headline)
+    assert line == facts.line()
+    assert 'pane died: desk 06:00:00 exit 0, worker1 06:00:00 exit 7, captain time unknown exit unknown' in line
+    assert 'disk: / 94%' in line and '2 waiting, oldest 7m' in line
+    assert headlines.columns(line) <= headlines.WIDTH
+    details = '\n'.join(headlines.details(facts))
+    assert f'desk: pane died at {when}; exit status 0' in details
+    assert f'worker1: pane died at {when}; exit status 7' in details
+    assert 'captain: pane died at unknown time; exit status unknown' in details
+
+
+def test_dead_pane_names_remain_when_the_time_and_status_list_outgrows_the_line():
+    exits = dict.fromkeys(('captain', 'builder', 'office', 'worker1', 'worker8', 'operator'), (None, None))
+    facts = watch.Facts('ok', 0, 0, 0, pane_exits=exits)
+    headline = headlines.recover_document(json.loads(json.dumps(headlines.cache_document(facts))))
+    line = headlines.render(headline)
+    assert 'pane died: captain, builder, office, worker1, worker8, operator' in line
     assert headlines.columns(line) <= headlines.WIDTH
 
 

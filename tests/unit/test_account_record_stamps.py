@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck.ledger import Ledger
-from quarterdeck import record_owner
+from quarterdeck import pane_death, record_owner, watch
 from quarterdeck.harness import reader_stamp
 from quarterdeck.post import Message
+from quarterdeck.tmux import Pane
 from tests.unit.test_ledger_pass_boundaries import AT, world, turn, writes
 
 
@@ -42,6 +43,37 @@ def test_second_start_reads_no_unchanged_turns_and_writes_nothing(tmp_path, monk
 def _launch(at, pool='synthetic-pool-q'):
     return SimpleNamespace(at=at, pool=pool, harness='fake', price=None, pane='%1', pid=1,
                            resume=None, argv=['fake'], version=None)
+
+
+def test_failed_pane_death_marker_keeps_accounting_and_retries(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch)
+    launch = _launch(AT.isoformat())
+    pane = Pane(launch.pane, 'Crew', 'dead-worker', launch.pid, 80, 24, False, True, 7, int(AT.timestamp()))
+    seat = SimpleNamespace(name='dead-worker', trusted=w.seat.trusted.with_name('dead-worker'),
+                           spec=SimpleNamespace(up=True), session=w.seat.session, retiring=lambda: None,
+                           pane=lambda: pane, launched=lambda: launch, record=lambda: None)
+    marker = seat.trusted / pane_death.FILE
+    marker.mkdir(parents=True)  # a directory at the marker path prevents replacement
+    reading = SimpleNamespace(selected=[seat], contexts={seat.name: {'launched': launch}})
+    sources = {seat.name: [], w.seat.name: list(w.owned.values())}
+    w.svc.resolved_seats = lambda: [seat, w.seat]
+
+    try:
+        w.svc.account_records(source_records=sources)
+        assert w.svc.ledger.ingested(w.paths[0]) == 1
+        assert watch._pane_exits(reading, {seat.name: pane}) == {seat.name: (AT, 7)}
+        assert not watch._pane_exits(reading, {})
+
+        w.svc.account_records(source_records=sources)
+        marker.rmdir()
+        w.svc.account_records(source_records=sources)
+        assert watch._pane_exits(reading, {}) == {seat.name: (AT, 7)}
+        (death,) = [fields for event, fields in w.logs if event == 'pane-dead']
+        assert death['seat'] == seat.name and death['status'] == 7
+        (error,) = [fields for event, fields in w.logs if event == 'error']
+        assert error['step'] == 'pane-death' and error['seat'] == seat.name and pane_death.FILE in error['error']
+    finally:
+        w.svc.ledger.close()
 
 
 def _rows(db, table):

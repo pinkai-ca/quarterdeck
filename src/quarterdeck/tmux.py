@@ -91,6 +91,13 @@ class Pane:
     exit_status: int | None
     dead_time: int | None = None  # when the pane's program died, in whole seconds since the epoch, as tmux reports it
 
+    @property
+    def died_at(self) -> datetime | None:
+        try:
+            return datetime.fromtimestamp(self.dead_time).astimezone() if self.dead_time is not None else None
+        except (OverflowError, OSError, ValueError):
+            return None
+
 
 @dataclass(frozen=True)
 class ControlFrame:
@@ -619,9 +626,10 @@ class Tmux:
             raise
 
     def new_window(
-        self, session: str, name: str, cwd: Path, command: list[str], env: dict[str, str] | None = None
+        self, session: str, name: str, cwd: Path, command: list[str], env: dict[str, str] | None = None,
+        *, retain_clean_exit: bool = False,
     ) -> Pane:
-        """Open ``command`` in a new window of ``session``; the window stays when it fails.
+        """Open ``command`` in a new window of ``session`` and retain failed exits, or all exits when requested.
 
         tmux runs the command through the user's login shell, whose profile resets PATH,
         so a PATH the program needs travels in the command itself, and every other
@@ -638,7 +646,7 @@ class Tmux:
             args += ["-e", f"{key}={value}"]
         # Prepare a blocking pane before running a command that may exit immediately.
         pane = _parse(self._invoke(*args, "cat").rstrip("\n"))
-        self._invoke("set-option", "-w", "-t", pane.id, "remain-on-exit", "failed")
+        self._invoke("set-option", "-w", "-t", pane.id, "remain-on-exit", "on" if retain_clean_exit else "failed")
         args = []
         if size is not None:
             # Sized while only the placeholder runs, before the command can draw or the door read it.

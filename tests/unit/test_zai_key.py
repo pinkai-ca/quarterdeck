@@ -427,7 +427,7 @@ def test_zai_opencode_normal_launch_records_the_route_for_wall_admission(tmp_pat
     monkeypatch.setattr(Seat, '_survives', lambda *a: None)
     monkeypatch.setattr(seatmod.shutil, 'which', lambda *a, **kw: '/usr/bin/sh')
 
-    def new_window(title, display, cwd, argv, env):
+    def new_window(title, display, cwd, argv, env, *, retain_clean_exit):
         assert env['npm_config_offline'] == 'true'
         assert env['OPENCODE_DISABLE_PROJECT_CONFIG'] == '1'
         assert env['OPENCODE_DISABLE_LSP_DOWNLOAD'] == env['OPENCODE_DISABLE_DEFAULT_PLUGINS'] == '1'

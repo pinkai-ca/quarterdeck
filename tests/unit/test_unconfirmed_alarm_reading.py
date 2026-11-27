@@ -299,7 +299,7 @@ def test_watch_keeps_standing_hold_after_notification_and_restart(alarm, monkeyp
     monkeypatch.setattr(fleet_post, 'status', lambda *args: [])
 
     monkeypatch.setattr(watch, 'seats', lambda *args: [alarm.seat])
-    monkeypatch.setattr(watch, 'limit_state', lambda *args: ([], [], []))
+    monkeypatch.setattr(watch, 'limit_state', lambda *args, panes=None: ([], [], []))
     monkeypatch.setattr(watch, 'Door', lambda seat: SimpleNamespace(
         human_obstruction=lambda: (Reading(True), None)))
     monkeypatch.setattr(turn_failure, 'obstruction', lambda *args: None)

@@ -163,6 +163,7 @@ The modules that the framework table does not list, the module of each part amon
 | `resting_failover.py` | exceptional automatic subscription moves, proven usage eligibility and durable per-generation launch claims |
 | `unit_hold.py` | read-only systemd user unit and timer evidence for the ship's optional resting subscription hold |
 | `order_attribution.py` | the order a turn is charged to, from reply threads and timestamped evidence, never from prose |
+| `pane_death.py` | a bounded, read-only status reading of the death evidence the service keeps for an exact pane launch |
 | `pane_obstruction.py` | one small marker that names why the door held a paste, such as a pane too short |
 | `pending_lifecycle.py` | journal retirement by the journal's writer, and the last exact join of a retiring launch |
 | `person_quiet.py` | a human seat's quiet time, from the seat's record, and one wake per readiness |

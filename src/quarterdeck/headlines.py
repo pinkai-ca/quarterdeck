@@ -51,6 +51,26 @@ def _waiting(facts):
     return group
 
 
+def _pane_exits(exits, *, detailed):
+    items = []
+    for name, (when, status) in exits.items():
+        died = when.isoformat(timespec='seconds') if when is not None else 'unknown time'
+        exit_status = status if status is not None else 'unknown'
+        items.append(f'{name}: pane died at {died}; exit status {exit_status}')
+    group = _named(items, 'dead panes', singular='dead pane')
+    if detailed or not exits:
+        return group
+    short = []
+    for name, (when, status) in exits.items():
+        time = when.strftime('%H:%M:%S') if when is not None else 'time unknown'
+        exit_status = status if status is not None else 'unknown'
+        short.append(f'{name} {time} exit {exit_status}')
+    compact = _plain(f'pane died: {", ".join(short)}')
+    if len(exits) == 1:
+        return group._replace(fallback=compact)
+    return group._replace(details=(compact,), fallback=_plain(f'pane died: {", ".join(exits)}'))
+
+
 def note(text, summary):
     return Group((_plain(text),), summary, 1)
 
@@ -112,6 +132,7 @@ def sections(facts, *, detailed=False) -> Headline:
     resting, other_relaunches = _relaunch_holds(facts.relaunches)
     immediate = (
         humans,
+        _pane_exits(facts.pane_exits, detailed=detailed),
         _named(seat_holds, 'seats held', singular='seat held'),
         *resting,
         _named(facts.sign_in_failures, 'sign-in failures', singular='sign-in failure'),

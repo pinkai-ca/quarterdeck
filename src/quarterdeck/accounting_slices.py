@@ -365,7 +365,7 @@ class Driver:
             with guard('accounting', seat) if guard is not None else nullcontext():
                 pane, launch = seat.pane(), seat.launched()
                 if pane is not None and pane.dead:
-                    service.pane_died(seat, pane)
+                    service.pane_died(seat, pane, launch)
                     pane = None
                 record = seat.record()
                 sources = [(str(item.path), item.name, item.reason, item.transient) for item in record_owner.records(seat)]

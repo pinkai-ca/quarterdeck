@@ -29,7 +29,7 @@ from . import resting_failover
 from .seat import SEAT_HOLDS, Seat, SelectionChanging, UnresolvedSeat, launch_pool_refusal, leftover_seats, seats
 from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
-from .tmux import Tmux, TmuxError
+from .tmux import Pane, Tmux, TmuxError
 from .usage_cache import MISSING, parse, skipped_access_read
 
 STALL_SECONDS = 600
@@ -669,6 +669,7 @@ class Facts:
     release_failures: list[str] = field(default_factory=list)
     credential_recoveries: list[str] = field(default_factory=list)
     release_notices: list[str] = field(default_factory=list)
+    pane_exits: dict[str, tuple[datetime | None, int | None]] = field(default_factory=dict)
 
     def line(self) -> str:  # law: nothing-waits-silently
         from .headlines import status_line
@@ -837,17 +838,24 @@ def _launch_reads(seat: Seat) -> bool:
         return False
 
 
-def _readable_up(seat: Seat) -> bool:
+def _readable_up(seat: Seat, panes: dict[str, Pane | None] | None = None) -> bool:
     """Up by its launch record; a record refused is not up here, and the seat's own line names the refusal."""
     try:
-        return seat.is_up
+        if panes is None:
+            return seat.is_up
+        pane = panes[seat.name] = seat.pane()
+        return pane is not None and not pane.dead
     except ShipError:
         return False
+    except (TmuxError, OSError):
+        if panes is None:
+            raise
+        return False  # the layout's pane-exit reading can still use a recorded death
 
 
-def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat], *, show_moves=True):
+def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat], *, show_moves=True, panes=None):
     """Up seats at a limit with no eligible destination in the recorded evidence."""
-    up = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and _readable_up(seat)]
+    up = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and _readable_up(seat, panes)]
     if not up:
         return [], [], []
     try:
@@ -1264,6 +1272,34 @@ def _record_bounds(ship, seats):
     return record_file.alarms(seats, owned=human_wake.owned_record)
 
 
+def _pane_exits(reading: Collection, panes: dict[str, Pane | None]) -> dict[str, tuple[datetime | None, int | None]]:
+    """Use launch and tmux metadata for both layouts, without opening records or screens."""
+    from . import pane_death
+
+    known = {}
+    for seat in reading.selected:
+        launch = reading.contexts[seat.name].get('launched')
+        if launch is None or not seat.spec.up:
+            continue
+        pane = panes.get(seat.name)
+        if pane is not None and (pane.id, pane.pid) != (launch.pane, launch.pid):
+            continue  # the pane came from a different launch than the one collected
+        if pane is not None and not pane.dead:
+            continue
+        if (seat.retiring() or {}).get('pid') == launch.pid:
+            continue  # a planned close left a retirement bound to this launch
+        when, status = (pane.died_at, pane.exit_status) if pane is not None else (None, None)
+        if when is None or status is None:
+            if (saved := pane_death.reading(seat.trusted, launch)) is not None:
+                seen_at, seen_status = saved
+                when = when if when is not None else seen_at
+                status = status if status is not None else seen_status
+            elif pane is None:
+                continue  # missing evidence cannot establish a death
+        known[seat.name] = (when, status)
+    return known
+
+
 @post.reading_pass()
 @reading_scope.reading_pass()
 def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
@@ -1274,7 +1310,8 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
     selected = seats(ship, tmux, False)
     # Seats whose launch record reads: a refused record holds its seat alone, said by that seat's own line.
     readable = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and _launch_reads(seat)]
-    held, limit_unknown, move_reasons = limit_state(ship, selected)
+    panes = {}
+    held, limit_unknown, move_reasons = limit_state(ship, selected, panes=panes)
     reading = Collection(ship, tmux, selected, readable, {}, {}, prefix=dict(pending=list(limit_unknown),
                       seat_holds=service_holds(ship.runtime)), suffix={}, slow={}, request_rows=request_rows)
     for seat in selected:
@@ -1300,6 +1337,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
     fields = _post_fields(ship, store, attempts, post_held, records, latest, lists['waiting'], reading)
     forecasts = [forecast for forecast in usage_forecast.readings(ship, now, wall_state=True) if forecast.warning]
     reading.slow = dict(
+        pane_exits=_pane_exits(reading, panes),
         pool_forecasts=[forecast.describe() for forecast in forecasts],
         pool_forecast_headlines=[forecast.headline() for forecast in forecasts if not forecast.at_wall],
         manual_fresh=compaction_alert.unrouted(ship, readable),

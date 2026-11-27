@@ -2216,17 +2216,41 @@ class Service:
         self.work_marks[seat.name] = mark
         return state.turn_open
 
-    def pane_died(self, seat: Seat, pane) -> None:
-        """Log death from the pane already read; log again when a pending exit status becomes known."""
+    def pane_died(self, seat: Seat, pane, launch=None) -> None:
+        """Retain death from the pane already read and fill in facts that become known later."""
+        from . import pane_death
+
         logged = self.__dict__.setdefault("dead_panes", {})
-        identity = (pane.id, pane.pid)
+        stamp = (launch.at if launch is not None and (launch.pane, launch.pid) == (pane.id, pane.pid) else None)
+        identity = (pane.id, pane.pid, stamp)
         previous = logged.get(seat.name)
-        if previous is not None and previous[:2] == identity and (previous[2] or pane.exit_status is None):
+        when, status = pane.died_at, pane.exit_status
+        if previous is not None and previous[0] == identity:
+            when = when if when is not None else previous[1]
+            status = status if status is not None else previous[2]
+        observed = (identity, when, status)
+        if observed != previous:
+            died = when.isoformat(timespec='seconds') if when is not None else None
+            binding = {'launch_at': stamp} if stamp is not None else {}
+            self.log("pane-dead", seat=seat.name, pane=pane.id, pid=pane.pid, died=died, status=status, **binding)
+            logged[seat.name] = observed
+
+        errors = self.__dict__.setdefault('pane_death_errors', {})
+        if stamp is None or not seat.spec.up:
+            errors.pop(seat.name, None)
             return
-        died = (datetime.fromtimestamp(pane.dead_time).astimezone().isoformat(timespec="seconds")
-                if pane.dead_time is not None else None)
-        self.log("pane-dead", seat=seat.name, pane=pane.id, pid=pane.pid, died=died, status=pane.exit_status)
-        logged[seat.name] = (*identity, pane.exit_status is not None)
+        if observed == previous and seat.name not in errors:
+            return
+        try:
+            pane_death.remember(seat.trusted, launch, when, status)
+        except OSError as error:
+            # A seat's marker is supplemental evidence. Retry on the next observation without relogging the death.
+            reason = f'could not save {pane_death.FILE}: {error.strerror or error}'
+            if errors.get(seat.name) != reason:
+                errors[seat.name] = reason
+                self.log('error', step='pane-death', seat=seat.name, error=reason)
+        else:
+            errors.pop(seat.name, None)
 
     def looks(self) -> None:
         """The door's one look at what it could not confirm (law: one-door): record first, then the screen.
@@ -2583,7 +2607,7 @@ class Service:
             Service.seat_hold(self, 'account_records', seat, None)
             live = pane is not None and not pane.dead
             if pane is not None and pane.dead:
-                self.pane_died(seat, pane)
+                self.pane_died(seat, pane, launched)
             current = seat.record()
             prepared = self.ledger.provenance.prepare(seat, current, launched)
             meter = meters.get(seat.name)
