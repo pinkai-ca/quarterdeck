@@ -8,7 +8,8 @@ import secrets
 import stat
 import time
 
-from . import durable, human_wake, launch_opening, lifecycle, pending, post, ship_locks, shutdown
+from . import durable, human_wake, launch_opening, lifecycle, pending, post, record_owner, ship_locks, shutdown
+from .harness.capabilities import follow_minimum_size
 from .seat import Seat, read_seat
 from .ship import ShipError, load
 from .tmux import Tmux, TmuxError, WindowGeometry
@@ -342,6 +343,12 @@ class Resize:
         wanted = (launch.pane, launch.pid, launch.at), width, height
         if expected is not None and wanted[0] != expected or self.applied.get(name) == wanted:
             return
+        if minimum := follow_minimum_size(record_owner.launch_reader(launch)):
+            # Keep the requested strip size in wanted. Only the native window gets the floor.
+            min_width, min_height = minimum
+            width = max(width, min_width)
+            if fit:
+                height = max(height, min_height)
         if (previous := self.original.get(name)) and previous.launch != launch.at:
             self._restore(name, previous, attempts)
             if name in self.original:

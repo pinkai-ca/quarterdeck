@@ -33,6 +33,13 @@ def screen_forms(harness: str):
     return None
 
 
+def follow_minimum_size(harness: str | None) -> tuple[int, int] | None:
+    """Optional minimum native pane dimensions for follow's temporary resize."""
+    if harness == "claude":
+        return 80, 24
+    return None
+
+
 @dataclass(frozen=True)
 class SuggestedValue:
     value: str | None

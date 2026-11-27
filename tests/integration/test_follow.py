@@ -85,12 +85,13 @@ def disposable_rig(rig):
 
 
 @contextmanager
-def viewer(ship, *args):
+def viewer(ship, *args, dimensions=(81, 30)):
     command = (sys.executable, '-c', 'from quarterdeck.cli import main; raise SystemExit(main())',
                '--ship', str(ship.folder), 'attach', '--follow', *map(str, args))
     child, terminal = pty.fork()
     if child == 0:
-        fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 81, 0, 0))
+        columns, rows = dimensions
+        fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
         os.execv(sys.executable, command)
     output = bytearray()
     result = None
@@ -195,9 +196,10 @@ def test_resize_and_restore_share_delivery_claim_and_keep_exact_option(rig):
         assert not tmux.resize_owned_window(replace(tmux.window_geometry(crew), pid=crew.pid + 1), 65)
 
 
-def test_live_shaped_view_crops_every_window_and_creates_no_geometry_intent(rig):
+def test_live_shaped_view_crops_every_window_and_creates_no_geometry_intent(rig, capsys):
     ship, tmux, panes = rig
     assert cli.main(['--ship', str(ship.folder), 'attach', '--follow', '--fit']) == 2
+    assert '--fit requires a framework-created throwaway ship' in capsys.readouterr().err
     cast = ship.folder / 'live-shaped.cast'
     with viewer(ship, '--record', cast) as (_, terminal, poll, waited, output):
         wait_for(lambda: poll() is None and b'Maeve' in output and b'worker-1' in output and b'Picard' in output)
@@ -216,12 +218,67 @@ def test_live_shaped_view_crops_every_window_and_creates_no_geometry_intent(rig)
 
 def test_fit_changes_all_selected_disposable_windows(disposable_rig):
     ship, tmux, panes = disposable_rig
-    with viewer(ship, '--fit', 'crew', 'office') as (_, terminal, poll, waited, _):
-        wait_for(lambda: poll() is None and all(size(tmux, pane) == (40, 29) for pane in panes.values()))
+    with viewer(ship, '--fit', 'crew', 'office', dimensions=(81, 20)) as (_, terminal, poll, waited, _):
+        wait_for(lambda: poll() is None and all(size(tmux, pane) == (40, 19) for pane in panes.values()))
         os.write(terminal, b'q')
         result, output = waited()
         assert result == 0, output
     assert all(size(tmux, pane) == (130, 42) for pane in panes.values())
+
+
+def test_follow_floors_native_claude_geometry_for_human_and_alternate_seats(rig):
+    ship, tmux, panes = rig
+    declaration = shipmod.edit(ship.file.read_text(), 'pools.claude', 'provider', 'anthropic')
+    declaration = shipmod.edit(declaration, 'seats.desk', 'harness', 'claude')
+    declaration = shipmod.edit(declaration, 'seats.desk', 'pool', 'claude')
+    route = dict(pool='claude', harness='claude', model='synthetic-model')
+    declaration = shipmod.edit(declaration, 'seats.worker-1', 'pool', ['fake', route])
+    ship.file.write_text(declaration)
+    for name in panes:
+        reader = seat.Seat(ship, ship.seats[name], tmux)
+        launch = reader.launched()
+        replace(launch, pool='claude', harness='claude').write(reader.trusted / trusted_files.LAUNCH)
+    ship = shipmod.load(ship.folder)
+    for name in panes:
+        assert seat.read_seat(ship, ship.seats[name], tmux).spec.harness == 'claude'
+    assert ship.seats['worker-1'].harness == 'fake' and ship.session_of(ship.seats['desk']).human
+    mark(rig)
+    crew = panes['worker-1']
+    original = tmux.window_geometry(crew)
+    with follow_geometry.lease(ship.runtime):
+        resize = follow_geometry.Resize(ship, tmux)
+        resize.apply({'worker-1': (40, None), 'desk': (40, None)})
+        assert size(tmux, crew) == (80, 42)
+        assert size(tmux, panes['desk']) == (130, 42)
+        assert resize.restore() == ()
+        assert tmux.window_geometry(crew) == original
+
+        tmux.run('resize-window', '-t', crew.id, '-x', '70')
+        narrow = tmux.window_geometry(crew)
+        resize.apply({'worker-1': (40, None)})
+        assert tmux.window_geometry(crew) == narrow
+        assert not resize.original
+        tmux.run('resize-window', '-t', crew.id, '-x', '130')
+        tmux.run('set-option', '-wu', '-t', crew.id, 'window-size')
+
+    cast = ship.folder / 'fitted.cast'
+    with running_service(ship):
+        with viewer(ship, '--record', cast, '--fit', 'crew', 'office',
+                    dimensions=(81, 20)) as (_, terminal, poll, waited, output):
+            def at_size(expected):
+                assert poll() is None, output.decode(errors='replace')
+                return all(size(tmux, pane) == expected for pane in panes.values())
+
+            wait_for(lambda: at_size((80, 24)))
+            fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 201, 0, 0))
+            wait_for(lambda: at_size((100, 29)))
+            os.write(terminal, b'q')
+            result, output = waited()
+            assert result == 0, output
+        assert all(size(tmux, pane) == (130, 42) for pane in panes.values())
+        assert not follow_geometry.journal_path(ship.runtime).exists()
+    header = json.loads(cast.read_text().splitlines()[0])
+    assert (header['width'], header['height']) == (81, 20)
 
 
 def test_restore_a_retained_window_after_its_program_exits(rig):
