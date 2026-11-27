@@ -7,9 +7,11 @@ done and how it was confirmed, and every refusal names the reason and what would
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
+import signal
 import sqlite3
 import sys
 from collections import Counter
@@ -47,8 +49,9 @@ def _main(argv: list[str] | None) -> int:
         completed_error(f'qd: {error}')
         return 2
     parser = build_parser()
-    if desk_request.candidate(argv):
-        return cmd_desk_request(parser, argv)
+    argv = desk_request.help_flag(argv)
+    if (request := desk_request.candidate(argv)) is not None:
+        return cmd_desk_request(parser, argv, request)
     args = parser.parse_args(argv)
     if not hasattr(args, "run"):
         parser.print_help()
@@ -81,10 +84,10 @@ def _main(argv: list[str] | None) -> int:
     return status
 
 
-def completed_error(text):
+def completed_error(text, *, flush=False):
     """The command already refused; an unavailable diagnostic pipe cannot alter that."""
     try:
-        print(text, file=sys.stderr)
+        print(text, file=sys.stderr, flush=flush)
     except BrokenPipeError:
         closed_pipe.silence('stderr')
 
@@ -92,6 +95,7 @@ def completed_error(text):
 # The invoking copy reads these declarations before exec.
 DEFAULT_HANDOFF = "default-label-v1"
 DESK_REQUEST_HANDOFF = "desk-request-v1"
+TERMINAL_REPLIES_HANDOFF = "terminal-replies-v2"
 HANDED = copy_state.DEFAULT_SHIP_ENV
 
 
@@ -147,12 +151,18 @@ def emit(args: argparse.Namespace, result: Any, *, completed_act: bool = False, 
 
 
 class MainParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        if message.startswith('argument <verb>: invalid choice:'):
+            message += '\n' + desk_request.QUOTE_HINT
+        super().error(message)
+
     def format_help(self) -> str:
-        return 'Send a request to the desk with qd "a sentence" or echo text | qd\n' + super().format_help()
+        return 'Send a request with qd "a sentence", echo text | qd, qd -t SEAT, or qd -n\n' + super().format_help()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = MainParser(prog="qd", description=__doc__.split("\n\n")[0], epilog=desk_request.help_text())
+    parser = MainParser(prog="qd", description=__doc__.split("\n\n")[0], epilog=desk_request.help_text(),
+                        formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
     parser.add_argument("--ship", help="the ship folder (default: $QD_SHIP, else the default ship: qd default)")
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     parser.add_argument("--version", action="version", version=f"qd {__version__}")
@@ -1040,19 +1050,24 @@ def cmd_watch(args: argparse.Namespace) -> Reading | str:
 # -- post --------------------------------------------------------------------------------
 
 
-def cmd_desk_request(parser: argparse.ArgumentParser, argv: list[str]) -> int:
-    from . import post_sender
+def cmd_desk_request(parser: argparse.ArgumentParser, argv: list[str], request: desk_request.Request) -> int:
+    from . import fleet_post, forward_post, post_index, post_sender
+
+    exits = desk_request.EXIT
+    if request.error:
+        parser.error(request.error)
 
     def help_only():
         parser.print_help()
-        return 0
+        return exits['filed']
 
+    filed = False
     try:
         if seat := os.environ.get('QD_SEAT'):
             if not argv:
                 return help_only()
             raise ShipError(f'this shell is seat {seat}; use qd post order --to <seat> "your request" to post as yourself')
-        origin, refusal, scoped = desk_request.origin()
+        origin, refusal, scoped = desk_request.origin(request.ship)
         if origin is not None and (session := post_sender.seat_session(origin)) is not None:  # law: identity
             if not argv:
                 return help_only()
@@ -1063,46 +1078,120 @@ def cmd_desk_request(parser: argparse.ArgumentParser, argv: list[str]) -> int:
             handoff_env = {copy_state.DESK_REQUEST_ENTRY_ENV: qd}
             if scoped:
                 handoff_env[copy_state.DESK_REQUEST_SCOPE_ENV] = str(origin.folder)
-            install.handoff(origin.folder, argv, desk_request=handoff_env)
+            install.handoff(origin.folder, argv, desk_request=handoff_env, terminal_replies=True)
 
-        sentence = argv[0].strip() if argv else ''
+        sentence = request.sentence if request.sentence.strip() else ''
         try:
             stdin, initial_timeout = desk_request.read_stdin(sys.stdin)
         except KeyboardInterrupt:
-            completed_error('qd: interrupted while reading stdin')
-            return 130
-        if initial_timeout:
-            completed_error(f'qd: stdin gave no byte or EOF within {desk_request.FIRST_INPUT_SECONDS} seconds. '
-                            'Close the pipe or redirect a complete file.')
+            completed_error('qd: interrupted while reading stdin', flush=True)
+            return exits['interrupt']
+        if initial_timeout and sentence:
+            raise ShipError(f'stdin gave no byte or EOF within {desk_request.FIRST_INPUT_SECONDS} seconds; '
+                            'close the pipe or redirect a complete file')
         attachment = stdin if stdin.strip() else ''
         if not sentence and not attachment:
+            if request.explicit or initial_timeout or desk_request.stdin_is_input(sys.stdin):
+                raise ShipError('nothing to send')
             return help_only()
         if refusal is not None:
             raise refusal
 
-        destination, desk = desk_request.destination(origin)
-        address = f'{desk}@{destination.folder.name}'
-        to = desk if origin.folder == destination.folder else address
+        if request.to is None:
+            selected, recipient = desk_request.destination(origin)
+            to = recipient if selected.folder == origin.folder else f'{recipient}@{selected.folder.name}'
+        else:
+            recipient, target = fleet_post.address(request.to, origin.folder.name)
+            selected = desk_request.addressed_ship(origin, target)
+            if recipient in selected.groups:
+                raise ShipError(f'group {request.to}: use qd post order --to {request.to}')
+            to = post_target(origin, request.to)
+            recipient, _ = fleet_post.address(to, origin.folder.name)
+
+        destination = selected
+        if recipient in selected.forward:
+            target = forward_post.resolve(origin, f'{recipient}@{selected.folder.name}')[-1]
+            recipient, ship_name = fleet_post.address(target, origin.folder.name)
+            destination = desk_request.addressed_ship(origin, ship_name)
+        address = f'{recipient}@{destination.folder.name}'
+
+        if not request.no_wait:
+            required = {ship.folder: ship for ship in (origin, selected, destination)}
+            down = [ship for ship in required.values() if not service.alive(ship.runtime)]
+            if down:
+                services = [f'the {ship.folder.name} service; start it with '
+                            f'{desk_request.shell_command(qd, ship.folder, "up")}' for ship in down]
+                raise ShipError(f'delivery waits for {"; ".join(services)}')
+
         body = desk_request.body(sentence, attachment)
         shipmod.fence(origin)
         store = post.Store(origin.runtime)
         sender = this_seat(origin, None, operator_too=True)
-        with post.reading_pass(store=store):
-            message = store.prepare('order', sender, to, body)
+        with post_index.MessageIndex(store) as index:
+            try:
+                message = store.prepare('order', sender, to, body, short_taken=index.has_short)
+            except post_index.IndexUnavailable:
+                message = store.prepare('order', sender, to, body)
         scope = origin.folder if scoped else None
-        inbox = desk_request.shell_command(qd, scope, 'inbox', '--wait')
-        if service.alive(origin.runtime):
-            proof = f'Posted {message.id} to {address}'
-        else:
-            start = desk_request.shell_command(qd, scope, 'up')
-            proof = (f'Filed {message.id} for {address} · delivery waits for the {origin.folder.name} service '
-                     f'· start it with {start}')
-        post.write_drop(origin.runtime, message, seat=sender, bounded=True)  # law: can-post
-        output.emit(f'{proof} · see the reply with {inbox}', completed_act=True)
-        return 0
-    except (ShipError, OSError) as error:
-        completed_error(f'qd: {error}')
-        return 2
+        inbox = desk_request.shell_command(qd, scope, 'inbox')
+        where = 'the reply will be in qd inbox' + (f'; use {inbox}' if scope is not None else '')
+
+        # A pending Ctrl-C after the atomic drop belongs to the filed order.
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        try:
+            post.write_drop(origin.runtime, message, seat=sender, bounded=True)  # law: can-post
+            filed = True
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+        if request.no_wait:
+            result = json.dumps({'id': message.id}) if request.json else message.id
+            desk_request.write_stdout(sys.stdout, result)
+            return exits['filed']
+
+        completed_error(f'sent to {address} ({message.id}); waiting for the reply', flush=True)
+        reply_sender = recipient if destination.folder == origin.folder else address
+        reply = desk_request.wait_for_reply(store, message, sender, reply_sender, sys.stdout)
+        desk_request.write_stdout(sys.stdout, desk_request.reply_text(reply, json_output=request.json))
+        desk_request.mark_printed(origin.runtime, sender, reply)
+        if reply.kind == 'question':
+            completed_error(f'question {reply.id} from {address}; qd post answer --re {reply.id} "your answer"',
+                            flush=True)
+        return exits[reply.kind]
+    except KeyboardInterrupt:
+        note = f'stopped waiting for {message.id}; {where}' if filed else 'interrupted while preparing the request'
+        completed_error(f'qd: {note}', flush=True)
+        return exits['interrupt']
+    except BrokenPipeError:
+        closed_pipe.silence('stdout')
+        return exits['broken pipe']
+    except (ShipError, OSError, ValueError, TypeError, KeyError) as error:
+        detail = str(error).replace('\n', ' ')
+        note = f'request {message.id} was filed; {detail}; {where}' if filed else detail
+        completed_error(f'qd: {note}', flush=True)
+        return exits['failed' if filed else 'not sent']
+
+
+def post_target(ship: shipmod.Ship, to: str, *, explain: bool = False) -> str:
+    """Validate a post address, returning its ordinary local or fleet spelling."""
+    from . import fleet_post
+
+    if not to:
+        raise ShipError('address is empty; use seat or seat@ship')
+    if '@' in to:
+        recipient, destination = fleet_post.validate_target(ship, to, explain=explain)
+        if destination != ship.folder.name:
+            return to
+        to = recipient
+    operator = ship.operator.lower()
+    if to.lower() == operator:
+        return operator
+    if to in ship.seats or to in ship.groups or to in getattr(ship, 'forward', {}) or to == post.SHIP:
+        return to
+    reason = f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, the operator {operator}, or {post.SHIP} for the ship's own notices"
+    if explain:
+        reason += '\nProject ship addresses\n' + '\n'.join(fleet_post.project_address_lines(ship, role=to))
+    raise ShipError(reason)
 
 
 def cmd_post(args: argparse.Namespace) -> str:
@@ -1127,33 +1216,16 @@ def cmd_post(args: argparse.Namespace) -> str:
     office_seat = ship.kind == 'office' and seat_here in ship.seats
     # Resolve the reply and reserve its id from one read-only post view. The
     # repeat guard must read drops, then a fresh store view, after this ends.
-    remote = False
     with post.reading_pass(store=store):
         to = args.to or (store.get(args.re).sender if args.re else None)
         if not to:
             raise ShipError(f"a {args.kind} needs --to <seat>" + (" or --re <message>" if args.kind != "order" else ""))
-        if '@' in to:
-            from . import fleet_post
-            recipient, destination = fleet_post.validate_target(ship, to, explain=office_seat)
-            if destination == ship.folder.name:
-                to = recipient
-            else:
-                remote = True
-        if not remote:
-            if to.lower() == ship.operator.lower():
-                to = ship.operator.lower()
-            if to in ship.groups:
-                if args.kind != 'order':
-                    raise ShipError(f'group {to}: {args.kind} is unsupported; groups accept orders only for now')
-            elif to not in ship.seats and to not in getattr(ship, 'forward', {}) and to not in (ship.operator.lower(), post.SHIP):
-                reason = (f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
-                          f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
-                if office_seat:
-                    from .fleet_post import project_address_lines
-
-                    reason += '\nProject ship addresses\n' + '\n'.join(project_address_lines(ship, role=to))
-                raise ShipError(reason)
-        message = (None if not remote and to in ship.groups else
+        to = post_target(ship, to, explain=office_seat)
+        remote = '@' in to
+        group = not remote and to in ship.groups
+        if group and args.kind != 'order':
+            raise ShipError(f'group {to}: {args.kind} is unsupported; groups accept orders only for now')
+        message = (None if group else
                    store.prepare(args.kind, sender, to, body, re=args.re, subject=args.subject,
                                  due=args.due, speed=args.speed))
     if remote:
@@ -1302,7 +1374,10 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     if not args.wait:
         # A hand reads only what is open for it, as its inbox file does; --all still prints the whole history.
         open_only = not args.all and role == 'hand'
-        data = post.inbox_reading(post.Store(ship.runtime), seat, recent=not args.all, open_only=open_only)
+        excluded = (desk_request.printed_ids(ship.runtime, seat)
+                    if not args.all and human and seat == ship.operator.lower() else ())
+        data = post.inbox_reading(post.Store(ship.runtime), seat, recent=not args.all, open_only=open_only,
+                                  exclude=excluded)
         if validate is not None:
             validate()
         return Reading(data,
@@ -1310,8 +1385,10 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     if not human:
         raise ShipError(f"{seat} is reached through its door; --wait is for seats in a human's session")
     shipmod.fence(ship)
-    arrived = (post.wait_batch(ship.runtime, seat, validate=validate) if validate is not None
-               else post.wait_batch(ship.runtime, seat))
+    arrived = post.operator_ready(ship.runtime, seat) if seat == ship.operator.lower() else None
+    if arrived is None:
+        arrived = (post.wait_batch(ship.runtime, seat, validate=validate) if validate is not None
+                   else post.wait_batch(ship.runtime, seat))
     if arrived is None:
         return None
     messages, opened = arrived

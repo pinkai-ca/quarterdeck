@@ -14,7 +14,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `cost_evidence.py` | a turn's cost evidence, kept beside the Ledger's turns |
 | `credential.py` | the one link a seat shares with its pool, reseeded and relinked on the tick, never from a jailed seat, a seat on an endpoint pool, or a launch naming a pool not declared for the seat. Directory locking for subscription refreshes across ships. Metadata-only review holds and their audited release |
 | `daily_live.py` | the daily live test: a minimal check of each program the day's readings do not show was used, and one report to the desk |
-| `desk_request.py` | resolves the operator’s desk and reads bounded UTF-8 input for terminal requests |
+| `desk_request.py` | parses terminal requests, resolves the desk, reads bounded UTF-8 input, and finds and receipts replies |
 | `doctor.py` | `qd doctor`, the installation checked and handed to a seat to fix |
 | `endpoint.py` | endpoint pools: what a server serves, the model a seat takes from it, the key beside it |
 | `fakeharness.py` | the entry point installed as `qd-fakeharness`, for the simulator under `harness/` |
@@ -167,6 +167,7 @@ The modules that the framework table does not list, the module of each part amon
 | `pending_lifecycle.py` | journal retirement by the journal's writer, and the last exact join of a retiring launch |
 | `person_quiet.py` | a human seat's quiet time, from the seat's record, and one wake per readiness |
 | `post.py` | Post: orders, reports, questions, answers and acknowledgments as immutable files; the store, the inbox, the attempts and the watch |
+| `post_index.py` | disposable metadata index for exact post references and recipient inboxes |
 | `post_dir.py` | every path under `runtime/post` opened folder by folder, so that a link is refused by name and never followed |
 | `post_message.py` | a message's immutable identity, its JSON and the envelope the message is typed in |
 | `post_reads.py` | the bodies a seat has read whole through `qd thread`: claimed as `thread-reads.json` in its own writable folder only after the thread's complete output, then taken by an unjailed qd (the service's pass, a launch) into a receipt in its trusted folder, dated no later than the take; a receipt settles a read notice without changing any attempt's verdict |

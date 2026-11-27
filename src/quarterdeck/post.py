@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import hashlib
 from heapq import merge
+from collections.abc import Collection
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 import os
@@ -195,7 +196,7 @@ class Store:
                          open_obligation=message.kind in ("order", "question"), imported=imported)
 
     def prepare(self, kind: str, sender: str, to: str, body: str, *, taken: set[str] | None = None,
-                **fields) -> Message:
+                short_taken=None, **fields) -> Message:
         """Construct an immutable intent before publication, without changing its format.
 
         ``taken`` is a filing round's set of shorts (see ``_new_id``); the short chosen here is added to it."""
@@ -208,10 +209,10 @@ class Store:
         from .fleet_post import wire_parties
         sender, to = wire_parties(self.dir.parent.parent, sender, to)
         at = now()
-        message = Message(self._new_id(kind, sender, at, taken=taken), kind, sender, to, at, body, **fields)
+        message = Message(self._new_id(kind, sender, at, taken=taken, short_taken=short_taken), kind, sender, to, at, body, **fields)
         return message
 
-    def _new_id(self, kind: str, sender: str, at: datetime, *, taken: set[str] | None = None) -> str:
+    def _new_id(self, kind: str, sender: str, at: datetime, *, taken: set[str] | None = None, short_taken=None) -> str:
         """A fresh id whose short no stored message and no listed drop holds, in a bounded number of draws.
 
         Avoided: the store's shorts, and either a filing round's ``taken`` (the shorts it has prepared and the
@@ -221,8 +222,9 @@ class Store:
         drop is asked by name for the exact candidate, which no window can miss. After ID_DRAWS draws it
         refuses with a fixed reason; it never spins.
         """
-        avoid = set(self._shorts())
-        avoid.update(window_shorts(self.dir.parent.parent) if taken is None else taken)
+        if short_taken is None:
+            short_taken = self._shorts().__contains__
+        avoid = set(window_shorts(self.dir.parent.parent) if taken is None else taken)
         from .post_view import taken_shorts
         avoid.update(taken_shorts(self.dir.parent))  # inside a jail's view, the shorts other seats' messages hold
         try:
@@ -232,7 +234,7 @@ class Store:
         for _ in range(ID_DRAWS):
             candidate = f"{kind[:3]}-{at.strftime('%Y%m%d-%H%M')}-{sender}-{secrets.token_hex(SHORT_ID_BYTES)}"
             short = short_of(candidate)
-            if short in avoid or (own is not None and not _absent(own / f"{candidate}.json")):
+            if short in avoid or short_taken(short) or (own is not None and not _absent(own / f"{candidate}.json")):
                 continue
             if taken is not None:
                 taken.add(short)
@@ -1352,10 +1354,10 @@ class InboxContext:
 
 
 def inbox_reading(store: Store, seat: str, *, recent: bool = False, open_only: bool = False,
-                  context: InboxContext | None = None) -> dict:
+                  context: InboxContext | None = None, exclude: Collection[str] = ()) -> dict:
     context = InboxContext(store) if context is None else context
     withheld, told = context.refused(seat)
-    messages = [_shown(m, withheld, told, context.sender_seat) for m in store.for_seat(seat)]
+    messages = [_shown(m, withheld, told, context.sender_seat) for m in store.for_seat(seat) if m.id not in exclude]
     if open_only:
         return dict(seat=seat, open=[m for m in messages if store.is_open(m)],
                     received=[], closed_by={}, open_only=True)
@@ -2112,6 +2114,17 @@ def watch_retirement_warning(path: Path, generation: str) -> None:
         print(reason, file=sys.stderr)
     except Exception:
         pass  # preserving the primary return/error takes precedence if stderr also fails
+
+
+def operator_ready(runtime: Path, operator: str) -> tuple[list[Message], list[Attempt]] | None:
+    """Claim mail already waiting for a person's shell without arming a seat's watch."""
+    store, attempts = Store(runtime), Attempts(runtime)
+    with admission(runtime, operator):
+        with reading_pass(store=store, attempts=attempts):
+            messages = attempts.undelivered(store, operator, results=attempts.latest(operator))
+        if not messages:
+            return None
+        return messages, [attempts.open(message, operator, None, None, None) for message in messages]
 
 
 def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None, *, validate=None) -> tuple[list[Message], list[Attempt]] | None:

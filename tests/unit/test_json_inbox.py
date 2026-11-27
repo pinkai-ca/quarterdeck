@@ -159,20 +159,28 @@ def test_wait_batch_rearm_names_a_seat_selected_by_the_operator(inbox, capsys):
     assert capsys.readouterr().out.endswith(qd_command(folder, 'inbox', '--wait', 'desk') + '\n')
 
 
-def test_operator_wait_batch_ends_with_the_reply(inbox, capsys):
+def test_operator_wait_batch_ends_with_the_reply(inbox, capsys, monkeypatch):
     from quarterdeck import ship
 
     folder, store, _ = inbox
     declaration = folder / "ship.toml"
     declaration.write_text(ship.edit(declaration.read_text(), "ship", "operator", "TestOperator"))
     order = store.new("order", "testoperator", "captain", "synthetic work")
+    runtime = folder / "runtime"
+    earlier = store.new("report", "captain", "testoperator", "already printed")
+    attempts = post.Attempts(runtime)
+    attempts.close(attempts.open(earlier, "testoperator", None, None, None), "watch")
     reply = store.new("report", "captain", "testoperator", "finished\nwith details", re=order.id)
+
+    def must_not_wait(*args, **kwargs):
+        raise AssertionError("operator already had an unprinted reply")
+
+    monkeypatch.setattr(post, "wait_batch", must_not_wait)
 
     assert cli.main(["--ship", str(folder), "inbox", "--wait"]) == 0
     assert capsys.readouterr().out == post.typed([reply])
-    runtime = folder / "runtime"
-    assert [(a.message, a.result) for a in post.Attempts(runtime).all()] == [(reply.id, "watch")]
     assert not post.watch_file(runtime, "testoperator").exists()
+    assert attempts.latest("testoperator") == {earlier.id: "watch", reply.id: "watch"}
 
 
 def test_human_session_wait_batch_keeps_the_full_rearm_instruction(inbox, capsys, monkeypatch):

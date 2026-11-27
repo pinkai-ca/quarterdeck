@@ -122,12 +122,16 @@ def running_from(bin_dir: Path) -> bool:
     return Path(sys.executable).parent.resolve() == bin_dir.resolve()
 
 
-def handoff(folder: Path, argv: list[str], *, desk_request: dict[str, str] | None = None) -> None:
+def handoff(folder: Path, argv: list[str], *, desk_request: dict[str, str] | None = None,
+            terminal_replies: bool = False) -> None:
     selected = copy_state.select(folder)
-    if desk_request is not None and (selected.qd is None or not copy_state.supports_desk_request(selected.qd)):
-        return  # a copy older than the shortcut can still read the ordinary order
+    if desk_request is not None:
+        supports = copy_state.supports_terminal_replies if terminal_replies else copy_state.supports_desk_request
+        if selected.qd is None or not supports(selected.qd):
+            return  # an older copy can file an ordinary order without knowing how to wait and print its reply
     if selected.warning:
-        print(f'qd: {selected.warning}; continuing with this qd', file=sys.stderr)
+        if not terminal_replies:
+            print(f'qd: {selected.warning}; continuing with this qd', file=sys.stderr)
     elif selected.qd is not None and not running_from(selected.qd.parent):
         if os.environ.get(copy_state.DEFAULT_SHIP_ENV) == str(folder) and not copy_state.supports_default_annotation(
                 selected.qd):
@@ -142,8 +146,9 @@ def handoff(folder: Path, argv: list[str], *, desk_request: dict[str, str] | Non
             else:
                 os.execv(command[0], command)
         except OSError:
-            print('qd: installed copy could not start; continuing with this qd; '
-                  'use qd sync from the checkout or qd doctor', file=sys.stderr)
+            if not terminal_replies:
+                print('qd: installed copy could not start; continuing with this qd; '
+                      'use qd sync from the checkout or qd doctor', file=sys.stderr)
 
 
 def installed(runtime: Path) -> dict | None:

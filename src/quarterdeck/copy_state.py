@@ -176,6 +176,10 @@ def supports_desk_request(qd: Path) -> bool:
     return _cli_declares(qd, 'DESK_REQUEST_HANDOFF', 'desk-request-v1')
 
 
+def supports_terminal_replies(qd: Path) -> bool:
+    return _cli_declares(qd, 'TERMINAL_REPLIES_HANDOFF', 'terminal-replies-v2')
+
+
 def _cli_declares(qd: Path, name: str, value: str) -> bool:
     """Read the selected copy's static declaration without importing it."""
     import ast

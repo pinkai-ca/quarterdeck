@@ -460,20 +460,18 @@ def test_desk_request_installed_copy_and_operator_reply_round_trip(project, tmp_
     env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}
     ordinary_shell = tmp_path / "small project"
     ordinary_shell.mkdir()
-    result = subprocess.run(["qd", "Review this file"], input="the attachment\n", cwd=ordinary_shell,
+    result = subprocess.run(["qd", "-n", "Review this file"], input="the attachment\n", cwd=ordinary_shell,
                             env=env, capture_output=True, text=True, check=True)
-    assert result.stderr == '' and len(result.stdout.splitlines()) == 1
-    proof, command = result.stdout.strip().rsplit(" · see the reply with ", 1)
+    assert len(result.stdout.splitlines()) == 1
     flags = ["--ship", str(office)] if layout == 'office-only' else []
-    assert shlex.split(command) == ["qd", *flags, "inbox", "--wait"]
+    command = ["qd", *flags, "inbox", "--wait"]
 
     source, destination = shipmod.load(origin), shipmod.load(desk_folder)
     store, desk_store = post.Store(source.runtime), post.Store(destination.runtime)
     assert post.file_drops(store) == []
     order, = store.all()
-    assert proof.startswith(
-        f"Filed {order.id} for desk@{desk_folder.name} · delivery waits for the {origin.name} service · ")
-    assert shlex.split(proof.split('start it with ', 1)[1]) == ['qd', *flags, 'up']
+    assert result.stdout == order.id + '\n'
+    assert result.stderr == ''
     assert order.body == f"Working directory: {ordinary_shell}\n\nReview this file\n\nAttached stdin:\nthe attachment\n"
     assert order.subject is None
     if layout == 'separate':
@@ -497,11 +495,42 @@ def test_desk_request_installed_copy_and_operator_reply_round_trip(project, tmp_
             relative = Path('post/store', f'{message.id}.json')
             assert (source.runtime / relative).read_bytes() == (destination.runtime / relative).read_bytes()
 
-    result = subprocess.run(shlex.split(command), stdin=subprocess.DEVNULL, cwd=ordinary_shell,
+    result = subprocess.run(command, stdin=subprocess.DEVNULL, cwd=ordinary_shell,
                             env=env, capture_output=True, text=True, check=True)
     assert result.stderr == ''
     assert f'report from {reply.sender} · {reply.short} · re {order.short}' in result.stdout
     assert 'Finished the review.' in result.stdout
+
+
+def test_old_installed_shortcut_does_not_take_a_waiting_request(project):
+    folder = ship(project, 'endeavour')
+    installed = synthetic_copy(folder, capable=False)
+    module = installed.parent.parent / 'lib/python3/site-packages/quarterdeck/cli.py'
+    module.write_text('DESK_REQUEST_HANDOFF = "desk-request-v1"\n')
+    installed.write_text(f'#!{sys.executable}\nraise SystemExit("old copy was handed a waiting request")\n')
+    caller = f'''
+import sys
+from types import SimpleNamespace
+sys.path.insert(0, {str(Path(cli.__file__).parents[1])!r})
+from quarterdeck import cli, desk_request, post, post_sender, ship
+post_sender.seat_session = lambda ship: None
+cli.seat_of = lambda ship, seat: SimpleNamespace(is_up=True)
+cli.service.alive = lambda runtime: True
+store = post.Store(ship.load(ship.find()).runtime)
+
+def reply(interval):
+    assert post.file_drops(store) == []
+    order, = store.all()
+    store.new('report', order.to, order.sender, 'Reply from the synthetic desk', re=order.id)
+
+wait_for_reply = desk_request.wait_for_reply
+desk_request.wait_for_reply = lambda *args: wait_for_reply(*args, pause=reply)
+raise SystemExit(cli.main())
+'''
+    result = subprocess.run([sys.executable, '-c', caller, 'Please wait'], cwd=project, stdin=subprocess.DEVNULL,
+                            env={**os.environ, 'QD_SHIP': str(folder)}, capture_output=True, text=True, check=True)
+    assert result.stdout == 'Reply from the synthetic desk\n'
+    assert len(result.stderr.splitlines()) == 1
 
 
 def test_the_installed_copy_requires_a_named_ship_and_has_no_default_mark(project, tmp_path):
