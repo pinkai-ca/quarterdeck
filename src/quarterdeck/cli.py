@@ -29,6 +29,17 @@ RESTART_CONTROLS = {"pool": "restart", "harness": "fresh", "cwd": "restart", "pe
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except check.CheckInterrupted:
+        # qd check uses this exception for SIGTERM and SIGHUP.
+        raise
+    except KeyboardInterrupt:
+        completed_error('qd: interrupted')
+        return 130
+
+
+def _main(argv: list[str] | None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
     try:
         install.route_cutover.check_install_proof(argv)

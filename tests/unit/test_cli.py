@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -17,6 +18,79 @@ def run(capsys, *argv: str) -> tuple[int, str, str]:
     code = cli.main(list(argv))
     out = capsys.readouterr()
     return code, out.out, out.err
+
+
+@pytest.mark.parametrize('interrupted_at', ['law_reading', 'render_laws'])
+def test_reading_interrupt_during_execution_or_output(monkeypatch, capsys, interrupted_at):
+    monkeypatch.setattr(cli.standing, 'law_reading', Mock())
+    interrupted = Mock(side_effect=KeyboardInterrupt)
+    monkeypatch.setattr(cli.standing, interrupted_at, interrupted)
+    assert run(capsys, 'laws') == (130, '', 'qd: interrupted\n')
+    interrupted.assert_called_once()
+
+
+def test_acting_verb_interrupt(drydock, monkeypatch, capsys):
+    interrupted = Mock(side_effect=KeyboardInterrupt)
+    monkeypatch.setattr(cli, 'set_seat', interrupted)
+    assert run(capsys, '--ship', str(drydock), 'set', 'captain', 'model=fake-2') == (130, '', 'qd: interrupted\n')
+    interrupted.assert_called_once()
+
+
+@pytest.mark.parametrize('interrupted_by', [signal.SIGINT, signal.SIGTERM])
+def test_foreground_service_cleans_up_on_interrupt(drydock, monkeypatch, capsys, interrupted_by):
+    from quarterdeck import service_wait, write_bound
+
+    monkeypatch.setattr(cli.install, 'bootstrap_service', Mock())
+    server = Mock(ship=False)
+    monkeypatch.setattr(cli.Tmux, 'for_ship', Mock(return_value=server))
+    service = cli.service.Service(load(drydock), server)
+    monkeypatch.setattr(cli.service, 'Service', Mock(return_value=service))
+    monkeypatch.setattr(service, 'move_seat_files', Mock())
+    monkeypatch.setattr(service, 'watch_credentials', Mock())
+    arrivals = Mock()
+    alarm = Mock()
+    monkeypatch.setattr(service_wait, 'Arrivals', Mock(return_value=arrivals))
+    monkeypatch.setattr(write_bound, 'Alarm', Mock(return_value=alarm))
+
+    def tick():
+        if interrupted_by == signal.SIGINT:
+            raise KeyboardInterrupt
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+    monkeypatch.setattr(service, 'tick', tick)
+    try:
+        if interrupted_by == signal.SIGINT:
+            assert run(capsys, '--ship', str(drydock), 'service') == (130, '', 'qd: interrupted\n')
+        else:
+            with pytest.raises(SystemExit) as stopped:
+                cli.main(['--ship', str(drydock), 'service'])
+            assert stopped.value.code == 0
+            assert capsys.readouterr() == ('', '')
+        arrivals.close.assert_called_once_with()
+        alarm.start.return_value.close.assert_called_once_with()
+    finally:
+        if hasattr(service, 'lock'):
+            service.lock.close()
+        service.ledger.close()
+
+
+@pytest.mark.parametrize('interrupted_by', [signal.SIGTERM, signal.SIGHUP])
+def test_check_keeps_existing_signal_exception(drydock, monkeypatch, capsys, interrupted_by):
+    def interrupt(*args, **kwargs):
+        with cli.check.interruptible():
+            signal.getsignal(interrupted_by)(interrupted_by, None)
+
+    monkeypatch.setattr(cli.Tmux, 'for_ship', Mock())
+    monkeypatch.setattr(cli.check, 'check', interrupt)
+    with pytest.raises(cli.check.CheckInterrupted, match=interrupted_by.name):
+        cli.main(['--ship', str(drydock), 'check', 'codex'])
+    assert capsys.readouterr() == ('', '')
+
+
+def test_reading_keeps_its_nonzero_exit_code(monkeypatch, capsys):
+    monkeypatch.setattr(cli.shipmod, 'default_ship', Mock(side_effect=cli.ShipError('no ships declared')))
+    code, out, err = run(capsys, 'default')
+    assert code == 1 and out.startswith('no default ship') and not err
 
 
 def test_version_install_proof_compares_resolved_directories(tmp_path, capsys, monkeypatch):
