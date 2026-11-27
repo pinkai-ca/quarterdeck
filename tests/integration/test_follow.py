@@ -269,9 +269,9 @@ def test_follow_floors_native_claude_geometry_for_human_and_alternate_seats(rig)
                 assert poll() is None, output.decode(errors='replace')
                 return all(size(tmux, pane) == expected for pane in panes.values())
 
-            wait_for(lambda: at_size((80, 24)))
-            fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 201, 0, 0))
-            wait_for(lambda: at_size((100, 29)))
+            wait_for(lambda: at_size((80, 34)))
+            fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack('HHHH', 36, 201, 0, 0))
+            wait_for(lambda: at_size((100, 35)))
             os.write(terminal, b'q')
             result, output = waited()
             assert result == 0, output
