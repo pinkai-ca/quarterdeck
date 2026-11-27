@@ -237,7 +237,7 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | `check_evidence.py` | bounded tool evidence from a check's own pinned record, never a receipt |
 | `claude_background.py` | Claude Code's Bash background tasks, private task notices and measured restart sequences |
 | `claude_children.py` | Claude Code's measured subagent records and task notices joined to their root Agent call |
-| `claude_held_box.py` | Claude's exact-edge word wraps in the Door's held composer comparison |
+| `claude_held_box.py` | Claude's exact-edge word-wrap rules for complete and held drafts |
 | `claude_limits.py` | Claude's native allowance fields, model families and safe shape diagnostics |
 | `claude_extra_usage.py` | timestamped refusal metadata, status and doctor wording, and durable private Desk notices |
 | `claude_sign_in.py` | Claude access and renewal evidence for login alerts, usage preflight and resting subscription identity |

@@ -8,6 +8,7 @@ import pytest
 from quarterdeck import pending, post
 from quarterdeck.door import Door
 from quarterdeck.harness.claude import ClaudeHarness
+from quarterdeck.harness.claude_held_box import held_edge_wraps
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.types import _cells, held_box_matches
 from quarterdeck.post_message import typed
@@ -140,7 +141,7 @@ def test_a_wrap_is_soft_only_where_the_row_reaches_the_text_edge():
 
 
 @pytest.mark.parametrize('case', ['exact edge', 'wide cells', 'changed character', 'missing newline',
-                                  'missing separator', 'word fits', 'row too short', 'padding too short'])
+                                  'missing separator', 'word fits', 'less text', 'less padding', 'legacy padding'])
 def test_a_held_claude_word_can_wrap_at_the_exact_text_edge(case):
     edge = 315
     width = edge + 4
@@ -152,13 +153,15 @@ def test_a_held_claude_word_can_wrap_at_the_exact_text_edge(case):
         last = '界x' + last[3:]
     elif case == 'word fits':
         last = 'to ' + words(62, 3)
-    elif case == 'row too short':
+    elif case == 'less text':
         second = second[:-1]
         last = 'last ' + words(60, 3)
 
     second_padding = edge - _cells(second)
-    if case == 'padding too short':
+    if case == 'less padding':
         second_padding -= 1
+    elif case == 'legacy padding':
+        second_padding += 3
     rows = [header, first, second + ' ' * second_padding, last + ' ' * (317 - _cells(last))]
     captured = pane_text('', width, rows=rows, padding='none')
     payload = header + '\n' + first + ' ' + second + ' ' + last + '\n'
@@ -169,16 +172,24 @@ def test_a_held_claude_word_can_wrap_at_the_exact_text_edge(case):
     elif case == 'missing separator':
         payload = header + '\n' + first + ' ' + second + last + '\n'
 
-    proof, refusal = candidate(payload, captured, width)
+    harness = ClaudeHarness()
+    screen = harness.screen(captured)
+    shown = screen.box
+    legacy_match = case in ('exact edge', 'wide cells', 'legacy padding')
+    assert held_edge_wraps(payload, shown, edge, width) is legacy_match
     if case in ('exact edge', 'wide cells'):
-        harness = ClaudeHarness()
-        screen = harness.screen(captured)
-        shown = screen.box
         assert [(_cells(row.rstrip(' ')), _cells(row)) for row in shown.split('\n')] == [
             (50, 50), (315, 315), (311, 315), (65, 317),
         ]
         assert not harness.box(payload).matches(shown, edge, harness.wrap_slack)
         assert not held_box_matches(payload, shown, edge, width)
+    if case == 'legacy padding':
+        assert not harness.box(payload).matches(shown, edge, 1)
+        assert not held_box_matches(payload, shown, edge, width)
+
+    proof, refusal = candidate(payload, captured, width)
+    if legacy_match or case in ('less text', 'less padding'):
+        # The complete draft can prove the exact wrap before the held fallback is needed.
         assert proof is not None, refusal
 
         # Give Codex the same text edge with its three-column inset.

@@ -17,6 +17,14 @@ def persistent_screen_queue(harness: str):
     return None
 
 
+def complete_box_wrap_slack(harness: str, default: int) -> int:
+    """The adapter's word-break margin when checking a complete draft."""
+    if harness == "claude":
+        from .claude_held_box import COMPLETE_BOX_WRAP_SLACK
+        return COMPLETE_BOX_WRAP_SLACK
+    return default
+
+
 def held_box_wrap_rule(harness: str):
     """Optional rule for a program's measured held composer wraps."""
     if harness == "claude":

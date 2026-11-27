@@ -1,8 +1,13 @@
-"""Held-box wrap matching for the Claude composer."""
+"""Complete and held draft wrap rules for the Claude composer."""
 
 import re
 
 from .types import _cells, held_box_matches
+
+
+# A complete composer can wrap a word that would occupy the last text cell.
+# This margin applies to word breaks. A long word still splits at full width.
+COMPLETE_BOX_WRAP_SLACK = 1
 
 
 def held_edge_wraps(text: str, shown: str | None, columns: int | None, width: int) -> bool:

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import ledger as ledgermod, pending, input_receipt, quota, pane_obstruction, trusted_files
 from .harness.base import Harness, Screen, record_fingerprint
-from .harness.capabilities import held_box_wrap_rule, persistent_screen_queue, screen_forms
+from .harness.capabilities import complete_box_wrap_slack, held_box_wrap_rule, persistent_screen_queue, screen_forms
 from .harness.types import _cells, held_box_matches
 from .quota import reset_text, stamp
 from .seat import Seat
@@ -952,7 +952,8 @@ class Door:
         if (evidence := getattr(screen, "draft_evidence", None)) is not None:
             return evidence.matches(box, columns, self.harness.wrap_slack, getattr(pane, 'height', None))
         shown = self.harness.box_comparison(screen, pane.width) if pane else screen.box
-        if box.matches(shown, columns, self.harness.wrap_slack):
+        slack = complete_box_wrap_slack(self.harness.name, self.harness.wrap_slack)
+        if box.matches(shown, columns, slack):
             return True
         scroll = getattr(self.harness, 'box_scroll', None)
         height = getattr(pane, 'height', None)
