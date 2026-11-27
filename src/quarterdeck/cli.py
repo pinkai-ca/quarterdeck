@@ -244,7 +244,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("--sources", action="store_true", help="say which file each part came from")
     p = verb("attach", cmd_attach, "open the ship in this terminal: a session on the ship's own tmux server")
-    p.add_argument("session", nargs="?", help="a session's name or title (default: the person's own session)")
+    p.add_argument("session", nargs="?", help="name or title (default: the person's session, or all with --follow)")
+    p.add_argument("sessions", nargs="*", help="additional sessions with --follow")
+    p.add_argument("--follow", action="store_true", help="watch active seats in columns without attaching to the ship's server")
+    p.add_argument("--record", type=Path, metavar="FILE.cast", help="save an asciicast v2 of the follow view")
+    p.add_argument("--fit", action="store_true", help="fit every followed seat's window to its strip on a framework-created throwaway ship")
+    p.epilog = ("Follow crops live windows in the display. On throwaway ships it temporarily narrows crew windows. "
+                "Press q or Ctrl-C to quit.")
     p = verb("ls", cmd_ls, "list running tmux sessions of the selected ship, counting declared seats")
     p = verb("status", cmd_status, "every seat on one screen, then the open orders")
     p.add_argument("--line", action="store_true", help="published operational alerts; stale or unavailable readings are marked")
@@ -511,13 +517,20 @@ def cmd_down(args: argparse.Namespace) -> list[str] | str:
 
 def cmd_attach(args: argparse.Namespace) -> None:
     """Replace this process with a tmux client on the ship's server, in the session asked for."""
+    names = ([args.session] if args.session else []) + args.sessions
+    if not args.follow and (args.record is not None or args.fit or len(names) > 1):
+        raise ShipError('--record, --fit and multiple sessions require --follow')
     ship = load_ship(args)
+    if args.follow:
+        from . import follow
+        return follow.run(ship, names, record=args.record, fit=args.fit)
     tmux = Tmux.for_ship(ship)
-    if args.session:
-        chosen = ship.sessions.get(args.session) or next(
-            (s for s in ship.sessions.values() if s.title == args.session), None)
+    if names:
+        name = names[0]
+        chosen = ship.sessions.get(name) or next(
+            (s for s in ship.sessions.values() if s.title == name), None)
         if chosen is None:
-            raise ShipError(f"no session {args.session!r}; this ship has " +
+            raise ShipError(f"no session {name!r}; this ship has " +
                             ", ".join(f"{key} ({s.title})" for key, s in ship.sessions.items()))
     else:
         chosen = next((s for s in ship.sessions.values() if s.human), None) or next(iter(ship.sessions.values()))

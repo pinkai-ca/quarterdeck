@@ -22,6 +22,7 @@ from pathlib import Path
 
 from . import harness as harnesses, human_wake, inbox_watch, input_receipt, lifecycle, post, seat as seatmod, seat_files, service, ship as shipmod, standing, watch
 from . import service_wait
+from .follow_geometry import mark_disposable
 from .post import Attempts, Store
 from .pending import journals
 from .harness.synthetic_control import Rendezvous, events
@@ -403,7 +404,10 @@ def temporary_drydock() -> tuple[shipmod.Ship, Tmux, Path]:
         for key, value in harnesses.get(spec.harness).drill_settings(name == slow).items():
             text = shipmod.edit(text, f"seats.{name}.settings", key, value)
     ship.file.write_text(text)
-    return shipmod.load(folder), Tmux.private(standing.PROJECT_DIR / 'work'), folder.parent
+    ship = shipmod.load(folder)
+    tmux = Tmux.private(standing.PROJECT_DIR / 'work')
+    mark_disposable(ship, tmux)
+    return ship, tmux, folder.parent
 
 
 def temporary_copy(ship: shipmod.Ship) -> tuple[shipmod.Ship, Path]:
@@ -422,6 +426,8 @@ def temporary_copy(ship: shipmod.Ship) -> tuple[shipmod.Ship, Path]:
         programs = {spec.for_pool(pool).harness for spec in copied.seats.values() for pool in spec.pools}
         for program in sorted(programs & (ship.program_pins.keys() | copied.program_pins.keys())):
             shipmod.stage_program_pin(ship, copied, program)
+        from .tmux import ship_socket
+        mark_disposable(copied, Tmux(str(ship_socket(copied)), ship=True, name=copied.name))
         return copied, parent
     except BaseException:
         shutil.rmtree(parent)

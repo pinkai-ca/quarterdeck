@@ -5,7 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from quarterdeck import drill, ship as shipmod
+from quarterdeck import drill, follow_geometry, ship as shipmod
+from quarterdeck.tmux import Tmux, ship_socket
 
 
 def test_a_named_ship_is_drilled_on_a_copy_with_its_own_sessions(enterprise_ship: Path):
@@ -18,6 +19,8 @@ def test_a_named_ship_is_drilled_on_a_copy_with_its_own_sessions(enterprise_ship
         assert [s.title for s in copy.sessions.values()] == ["qd-drill Ship's Bridge", "qd-drill Operator's Office", "qd-drill Crew"]
         assert copy.pools.keys() == live.pools.keys() and copy.seats.keys() == live.seats.keys(), "the real pools and programs"
         assert not (copy.folder / "runtime").exists() and not (copy.folder / ".git").exists(), "no live state, no repository"
+        assert follow_geometry.disposable(copy, Tmux(str(ship_socket(copy)), ship=True))
+        assert not follow_geometry.disposable(copy, Tmux(str(ship_socket(live)), ship=True))
         assert (enterprise_ship / "runtime" / "post" / "store" / "live-message.json").exists(), "the live runtime is untouched"
     finally:
         shutil.rmtree(folder, ignore_errors=True)

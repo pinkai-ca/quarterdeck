@@ -43,7 +43,7 @@ def _stamp(info):
     return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns
 
 
-class _Changes:
+class DirectoryChanges:
     """Names changed since a watched inventory. An overflow or lost watch requests a new inventory."""
 
     def __init__(self, directory, identity):
@@ -206,7 +206,7 @@ class MessageIndex:
         if self.changes is None or self.changes.identity != identity or self.changes.fd is None:
             if self.changes is not None:
                 self.changes.close()
-            self.changes = _Changes(directory, identity)
+            self.changes = DirectoryChanges(directory, identity)
             self.revision = None
         watched = self.changes.fd is not None
         revision, cached_stamp, certified_at = self._snapshot(db)

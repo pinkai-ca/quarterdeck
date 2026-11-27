@@ -137,6 +137,9 @@ class Service:
         self.fleet_exports = ExportWorklist()
         self.inbox_certificate = None  # a new service always renders its first inbox pass
         self.attempts = Attempts(self.runtime)
+        from . import follow_geometry
+        self.follow_windows = (follow_geometry.ServiceWindows(self.runtime)
+                               if follow_geometry.disposable(ship, tmux) else None)
         self.drop_filer = post.FilingSlice()
         self.quick_request_scan = None
         self.quick_request_retry = None
@@ -236,7 +239,11 @@ class Service:
                     with self.timings().measure('drain_accounting'):
                         self.drain_accounting()
                     self.loop_stamp('arrivals')
-                    arrivals.refresh(self.ship.seats)
+                    follow_windows = self.__dict__.get('follow_windows')
+                    if follow_windows is not None:
+                        arrivals.refresh(self.ship.seats, extra=(follow_windows.directory,))
+                    else:
+                        arrivals.refresh(self.ship.seats)
                     self.loop_stamp('rest')
                     with self.timings().measure('sleep'):
                         arrivals.wait(self.ship.tick)  # arrival or one tick; no full status work in this rest
@@ -347,7 +354,8 @@ class Service:
         # under its own name: the drain and the status work between duties too, so neither reads as the duty before.
         self.loop_stamp('drain')
         self._drain_between_duties()
-        for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.set_asides, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.launch_openings, self.deliveries, self.follow, self.requests, self.fresh_handoffs, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
+        follow_windows = (self.update_follow_windows,) if self.__dict__.get('follow_windows') is not None else ()
+        for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.set_asides, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.launch_openings, self.deliveries, self.follow, self.requests, *follow_windows, self.fresh_handoffs, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.retire_hand_transcripts, self.account, self.refresh_usage, self.pool_forecasts, self.record_growth, self.retire_post):
             self.loop_stamp(step.__name__)  # a slow duty reads as busy, then stuck, never as ok; the beat thread
             self.heartbeat()  # proves only that the process is alive, never that this loop is moving
@@ -361,6 +369,9 @@ class Service:
             self.loop_stamp('status')
             self.status_due()
             self.timings().publish(self.log)
+
+    def update_follow_windows(self) -> None:
+        self.follow_windows.tick(self.ship, self.tmux, self.attempts)
 
     # The duties whose ledger rows may be counted apart from the accounting gate's other writers, and the tables
     # those rows may touch: usage refresh writes its cache, pacing and receipt tables. No record accounting reads

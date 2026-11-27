@@ -111,6 +111,22 @@ class ControlFrame:
 
 
 @dataclass(frozen=True)
+class WindowGeometry:
+    server: int
+    session: str
+    window: str
+    pane: str
+    pid: int
+    width: int
+    height: int
+    sizing: str = ''  # empty means the option is inherited
+
+    @property
+    def binding(self) -> tuple:
+        return self.server, self.session, self.window, self.pane, self.pid
+
+
+@dataclass(frozen=True)
 class SessionView:
     """One reading of a session, for showing a window there: what it shows, who is scrolling, when its clients last typed."""
 
@@ -270,7 +286,7 @@ class Tmux:
     """
 
     def __init__(self, socket: str | None = None, *, _owned=None, ship: bool = False, legacy: bool = False,
-                 name: str | None = None):
+                 name: str | None = None, command_timeout: float | None = None):
         self.socket = socket
         self.name = name  # the ship's, for its own server's scope
         self._runner = subprocess.run  # every command of _run goes through it
@@ -282,6 +298,7 @@ class Tmux:
         self._closed = False
         self.ship = ship or legacy
         self.legacy = legacy
+        self.command_timeout = command_timeout
 
     @property
     def _private(self) -> bool:
@@ -316,7 +333,7 @@ class Tmux:
         return shlex.join(self.attach_argv(session))
 
     @classmethod
-    def for_ship(cls, ship, *, strict: bool = False) -> "Tmux":
+    def for_ship(cls, ship, *, strict: bool = False, command_timeout: float | None = None) -> "Tmux":
         """The server a ship runs on, chosen explicitly and never through TMUX.
 
         - Its own: the socket under its runtime, whenever that holds the ship's sessions or no other
@@ -338,13 +355,13 @@ class Tmux:
 
         own = ship_socket(ship)
         _check_socket_path(own, create=False)
-        server = cls(str(own), ship=True, name=getattr(ship, 'name', None))
+        server = cls(str(own), ship=True, name=getattr(ship, 'name', None), command_timeout=command_timeout)
         named = os.environ.get("QD_TMUX_SOCKET")
         if named and named != str(own):
             if private_endpoint(named):
-                return cls(named)
+                return cls(named, command_timeout=command_timeout)
             if Path(named).is_absolute() and _user_socket(Path(named)):
-                old = cls(named, legacy=True)
+                old = cls(named, legacy=True, command_timeout=command_timeout)
                 if holds(old) and not (own.exists() and holds(server)):
                     return old
             raise TmuxError(f"QD_TMUX_SOCKET names {named}, which is not this ship's server {own}, not a private "
@@ -353,6 +370,7 @@ class Tmux:
         if own.exists() and holds(server):
             return server  # moved: the default server is not read again on every call
         for old in cls.defaults(own):
+            old.command_timeout = command_timeout
             if holds(old):
                 return old
         return server
@@ -418,7 +436,7 @@ class Tmux:
 
     def _run(self, *args, stdin=None, start=False):
         if self.ship:
-            address = ['-S', self.socket] + (['-N'] if self.legacy else [])
+            address = ['-S', self.socket] + (['-N'] if self.legacy or self.command_timeout is not None else [])
         elif self._private:
             address = ['-S', self.socket, '-f', '/dev/null'] + ([] if start else ['-N'])
         else:
@@ -433,11 +451,12 @@ class Tmux:
             env = unjailed_environment(os.environ)
             if not self._answers(env):
                 command = self._in_own_scope(command, env)
-        bound = PRIVATE_COMMAND_WAIT if self._private else None
+        bound = self.command_timeout if self.command_timeout is not None else (PRIVATE_COMMAND_WAIT if self._private else None)
         try:
             done = self._runner(command, input=stdin, capture_output=True, text=True, env=env, timeout=bound)
         except subprocess.TimeoutExpired:
-            raise TmuxUnanswered(f"tmux {args[0]}: private server did not answer within {bound:g} s "
+            server = 'private server' if self._private else 'server'
+            raise TmuxUnanswered(f"tmux {args[0]}: {server} did not answer within {bound:g} s "
                                  "(stopped or hung); retained") from None
         if done.returncode:
             detail = done.stderr.strip()
@@ -738,6 +757,56 @@ class Tmux:
                               f'select-window -t {pane_id}', f'display-message -p {refused}')
         if result.strip() == refused:
             raise TmuxError(f'pane {pane_id} changed process identity; window not shown')
+
+    _WINDOW_GEOMETRY = ('#{pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t'
+                        '#{window_width}\t#{window_height}\t#{pane_dead}\t#{window_panes}\t#{window_linked}')
+    _WINDOW_SIZING = frozenset(('', 'largest', 'smallest', 'latest', 'manual'))
+
+    def window_geometry(self, pane: Pane, *, restoring: bool = False) -> WindowGeometry | None:
+        """Read a single-pane, unlinked window. Restoration can include a retained dead pane."""
+        result = self.run('display-message', '-p', '-t', pane.id, self._WINDOW_GEOMETRY, ';',
+                          'show-options', '-wqv', '-t', pane.id, 'window-size')
+        line, _, option = result.partition('\n')
+        sizing = option.rstrip('\n')
+        try:
+            server, session, window, ident, pid, width, height, dead, panes, links = line.split('\t')
+            if (ident != pane.id or int(pid) != pane.pid or dead not in ('0', '1')
+                    or dead == '1' and not restoring or panes != '1' or links != '0'
+                    or sizing not in self._WINDOW_SIZING):
+                return None
+            return WindowGeometry(int(server), session, window, ident, int(pid), int(width), int(height), sizing)
+        except ValueError:
+            return None
+
+    def resize_owned_window(self, geometry: WindowGeometry, width: int, height: int | None = None,
+                            *, restore: bool = False) -> bool:
+        """Guard the resize and option restoration in the server's own command queue."""
+        fields = ((geometry.session, '$'), (geometry.window, '@'), (geometry.pane, '%'))
+        if (any(not value.startswith(prefix) or not value[1:].isascii() or not value[1:].isdigit()
+                for value, prefix in fields) or geometry.sizing not in self._WINDOW_SIZING
+                or any(type(n) is not int or n <= 0 for n in (geometry.server, geometry.pid, width))
+                or height is not None and (type(height) is not int or height <= 0)):
+            raise TmuxError('invalid followed-window geometry')
+        guard = '1'
+        checks = [('pid', geometry.server), ('session_id', geometry.session),
+                  ('window_id', geometry.window), ('pane_id', geometry.pane), ('pane_pid', geometry.pid),
+                  ('window_panes', 1), ('window_linked', 0)]
+        if not restore:
+            checks.append(('pane_dead', 0))
+        for field, expected in checks:
+            guard = f'#{{&&:{guard},#{{==:#{{{field}}},{expected}}}}}'
+        resize = f'resize-window -t {geometry.window} -x {width}'
+        if height is not None:
+            resize += f' -y {height}'
+        if restore:
+            if geometry.sizing:
+                resize += f' ; set-option -w -t {geometry.window} window-size {geometry.sizing}'
+            else:
+                resize += f' ; set-option -wu -t {geometry.window} window-size'
+        marker = 'qd-window-geometry-restored' if restore else 'qd-window-geometry-changed'
+        result = self._invoke('if-shell', '-F', '-t', geometry.pane, guard,
+                              f'{resize} ; display-message -p {marker}')
+        return result.strip() == marker
 
     # -- panes -------------------------------------------------------------------------
 
