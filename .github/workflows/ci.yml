@@ -90,7 +90,188 @@ jobs:
           export TMUX_TMPDIR="$ci_socket_anchor"
           env -u QD_SHIP -u QD_SEAT python -m pytest -q -rs -n 8
       - name: Fake-harness drill
+        if: matrix.python != 'system'
         run: |
           . .venv/bin/activate
           env -u QD_SHIP -u QD_SEAT qd drill
+      - name: Fake-harness drill (system Python)
+        id: fake_drill
+        if: matrix.python == 'system'
+        shell: bash
+        run: |
+          root="$(mktemp -d "${RUNNER_TEMP:?}/qd.XXXXXXXX")"
+          root="$(realpath -- "$root")"
+          mkdir -- "$root/home"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          # Start with no provider, GitHub, or runner credentials in the environment.
+          env -i HOME="$root/home" PATH="$PWD/.venv/bin:/usr/bin:/bin" LANG=C.UTF-8 \
+            TMPDIR="$root" TMUX_TMPDIR="$root" "$PWD/.venv/bin/qd" drill --keep 2>&1 | tee "$root/drill.log"
+      - name: Collect failed fake-harness drill evidence
+        id: drill_evidence
+        if: failure() && steps.fake_drill.outcome == 'failure'
+        env:
+          DRILL_ROOT: ${{ steps.fake_drill.outputs.root }}
+        run: |
+          "$PYTHON" - <<'PY'
+          import collections
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+          import tarfile
+          import tomllib
+
+          sessions = {"captain": "Bridge", "desk": "Office", "worker-1": "Crew"}
+          sign_in = {"auth.json", ".credentials.json", "credentials.json", "oauth_creds.json",
+                     "keys.toml", ".env", ".netrc", ".git-credentials", "hosts.yml", "id_ed25519", "id_rsa"}
+          credential = re.compile(
+              rb"-----BEGIN [A-Z ]*PRIVATE KEY-----|"
+              rb"\b(?:gh[pousr]_|github_pat_|sk-|xai-|AIza)[A-Za-z0-9_-]{20,}|"
+              rb"Authorization:[ \t]*(?:Bearer|Basic)[ \t]+[A-Za-z0-9_+/=-]{8,}", re.I
+          )
+
+          def private_child(root, prefix):
+              matches = list(root.glob(prefix + "*"))
+              if len(matches) == 1 and not matches[0].is_symlink() and matches[0].is_dir():
+                  return matches[0]
+
+          def read_evidence(path):
+              if not path or path.is_symlink() or not path.is_file():
+                  return None
+              try:
+                  with path.open("rb") as stream:
+                      stream.seek(max(0, os.fstat(stream.fileno()).st_size - 16384))
+                      return stream.read(16384)
+              except OSError:
+                  return None
+
+          def show(label, data):
+              if data is None:
+                  print(f"{label}: unavailable")
+                  return
+              if credential.search(data):
+                  raise RuntimeError("credential-like content in diagnostics")
+              print(f"{label}:")
+              for line in data.decode(errors="replace").splitlines()[-40:]:
+                  print(f"| {line}")
+
+          def diagnostics(root, files):
+              log = read_evidence(root / "drill.log") or b""
+              failures = {name: (short, reason) for name, short, reason in re.findall(
+                  r"^FAIL  (captain|desk|worker-1) fresh · wait for ord-([a-f0-9]{6})(.*)$",
+                  log.decode(errors="replace"), re.M
+              )}
+              namespace = private_child(root, "qd-pt-")
+              socket = namespace / "s" if namespace else None
+              attempts = {path.name: path for rel, path in files.items()
+                          if Path(rel).parent.as_posix() in {"post/retired/attempts", "post/attempts"}}
+              for name in failures or sessions:
+                  short, reason = failures.get(name, ("", ""))
+                  refs = set(re.findall(r"\b(?:ord|rep)-[\w-]+\.json\b", reason))
+                  active = [path for rel, path in files.items()
+                            if rel.startswith(f"post/pending/{name}/") and path.suffix == ".json"]
+                  matched = [path for path in active if path.name in refs or f"-{short}-" in path.name]
+                  if active and not matched:
+                      print(f"{name}: showing retained active-directory journals")
+                  journals = (matched + [path for path in active if path not in matched])[:8]
+                  if not journals:
+                      show(f"{name} delivery journal", None)
+                  for journal in journals:
+                      body = read_evidence(journal)
+                      show(f"{name} delivery journal {journal.name}", body)
+                      refs.add(journal.name)
+                      try:
+                          refs.update(a for a in json.loads(body)["attempts"]
+                                      if isinstance(a, str) and re.fullmatch(r"[\w-]+\.json", a))
+                      except (ValueError, KeyError, TypeError):
+                          print(f"{name}: journal's attempt references unavailable")
+                  if short:
+                      refs.update(filename for filename in attempts if f"-{short}-" in filename)
+                  if not refs:
+                      show(f"{name} delivery attempt", None)
+                  for ref in sorted(refs)[:12]:
+                      show(f"{name} delivery attempt {ref}", read_evidence(attempts.get(ref)))
+
+                  pointer = read_evidence(files.get(f"trusted/{name}/record")) or b""
+                  record = Path(pointer.decode(errors="replace").strip())
+                  records = {path for rel, path in files.items()
+                             if rel.startswith(f"seats/{name}/home/projects/") and path.suffix == ".jsonl"}
+                  show(f"{name} fake record tail", read_evidence(record) if record in records else None)
+
+                  capture = None
+                  if socket and socket.exists() and stat.S_ISSOCK(socket.lstat().st_mode):
+                      try:
+                          pane = subprocess.run(
+                              ["tmux", "-N", "-S", str(socket), "capture-pane", "-p", "-S", "-40",
+                               "-t", f"={sessions[name]}:"], capture_output=True, timeout=5
+                          )
+                          if pane.returncode == 0:
+                              capture = pane.stdout[-16384:]
+                      except (OSError, subprocess.TimeoutExpired):
+                          pass
+                  show(f"{name} pane capture", capture)
+
+          try:
+              root = Path(os.environ["DRILL_ROOT"])
+              if not root.is_absolute() or root.resolve() != root:
+                  raise RuntimeError("private drill root unavailable")
+              attempt = private_child(root, "qd-drill-")
+              if not attempt:
+                  raise RuntimeError("kept drill folder unavailable or ambiguous")
+              dock = attempt / "drydock"
+              runtime = dock / "runtime"
+              declaration = dock / "ship.toml"
+              if runtime.resolve() != runtime or not runtime.is_dir():
+                  raise RuntimeError("kept runtime missing or outside the drill root")
+              if not declaration.is_file() or declaration.is_symlink():
+                  raise RuntimeError("fake declaration unavailable")
+              ship = tomllib.loads(declaration.read_text())
+              if (ship["pools"] != {"fake": {"provider": "synthetic"}} or ship["seats"].keys() != sessions.keys()
+                      or any(s["harness"] != "fake" or s["pool"] != "fake" for s in ship["seats"].values())):
+                  raise RuntimeError("declaration is not the synthetic drydock")
+
+              inventory = collections.Counter()
+              files = {}
+              archive = root / "drydock-runtime.tar.gz"
+              command_bin = (Path.cwd() / ".venv/bin").resolve()
+              with tarfile.open(archive, "x:gz") as tar:
+                  for path in sorted(runtime.rglob("*")):
+                      rel = path.relative_to(runtime)
+                      if rel.name.lower() in sign_in:
+                          raise RuntimeError("sign-in or key file found in the runtime")
+                      if path.is_symlink():
+                          if (rel.as_posix() not in {"bin/qd", "bin/qd-fakeharness"}
+                                  or path.readlink() != command_bin / path.name):
+                              raise RuntimeError("unexpected runtime link")
+                      elif path.is_file():
+                          if path.stat().st_nlink != 1:
+                              raise RuntimeError("unexpected runtime hard link")
+                          if credential.search(path.read_bytes()):
+                              raise RuntimeError("credential-like content found in the runtime")
+                          files[rel.as_posix()] = path
+                      elif not path.is_dir():
+                          raise RuntimeError("unexpected runtime file type")
+                      tar.add(path, arcname=f"runtime/{rel}", recursive=False)
+                      inventory[rel.parts[0]] += 1
+              print("Drydock runtime inventory (entries by top-level path):")
+              for name, count in sorted(inventory.items()):
+                  print(f"  {name}: {count}")
+              diagnostics(root, files)
+          except RuntimeError as error:
+              print(f"Failed drill upload held: {error}")
+          except (OSError, ValueError, KeyError, TypeError, tarfile.TarError) as error:
+              print(f"Failed drill upload held: {type(error).__name__}")
+          else:
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  print(f"archive={archive}", file=output)
+          PY
+      - name: Upload failed fake-harness drill runtime
+        if: failure() && steps.fake_drill.outcome == 'failure' && steps.drill_evidence.outputs.archive != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: failed-fake-drill-runtime
+          path: ${{ steps.drill_evidence.outputs.archive }}
+          if-no-files-found: error
     # Local command proof does not prove the runner; inspect the first Actions run.
