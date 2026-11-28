@@ -218,13 +218,15 @@ def _publish(ship, tmux, framework, store, attempts, kept=None, door_seats=froze
     if kept is None:
         status_snapshot.invalidate(ship.runtime)
         current = shipmod.load(ship.folder)
-        post_generation = status_snapshot.post_generation(current.runtime)
+        observe_store = ((current.runtime / 'post' / 'store').absolute(),
+                         lambda: status_snapshot.post_generation(current.runtime))
         keep = []
-        with post.reading_pass(store=store, attempts=attempts), reading_scope.reading_pass(), record_owner.reader_pass():
+        with (post.reading_pass(store=store, attempts=attempts, observe_store=observe_store),
+              reading_scope.reading_pass(), record_owner.reader_pass()):
             facts = watch.facts(current, tmux, store=store, attempts=attempts, keep=keep)
             if isinstance(facts, watch.Facts):
                 whole_reading = watch.status_reading(current, tmux, store=store, collected=facts)
-                messages = post.observed_messages(current.runtime)
+                post_observation = post.store_observation(current.runtime)
         collection = keep[0] if keep else None  # none kept: the next post change collects in full
     else:
         collection = kept
@@ -249,7 +251,7 @@ def _publish(ship, tmux, framework, store, attempts, kept=None, door_seats=froze
     os.replace(temporary, path)
     if whole_reading is not None:
         status_snapshot.publish(current, whole_reading, wall=wall, monotonic=monotonic,
-                                framework=framework, stamp=stamp, messages=messages, generation=post_generation)
+                                framework=framework, stamp=stamp, post_observation=post_observation)
     return True, collection
 
 

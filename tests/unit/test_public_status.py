@@ -2,13 +2,15 @@
 
 from contextlib import ExitStack
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import json
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, post, presentation, service, servicectl, ship as shipmod, status_snapshot, watch
+from quarterdeck import (cli, fleet_post, post, post_dir, presentation, service, servicectl, ship as shipmod,
+                         status_snapshot, watch)
 
 POLICY = 'office_seats = ["CoUnSeL"]\nprivate_ships = ["pRiVaTe-rEvIeW"]\n'
 TEXT = 'Synthetic private message text'
@@ -94,6 +96,17 @@ def no_fallback(monkeypatch):
     monkeypatch.setattr(cli.Tmux, 'for_ship', fail)
 
 
+def coverage(observed_at, orders):
+    return {'observed_at': observed_at, 'order_hashes': sorted(sha256(order.id.encode('utf-8')).hexdigest()
+                                                             for order in orders)}
+
+
+def admits_title(reading, order):
+    proof = reading['title_coverage']
+    return (proof is not None and order.id not in reading['withheld_titles']
+            and sha256(order.id.encode('utf-8')).hexdigest() in proof['order_hashes'])
+
+
 def test_dashboard_schema_and_privacy_using_one_policy(fleet, monkeypatch, capsys):
     make, policy = fleet
     public_ship = make('enterprise', 'Enterprise')
@@ -124,7 +137,8 @@ def test_dashboard_schema_and_privacy_using_one_policy(fleet, monkeypatch, capsy
         result = json.loads(captured.out)
         assert result == {'service': original['service'], 'observed_at': original['reading']['at'],
                           'open_orders': len(original['open_orders']), 'seats': public_rows,
-                          'programs': PROGRAMS, 'withheld_titles': []}
+                          'programs': PROGRAMS, 'withheld_titles': [],
+                          'title_coverage': coverage(original['reading']['at'], orders.values())}
         assert datetime.fromisoformat(result['observed_at']).tzinfo == timezone.utc
         # The emitter shares no full document. The private companion has no post text or activity details.
         for contents in (captured.out, status_snapshot.path(ship.runtime, status_snapshot.PUBLIC).read_text()):
@@ -172,6 +186,7 @@ def test_non_order_current_items_leave_public_status_available(fleet, monkeypatc
         'seats': public_rows,
         'programs': PROGRAMS,
         'withheld_titles': [orders['desk'].id],
+        'title_coverage': coverage(ordinary['reading']['at'], orders.values()),
     }
 
 
@@ -187,7 +202,7 @@ def test_explicit_empty_policy_is_reread_and_default_ship_adds_no_fields(fleet, 
     assert cli.main(argv) == 0
     after = json.loads(capsys.readouterr().out)
     assert set(before) == set(after) == {'service', 'observed_at', 'open_orders', 'seats', 'programs',
-                                       'withheld_titles'}
+                                       'withheld_titles', 'title_coverage'}
     before = {row['name']: row for row in before['seats']}
     after = {row['name']: row for row in after['seats']}
     assert 'order' not in before['counsel']
@@ -229,6 +244,9 @@ def test_security_thread_withholds_titles_across_private_replies(fleet, monkeypa
     stdout = capsys.readouterr().out
     result = json.loads(stdout)
     assert result['withheld_titles'] == expected
+    assert result['title_coverage'] == coverage(
+        result['observed_at'], [*orders.values(), sibling, direct, from_security, local_private, remote_private,
+                                other_ship, wrong_ship_convention])
     assert result['observed_at'] == ordinary['reading']['at']
     assert result['open_orders'] == len(ordinary['open_orders'])
     assert result['programs'] == PROGRAMS
@@ -249,7 +267,7 @@ def test_ship_name_does_not_imply_a_security_seat(fleet, capsys, folder, name):
     assert json.loads(capsys.readouterr().out)['withheld_titles'] == []
 
 
-@pytest.mark.parametrize('unavailable', ['held-store', 'missing-ancestor', 'cycle'])
+@pytest.mark.parametrize('unavailable', ['held-store', 'missing-store', 'missing-ancestor', 'cycle'])
 def test_unproven_graph_is_null_and_preserves_ordinary_status(fleet, monkeypatch, capsys, unavailable):
     make, policy = fleet
     ship, actor, _, orders = make('enterprise', 'Enterprise')
@@ -257,6 +275,8 @@ def test_unproven_graph_is_null_and_preserves_ordinary_status(fleet, monkeypatch
         def held(_store):
             raise OSError('synthetic listing unavailable')
         monkeypatch.setattr(post.Store, '_load_current', held)
+    elif unavailable == 'missing-store':
+        actor.store.dir.rename(actor.store.dir.with_name('previous-store'))
     else:
         message = actor.store.prepare('answer', 'laan', 'desk', TEXT, re=orders['crew'].id)
         absent = actor.store.prepare('question', 'desk', 'laan', TEXT)
@@ -264,18 +284,19 @@ def test_unproven_graph_is_null_and_preserves_ordinary_status(fleet, monkeypatch
         actor.store.write(replace(message, re=parent))
     assert actor.publish_status()
     full = status_snapshot.served(ship)
-    assert full is not None and 'withheld_titles' not in full
+    assert full is not None and 'withheld_titles' not in full and 'title_coverage' not in full
     if unavailable == 'held-store':
         assert full['open_orders'] == [] and full['facts']['post_held']
     no_fallback(monkeypatch)
     assert public(ship, policy) == 0
     result = json.loads(capsys.readouterr().out)
     assert result['withheld_titles'] is None
+    assert result['title_coverage'] is None
     assert result['open_orders'] == len(full['open_orders'])
     assert result['programs'] == PROGRAMS
 
 
-def test_known_post_change_only_invalidates_title_set_until_next_whole_reading(fleet, monkeypatch, capsys):
+def test_post_only_refresh_keeps_title_proof_until_next_whole_reading(fleet, monkeypatch, capsys):
     make, policy = fleet
     ship, actor, _, orders = make('enterprise', 'Enterprise', security='sentry')
     assert public(ship, policy) == 0
@@ -287,18 +308,23 @@ def test_known_post_change_only_invalidates_title_set_until_next_whole_reading(f
     assert actor.publish_status() and actor.status_done == 'post'
     with monkeypatch.context() as patch:
         no_fallback(patch)
+        patch.setattr(status_snapshot, 'post_generation', fail)
         assert public(ship, policy) == 0
-    assert json.loads(capsys.readouterr().out) == dict(before, withheld_titles=None)
+    assert json.loads(capsys.readouterr().out) == before
 
     assert actor.publish_status() and actor.status_done == 'full'
     assert public(ship, policy) == 0
-    assert json.loads(capsys.readouterr().out)['withheld_titles'] == [orders['crew'].id]
+    after = json.loads(capsys.readouterr().out)
+    assert after['withheld_titles'] == [orders['crew'].id]
+    assert after['title_coverage'] == coverage(after['observed_at'], orders.values())
 
 
 @pytest.mark.parametrize('damage', [
     'missing', 'stale', 'clock-skew', 'foreign-owner', 'foreign-start', 'foreign-ship', 'foreign-framework',
     'stopped', 'format', 'json', 'duplicate', 'schema', 'missing-seat', 'activity', 'order', 'count', 'program',
     'observed-at', 'missing-titles', 'wrapped-title', 'short-title', 'duplicate-title', 'unsorted-titles',
+    'missing-coverage', 'half-proof', 'coverage-time', 'raw-order-hash', 'upper-hash', 'unsorted-hashes',
+    'duplicate-hash', 'uncovered-withheld', 'future-proof',
 ])
 def test_unavailable_companion_never_reads_ordinary_status(fleet, monkeypatch, capsys, damage):
     make, policy = fleet
@@ -311,8 +337,8 @@ def test_unavailable_companion_never_reads_ordinary_status(fleet, monkeypatch, c
     def update():
         if damage == 'stale':
             monkeypatch.setattr(status_snapshot, 'time', SimpleNamespace(
-                time_ns=lambda: data['wall'] + status_snapshot.MAX_AGE_NS,
-                monotonic_ns=lambda: data['monotonic'] + status_snapshot.MAX_AGE_NS))
+                time_ns=lambda: data['wall'] + status_snapshot.PUBLIC_MAX_AGE_NS,
+                monotonic_ns=lambda: data['monotonic'] + status_snapshot.PUBLIC_MAX_AGE_NS))
         elif damage == 'clock-skew':
             monkeypatch.setattr(status_snapshot, 'time', SimpleNamespace(
                 time_ns=lambda: data['wall'] + 1_000_000_000, monotonic_ns=lambda: data['monotonic']))
@@ -351,6 +377,25 @@ def test_unavailable_companion_never_reads_ordinary_status(fleet, monkeypatch, c
                     reading['withheld_titles'] = [orders['desk'].id] * 2
                 elif damage == 'unsorted-titles':
                     reading['withheld_titles'] = sorted([orders['desk'].id, orders['crew'].id], reverse=True)
+                elif damage == 'missing-coverage':
+                    del reading['title_coverage']
+                elif damage == 'half-proof':
+                    reading['title_coverage'] = None
+                elif damage == 'coverage-time':
+                    reading['title_coverage']['observed_at'] = '2026-11-27T20:01:00'
+                elif damage == 'raw-order-hash':
+                    reading['title_coverage']['order_hashes'] = [orders['crew'].id]
+                elif damage == 'upper-hash':
+                    reading['title_coverage']['order_hashes'] = ['A' * 64]
+                elif damage == 'unsorted-hashes':
+                    reading['title_coverage']['order_hashes'].reverse()
+                elif damage == 'duplicate-hash':
+                    reading['title_coverage']['order_hashes'] *= 2
+                elif damage == 'uncovered-withheld':
+                    reading['withheld_titles'] = [orders['crew'].id]
+                    reading['title_coverage']['order_hashes'] = []
+                elif damage == 'future-proof':
+                    data['title_clock']['monotonic'] += 1
             snapshot.write_text(json.dumps(data))
 
     if damage == 'missing':
@@ -408,7 +453,7 @@ def refresh_clock(monkeypatch):
     return advance
 
 
-def test_full_refresh_serves_the_preceding_snapshot_until_it_expires_or_is_replaced(
+def test_slow_full_refresh_serves_the_preceding_public_snapshot_until_replaced(
         fleet, refresh_clock, monkeypatch, capsys):
     make, policy = fleet
     ship, actor, _, orders = make('fleet-crew', 'Sample Crew', security='sentry')
@@ -418,8 +463,13 @@ def test_full_refresh_serves_the_preceding_snapshot_until_it_expires_or_is_repla
     before = json.loads(capsys.readouterr().out)
     assert before['withheld_titles'] == []
     actor.store.new('question', 'desk', 'sentry', TEXT, re=orders['crew'].id)
-    half_age = status_snapshot.MAX_AGE_NS // 2
-    refresh_clock(half_age)
+    refresh_clock(60_000_000_000)
+    assert status_snapshot.served(ship) is None
+    assert public(ship, policy) == 0
+    assert json.loads(capsys.readouterr().out) == before
+
+    # A 95 s healthy pass can still serve the previous public observation.
+    refresh_clock(1_000_000_000)
 
     def collect(*args, **kwargs):
         assert status_snapshot.served(ship) is None
@@ -427,13 +477,12 @@ def test_full_refresh_serves_the_preceding_snapshot_until_it_expires_or_is_repla
         assert companion.read_bytes() == original
         with monkeypatch.context() as patch:
             no_fallback(patch)
+            refresh_clock(95_000_000_000)
             assert public(ship, policy) == 0
-            assert json.loads(capsys.readouterr().out) == dict(before, withheld_titles=None)
-            refresh_clock(half_age)
-            assert public(ship, policy) == 2
-            captured = capsys.readouterr()
-            assert captured.out == '' and captured.err == 'qd: public status unavailable\n'
-        return read(*args, **kwargs)
+            assert json.loads(capsys.readouterr().out) == before
+        reading = read(*args, **kwargs)
+        actor.store.new('order', 'desk', 'unassigned', TEXT)  # arrives after the certified reading
+        return reading
 
     def replace_file(path, text):
         if path == companion:
@@ -448,12 +497,79 @@ def test_full_refresh_serves_the_preceding_snapshot_until_it_expires_or_is_repla
     monkeypatch.setattr(status_snapshot.durable, 'replace_file', replace_file)
     assert actor.publish_status()
     assert replacements == [companion]
-    ordinary = status_snapshot.served(ship)['reading']
-    assert ordinary['mode'] == 'served' and ordinary['at'] != before['observed_at']
+    assert status_snapshot.served(ship) is None  # the new ordinary reading is already 95 s old
     no_fallback(monkeypatch)
     assert public(ship, policy) == 0
-    assert json.loads(capsys.readouterr().out) == dict(before, observed_at=ordinary['at'],
-                                                     withheld_titles=[orders['crew'].id])
+    after = json.loads(capsys.readouterr().out)
+    assert after['observed_at'] != before['observed_at']
+    assert after == dict(before, observed_at=after['observed_at'], withheld_titles=[orders['crew'].id],
+                         title_coverage=coverage(after['observed_at'], orders.values()))
+
+
+def test_concurrent_arrivals_keep_pair_without_covering_new_or_late_imported_orders(
+        fleet, refresh_clock, monkeypatch, capsys):
+    make, policy = fleet
+    minted = datetime(2026, 11, 27, 20, tzinfo=timezone.utc)
+    source, sender, _, _ = make('field-review', 'Field Review')
+    with monkeypatch.context() as patch:
+        patch.setattr(post, 'now', lambda: minted - timedelta(days=2))
+        old_import = sender.store.new('order', 'desk', 'remote-private@fleet-crew', TEXT, subject=SUBJECT)
+    monkeypatch.setattr(post, 'now', lambda: minted)
+    ship, actor, _, orders = make('fleet-crew', 'Sample Crew', security='sentry')
+    assert public(ship, policy) == 0
+    before = json.loads(capsys.readouterr().out)
+    assert admits_title(before, orders['crew'])
+
+    store = actor.store
+    same_minute = store.new('order', 'desk', 'unassigned', TEXT, subject=SUBJECT)
+    assert same_minute.at == orders['crew'].at and old_import.at < orders['crew'].at
+    fleet_post.offer(source, old_import, ship.folder.name)
+    offer = source.runtime / 'post' / 'outbound' / ship.folder.name / (old_import.id + '.json')
+    assert fleet_post.fetch(ship, source, offer) == old_import.id
+    store.new('ack', 'remote-private', 'desk', '', re=old_import.id)
+    store.new('question', 'desk', 'sentry', TEXT, re=orders['crew'].id)
+    refresh_clock(60_000_000_000)
+
+    assert store.dir == ship.runtime / 'post' / 'store' and post_dir.under_post(store.dir)
+    unrelated = store.prepare('report', 'desk', 'operator', TEXT)
+    load = post.Store._load_current
+    loaded = []
+
+    def collect(reader):
+        reading = load(reader)
+        loaded.append(reader)
+        if reader is store:
+            post.Store(ship.runtime).write(unrelated)  # a separate writer bumps the generation during the read
+        return reading
+
+    with monkeypatch.context() as patch:
+        patch.setattr(post.Store, '_load_current', collect)
+        assert actor.publish_status()
+    assert loaded == [store]
+    assert public(ship, policy) == 0
+    during = json.loads(capsys.readouterr().out)
+    assert during['observed_at'] != before['observed_at']
+    assert during['title_coverage'] == before['title_coverage']
+    assert during['withheld_titles'] == before['withheld_titles']
+    assert during['open_orders'] == before['open_orders'] + 2
+    claims = {row['name']: row['order'] for row in during['seats'] if 'order' in row}
+    assert claims['unassigned'] == same_minute.id and claims['remote-private'] == old_import.id
+    assert admits_title(during, orders['crew'])
+    assert not admits_title(during, same_minute) and not admits_title(during, old_import)
+
+    refresh_clock(120_000_000_000)
+    assert public(ship, policy) == 0
+    expired = json.loads(capsys.readouterr().out)
+    assert expired == dict(during, withheld_titles=None, title_coverage=None)
+
+    assert actor.publish_status()
+    no_fallback(monkeypatch)
+    assert public(ship, policy) == 0
+    after = json.loads(capsys.readouterr().out)
+    assert after['withheld_titles'] == [orders['crew'].id]
+    assert after['title_coverage'] == coverage(after['observed_at'], [*orders.values(), same_minute, old_import])
+    assert admits_title(after, same_minute) and admits_title(after, old_import)
+    assert not admits_title(after, orders['crew'])
 
 
 @pytest.mark.parametrize('failure', ['collection', 'incomplete', 'invalid-companion', 'ordinary-write', 'public-write'])
@@ -465,7 +581,7 @@ def test_unsuccessful_refresh_keeps_the_previous_public_snapshot_until_it_expire
     original = companion.read_bytes()
     assert public(ship, policy) == 0
     before = json.loads(capsys.readouterr().out)
-    refresh_clock(status_snapshot.MAX_AGE_NS // 2)
+    refresh_clock(61_000_000_000)
 
     def collect(*args, **kwargs):
         if failure == 'collection':
@@ -504,7 +620,7 @@ def test_unsuccessful_refresh_keeps_the_previous_public_snapshot_until_it_expire
     no_fallback(monkeypatch)
     assert public(ship, policy) == 0
     assert json.loads(capsys.readouterr().out) == before
-    refresh_clock(status_snapshot.MAX_AGE_NS // 2)
+    refresh_clock(119_000_000_000)
     assert public(ship, policy) == 2
     captured = capsys.readouterr()
     assert captured.out == '' and captured.err == 'qd: public status unavailable\n'

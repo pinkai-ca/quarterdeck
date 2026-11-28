@@ -72,7 +72,8 @@ A successful document has exactly these fields.
 | `open_orders` | The number of open orders |
 | `seats` | Rows with `name`, `activity` (the state string), `harness`, `model` (string or null), `pool`, and, where allowed, `order` |
 | `programs` | Aggregate rows with `harness`, `working_now` (boolean or null), and `last_turn_ended` (ISO 8601 string or null) |
-| `withheld_titles` | A sorted list of canonical order IDs in threads involving the ship's Security seats, or null when the whole graph cannot be verified |
+| `withheld_titles` | A sorted list of canonical order IDs in threads involving the ship's Security seats, or null when no current title proof is available |
+| `title_coverage` | An object with `observed_at` (ISO 8601 UTC) and `order_hashes` (sorted unique lowercase SHA-256 hex digests), or null together with `withheld_titles` |
 
 The `order` field is omitted for office seats and every seat on a private ship.
 On other rows it holds the canonical order ID or null. A claimed question or an
@@ -84,10 +85,23 @@ independent activity reading.
 
 The service follows every reply link in its observed message graph, including
 replies whose senders or recipients are private. The privacy policy filters
-withheld IDs by their encoded senders before output. An empty list means the
-service confirmed that there are no eligible IDs to withhold. On null, omit
-all order titles and keep the other public figures available. A post generation
-change makes the list null until the service publishes another whole observation.
+withheld IDs by their encoded senders before output. For each eligible current
+order, hash the exact UTF-8 bytes of its canonical ID. Show its title only
+when that hash is in `title_coverage.order_hashes` and the canonical ID is
+absent from `withheld_titles`. The pair describes one complete graph
+observation and covers only the orders seen in it, including orders imported
+before that observation regardless of when they were minted. An empty
+withholding list confirms that there are no eligible IDs to withhold for
+that observation. On null, omit all order titles and keep the other public
+figures available.
+
+Arrivals leave the preceding title proof available until a complete pass
+replaces it or it expires. If arrivals race a pass, the service can refresh
+the dashboard figures while keeping the previous title proof and its own
+`observed_at`. The next complete pass also reevaluates existing orders
+whose threads changed. Public status and its title proof each expire
+180 seconds after their own observation. Detailed status keeps its
+60-second limit.
 
 Each call with a valid policy marks the usual demand and reads the service's
 separate dashboard snapshot. A refresh leaves the preceding snapshot in place,

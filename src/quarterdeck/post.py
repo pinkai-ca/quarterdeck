@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import hashlib
 from heapq import merge
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 import os
@@ -41,6 +41,7 @@ class _Reading:
     attempts: dict = field(default_factory=dict)
     values: dict = field(default_factory=dict)
     delivery_candidates: bool = False
+    observe_store: tuple[Path, Callable] | None = None
 
 
 @contextmanager
@@ -62,12 +63,12 @@ def reader_scope(*, store=None, attempts=None):
 
 
 @contextmanager
-def reading_pass(*, store=None, attempts=None, delivery_candidates=False):
+def reading_pass(*, store=None, attempts=None, delivery_candidates=False, observe_store=None):
     """One post/attempt view for a read-only presentation, discarded when it ends."""
     if _READING.get() is not None:
         yield
         return
-    reading = _Reading(delivery_candidates=delivery_candidates)
+    reading = _Reading(delivery_candidates=delivery_candidates, observe_store=observe_store)
     readers = _READERS.get()
     if readers is not None:
         reading.stores = readers.stores
@@ -94,13 +95,11 @@ def reading_value(kind, key, read):
     return reading.values[key]
 
 
-def observed_messages(runtime):
-    """The current reading pass's whole store, if already loaded. This never opens a file."""
+def store_observation(runtime):
+    """The current pass's loaded messages and their before/after generation, if requested."""
     reading = _READING.get()
     if reading is not None:
-        key = ('store', (runtime / 'post' / 'store').absolute())
-        if (loaded := reading.values.get(key)) is not None:
-            return loaded[0]
+        return reading.values.get(('complete_store', (runtime / 'post' / 'store').absolute()))
 
 
 def reading_names(folder):
@@ -301,8 +300,20 @@ class Store:
         if reading is not None:
             key = self.dir.absolute()
             reader = reading.stores.setdefault(key, self)
+            observation = reading.observe_store
+            if observation is not None and key == observation[0] and ('store', key) not in reading.values:
+                return reading_value('store', key, lambda: reader._observe_current(reading, key, observation[1]))
             return reading_value('store', key, reader._load_current)
         return self._load_current()
+
+    def _observe_current(self, reading, key, generation):
+        before = generation()
+        loaded = self._load_current()
+        # Completeness of this read is distinct from whether a later pass
+        # can reuse it across the filesystem timestamp bucket.
+        if self._validated_complete and self._cache is not None and self._cache[1] is loaded[0]:
+            reading.values['complete_store', key] = (loaded[0], before, generation())
+        return loaded
 
     def _refresh_messages(self, children, context, started):
         """Reuse immutable files only after a complete, unchanged identity inventory."""
@@ -356,6 +367,7 @@ class Store:
                 except FileNotFoundError:
                     if not post_dir.gone(path):
                         raise
+                    complete = False
                     continue
                 try:
                     after = path.lstat()

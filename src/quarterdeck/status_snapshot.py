@@ -2,9 +2,11 @@
 
 from dataclasses import fields
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import time
 import tomllib
@@ -15,14 +17,16 @@ NAME = 'status-reading.json'
 PUBLIC = 'status-public.json'
 DEMAND = 'status-demand.json'
 MAX_AGE_NS = 60_000_000_000  # two ordinary 30 s whole-reading periods
+PUBLIC_MAX_AGE_NS = 180_000_000_000
 DEMAND_NS = 300_000_000_000
 MAX_BYTES = 32 * 1024 * 1024
 MAX_POLICY_BYTES = 64 * 1024
 ENVELOPE = {'format', 'wall', 'monotonic', 'pid', 'process_start', 'ship', 'framework', 'reading'}
-PUBLIC_ENVELOPE = ENVELOPE | {'post_generation'}
-PUBLIC_TOP = {'service', 'observed_at', 'open_orders', 'seats', 'programs', 'withheld_titles'}
+PUBLIC_ENVELOPE = ENVELOPE | {'title_clock'}
+PUBLIC_TOP = {'service', 'observed_at', 'open_orders', 'seats', 'programs', 'withheld_titles', 'title_coverage'}
 PUBLIC_SEAT = {'name', 'activity', 'harness', 'model', 'pool', 'order'}
 PUBLIC_PROGRAM = {'harness', 'working_now', 'last_turn_ended'}
+ORDER_HASH = re.compile(r'[0-9a-f]{64}')
 TOP = frozenset(('service', 'seats', 'programs', 'programs_error', 'check_outcomes', 'check_outcome_errors',
                  'open_orders', 'requests', 'facts', 'usage', 'pools', 'harnesses'))
 
@@ -118,19 +122,19 @@ def post_generation(runtime):
     post = runtime / 'post'
     try:
         parent = fingerprint(post)
-        if parent is not None and not stat.S_ISDIR(parent[2]):
+        if parent is None or not stat.S_ISDIR(parent[2]):
             return None
         folders = [fingerprint(post / name) for name in ('store', 'imports', 'forwarded', 'addressed')]
-        if any(entry is not None and not stat.S_ISDIR(entry[2]) for entry in folders):
+        if folders[0] is None or any(entry is not None and not stat.S_ISDIR(entry[2]) for entry in folders):
             return None
         # Only the identity of the parent matters. Attempts and drops can make
         # new directories there without changing the message graph.
-        return json.dumps([parent[:3] if parent else None, *folders], separators=(',', ':'))
+        return (parent[:3], *folders)
     except OSError:
         return None
 
 
-def publish(ship, reading, *, wall, monotonic, framework, stamp, messages=None, generation=None):
+def publish(ship, reading, *, wall, monotonic, framework, stamp, post_observation=None):
     from . import presentation
     value = output.value(reading)
     beat = servicectl.read_heartbeat(ship.runtime)
@@ -144,16 +148,40 @@ def publish(ship, reading, *, wall, monotonic, framework, stamp, messages=None, 
                     ship=stamp, framework=framework)
     _write(ship.runtime, NAME, dict(envelope, reading=value))
     try:
-        titles = None
-        if (messages is not None and not value['facts']['post_held'] and generation is not None
-                and post_generation(ship.runtime) == generation):
-            titles = _withheld_titles(ship, messages)
-        public = _projection(value, wall, titles)
-        if value['facts']['service'] == 'ok' and _public_complete(public, wall):
-            _write(ship.runtime, PUBLIC, dict(envelope, reading=public,
-                                            post_generation=generation if titles is not None else None))
+        titles, coverage, clock = _title_proof(ship, value, post_observation, envelope)
+        public = _projection(value, wall, titles, coverage)
+        publication = dict(envelope, reading=public, title_clock=clock)
+        if value['facts']['service'] == 'ok' and _public_complete(publication):
+            _write(ship.runtime, PUBLIC, publication)
     except (OSError, KeyError, TypeError):
         pass  # an unavailable companion does not stop ordinary status
+
+
+def _title_proof(ship, value, observation, envelope):
+    unavailable = (None, None, None)
+    if observation is None or value['facts']['post_held']:
+        return unavailable
+    messages, before, after = observation
+    if before is None or after is None or any(
+            old is not None and (new is None or old[:3] != new[:3]) for old, new in zip(before, after)):
+        return unavailable
+    if (lists := _title_lists(ship, messages)) is None:
+        return unavailable
+    if before == after:
+        titles, hashes = lists
+        clock = {key: envelope[key] for key in ('wall', 'monotonic')}
+        return titles, dict(observed_at=_observed_at(clock['wall']), order_hashes=hashes), clock
+    # A directory can gain mail during a whole reading. Reuse only a proved
+    # pair from this service/declaration/framework and keep its original time.
+    try:
+        previous = _served_document(ship, PUBLIC, stamp=envelope['ship'])
+        if (previous is not None and previous['framework'] == envelope['framework']
+                and _public_complete(previous) and _fresh(previous['title_clock'], PUBLIC_MAX_AGE_NS)):
+            reading = previous['reading']
+            return reading['withheld_titles'], reading['title_coverage'], previous['title_clock']
+    except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        pass
+    return unavailable
 
 
 def _observed_at(wall):
@@ -172,8 +200,9 @@ def _served_document(ship, name, *, stamp=None):
     if stop_barrier.status(ship.runtime):
         return None
     data = _read(ship.runtime, name)
+    bound = PUBLIC_MAX_AGE_NS if name == PUBLIC else MAX_AGE_NS
     if (not isinstance(data, dict) or type(data.get('format')) is not int or data['format'] != 1
-            or not _fresh(data, MAX_AGE_NS) or (stamp is not None and data.get('ship') != stamp)):
+            or not _fresh(data, bound) or (stamp is not None and data.get('ship') != stamp)):
         return None
     beat = servicectl.read_heartbeat(ship.runtime)
     if (beat is None or type(data.get('pid')) is not int or data['pid'] <= 0 or beat[0] != data['pid']
@@ -196,7 +225,7 @@ def served(ship):
         return None
 
 
-def _projection(full, wall, titles):
+def _projection(full, wall, titles, coverage):
     seats = [dict(name=row['name'], activity=row['activity']['state'], harness=row['harness'],
                   model=row['model'], pool=row['pool'],
                   order=row['order'] if _order_origin(row['order']) is not None else None)
@@ -206,7 +235,7 @@ def _projection(full, wall, titles):
                      last_turn_ended=row['last_turn_ended'] if history_available else None)
                 for row in full['programs']]
     return dict(service=full['service'], observed_at=_observed_at(wall), open_orders=len(full['open_orders']),
-                seats=seats, programs=programs, withheld_titles=titles)
+                seats=seats, programs=programs, withheld_titles=titles, title_coverage=coverage)
 
 
 def _order_origin(order):
@@ -223,8 +252,12 @@ def _order_origin(order):
         return seat, ship
 
 
-def _withheld_titles(ship, messages):
-    """Find every order in a thread with a local Security party, using the full post reading."""
+def _order_hash(order):
+    return sha256(order.encode('utf-8')).hexdigest()
+
+
+def _title_lists(ship, messages):
+    """Find covered orders and those involving local Security in the same graph."""
     from .fleet_post import address
     from .ship import ShipError
 
@@ -265,14 +298,26 @@ def _withheld_titles(ship, messages):
                    if security_party(message.sender) or security_party(message.to)}
     except (AttributeError, ShipError):
         return None
-    orders = [message.id for message in messages if message.kind == 'order' and roots[message.id] in blocked]
-    return sorted(orders) if all(_order_origin(order) is not None for order in orders) else None
+    orders = [message.id for message in messages if message.kind == 'order']
+    if not all(_order_origin(order) is not None for order in orders):
+        return None
+    return (sorted(order for order in orders if roots[order] in blocked),
+            sorted({_order_hash(order) for order in orders}))
 
 
-def _public_titles(titles):
-    return (titles is None or isinstance(titles, list)
-            and all(_order_origin(order) is not None for order in titles)
-            and titles == sorted(set(titles)))
+def _public_titles(titles, coverage, clock, snapshot):
+    if titles is None or coverage is None or clock is None:
+        return titles is coverage is clock is None
+    if (not isinstance(titles, list) or not all(_order_origin(order) is not None for order in titles)
+            or titles != sorted(set(titles))
+            or not isinstance(clock, dict) or clock.keys() != {'wall', 'monotonic'}
+            or any(type(clock[key]) is not int or clock[key] > snapshot[key] for key in clock)
+            or not isinstance(coverage, dict) or coverage.keys() != {'observed_at', 'order_hashes'}
+            or coverage['observed_at'] != _observed_at(clock['wall'])):
+        return False
+    hashes = coverage['order_hashes']
+    return (isinstance(hashes, list) and all(isinstance(value, str) and ORDER_HASH.fullmatch(value) for value in hashes)
+            and hashes == sorted(set(hashes)) and {_order_hash(order) for order in titles} <= set(hashes))
 
 
 def _public_seats(rows):
@@ -310,13 +355,14 @@ def _public_programs(rows):
     return len(names) == len(rows)
 
 
-def _public_complete(reading, wall):
-    return (isinstance(reading, dict) and reading.keys() == PUBLIC_TOP and reading['service'] == 'ok'
-            and reading['observed_at'] == _observed_at(wall)
+def _public_complete(data):
+    return (data.keys() == PUBLIC_ENVELOPE and isinstance(reading := data['reading'], dict)
+            and reading.keys() == PUBLIC_TOP and reading['service'] == 'ok'
+            and reading['observed_at'] == _observed_at(data['wall'])
             and type(reading['open_orders']) is int and reading['open_orders'] >= 0
             and isinstance(reading['seats'], list) and _public_seats(reading['seats'])
             and isinstance(reading['programs'], list) and _public_programs(reading['programs'])
-            and _public_titles(reading['withheld_titles']))
+            and _public_titles(reading['withheld_titles'], reading['title_coverage'], data['title_clock'], data))
 
 
 def _policy(file):
@@ -349,9 +395,10 @@ def public_served(folder, policy_file):
         if not isinstance(ship.name, str) or not request(ship):
             return None
         data = _served_document(ship, PUBLIC, stamp=stamp)
-        if (data is None or data.keys() != PUBLIC_ENVELOPE
-                or not _public_complete(reading := data['reading'], data['wall'])
-                or {row['name'] for row in reading['seats']} != ship.seats.keys()):
+        if data is None or not _public_complete(data):
+            return None
+        reading = data['reading']
+        if {row['name'] for row in reading['seats']} != ship.seats.keys():
             return None
         office, private = policy['office_seats'], policy['private_ships']
         here = ship.folder.name.casefold()
@@ -367,10 +414,10 @@ def public_served(folder, policy_file):
             elif row['order'] is not None and not public_order(row['order']):
                 row['order'] = None
         if (titles := reading['withheld_titles']) is not None:
-            generation = data['post_generation']
-            reading['withheld_titles'] = ([order for order in titles if public_order(order)]
-                                          if generation is not None and generation == post_generation(ship.runtime)
-                                          else None)
-        return reading if _fresh(data, MAX_AGE_NS) else None
+            if _fresh(data['title_clock'], PUBLIC_MAX_AGE_NS):
+                reading['withheld_titles'] = [order for order in titles if public_order(order)]
+            else:
+                reading['withheld_titles'] = reading['title_coverage'] = None
+        return reading if _fresh(data, PUBLIC_MAX_AGE_NS) else None
     except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, RecursionError, shipmod.ShipError):
         return None
