@@ -12,6 +12,7 @@ from quarterdeck.harness.types import Input
 from quarterdeck.ledger import Machine
 from quarterdeck.service import Service
 from quarterdeck.ship import Ship
+from tests.measure_status_service import identity as file_identity
 from .test_order_attribution import AT, message, measurement_snapshot, turn
 
 
@@ -35,7 +36,7 @@ def test_turn_write_waits_for_full_cached_evidence_and_service_replay(tmp_path, 
     assert svc.ledger.ingest('worker','pool',record,[initial],svc.store,{0:Machine(1.25,8192,3,512)})==1
     svc.account()
     assert svc.ledger.attributions.details()[0]['orders']==[order.id]
-    source_stamp=record.stat()
+    source_stamp = file_identity(record.stat())
     posts=svc.store.all()
     if change=='measurement-refresh':
         updated=replace(initial,cost=3)
@@ -58,7 +59,7 @@ def test_turn_write_waits_for_full_cached_evidence_and_service_replay(tmp_path, 
     assert total.read_cached+total.read_uncached+total.cache_written+total.written==expected_tokens
     assert total.cpu_seconds==1.25 and total.write_bytes==512
     assert calls==[record], 'reconciliation must use the unchanged cached full source, not only turn.input'
-    assert record.stat()==source_stamp and svc.store.all()==posts
+    assert file_identity(record.stat()) == source_stamp and svc.store.all() == posts
     assert svc.ledger.attributions.replay(svc.store,ship.runtime)==0
     svc.account()
     assert measurement_snapshot(svc.ledger)==measured and calls==[record]

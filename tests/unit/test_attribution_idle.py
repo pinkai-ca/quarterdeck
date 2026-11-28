@@ -10,6 +10,7 @@ from quarterdeck import attribution_cache, post
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.harness.types import Input
 from quarterdeck.ledger import Ledger
+from tests.measure_status_service import identity as file_identity
 from .test_order_attribution import AT, message, measurement_snapshot, turn
 
 
@@ -126,7 +127,7 @@ def test_failed_replay_retries_cached_changed_source(tmp_path, monkeypatch, fail
         assert book.attributions.details()[0]['orders'] == [first.id]
         measured = measurement_snapshot(book)
         record.write_text('second synthetic source')
-        source_stamp = record.stat()
+        source_stamp = file_identity(record.stat())
         posts = store.all()
         current[:] = [second]
         with monkeypatch.context() as patch:
@@ -149,7 +150,7 @@ def test_failed_replay_retries_cached_changed_source(tmp_path, monkeypatch, fail
         assert book.attributions.replay(store, tmp_path, bindings) == 1
         assert book.attributions.details()[0]['orders'] == [second.id]
         assert measurement_snapshot(book) == measured
-        assert record.stat() == source_stamp and store.all() == posts
+        assert file_identity(record.stat()) == source_stamp and store.all() == posts
         assert len(graphs) == before + 1 and reads == [record, record]
         before = len(graphs)
         assert book.attributions.replay(store, tmp_path, bindings) == 0

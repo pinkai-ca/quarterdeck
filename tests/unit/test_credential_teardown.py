@@ -27,6 +27,7 @@ from quarterdeck.seat import Launched, Seat, temporary_seat
 from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, ShipError, load
 from quarterdeck.tmux import Pane
+from tests.measure_status_service import identity as file_identity
 
 
 def live(token: str, expires_in: float) -> str:
@@ -741,9 +742,9 @@ def test_operator_can_finish_a_proved_prior_move(muse_ship, monkeypatch, history
     seat, record, archive, saved, original = move_with_stale_hold(muse_ship, monkeypatch, temporary=temporary)
     audit = acts.path(seat)
     start, failed = [json.loads(line) for line in audit.read_text().splitlines()]
-    before = archive.stat()
+    before = file_identity(archive.stat())
     archived_home = archive / "home" if temporary else archive
-    home_before = archived_home.stat()
+    home_before = file_identity(archived_home.stat())
     if history.startswith("landed-"):
         del start["source_identity"], start["review_identity"], failed["recovery"]
         previous = [start] if history == "landed-pending" else [start, failed]
@@ -762,8 +763,8 @@ def test_operator_can_finish_a_proved_prior_move(muse_ship, monkeypatch, history
     assert not seat.home.exists()
     registered = json.loads(audit.read_text().splitlines()[-1])
     assert (registered["act"], registered["outcome"], registered["recovery"]) == (start["act"], "remove", str(archive))
-    assert archive.stat() == before
-    assert archived_home.stat() == home_before
+    assert file_identity(archive.stat()) == before
+    assert file_identity(archived_home.stat()) == home_before
     assert auth_state(*saved) == original
 
 
