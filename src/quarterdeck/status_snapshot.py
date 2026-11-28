@@ -207,7 +207,9 @@ def served(ship):
 
 def _projection(full, wall, titles):
     seats = [dict(name=row['name'], activity=row['activity']['state'], harness=row['harness'],
-                  model=row['model'], pool=row['pool'], order=row['order']) for row in full['seats']]
+                  model=row['model'], pool=row['pool'],
+                  order=row['order'] if _order_origin(row['order']) is not None else None)
+             for row in full['seats']]
     history_available = full['programs_error'] is None
     programs = [dict(harness=row['harness'], working_now=row['working_now'],
                      last_turn_ended=row['last_turn_ended'] if history_available else None)

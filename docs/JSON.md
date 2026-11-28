@@ -75,9 +75,10 @@ A successful document has exactly these fields.
 | `withheld_titles` | A sorted list of canonical order IDs in threads involving the ship's Security seats, or null when the whole graph cannot be verified |
 
 The `order` field is omitted for office seats and every seat on a private ship.
-On other rows it holds the canonical order ID or null. Orders whose ID names an
-office sender or a private originating ship also appear as null. Program rows
-reflect the service's aggregate program observation. If program history is
+On other rows it holds the canonical order ID or null. A claimed question or an
+invalid current reference appears as null. Orders whose ID names an office sender
+or a private originating ship also appear as null. Program rows reflect the
+service's aggregate program observation. If program history is
 unavailable, `last_turn_ended` is null and `working_now` still reflects the
 independent activity reading.
 

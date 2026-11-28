@@ -134,6 +134,47 @@ def test_dashboard_schema_and_privacy_using_one_policy(fleet, monkeypatch, capsy
             assert orders[name].id not in captured.out
 
 
+def test_non_order_current_items_leave_public_status_available(fleet, monkeypatch, capsys):
+    make, policy = fleet
+    ship, actor, _, orders = make('fleet-crew', 'Sample Crew', security='sentry')
+    question = actor.store.new('question', 'sentry', 'desk', TEXT, re=orders['desk'].id)
+    actor.store.new('ack', 'desk', 'sentry', '', re=question.id)
+    malformed = 'ord-1234'
+    claimed = post.Store.claimed
+
+    def claim(store, seat, before):
+        return malformed if seat == 'unassigned' else claimed(store, seat, before)
+
+    monkeypatch.setattr(post.Store, 'claimed', claim)
+    assert actor.publish_status()
+    ordinary = status_snapshot.served(ship)
+    assert ordinary is not None
+    full_rows = {row['name']: row for row in ordinary['seats']}
+    assert full_rows['desk']['order'] == question.id
+    assert full_rows['unassigned']['order'] == malformed
+    assert full_rows['crew']['order'] == orders['crew'].id
+
+    no_fallback(monkeypatch)
+    assert public(ship, policy) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ''
+    public_rows = []
+    for name, row in full_rows.items():
+        expected = {key: row[key] for key in ('name', 'harness', 'model', 'pool')}
+        expected['activity'] = row['activity']['state']
+        if name != 'counsel':
+            expected['order'] = orders['crew'].id if name == 'crew' else None
+        public_rows.append(expected)
+    assert json.loads(captured.out) == {
+        'service': ordinary['service'],
+        'observed_at': ordinary['reading']['at'],
+        'open_orders': len(ordinary['open_orders']),
+        'seats': public_rows,
+        'programs': PROGRAMS,
+        'withheld_titles': [orders['desk'].id],
+    }
+
+
 def test_explicit_empty_policy_is_reread_and_default_ship_adds_no_fields(fleet, monkeypatch, capsys):
     make, policy = fleet
     ship, _, _, orders = make('enterprise', 'Enterprise')
