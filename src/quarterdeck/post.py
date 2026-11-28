@@ -94,6 +94,15 @@ def reading_value(kind, key, read):
     return reading.values[key]
 
 
+def observed_messages(runtime):
+    """The current reading pass's whole store, if already loaded. This never opens a file."""
+    reading = _READING.get()
+    if reading is not None:
+        key = ('store', (runtime / 'post' / 'store').absolute())
+        if (loaded := reading.values.get(key)) is not None:
+            return loaded[0]
+
+
 def reading_names(folder):
     """A presentation's directory inventory; None outside a read-only view."""
     if _READING.get() is None:

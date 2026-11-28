@@ -72,6 +72,7 @@ A successful document has exactly these fields.
 | `open_orders` | The number of open orders |
 | `seats` | Rows with `name`, `activity` (the state string), `harness`, `model` (string or null), `pool`, and, where allowed, `order` |
 | `programs` | Aggregate rows with `harness`, `working_now` (boolean or null), and `last_turn_ended` (ISO 8601 string or null) |
+| `withheld_titles` | A sorted list of canonical order IDs in threads involving the ship's Security seats, or null when the whole graph cannot be verified |
 
 The `order` field is omitted for office seats and every seat on a private ship.
 On other rows it holds the canonical order ID or null. Orders whose ID names an
@@ -79,6 +80,13 @@ office sender or a private originating ship also appear as null. Program rows
 reflect the service's aggregate program observation. If program history is
 unavailable, `last_turn_ended` is null and `working_now` still reflects the
 independent activity reading.
+
+The service follows every reply link in its observed message graph, including
+replies whose senders or recipients are private. The privacy policy filters
+withheld IDs by their encoded senders before output. An empty list means the
+service confirmed that there are no eligible IDs to withhold. On null, omit
+all order titles and keep the other public figures available. A post generation
+change makes the list null until the service publishes another whole observation.
 
 Each call with a valid policy marks the usual demand and reads the service's
 separate dashboard snapshot. A missing, invalid, stale, or incompatible snapshot
