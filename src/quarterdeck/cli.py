@@ -145,7 +145,7 @@ def handoff(args: argparse.Namespace, argv: list[str]) -> None:
 
 
 def emit(args: argparse.Namespace, result: Any, *, completed_act: bool = False, emitted=None) -> bool:
-    if getattr(args, "default_ship", None) and result is not None:
+    if getattr(args, "default_ship", None) and not getattr(args, 'public_status', None) and result is not None:
         result = output.with_default_ship(result, args.default_ship)
     return output.emit(result, json_output=args.json, completed_act=completed_act, emitted=emitted)
 
@@ -253,7 +253,10 @@ def build_parser() -> argparse.ArgumentParser:
                 "Press q or Ctrl-C to quit.")
     p = verb("ls", cmd_ls, "list running tmux sessions of the selected ship, counting declared seats")
     p = verb("status", cmd_status, "every seat on one screen, then the open orders")
-    p.add_argument("--line", action="store_true", help="published operational alerts; stale or unavailable readings are marked")
+    status_view = p.add_mutually_exclusive_group()
+    status_view.add_argument("--line", action="store_true", help="published operational alerts; stale or unavailable readings are marked")
+    status_view.add_argument("--public", dest="public_status", type=Path, metavar="POLICY",
+                             help="with --json: dashboard status from the service, using an absolute privacy policy path")
     p = verb("watch", cmd_watch, "read a seat: activity from its record, the door from its screen")
     p.add_argument("seat", nargs="?")
     p.add_argument("--save-screen", action="store_true", help="save the screen for the adapter's next fixture")
@@ -1002,6 +1005,18 @@ def render_sources(data: dict) -> list[str]:
 
 
 def cmd_status(args: argparse.Namespace) -> Reading:
+    if (policy := getattr(args, 'public_status', None)) is not None:
+        from . import status_snapshot
+
+        if not args.json:
+            raise ShipError('status --public requires --json')
+        try:
+            folder = shipmod.find(args.ship)
+        except (ShipError, OSError, ValueError):
+            raise ShipError('public status unavailable') from None
+        if (reading := status_snapshot.public_served(folder, policy)) is None:
+            raise ShipError('public status unavailable')
+        return Reading(reading, lambda data: '')
     ship = load_ship(args)
     if args.line:
         warning = copy_state.select(ship.folder, mode=ship.code, mode_known=True).warning

@@ -7,7 +7,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | Module | What it holds |
 | --- | --- |
 | `status_profile.py` | `qd profile-status`: one full status collection of the service's own profiled at a systems or engineering seat's request, one at a time, written to `runtime/status-profiles/` as code locations (folders included), call counts, times and callers only, with the collecting thread's own CPU and a note that other threads appear, bounded in size and number |
-| `status_snapshot.py` | service-produced JSON status, bounded by the reading’s age and owner |
+| `status_snapshot.py` | service-produced full and dashboard JSON status, bounded by the reading’s age and owner, with the dashboard privacy policy applied on read |
 | `check.py` | `qd check`, the live proof of an installed program; scoped report filing through the shared post door when no service is alive |
 | `check_capacity.py` | a nightly check's one-pass reservation of an existing shared test slot, held through its cleanup |
 | `compaction_alert.py` | an idle seat that is ready for a fresh start by hand: one report to the systems seats for each such reading, and a named alarm while no systems seat is up |

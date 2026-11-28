@@ -22,6 +22,7 @@ What each reading holds:
 | Command | The document holds |
 | --- | --- |
 | `status`, or `watch` without a seat | every seat's reading, the open orders, and the status facts |
+| `status --public /absolute/path/to/post-privacy.toml` with `--json` | the dashboard status from the service, with the privacy policy applied |
 | `status --line` | the facts alone, with the counts of what waits and the operational warnings |
 | `watch <seat>` | that seat's reading, the full state of its record, and its screen as parsed |
 | `ledger` | the stored usage windows and how fresh each is, the declared pools, the spend on key pools, usage attempts, and the walls now standing |
@@ -46,6 +47,44 @@ clients are attached, the service makes its ordinary periodic whole readings onl
 for five minutes after the latest call. The minute-by-minute site feed keeps that
 demand alive; five quiet minutes stop headless collection. A call that cannot write
 the private status stamp falls back cold. The stamp never renews a reading's own time.
+
+## Dashboard status
+
+Run `qd --json status --public /absolute/path/to/post-privacy.toml` with the
+dashboard's post privacy file. The TOML file must define exactly two top-level
+arrays of names.
+
+```toml
+office_seats = ["assistant"]
+private_ships = ["private-review"]
+```
+
+Names must be Quarterdeck address components. Matching is case-insensitive, with
+duplicate names refused within each array. An explicitly empty array is valid.
+A private ship matches either its fleet folder or its declared name.
+
+A successful document has exactly these fields.
+
+| Field | Value |
+| --- | --- |
+| `service` | Service health as a string |
+| `observed_at` | The service snapshot's observation time, in ISO 8601 UTC |
+| `open_orders` | The number of open orders |
+| `seats` | Rows with `name`, `activity` (the state string), `harness`, `model` (string or null), `pool`, and, where allowed, `order` |
+| `programs` | Aggregate rows with `harness`, `working_now` (boolean or null), and `last_turn_ended` (ISO 8601 string or null) |
+
+The `order` field is omitted for office seats and every seat on a private ship.
+On other rows it holds the canonical order ID or null. Orders whose ID names an
+office sender or a private originating ship also appear as null. Program rows
+reflect the service's aggregate program observation. If program history is
+unavailable, `last_turn_ended` is null and `working_now` still reflects the
+independent activity reading.
+
+Each call with a valid policy marks the usual demand and reads the service's
+separate dashboard snapshot. A missing, invalid, stale, or incompatible snapshot
+or an unavailable policy exits nonzero with `public status unavailable` on
+standard error and empty standard output. The dashboard should hold its previous
+publication until a reading succeeds.
 
 Detailed status and the ledger show each provider's allowance as it was last stored. A command that changes something keeps its proof line as text; that includes `watch --save-screen` and `doctor --fix`.
 
