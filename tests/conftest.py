@@ -10,6 +10,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,16 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 MARK_PATIENCE = 5.0  # seconds another controller may take between creating its mark and writing it
 TEST_TICK = 0.1  # seconds: every test ship's declared [ship] tick, so the service passes quickly (production: 1.0)
+
+
+@pytest.fixture
+def retirement_clock(monkeypatch):
+    """Keep retirement work counts independent of the time taken by filesystem operations."""
+    from quarterdeck import post_retirement
+
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(post_retirement, 'time', SimpleNamespace(monotonic=lambda: clock.now, time=time.time))
+    return clock
 
 
 def socket_project():

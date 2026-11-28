@@ -8,6 +8,8 @@ import pytest
 
 from quarterdeck import inbox_watch, pending, post, post_dir, post_retirement as retirement
 
+pytestmark = pytest.mark.usefixtures('retirement_clock')
+
 
 def service(runtime):
     return SimpleNamespace(runtime=runtime, store=post.Store(runtime), attempts=post.Attempts(runtime),
@@ -317,19 +319,17 @@ def test_current_launch_receipts_stay_until_that_launch_ends(tmp_path):
     assert retirement.run(s) == dict(attempts=1, journals=1)
 
 
-def test_service_slice_beats_yields_and_resumes_between_whole_moves(tmp_path, monkeypatch):
+def test_service_slice_beats_yields_and_resumes_between_whole_moves(tmp_path, monkeypatch, retirement_clock):
     s = service(tmp_path)
     originals = [delivery(s) for _ in range(8)]
-    clock = [0.0]
     beats = []
-    s.heartbeat = lambda: beats.append(clock[0])
+    s.heartbeat = lambda: beats.append(retirement_clock.now)
     real_move = retirement.move
     def measured_move(source, target):
         moved = real_move(source, target)
-        clock[0] += 0.11
+        retirement_clock.now += 0.11
         return moved
     with monkeypatch.context() as patch:
-        patch.setattr(retirement.time, 'monotonic', lambda: clock[0])
         patch.setattr(retirement, 'move', measured_move)
         result = retirement.run(s, seconds=0.5)
     assert result['paused'] is True
@@ -361,18 +361,16 @@ def test_retirement_is_once_after_delivery_and_accounting_in_a_service_pass():
     assert events.index('deliveries') < events.index('account') < events.index('retire_post')
 
 
-def test_yielding_while_reading_one_seat_still_gives_the_next_seat_a_turn(tmp_path, monkeypatch):
+def test_yielding_while_reading_one_seat_still_gives_the_next_seat_a_turn(tmp_path, monkeypatch, retirement_clock):
     s = service(tmp_path)
     delivery(s, name='first')
     delivery(s, name='second')
-    clock = [0.0]
     journals = pending._journals
     def slow_read(*args, **kwargs):
         result = journals(*args, **kwargs)
-        clock[0] += 0.6
+        retirement_clock.now += 0.6
         return result
     with monkeypatch.context() as patch:
-        patch.setattr(retirement.time, 'monotonic', lambda: clock[0])
         patch.setattr(pending, '_journals', slow_read)
         assert retirement.run(s, seconds=0.5)['paused'] is True
     assert s.post_retirement_cursor == 'second'

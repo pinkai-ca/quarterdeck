@@ -57,11 +57,11 @@ def service(runtime, answer):
 def busy_owner(runtime):
     (runtime / 'locks').mkdir(parents=True)
     process = subprocess.Popen([sys.executable, '-c', '''
-import fcntl, select, sys
+import fcntl, sys
 with open(sys.argv[1], 'a') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     print('locked', flush=True)
-    select.select([sys.stdin], [], [], 5)
+    sys.stdin.readline()
 ''', str(runtime / 'locks' / 'request.lock')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         assert process.stdout.readline().strip() == 'locked'
@@ -87,9 +87,18 @@ def test_busy_owner_does_not_stall_tick_or_dispatch(runtime, busy_owner, monkeyp
                  'deliveries', 'follow', 'compactions', 'fresh_after_order', 'rebrief', 'credentials',
                  'failover', 'heartbeat', 'status_due'):
         setattr(runner, name, lambda name=name: steps.append(name))
-    started = time.monotonic()
+    def unexpected_sleep(_):
+        pytest.fail('the service must skip a busy request owner without sleeping')
+    monkeypatch.setattr(request_queue, 'time', SimpleNamespace(monotonic=lambda: 0.0, sleep=unexpected_sleep))
+    probes = []
+    def probe(descriptor, operation):
+        assert operation == fcntl.LOCK_EX | fcntl.LOCK_NB
+        probes.append(operation)
+        return fcntl.flock(descriptor, operation)
+    monkeypatch.setattr(request_queue, 'fcntl',
+                        SimpleNamespace(flock=probe, LOCK_EX=fcntl.LOCK_EX, LOCK_NB=fcntl.LOCK_NB))
     runner.tick()
-    assert time.monotonic() - started < 1
+    assert probes
     assert 'deliveries' in steps and 'failover' in steps and 'compactions' in steps
     assert path.exists() and not path.with_suffix('.claimed').exists()
     assert busy_owner.poll() is None

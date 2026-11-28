@@ -333,6 +333,7 @@ def test_normal_usage_duty_counts_rollbacks_once_and_clears_on_commit(tmp_path, 
 
     # Keep the actual tick, duty order, record apply and quota dispatch. Supply the planner's reply
     # synchronously and stand in for unrelated duties so this test never needs a child or tmux.
+    monkeypatch.setattr(accounting_slices, 'time', SimpleNamespace(monotonic=lambda: w.clock.now))
     for name in ('rebind heartbeat status_due server_recovery relaunch_intents reconcile file_drops groups cascades '
                  'fleet_post inboxes views recoveries refusals set_asides answers looks jailed_watches '
                  'write_bound_floor deliveries follow requests compactions output_limits person_quiet fresh_after_order '

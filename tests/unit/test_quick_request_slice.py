@@ -2,10 +2,18 @@
 from contextlib import contextmanager
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from quarterdeck import request_queue, service, ship
+
+
+@pytest.fixture
+def quick_clock(monkeypatch):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(service, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    return clock
 
 
 @pytest.fixture
@@ -30,7 +38,7 @@ def publish(owner, name, kind, arrival):
     return path
 
 
-def test_only_submit_and_resend_run_between_duties(owner):
+def test_only_submit_and_resend_run_between_duties(owner, quick_clock):
     kinds = ['relaunch', 'submit', 'select', 'control', 'resend', 'stop', 'press', 'type',
              'rebrief', 'cascade', 'fresh-ready']
     paths = [publish(owner, f'example-{i}', kind, i + 1) for i, kind in enumerate(kinds)]
@@ -42,7 +50,7 @@ def test_only_submit_and_resend_run_between_duties(owner):
     assert [row['kind'] for row in owner.calls[2:]] == [kind for kind in kinds if kind not in request_queue.QUICK_KINDS]
 
 
-def test_arrival_order_is_not_the_filename_order(owner):
+def test_arrival_order_is_not_the_filename_order(owner, quick_clock):
     publish(owner, 'z-old', 'submit', 1)
     publish(owner, 'm-middle', 'resend', 2)
     publish(owner, 'a-new', 'submit', 3)
@@ -57,7 +65,7 @@ def test_the_full_step_uses_the_same_arrival_order(owner):
     assert [row['seat'] for row in owner.calls] == ['z-old', 'a-new']
 
 
-def test_refused_answers_remain_and_neither_drain_repeats_them(owner):
+def test_refused_answers_remain_and_neither_drain_repeats_them(owner, quick_clock):
     path = publish(owner, 'refused', 'submit', 1)
 
     def refuse(data):
@@ -74,9 +82,8 @@ def test_refused_answers_remain_and_neither_drain_repeats_them(owner):
     assert path.with_suffix('.done').read_text() == 'refused: synthetic refusal\n'
 
 
-def test_a_scan_resumes_past_unrelated_requests_with_one_operation_per_slice(owner, monkeypatch):
+def test_a_scan_resumes_past_unrelated_requests_with_one_operation_per_slice(owner, quick_clock, monkeypatch):
     monkeypatch.setattr(service, 'QUICK_REQUEST_OPERATIONS', 1)
-    monkeypatch.setattr(service, 'QUICK_REQUEST_SECONDS', 60)
     for i in range(4):
         publish(owner, f'lifecycle-{i}', 'select', i + 1)
     publish(owner, 'quick', 'submit', 5)
@@ -87,25 +94,26 @@ def test_a_scan_resumes_past_unrelated_requests_with_one_operation_per_slice(own
     assert [row['kind'] for row in owner.calls] == ['submit']
 
 
-def test_one_atomic_request_can_finish_but_the_next_waits_for_another_slice(owner, monkeypatch):
-    clock = [0.0]
-    monkeypatch.setattr(service.time, 'monotonic', lambda: clock[0])
-    publish(owner, 'first', 'submit', 1)
-    publish(owner, 'second', 'resend', 2)
+def test_one_atomic_request_can_finish_but_the_next_waits_for_another_slice(owner, quick_clock):
+    first = publish(owner, 'first', 'submit', 1)
+    second = publish(owner, 'second', 'resend', 2)
     answer = owner.answer
 
     def elapsed(data):
-        clock[0] += 1
+        quick_clock.now += 2 * service.QUICK_REQUEST_SECONDS
         return answer(data)
 
     owner.answer = elapsed
     owner.drain_requests()
     assert [row['kind'] for row in owner.calls] == ['submit']
+    assert first.with_suffix('.done').read_text() == 'answered submit\n'
+    assert second.exists()
     owner.drain_requests()
     assert [row['kind'] for row in owner.calls] == ['submit', 'resend']
+    assert second.with_suffix('.done').read_text() == 'answered resend\n'
 
 
-def test_a_busy_owner_keeps_the_earlier_quick_request_first(owner, monkeypatch):
+def test_a_busy_owner_keeps_the_earlier_quick_request_first(owner, quick_clock, monkeypatch):
     busy = [True]
 
     @contextmanager
@@ -122,7 +130,7 @@ def test_a_busy_owner_keeps_the_earlier_quick_request_first(owner, monkeypatch):
     assert [row['seat'] for row in owner.calls] == ['z-first', 'a-second']
 
 
-def test_a_path_selected_by_an_earlier_scan_is_rechecked_before_dispatch(owner):
+def test_a_path_selected_by_an_earlier_scan_is_rechecked_before_dispatch(owner, quick_clock):
     path = publish(owner, 'lifecycle', 'select', 1)
     owner.quick_request_scan = iter([path])
     owner.drain_requests()

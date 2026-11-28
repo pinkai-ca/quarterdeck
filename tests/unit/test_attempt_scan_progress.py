@@ -24,17 +24,16 @@ def archive(runtime, count):
                            ledger=SimpleNamespace(catching_up=lambda: False)), message
 
 
-def test_cold_retirement_makes_progress_across_default_slices(tmp_path, monkeypatch):
+def test_cold_retirement_makes_progress_across_default_slices(tmp_path, monkeypatch, retirement_clock):
     service, _ = archive(tmp_path, 600)
-    clock, reads = [0.0], Counter()
+    reads = Counter()
     read = post_dir.read_text
     def costly_parse(path, *args, **kwargs):
         if path.parent == service.attempts.dir:
             reads[path.name] += 1
-            clock[0] += 0.006
+            retirement_clock.now += 0.006
         return read(path, *args, **kwargs)
     monkeypatch.setattr(post_dir, 'read_text', costly_parse)
-    monkeypatch.setattr(retirement.time, 'monotonic', lambda: clock[0])
 
     results = []
     for _ in range(12):
@@ -60,7 +59,7 @@ def interrupted_scan(attempts):
         attempts.all(progress=progress)
 
 
-def test_yielded_cache_rechecks_edits_additions_and_removals(tmp_path):
+def test_yielded_cache_rechecks_edits_additions_and_removals(tmp_path, retirement_clock):
     service, message = archive(tmp_path, 201)
     attempts = service.attempts
     interrupted_scan(attempts)
@@ -84,7 +83,7 @@ def test_yielded_cache_rechecks_edits_additions_and_removals(tmp_path):
     assert retirement.run(service) == dict(attempts=0, journals=0)
 
 
-def test_yielded_cache_cannot_hide_a_read_error_or_return_partial_history(tmp_path):
+def test_yielded_cache_cannot_hide_a_read_error_or_return_partial_history(tmp_path, retirement_clock):
     service, _ = archive(tmp_path, 201)
     interrupted_scan(service.attempts)
     path = service.attempts.dir / next(iter(service.attempts._cache))

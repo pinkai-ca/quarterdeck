@@ -216,21 +216,27 @@ def test_only_an_offered_open_attempt_of_this_seat_is_closed_by_a_receipt(tmp_pa
     assert watch_broker.read_offer(runtime, 'desk') is None, 'a settled offer is retired'
 
 
-def test_a_held_lease_is_only_tested_and_never_delays_a_pass(tmp_path: Path):
+def test_a_held_lease_is_only_tested_and_never_delays_a_pass(tmp_path: Path, monkeypatch):
     """The wait holds its lease for its whole life; the service only tests it, without blocking, for every seat."""
     runtime = tmp_path / 'runtime'
     svc = service(runtime)
     _, lease = armed(runtime, 'desk')  # held, exclusively, as a live wait holds it
     _, other = armed(runtime, 'office')
+    probed = set()
+    def probe(descriptor, operation):
+        assert operation == fcntl.LOCK_SH | fcntl.LOCK_NB
+        probed.add(os.fstat(descriptor).st_ino)
+        return fcntl.flock(descriptor, operation)
+    monkeypatch.setattr(watch_broker, 'fcntl',
+                        SimpleNamespace(flock=probe, LOCK_SH=fcntl.LOCK_SH, LOCK_NB=fcntl.LOCK_NB))
     try:
-        svc.store.new('order', 'captain', 'office', 'for the other seat')
-        started = time.monotonic()
+        message = svc.store.new('order', 'captain', 'office', 'for the other seat')
         for _ in range(20):
             assert watch_broker.lease_held(runtime, 'desk', 'a' * 32) is True
             watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
             watch_broker.run(svc, SimpleNamespace(name='office', ship=SimpleNamespace(runtime=runtime)))
-        assert time.monotonic() - started < 2, 'forty passes over held leases, none waiting on them'
-        assert watch_broker.read_offer(runtime, 'office') is not None
+        assert probed == {os.fstat(lease).st_ino, os.fstat(other).st_ino}
+        assert watch_broker.read_offer(runtime, 'office')['messages'] == [message.id]
     finally:
         os.close(lease)
         os.close(other)

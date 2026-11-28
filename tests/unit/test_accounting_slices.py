@@ -43,16 +43,13 @@ def world(tmp_path, monkeypatch, count=1):
 
 
 def finish(driver, svc, timeout=20):
-    times = []
     until = None if timeout is None else time.monotonic() + timeout
     while until is None or time.monotonic() < until:
-        before = time.monotonic()
         driver.step(svc)
-        times.append(time.monotonic() - before)
         assert not svc.ledger.db.in_transaction, 'each slice releases its write transaction'
         if not driver.active:
             assert svc.accounting_health.failures == 0
-            return times
+            return
         time.sleep(0.005)
     pytest.fail('planning child did not finish')
 
@@ -73,11 +70,19 @@ def test_child_plan_matches_full_replay_and_releases_every_slice(tmp_path, monke
     expected = rows(reference.ledger)
     reference.ledger.close()
     driver = Driver()
-    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
+    def unexpected_replay(*args, **kwargs):
+        pytest.fail('the service process must not replay the records itself')
+    monkeypatch.setattr(Service, 'account_records', unexpected_replay)
     try:
-        durations = finish(driver, svc)
-        assert len(durations) > 1
-        assert max(durations) < 0.5, 'native parsing and replay must not block the service'
+        # The first pass yields while the child still has no request to read.
+        with monkeypatch.context() as first:
+            first.setattr(accounting_slices, 'time', SimpleNamespace(monotonic=lambda: 0.0))
+            first.setattr(driver, 'pump', lambda: False)
+            driver.step(svc, wait=False)
+        assert driver.active and driver.process is not None and driver.outgoing
+        assert not svc.ledger.db.in_transaction
+        assert svc.ledger.ingested(record) == 0
+        finish(driver, svc)
         assert os.getpriority(os.PRIO_PROCESS, driver.process.pid) >= 10
         assert rows(svc.ledger) == expected
         assert not svc.ledger.catching_up()
@@ -247,13 +252,24 @@ def test_heartbeat_continues_inside_a_long_service_step(tmp_path, monkeypatch):
 def test_restart_resumes_committed_prefix_without_duplicate_turns(tmp_path, monkeypatch):
     svc, seat, record, _ = world(tmp_path, monkeypatch, 1000)
     driver = Driver()
-    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.0005)
+
+    def after_first_turn(sql):
+        if sql.startswith('INSERT OR REPLACE INTO turns '):
+            clock.now += 2 * accounting_slices.BUDGET
+
+    clock = SimpleNamespace(now=0.0)
     try:
-        until = time.monotonic() + 20
-        while svc.ledger.ingested(record) == 0 and time.monotonic() < until:
-            driver.step(svc)
-            time.sleep(0.005)
-        assert 0 < svc.ledger.ingested(record) < 1000
+        with monkeypatch.context() as first:
+            first.setattr(accounting_slices, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+            svc.ledger.db.set_trace_callback(after_first_turn)
+            try:
+                until = time.monotonic() + 20
+                while svc.ledger.ingested(record) == 0 and time.monotonic() < until:
+                    driver.step(svc, wait=False)
+                    time.sleep(0.005)
+            finally:
+                svc.ledger.db.set_trace_callback(None)
+        assert svc.ledger.ingested(record) == 1
         assert svc.ledger.catching_up()
         assert not svc.ledger.db.in_transaction
     finally:
@@ -265,7 +281,6 @@ def test_restart_resumes_committed_prefix_without_duplicate_turns(tmp_path, monk
     restarted.log = lambda *args, **kwargs: None
     restarted.publish_accounting_health = lambda **kwargs: None
     driver = Driver()
-    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
     try:
         finish(driver, restarted)
         assert restarted.ledger.ingested(record) == 1000
@@ -455,9 +470,10 @@ def test_progress_is_logged_after_committed_record_groups(tmp_path, monkeypatch)
     from collections import deque
     import tempfile
     svc, seat, _, _ = world(tmp_path, monkeypatch)
+    monkeypatch.setattr(accounting_slices, 'time', SimpleNamespace(monotonic=lambda: 0.0))
     driver = Driver()
     driver.active = True
-    driver.started = time.monotonic()
+    driver.started = 0.0
     driver.job = 1
     driver.plan = tempfile.TemporaryFile(dir=svc.runtime)
     driver.identities = {seat.name: driver.identity(svc.runtime, seat.name)}
@@ -471,7 +487,7 @@ def test_progress_is_logged_after_committed_record_groups(tmp_path, monkeypatch)
         logs.append((event, fields))
     svc.log = logged
     try:
-        driver.step(svc)
+        driver.step(svc, wait=False)
         progress = [data for event, data in logs if event == 'accounting-job-progress']
         assert len(progress) == 1
         assert progress[0]['records'] == progress[0]['unique_records'] == 205
@@ -485,15 +501,18 @@ def test_progress_is_logged_after_committed_record_groups(tmp_path, monkeypatch)
 def test_empty_interstep_drain_does_not_wait_or_start_a_new_job(tmp_path, monkeypatch):
     svc, _, _, _ = world(tmp_path, monkeypatch)
     driver = Driver()
+    def unexpected_sleep(_):
+        pytest.fail('an empty interstep drain must not sleep')
+    monkeypatch.setattr(accounting_slices, 'time', SimpleNamespace(monotonic=lambda: 0.0, sleep=unexpected_sleep))
+    pumps = []
+    monkeypatch.setattr(driver, 'pump', lambda: pumps.append('pump') or False)
     try:
         driver.drain(svc)
-        assert driver.process is None
+        assert driver.process is None and not pumps
         driver.active = True
-        driver.started = time.monotonic()
-        monkeypatch.setattr(driver, 'pump', lambda: False)
-        started = time.monotonic()
+        driver.started = 0.0
         driver.drain(svc)
-        assert time.monotonic() - started < 0.2
+        assert pumps == ['pump']
         assert not svc.ledger.db.in_transaction
         assert driver.process is None and driver.active
     finally:

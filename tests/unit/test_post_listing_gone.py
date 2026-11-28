@@ -93,7 +93,7 @@ def test_attempt_disappearance_evicts_the_parsed_entry(monkeypatch, tmp_path, op
 
 @pytest.mark.parametrize('operation', ['remove', 'retire'])
 @pytest.mark.parametrize('warm', [False, True])
-def test_retired_index_disappearance_drops_its_cached_rows(tmp_path, monkeypatch, operation, warm):
+def test_retired_index_disappearance_drops_its_cached_rows(tmp_path, monkeypatch, retirement_clock, operation, warm):
     s = service(tmp_path / 'runtime')
     delivery(s)
     retirement.run(s)
@@ -161,7 +161,7 @@ def test_pending_journal_gone_during_read_is_not_an_unreadable_journal(tmp_path,
 
 
 @pytest.mark.parametrize('operation', ['remove', 'retire'])
-def test_retirement_scan_skips_an_index_that_disappears_before_read(tmp_path, monkeypatch, operation):
+def test_retirement_scan_skips_an_index_that_disappears_before_read(tmp_path, monkeypatch, retirement_clock, operation):
     s = service(tmp_path / 'runtime')
     folder = s.runtime / 'post' / 'retired' / 'index'
     folder.mkdir(parents=True)

@@ -111,7 +111,8 @@ def test_first_and_later_service_duties_file_post_before_the_next_duty(tmp_path,
              'refresh_usage', 'pool_forecasts', 'retire_post', 'heartbeat', 'status_due', 'drain_accounting')
     for name in names:
         monkeypatch.setattr(svc, name, lambda: None)
-    svc.drop_filer = post.FilingSlice(seconds=float('inf'))
+    monkeypatch.setattr(post, 'time',
+                        SimpleNamespace(monotonic=lambda: 0.0, time=time.time, time_ns=time.time_ns))
     waiting = []
     def first_duty():
         assert svc.store.get(waiting[-1].id) == waiting[-1]

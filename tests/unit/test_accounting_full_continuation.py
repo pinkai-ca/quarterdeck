@@ -31,7 +31,7 @@ def test_record_change_job_cannot_finish_full_continuation_with_the_same_seats(t
     callbacks = driver.callbacks
     held = []
     def complete(service, deadline):
-        if driver.scope == {seat.name} and any(packet[0] == 'done' for packet, _ in driver.events):
+        if not held and driver.scope == {seat.name} and any(packet[0] == 'done' for packet, _ in driver.events):
             assert driver.continuing is None and driver.completion == []
             continuation = FullContinuation(driver.full_generation, (FENCE,), {seat.name})
             driver.full_continuation = continuation
@@ -59,7 +59,7 @@ def test_record_scope_rejects_a_child_global_completion(tmp_path, monkeypatch):
     callbacks = driver.callbacks
     injected = []
     def complete(service, deadline):
-        if driver.scope == {seat.name} and any(packet[0] == 'done' for packet, _ in driver.events):
+        if not injected and driver.scope == {seat.name} and any(packet[0] == 'done' for packet, _ in driver.events):
             service.ledger.begin_catchup(service.accounting_epoch, force=True)
             driver.completion.append(FENCE)
             injected.append(True)
@@ -69,7 +69,7 @@ def test_record_scope_rejects_a_child_global_completion(tmp_path, monkeypatch):
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             driver.step(svc)
-            if injected:
+            if injected and not driver.active:
                 break
         assert injected and not driver.active
         assert svc.accounting_health.failures == 1
@@ -117,10 +117,11 @@ def test_active_record_scope_yields_to_the_full_backstop(tmp_path, monkeypatch):
         assert os.WIFSTOPPED(os.waitpid(driver.process.pid, os.WUNTRACED)[1])
         return result
     monkeypatch.setattr(driver, 'start', stopped)
-    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
     try:
-        driver.step(svc)
-        assert driver.active and driver.scope == {seat.name}
+        with monkeypatch.context() as first:
+            first.setattr(accounting_slices, 'time', SimpleNamespace(monotonic=lambda: 0.0))
+            driver.step(svc, wait=False)
+        assert driver.active and driver.process is not None and driver.scope == {seat.name}
         scoped_generation = driver.full_generation
         driver.gate.partitions.due = time.monotonic() - 1
         monkeypatch.setattr(driver, 'start', start)

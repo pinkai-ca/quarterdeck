@@ -335,7 +335,7 @@ def test_fresh_links_and_settles_submission_from_the_exact_old_record(tmp_path, 
     ('answer', False, False), ('missing-message', False, False),
     ('unreadable-report', False, False),
 ])
-def test_report_settles_only_a_detached_journal(tmp_path, monkeypatch, reply, current, settled):
+def test_report_settles_only_a_detached_journal(tmp_path, monkeypatch, retirement_clock, reply, current, settled):
     seat = SyntheticSeat(tmp_path, 'worker')
     service = service_for(tmp_path, seat)
     service.ledger = SimpleNamespace(catching_up=lambda: False)
