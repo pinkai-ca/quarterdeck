@@ -92,15 +92,8 @@ def requested(ship):
         return False
 
 
-def _invalidate_public(runtime):
-    try:
-        path(runtime, PUBLIC).unlink(missing_ok=True)
-    except IsADirectoryError:
-        pass  # a directory at the companion path can never be a reading
-
-
 def invalidate(runtime):
-    _invalidate_public(runtime)
+    """Invalidate the ordinary reading. The public reading expires on its own."""
     path(runtime).unlink(missing_ok=True)
 
 
@@ -159,10 +152,8 @@ def publish(ship, reading, *, wall, monotonic, framework, stamp, messages=None, 
         if value['facts']['service'] == 'ok' and _public_complete(public, wall):
             _write(ship.runtime, PUBLIC, dict(envelope, reading=public,
                                             post_generation=generation if titles is not None else None))
-            return
     except (OSError, KeyError, TypeError):
         pass  # an unavailable companion does not stop ordinary status
-    _invalidate_public(ship.runtime)
 
 
 def _observed_at(wall):

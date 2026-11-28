@@ -181,7 +181,8 @@ def test_status_publication_and_demand_do_not_change_accounting_certificate(publ
     from quarterdeck import accounting_gate, trusted_files
     ship, _, _, _ = published
     trusted_files.root(ship.runtime).mkdir(exist_ok=True)
-    status_snapshot.invalidate(ship.runtime)
+    for name in (status_snapshot.NAME, status_snapshot.PUBLIC):
+        status_snapshot.path(ship.runtime, name).unlink()
     status_snapshot.path(ship.runtime).parent.rmdir()
     monkeypatch.setattr(presentation, 'time', status_snapshot.time)
     actor = service.Service(ship, SimpleNamespace())

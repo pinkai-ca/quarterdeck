@@ -391,25 +391,145 @@ def test_invalid_policy_fails_before_reading_snapshot(fleet, monkeypatch, capsys
     assert result.err == 'qd: public status unavailable\n'
 
 
-def test_invalidation_and_malformed_programs_leave_ordinary_status_available(fleet, monkeypatch, capsys):
+@pytest.fixture
+def refresh_clock(monkeypatch):
+    moment = datetime(2026, 11, 27, 20, tzinfo=timezone.utc)
+    clocks = [int(moment.timestamp()) * 1_000_000_000, 1_000_000_000]
+    clock = SimpleNamespace(time_ns=lambda: clocks[0], monotonic_ns=lambda: clocks[1])
+    monkeypatch.setattr(presentation, 'time', clock)
+    monkeypatch.setattr(status_snapshot, 'time', clock)
+    # Age the snapshot independently of the service's continuing heartbeat.
+    monkeypatch.setattr(servicectl, 'datetime', SimpleNamespace(now=lambda tz: moment,
+                                                             fromisoformat=datetime.fromisoformat))
+
+    def advance(ns):
+        clocks[:] = [value + ns for value in clocks]
+
+    return advance
+
+
+def test_full_refresh_serves_the_preceding_snapshot_until_it_expires_or_is_replaced(
+        fleet, refresh_clock, monkeypatch, capsys):
     make, policy = fleet
-    ship, actor, _, _ = make('enterprise', 'Enterprise')
+    ship, actor, _, orders = make('fleet-crew', 'Sample Crew', security='sentry')
     companion = status_snapshot.path(ship.runtime, status_snapshot.PUBLIC)
-    assert companion.exists()
-    monkeypatch.setattr(watch.program_use, 'collect', lambda *args: ([{'harness': 'fake'}], PROGRAM_ERROR))
+    original = companion.read_bytes()
+    assert public(ship, policy) == 0
+    before = json.loads(capsys.readouterr().out)
+    assert before['withheld_titles'] == []
+    actor.store.new('question', 'desk', 'sentry', TEXT, re=orders['crew'].id)
+    half_age = status_snapshot.MAX_AGE_NS // 2
+    refresh_clock(half_age)
+
+    def collect(*args, **kwargs):
+        assert status_snapshot.served(ship) is None
+        assert not status_snapshot.path(ship.runtime).exists()
+        assert companion.read_bytes() == original
+        with monkeypatch.context() as patch:
+            no_fallback(patch)
+            assert public(ship, policy) == 0
+            assert json.loads(capsys.readouterr().out) == dict(before, withheld_titles=None)
+            refresh_clock(half_age)
+            assert public(ship, policy) == 2
+            captured = capsys.readouterr()
+            assert captured.out == '' and captured.err == 'qd: public status unavailable\n'
+        return read(*args, **kwargs)
+
+    def replace_file(path, text):
+        if path == companion:
+            assert companion.read_bytes() == original
+            replacements.append(path)
+        atomic_replace(path, text)
+
+    read = watch.status_reading
+    atomic_replace = status_snapshot.durable.replace_file
+    replacements = []
+    monkeypatch.setattr(watch, 'status_reading', collect)
+    monkeypatch.setattr(status_snapshot.durable, 'replace_file', replace_file)
     assert actor.publish_status()
-    assert not companion.exists()
+    assert replacements == [companion]
+    ordinary = status_snapshot.served(ship)['reading']
+    assert ordinary['mode'] == 'served' and ordinary['at'] != before['observed_at']
+    no_fallback(monkeypatch)
+    assert public(ship, policy) == 0
+    assert json.loads(capsys.readouterr().out) == dict(before, observed_at=ordinary['at'],
+                                                     withheld_titles=[orders['crew'].id])
+
+
+@pytest.mark.parametrize('failure', ['collection', 'incomplete', 'invalid-companion', 'ordinary-write', 'public-write'])
+def test_unsuccessful_refresh_keeps_the_previous_public_snapshot_until_it_expires(
+        fleet, refresh_clock, monkeypatch, capsys, failure):
+    make, policy = fleet
+    ship, actor, _, _ = make('fleet-crew', 'Sample Crew')
+    companion = status_snapshot.path(ship.runtime, status_snapshot.PUBLIC)
+    original = companion.read_bytes()
+    assert public(ship, policy) == 0
+    before = json.loads(capsys.readouterr().out)
+    refresh_clock(status_snapshot.MAX_AGE_NS // 2)
+
+    def collect(*args, **kwargs):
+        if failure == 'collection':
+            raise OSError('synthetic collection failure')
+        reading = read(*args, **kwargs)
+        if failure == 'incomplete':
+            del reading['programs']
+        elif failure == 'invalid-companion':
+            reading['programs'] = [{'harness': 'fake'}]
+        return reading
+
+    def replace_file(path, text):
+        if (path.name, failure) in ((status_snapshot.NAME, 'ordinary-write'), (status_snapshot.PUBLIC, 'public-write')):
+            raise PermissionError('synthetic snapshot write failure')
+        atomic_replace(path, text)
+
+    read = watch.status_reading
+    atomic_replace = status_snapshot.durable.replace_file
+    monkeypatch.setattr(watch, 'status_reading', collect)
+    monkeypatch.setattr(status_snapshot.durable, 'replace_file', replace_file)
+    if failure in ('collection', 'ordinary-write'):
+        with pytest.raises(OSError, match='synthetic .* failure'):
+            actor.publish_status()
+        assert not (ship.runtime / presentation.NAME).exists()
+    else:
+        assert actor.publish_status()
+        assert (ship.runtime / presentation.NAME).exists()
+    ordinary = status_snapshot.served(ship)
+    if failure in ('invalid-companion', 'public-write'):
+        assert ordinary['reading']['at'] != before['observed_at']
+        if failure == 'invalid-companion':
+            assert ordinary['programs'] == [{'harness': 'fake'}]
+    else:
+        assert ordinary is None and not status_snapshot.path(ship.runtime).exists()
+
+    no_fallback(monkeypatch)
+    assert public(ship, policy) == 0
+    assert json.loads(capsys.readouterr().out) == before
+    refresh_clock(status_snapshot.MAX_AGE_NS // 2)
     assert public(ship, policy) == 2
-    assert capsys.readouterr().out == ''
-    assert cli.main(['--ship', str(ship.folder), '--json', 'status']) == 0
-    original = json.loads(capsys.readouterr().out)
-    assert original['reading']['mode'] == 'served'
-    assert original['programs'] == [{'harness': 'fake'}]
-    monkeypatch.setattr(watch.program_use, 'collect', lambda *args: (PROGRAMS, None))
-    assert actor.publish_status()
-    assert status_snapshot.path(ship.runtime).exists() and companion.exists()
-    status_snapshot.invalidate(ship.runtime)
-    assert not status_snapshot.path(ship.runtime).exists() and not companion.exists()
+    captured = capsys.readouterr()
+    assert captured.out == '' and captured.err == 'qd: public status unavailable\n'
+    assert companion.read_bytes() == original
+
+
+def test_refresh_refuses_the_previous_public_snapshot_after_the_declaration_changes(fleet, refresh_clock, monkeypatch):
+    make, policy = fleet
+    ship, actor, _, _ = make('fleet-crew', 'Sample Crew')
+    companion = status_snapshot.path(ship.runtime, status_snapshot.PUBLIC)
+    original = companion.read_bytes()
+
+    def collect(*args, **kwargs):
+        reading = read(*args, **kwargs)
+        with ship.file.open('a') as stream:
+            stream.write('\n# Changed declaration during collection\n')
+        return reading
+
+    read = watch.status_reading
+    monkeypatch.setattr(watch, 'status_reading', collect)
+    assert not actor.publish_status()
+    assert not status_snapshot.path(ship.runtime).exists()
+    assert companion.read_bytes() == original
+    no_fallback(monkeypatch)
+    assert status_snapshot.public_served(ship.folder, policy) is None
 
 
 def test_program_history_error_clears_last_use_but_keeps_activity(fleet, monkeypatch, capsys):

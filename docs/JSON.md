@@ -90,10 +90,12 @@ all order titles and keep the other public figures available. A post generation
 change makes the list null until the service publishes another whole observation.
 
 Each call with a valid policy marks the usual demand and reads the service's
-separate dashboard snapshot. A missing, invalid, stale, or incompatible snapshot
-or an unavailable policy exits nonzero with `public status unavailable` on
-standard error and empty standard output. The dashboard should hold its previous
-publication until a reading succeeds.
+separate dashboard snapshot. A refresh leaves the preceding snapshot in place,
+and the usual freshness and service identity checks determine whether it can
+still be served. A successful refresh replaces it in one step. A missing, invalid,
+stale, or incompatible snapshot or an unavailable policy exits nonzero with
+`public status unavailable` on standard error and empty standard output. The
+dashboard should hold its previous publication until a reading succeeds.
 
 Detailed status and the ledger show each provider's allowance as it was last stored. A command that changes something keeps its proof line as text; that includes `watch --save-screen` and `doctor --fix`.
 
